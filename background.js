@@ -877,6 +877,9 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
       bg_type: item.bg_type,
       bg_color: item.bg_color || "",
       bg_confidence: Number(item.bg_confidence || 0),
+      polygon: item.polygon || null,
+      rotation_deg: normalizeRotationDegrees(item.rotation_deg),
+      source_line_count: Math.max(1, Number(item.source_line_count) || 1),
       original_text: item.original_text,
       translated_text: cleanDecorativeSymbols(translatedText)
     };
@@ -1396,7 +1399,16 @@ function buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, deb
     kind = "effectText";
   }
 
-  return { item, index, box, text, kind, container, color };
+  return {
+    item,
+    index,
+    box,
+    text,
+    kind,
+    container,
+    color,
+    rotation: normalizeRotationDegrees(item && item.rotation_deg)
+  };
 }
 
 function assignLocalOcrWhiteContainer(box, containers) {
@@ -1526,6 +1538,10 @@ function buildLocalPaddleConnectedClusters(entries, imageSize) {
 
 function shouldJoinLocalPaddleCluster(left, right, imageSize) {
   if (!left || !right || left.kind !== right.kind) {
+    return false;
+  }
+  // 不把不同方向、但空间上恰好相交的拟声词拼成一句。
+  if (rotationDistance(left.rotation, right.rotation) > 18) {
     return false;
   }
   if (left.kind === "bubbleText") {
@@ -1660,6 +1676,15 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis) {
   if (!merged) {
     return null;
   }
+  const geometry = buildRotatedClusterGeometry(cluster, imageSize);
+  if (geometry) {
+    merged.polygon = geometry.polygon;
+    merged.rotation_deg = geometry.rotation;
+    merged.sourceLineCount = geometry.lineCount;
+    merged.words = composeRotatedClusterWords(cluster, geometry.rotation);
+  } else {
+    merged.sourceLineCount = Math.max(1, cluster.length);
+  }
   merged.localOcrClusterKind = cluster[0].kind;
   merged.localOcrContainerId = cluster[0].container ? cluster[0].container.id : "";
   merged.adaptiveBackground = analyzeLocalOcrAdaptiveBackground(
@@ -1670,9 +1695,82 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis) {
   return merged;
 }
 
+function buildRotatedClusterGeometry(cluster, imageSize) {
+  const points = cluster.flatMap((entry) =>
+    Array.isArray(entry.item && entry.item.polygon) ? entry.item.polygon : []
+  );
+  if (points.length < 4) {
+    return null;
+  }
+  const angles = cluster
+    .map((entry) => normalizeRotationDegrees(entry.rotation))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  const rotation = angles[Math.floor(angles.length / 2)] || 0;
+  const radians = (rotation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const projected = points.map((point) => ({
+    x: point.x * cos + point.y * sin,
+    y: -point.x * sin + point.y * cos
+  }));
+  const minX = Math.min(...projected.map((point) => point.x));
+  const maxX = Math.max(...projected.map((point) => point.x));
+  const minY = Math.min(...projected.map((point) => point.y));
+  const maxY = Math.max(...projected.map((point) => point.y));
+  const inverse = (x, y) => ({ x: x * cos - y * sin, y: x * sin + y * cos });
+  const width = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const height = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  const polygon = [inverse(minX, minY), inverse(maxX, minY), inverse(maxX, maxY), inverse(minX, maxY)]
+    .map((point) => ({ x: clamp(point.x, 0, width), y: clamp(point.y, 0, height) }));
+  return {
+    polygon,
+    rotation,
+    lineCount: estimateRotatedClusterLineCount(cluster, rotation)
+  };
+}
+
+function projectClusterCenter(entry, rotation) {
+  const radians = (rotation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    x: entry.box.centerX * cos + entry.box.centerY * sin,
+    y: -entry.box.centerX * sin + entry.box.centerY * cos,
+    height: Math.max(1, Math.min(entry.box.width, entry.box.height))
+  };
+}
+
+function buildRotatedClusterRows(cluster, rotation) {
+  const rows = [];
+  cluster.forEach((entry) => {
+    const point = projectClusterCenter(entry, rotation);
+    let row = rows.find((candidate) => Math.abs(candidate.y - point.y) <= Math.max(candidate.height, point.height) * 0.7);
+    if (!row) {
+      row = { y: point.y, height: point.height, entries: [] };
+      rows.push(row);
+    }
+    row.entries.push({ entry, point });
+    row.y = row.entries.reduce((sum, item) => sum + item.point.y, 0) / row.entries.length;
+    row.height = Math.max(row.height, point.height);
+  });
+  return rows.sort((left, right) => left.y - right.y);
+}
+
+function estimateRotatedClusterLineCount(cluster, rotation) {
+  return Math.max(1, buildRotatedClusterRows(cluster, rotation).length);
+}
+
+function composeRotatedClusterWords(cluster, rotation) {
+  return buildRotatedClusterRows(cluster, rotation)
+    .map((row) => row.entries.sort((left, right) => left.point.x - right.point.x).map((item) => item.entry.text).join(" "))
+    .filter(Boolean)
+    .join("\n");
+}
+
 function analyzeLocalOcrAdaptiveBackground(sample, box, clusterKind) {
   if (!sample || !sample.data || !box) {
-    return { type: clusterKind === "bubbleText" ? "solid" : "outline", color: "#ffffff", confidence: 0 };
+    return { type: "outline", color: "#ffffff", confidence: 0 };
   }
   const { data, width, height, scale } = sample;
   const padX = box.width * 0.08;
@@ -1697,7 +1795,7 @@ function analyzeLocalOcrAdaptiveBackground(sample, box, clusterKind) {
     }
   }
   if (pixels.length < 16) {
-    return { type: clusterKind === "bubbleText" ? "solid" : "outline", color: "#ffffff", confidence: 0 };
+    return { type: "outline", color: "#ffffff", confidence: 0 };
   }
   const medianChannel = (channel) => pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[Math.floor(pixels.length / 2)];
   const red = medianChannel(0);
@@ -1709,7 +1807,7 @@ function analyzeLocalOcrAdaptiveBackground(sample, box, clusterKind) {
   const confidence = matching / pixels.length;
   const color = `#${[red, green, blue].map((value) => Math.round(value).toString(16).padStart(2, "0")).join("")}`;
   return {
-    type: confidence >= 0.84 || clusterKind === "bubbleText" ? "solid" : "outline",
+    type: confidence >= 0.84 ? "solid" : "outline",
     color,
     confidence
   };
@@ -1909,6 +2007,10 @@ function normalizeLocalPaddleOcrItem(item, imageSize) {
   return {
     words: text,
     confidence: Number(item.score || item.confidence || 0),
+    polygon: normalizeLocalPaddlePolygon(item && item.polygon, imageSize),
+    rotation_deg: normalizeRotationDegrees(item && item.rotation_deg),
+    orientation_applied: Number(item && item.orientation_applied) || 0,
+    det_score: Number(item && item.det_score) || 0,
     rawBox: box,
     location: {
       left: box.left,
@@ -1917,6 +2019,34 @@ function normalizeLocalPaddleOcrItem(item, imageSize) {
       height: box.height
     }
   };
+}
+
+function normalizeLocalPaddlePolygon(value, imageSize) {
+  if (!Array.isArray(value) || value.length < 4) {
+    return null;
+  }
+  const width = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const height = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  const points = value.slice(0, 4).map((point) => {
+    const x = Array.isArray(point) ? Number(point[0]) : Number(point && point.x);
+    const y = Array.isArray(point) ? Number(point[1]) : Number(point && point.y);
+    return Number.isFinite(x) && Number.isFinite(y)
+      ? { x: clamp(x, 0, width), y: clamp(y, 0, height) }
+      : null;
+  });
+  return points.every(Boolean) ? points : null;
+}
+
+function normalizeRotationDegrees(value) {
+  let angle = Number(value) || 0;
+  while (angle >= 90) angle -= 180;
+  while (angle < -90) angle += 180;
+  return angle;
+}
+
+function rotationDistance(left, right) {
+  const distance = Math.abs(normalizeRotationDegrees(left) - normalizeRotationDegrees(right));
+  return Math.min(distance, 180 - distance);
 }
 
 function isOcrItemOwnedByStitch(item, stitch) {
@@ -2757,6 +2887,8 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
   const bgType = adaptiveBackground
     ? adaptiveBackground.type === "solid" ? "solid" : "none"
     : clusterKind && clusterKind !== "bubbleText" ? "none" : "solid";
+  const polygon = normalizePercentPolygon(item && item.polygon, imageSize);
+  const rotation = normalizeRotationDegrees(item && item.rotation_deg);
 
   return {
     id: `t${index}`,
@@ -2767,6 +2899,9 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
     bg_type: bgType,
     bg_color: adaptiveBackground && adaptiveBackground.type === "solid" ? adaptiveBackground.color : "",
     bg_confidence: adaptiveBackground ? Number(adaptiveBackground.confidence || 0) : 0,
+    polygon,
+    rotation_deg: rotation,
+    source_line_count: Math.max(1, Math.round(Number(item && item.sourceLineCount) || String(text).split(/\n/).length)),
     original_text: text,
     translated_text: "",
     confidence: Number(item.confidence || 0),
@@ -2777,6 +2912,18 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
       height
     }
   };
+}
+
+function normalizePercentPolygon(value, imageSize) {
+  if (!Array.isArray(value) || value.length < 4) {
+    return null;
+  }
+  const width = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const height = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  return value.slice(0, 4).map((point) => ({
+    x: clamp((Number(point && point.x) / width) * 100, 0, 100),
+    y: clamp((Number(point && point.y) / height) * 100, 0, 100)
+  }));
 }
 
 async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl, model }) {
@@ -3336,6 +3483,9 @@ function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
   if (leftBgType !== rightBgType) {
     return false;
   }
+  if (rotationDistance(leftGroup[0] && leftGroup[0].rotation_deg, rightGroup[0] && rightGroup[0].rotation_deg) > 18) {
+    return false;
+  }
 
   const overlapWidth = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
   const overlapHeight = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
@@ -3378,11 +3528,37 @@ function mergeOcrCandidateGroup(group, index) {
     original_text: sorted.map((item) => String(item.original_text || "").trim()).filter(Boolean).join("\n"),
     translated_text: "",
     bg_type: normalizeBgType(sorted[0] && sorted[0].bg_type),
+    polygon: mergePercentPolygons(sorted),
+    rotation_deg: medianRotation(sorted.map((item) => item.rotation_deg)),
+    source_line_count: Math.max(1, ...sorted.map((item) => Number(item.source_line_count) || 1)),
     confidence: Math.max(...sorted.map((item) => Number(item.confidence || 0))),
     ...(rawBoxes.length > 0
       ? { rawBox: { left: rawLeft, top: rawTop, width: rawRight - rawLeft, height: rawBottom - rawTop } }
       : {})
   };
+}
+
+function medianRotation(values) {
+  const angles = values.map(normalizeRotationDegrees).sort((left, right) => left - right);
+  return angles.length > 0 ? angles[Math.floor(angles.length / 2)] : 0;
+}
+
+function mergePercentPolygons(items) {
+  const points = items.flatMap((item) => Array.isArray(item && item.polygon) ? item.polygon : []);
+  if (points.length < 4) {
+    return items[0] && items[0].polygon ? items[0].polygon : null;
+  }
+  const rotation = medianRotation(items.map((item) => item.rotation_deg));
+  const radians = (rotation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const projected = points.map((point) => ({ x: point.x * cos + point.y * sin, y: -point.x * sin + point.y * cos }));
+  const minX = Math.min(...projected.map((point) => point.x));
+  const maxX = Math.max(...projected.map((point) => point.x));
+  const minY = Math.min(...projected.map((point) => point.y));
+  const maxY = Math.max(...projected.map((point) => point.y));
+  const inverse = (x, y) => ({ x: clamp(x * cos - y * sin, 0, 100), y: clamp(x * sin + y * cos, 0, 100) });
+  return [inverse(minX, minY), inverse(maxX, minY), inverse(maxX, maxY), inverse(minX, maxY)];
 }
 
 function collapseDuplicateLocalPaddleTranslations(bubbles) {

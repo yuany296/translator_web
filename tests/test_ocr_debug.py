@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import io
 
 import pytest
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -25,6 +27,145 @@ def test_local_ocr_request_defaults_to_fast_mode() -> None:
     import server
 
     assert server.OcrRequest(image="placeholder").mode == "fast"
+
+
+def test_polygon_rotation_and_perspective_crop_support_arbitrary_tilt() -> None:
+    import server
+
+    image = Image.new("RGB", (180, 140), "white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    polygon = [[35, 20], [150, 54], [140, 100], [25, 66]]
+
+    angle = server.polygon_rotation_deg(polygon)
+    crop = server._deskew_crop_image(buffer.getvalue(), polygon)
+
+    assert 10 < angle < 25
+    assert crop is not None
+    with Image.open(io.BytesIO(crop)) as warped:
+        assert warped.width > warped.height
+        assert warped.width >= 110
+
+
+def test_fast_perspective_pipeline_tries_both_vertical_directions_and_keeps_polygon(monkeypatch: pytest.MonkeyPatch) -> None:
+    import server
+
+    image = Image.new("RGB", (80, 160), "white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    polygon = [[20, 10], [50, 10], [50, 145], [20, 145]]
+    detection = {
+        "polygon": polygon,
+        "box": server._polygon_to_box(polygon),
+        "det_score": 0.93,
+        "rotation_deg": -90.0,
+    }
+    seen_orientations = []
+
+    monkeypatch.setattr(server, "_run_detection_only", lambda *_args, **_kwargs: [detection])
+
+    def recognize(rows, languages):
+        seen_orientations.extend(row["orientation"] for row in rows)
+        return [
+            {
+                **row,
+                "text": "잘못" if row["orientation"] == 90 else "덤벼라",
+                "score": 0.45 if row["orientation"] == 90 else 0.96,
+                "lang": languages[0],
+            }
+            for row in rows
+        ]
+
+    monkeypatch.setattr(server, "recognize_candidate_rows", recognize)
+    result = server._run_slice_ocr_pipeline(buffer.getvalue(), "korean", PARAMS)
+
+    assert set(seen_orientations) == {-90, 90}
+    assert result["items"][0]["text"] == "덤벼라"
+    assert result["items"][0]["polygon"] == polygon
+    assert result["items"][0]["orientation_applied"] == -90
+
+
+def test_recognition_candidates_are_sent_as_one_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+    import server
+
+    calls = []
+
+    class StubRecognizer:
+        def predict(self, images, batch_size):
+            calls.append((len(images), batch_size))
+            return [
+                {"rec_text": f"문장{index}", "rec_score": 0.9}
+                for index in range(len(images))
+            ]
+
+    monkeypatch.setattr(server, "get_text_recognition_client", lambda _lang: StubRecognizer())
+    rows = [
+        {"detection_index": index, "orientation": 0, "image": np.zeros((20, 80, 3), dtype=np.uint8)}
+        for index in range(3)
+    ]
+    result = server.recognize_candidate_rows(rows, ["korean"])
+
+    assert calls == [(3, 3)]
+    assert [item["text"] for item in result] == ["문장0", "문장1", "문장2"]
+
+
+def test_detection_only_reads_numpy_polygons_and_scores(monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+    import server
+
+    class StubDetector:
+        def predict(self, _image, batch_size):
+            assert batch_size == 1
+            return [{
+                "dt_polys": np.asarray([[[10, 12], [90, 20], [86, 44], [6, 36]]], dtype=np.float32),
+                "dt_scores": np.asarray([0.94], dtype=np.float32)
+            }]
+
+    image = Image.new("RGB", (120, 80), "white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    monkeypatch.setattr(server, "get_text_detection_client", lambda _params: StubDetector())
+
+    items = server._run_detection_only(buffer.getvalue(), "korean", PARAMS)
+
+    assert len(items) == 1
+    assert items[0]["det_score"] == pytest.approx(0.94)
+    assert len(items[0]["polygon"]) == 4
+    assert items[0]["box"]["width"] > 80
+
+
+def test_fast_perspective_pipeline_retries_weak_horizontal_text_at_180(monkeypatch: pytest.MonkeyPatch) -> None:
+    import server
+
+    image = Image.new("RGB", (160, 80), "white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    polygon = [[10, 20], [145, 20], [145, 50], [10, 50]]
+    monkeypatch.setattr(server, "_run_detection_only", lambda *_args, **_kwargs: [{
+        "polygon": polygon,
+        "box": server._polygon_to_box(polygon),
+        "det_score": 0.9,
+        "rotation_deg": 0.0,
+    }])
+    orientations = []
+
+    def recognize(rows, languages):
+        orientations.extend(row["orientation"] for row in rows)
+        return [{
+            "detection_index": row["detection_index"],
+            "orientation": row["orientation"],
+            "text": "정답" if row["orientation"] == 180 else "?",
+            "score": 0.97 if row["orientation"] == 180 else 0.2,
+            "lang": languages[0],
+        } for row in rows]
+
+    monkeypatch.setattr(server, "recognize_candidate_rows", recognize)
+    result = server._run_slice_ocr_pipeline(buffer.getvalue(), "korean", PARAMS)
+
+    assert orientations == [0, 180]
+    assert result["items"][0]["text"] == "정답"
+    assert result["items"][0]["orientation_applied"] == 180
 
 
 def test_local_ocr_disables_textline_orientation(monkeypatch: pytest.MonkeyPatch) -> None:

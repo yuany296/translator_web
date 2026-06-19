@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import math
 import os
 import shutil
 import sys
@@ -38,9 +39,11 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from pydantic import BaseModel
 
 try:
-    from paddleocr import PaddleOCR
+    from paddleocr import PaddleOCR, TextDetection, TextRecognition
 except Exception as exc:  # pragma: no cover - import failure is surfaced by /health
     PaddleOCR = None
+    TextDetection = None
+    TextRecognition = None
     PADDLEOCR_IMPORT_ERROR = exc
 else:
     PADDLEOCR_IMPORT_ERROR = None
@@ -64,6 +67,17 @@ DEFAULT_TEXT_DET_UNCLIP_RATIO = 1.2
 DEBUG_DIR = Path(__file__).resolve().parent / "debug-ocr"
 SERVICE_DEBUG_ROOT = Path(__file__).resolve().parent / "debug"
 
+# ---------------------------------------------------------------------------
+# OpenCV 用于四边形透视裁剪。
+# ---------------------------------------------------------------------------
+CV2_AVAILABLE = False
+try:
+    import cv2  # type: ignore[import-untyped]
+    import numpy as np  # type: ignore[import-untyped]
+    CV2_AVAILABLE = True
+except ImportError:
+    pass
+
 
 class OcrRequest(BaseModel):
     image: str
@@ -86,6 +100,8 @@ app.add_middleware(
 )
 
 _ocr_clients: dict[str, Any] = {}
+_text_detection_clients: dict[str, Any] = {}
+_text_recognition_clients: dict[str, Any] = {}
 _ocr_client_lock = threading.Lock()
 _ocr_runtime_lock = asyncio.Lock()
 
@@ -103,6 +119,7 @@ def health() -> dict[str, Any]:
         "engine": "paddleocr",
         "device": device,
         "cuda": is_cuda_available(),
+        "cv2_available": CV2_AVAILABLE,
         "error": str(PADDLE_IMPORT_ERROR) if PADDLE_IMPORT_ERROR else device_error,
     }
 
@@ -217,6 +234,13 @@ def run_ocr(
     debug: bool,
     debug_id: str,
 ) -> dict[str, Any]:
+    if mode == "fast" and CV2_AVAILABLE and TextDetection is not None and TextRecognition is not None:
+        try:
+            return run_fast_perspective_ocr(image_bytes, lang, params, debug, debug_id)
+        except Exception as exc:
+            # 独立模型或几何处理失败时保留原 Fast OCR，避免整张漫画不可用。
+            print(f"[local-ocr] perspective fast OCR failed, falling back: {exc}", flush=True)
+
     image_width, image_height = get_image_size(image_bytes)
     variants = create_ocr_image_variants(image_bytes, mode)
     debug_paths: dict[str, str] = {}
@@ -316,8 +340,12 @@ def response_boxes(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
             "box": item.get("box"),
+            "polygon": item.get("polygon"),
             "text": item.get("text", ""),
             "score": float(item.get("score") or 0.0),
+            "det_score": float(item.get("det_score") or 0.0),
+            "rotation_deg": float(item.get("rotation_deg") or 0.0),
+            "orientation_applied": int(item.get("orientation_applied") or 0),
         }
         for item in items
     ]
@@ -731,6 +759,13 @@ def normalize_item_box_scale(item: dict[str, Any], scale: float) -> None:
     for key in ("left", "top", "width", "height"):
         if is_number(box.get(key)):
             box[key] = float(box[key]) / scale
+    polygon = item.get("polygon")
+    if isinstance(polygon, list):
+        item["polygon"] = [
+            [float(point[0]) / scale, float(point[1]) / scale]
+            for point in polygon
+            if isinstance(point, (list, tuple)) and len(point) >= 2 and is_number(point[0]) and is_number(point[1])
+        ]
 
 
 def get_ocr(lang: str, params: dict[str, float]) -> Any:
@@ -929,17 +964,30 @@ def extract_mapping_items(mapping: dict[str, Any]) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for index, text in enumerate(texts):
-        box = box_from_any(boxes[index] if index < len(boxes) else None)
+        raw_box = boxes[index] if index < len(boxes) else None
+        box = box_from_any(raw_box)
         if not box:
             continue
-        rows.append(
-            {
-                "text": str(text).strip(),
-                "box": box,
-                "score": float(scores[index]) if index < len(scores) and is_number(scores[index]) else 0.0,
-            }
-        )
+        row = {
+            "text": str(text).strip(),
+            "box": box,
+            "score": float(scores[index]) if index < len(scores) and is_number(scores[index]) else 0.0,
+        }
+        polygon = polygon_from_any(raw_box)
+        if polygon:
+            row["polygon"] = polygon
+            row["rotation_deg"] = polygon_rotation_deg(polygon)
+        rows.append(row)
     return rows
+
+
+def polygon_from_any(value: Any) -> list[list[float]] | None:
+    points: list[list[float]] = []
+    for point in as_list(value):
+        pair = to_plain(point)
+        if isinstance(pair, (list, tuple)) and len(pair) >= 2 and is_number(pair[0]) and is_number(pair[1]):
+            points.append([float(pair[0]), float(pair[1])])
+    return points[:4] if len(points) >= 4 else None
 
 
 def first_present(mapping: dict[str, Any], *keys: str) -> Any:
@@ -1392,6 +1440,384 @@ def is_number(value: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+# =============================================================================
+# Fast OCR：独立检测、逐四边形透视矫正、批量识别。
+# =============================================================================
+
+def _order_polygon_points(pts: np.ndarray) -> np.ndarray:
+    """将四点排列为左上、右上、右下、左下。"""
+    points = np.asarray(pts, dtype=np.float32).reshape(-1, 2)
+    center = points.mean(axis=0)
+    angles = np.arctan2(points[:, 1] - center[1], points[:, 0] - center[0])
+    ordered = points[np.argsort(angles)]
+    start = int(np.argmin(ordered.sum(axis=1)))
+    ordered = np.roll(ordered, -start, axis=0)
+    first_edge = ordered[1] - ordered[0]
+    second_edge = ordered[2] - ordered[1]
+    cross = float(first_edge[0] * second_edge[1] - first_edge[1] * second_edge[0])
+    if cross < 0:
+        ordered = ordered[[0, 3, 2, 1]]
+    return ordered.astype(np.float32)
+
+
+def _deskew_crop_image(image_bytes: bytes, polygon: list[list[float]]) -> bytes | None:
+    """使用 OpenCV 透视变换裁剪四边形，失败时返回 ``None``。"""
+    if not CV2_AVAILABLE:
+        return None
+    try:
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if image is None:
+            return None
+
+        pts = np.array(polygon, dtype=np.float32)
+        pts = _order_polygon_points(pts)
+
+        # 向外保留少量边缘，避免透视裁剪切掉描边和标点。
+        center = pts.mean(axis=0)
+        edge = max(
+            np.linalg.norm(pts[1] - pts[0]),
+            np.linalg.norm(pts[3] - pts[0]),
+        )
+        padding = min(12.0, max(2.0, float(edge) * 0.06))
+        for index in range(4):
+            vector = pts[index] - center
+            length = max(1.0, float(np.linalg.norm(vector)))
+            pts[index] += vector / length * padding
+        pts[:, 0] = np.clip(pts[:, 0], 0, image.shape[1] - 1)
+        pts[:, 1] = np.clip(pts[:, 1], 0, image.shape[0] - 1)
+
+        # 使用两组平行边的较大值，避免矫正后再次截断文字。
+        width = max(
+            1, int(round(max(
+                np.linalg.norm(pts[1] - pts[0]),
+                np.linalg.norm(pts[2] - pts[3]),
+            ))),
+        )
+        height = max(
+            1, int(round(max(
+                np.linalg.norm(pts[3] - pts[0]),
+                np.linalg.norm(pts[2] - pts[1]),
+            ))),
+        )
+
+        dst = np.array([
+            [0, 0],
+            [width - 1, 0],
+            [width - 1, height - 1],
+            [0, height - 1],
+        ], dtype=np.float32)
+
+        matrix = cv2.getPerspectiveTransform(pts, dst)
+        warped = cv2.warpPerspective(image, matrix, (width, height), flags=cv2.INTER_CUBIC)
+        _, buf = cv2.imencode(".png", warped)
+        return buf.tobytes()
+    except Exception as exc:
+        print(f"[slice-ocr] deskew_crop_image failed: {exc}", flush=True)
+        return None
+
+
+def _polygon_to_box(polygon: list[list[float]]) -> dict[str, float]:
+    """将四边形转换为兼容旧链路的轴对齐矩形。"""
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    left = min(xs)
+    top = min(ys)
+    return {
+        "left": left,
+        "top": top,
+        "width": max(xs) - left,
+        "height": max(ys) - top,
+    }
+
+
+def _run_detection_only(
+    image_bytes: bytes,
+    lang: str,
+    params: dict[str, float],
+) -> list[dict[str, Any]]:
+    """使用 Paddle 独立检测模型返回原图四边形，不执行文字识别。"""
+    client = get_text_detection_client(params)
+    image = decode_cv_image(image_bytes)
+    raw = client.predict(image, batch_size=1)
+    items: list[dict[str, Any]] = []
+    for page in as_list(raw):
+        mapping = result_to_mapping(page) or {}
+        raw_polygons = first_present(mapping, "dt_polys", "polys", "boxes")
+        raw_scores = first_present(mapping, "dt_scores", "scores")
+        polygons = as_list([] if raw_polygons is None else raw_polygons)
+        scores = as_list([] if raw_scores is None else raw_scores)
+        for index, value in enumerate(polygons):
+            polygon = normalize_detection_polygon(value, image.shape[1], image.shape[0])
+            if not polygon:
+                continue
+            items.append(
+                {
+                    "polygon": polygon,
+                    "box": _polygon_to_box(polygon),
+                    "det_score": float(scores[index]) if index < len(scores) and is_number(scores[index]) else 0.0,
+                    "rotation_deg": polygon_rotation_deg(polygon),
+                }
+            )
+    return items
+
+
+def decode_cv_image(image_bytes: bytes) -> Any:
+    image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("OpenCV cannot decode image")
+    return image
+
+
+def get_text_detection_client(params: dict[str, float]) -> Any:
+    device = get_runtime_device()
+    model_name = get_detection_model_name("auto")
+    key = "|".join(
+        [
+            device,
+            model_name,
+            f"{params['text_det_thresh']:.4f}",
+            f"{params['text_det_box_thresh']:.4f}",
+            f"{params['text_det_unclip_ratio']:.4f}",
+        ]
+    )
+    with _ocr_client_lock:
+        client = _text_detection_clients.get(key)
+        if client is None:
+            client = TextDetection(
+                model_name=model_name,
+                device=device,
+                thresh=params["text_det_thresh"],
+                box_thresh=params["text_det_box_thresh"],
+                unclip_ratio=params["text_det_unclip_ratio"],
+                **({"enable_mkldnn": False, "cpu_threads": 4} if device == "cpu" else {}),
+            )
+            _text_detection_clients[key] = client
+        return client
+
+
+def get_text_recognition_client(lang: str) -> Any:
+    device = get_runtime_device()
+    model_name = get_recognition_model_name(lang)
+    key = "|".join([device, model_name])
+    with _ocr_client_lock:
+        client = _text_recognition_clients.get(key)
+        if client is None:
+            client = TextRecognition(
+                model_name=model_name,
+                device=device,
+                **({"enable_mkldnn": False, "cpu_threads": 4} if device == "cpu" else {}),
+            )
+            _text_recognition_clients[key] = client
+        return client
+
+
+def normalize_detection_polygon(value: Any, image_width: int, image_height: int) -> list[list[float]] | None:
+    points = polygon_from_any(value)
+    if not points:
+        return None
+    pts = np.asarray(points, dtype=np.float32)
+    if pts.shape[0] != 4:
+        pts = cv2.boxPoints(cv2.minAreaRect(pts))
+    if abs(float(cv2.contourArea(pts))) < 4:
+        return None
+    ordered = _order_polygon_points(pts)
+    ordered[:, 0] = np.clip(ordered[:, 0], 0, max(0, image_width - 1))
+    ordered[:, 1] = np.clip(ordered[:, 1], 0, max(0, image_height - 1))
+    return [[float(point[0]), float(point[1])] for point in ordered]
+
+
+def polygon_rotation_deg(polygon: list[list[float]]) -> float:
+    pts = _order_polygon_points(np.asarray(polygon, dtype=np.float32))
+    top_vector = pts[1] - pts[0]
+    side_vector = pts[3] - pts[0]
+    vector = top_vector if np.linalg.norm(top_vector) >= np.linalg.norm(side_vector) else side_vector
+    angle = math.degrees(math.atan2(float(vector[1]), float(vector[0])))
+    while angle >= 90:
+        angle -= 180
+    while angle < -90:
+        angle += 180
+    return float(angle)
+
+
+def recognize_candidate_rows(rows: list[dict[str, Any]], languages: list[str]) -> list[dict[str, Any]]:
+    """按语言批量识别透视候选，输出仍与候选索引一一对应。"""
+    output: list[dict[str, Any]] = []
+    if not rows:
+        return output
+    images = [row["image"] for row in rows]
+    for current_lang in languages:
+        client = get_text_recognition_client(current_lang)
+        results = as_list(client.predict(images, batch_size=min(16, len(images))))
+        for index, result in enumerate(results[: len(rows)]):
+            mapping = result_to_mapping(result) or {}
+            text = scalar_result_value(mapping.get("rec_text"), "")
+            score = scalar_result_value(mapping.get("rec_score"), 0.0)
+            candidate = {key: value for key, value in rows[index].items() if key != "image"}
+            output.append(
+                {
+                    **candidate,
+                    "text": str(text or "").strip(),
+                    "score": float(score) if is_number(score) else 0.0,
+                    "lang": current_lang,
+                }
+            )
+    return output
+
+
+def scalar_result_value(value: Any, fallback: Any) -> Any:
+    plain = to_plain(value)
+    if isinstance(plain, (list, tuple)):
+        return plain[0] if plain else fallback
+    return fallback if plain is None else plain
+
+
+def count_target_script_chars(text: str, lang: str) -> int:
+    raw = str(text or "")
+    if lang == "korean":
+        return len([char for char in raw if "\uac00" <= char <= "\ud7af"])
+    return len([char for char in raw if "\u3040" <= char <= "\u30ff" or "\u4e00" <= char <= "\u9fff"])
+
+
+def recognition_quality(row: dict[str, Any]) -> float:
+    text = str(row.get("text") or "").strip()
+    script_chars = count_target_script_chars(text, str(row.get("lang") or ""))
+    meaningful = sum(1 for char in text if char.isalnum() or "\u3040" <= char <= "\ud7af")
+    return float(row.get("score") or 0.0) + min(script_chars, 12) * 0.025 + min(meaningful, 20) * 0.003
+
+
+def _run_slice_ocr_pipeline(
+    image_bytes: bytes,
+    lang: str,
+    params: dict[str, float],
+    debug: bool = False,
+    debug_id: str = "",
+) -> dict[str, Any]:
+    """检测一次，透视裁剪后批量识别所有方向候选。"""
+    image_width, image_height = get_image_size(image_bytes)
+    detections = _run_detection_only(image_bytes, lang, params)
+    candidate_rows: list[dict[str, Any]] = []
+    failed_detections = 0
+    for det_index, det in enumerate(detections):
+        deskewed_bytes = _deskew_crop_image(image_bytes, det["polygon"])
+        if deskewed_bytes is None:
+            failed_detections += 1
+            continue
+        crop = decode_cv_image(deskewed_bytes)
+        height, width = crop.shape[:2]
+        orientations = (
+            [
+                (90, cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)),
+                (-90, cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)),
+            ]
+            if height > width * 1.15
+            else [(0, crop)]
+        )
+        for orientation, candidate in orientations:
+            candidate_rows.append(
+                {
+                    "detection_index": det_index,
+                    "orientation": orientation,
+                    "image": candidate,
+                }
+            )
+        if debug:
+            debug_dir = service_debug_dir("slice_crops")
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / f"slice-{safe_debug_stem(debug_id)}-{det_index:03d}.png").write_bytes(deskewed_bytes)
+
+    if failed_detections > 0:
+        # 不静默丢失单个区域；交给 run_ocr 回退完整旧 Fast 流程。
+        raise RuntimeError(f"perspective crop failed for {failed_detections} detection(s)")
+
+    languages = ["japan", "korean"] if lang == "auto" else [lang]
+    recognized = recognize_candidate_rows(candidate_rows, languages)
+    primary_best: dict[int, dict[str, Any]] = {}
+    for row in recognized:
+        current = primary_best.get(row["detection_index"])
+        if current is None or recognition_quality(row) > recognition_quality(current):
+            primary_best[row["detection_index"]] = row
+    weak_indexes = {
+        detection_index
+        for detection_index, row in primary_best.items()
+        if row["orientation"] == 0
+        and (row["score"] < 0.72 or count_target_script_chars(row["text"], row["lang"]) == 0)
+    }
+    retry_rows = [
+        {**row, "orientation": 180, "image": cv2.rotate(row["image"], cv2.ROTATE_180)}
+        for row in candidate_rows
+        if row["detection_index"] in weak_indexes and row["orientation"] == 0
+    ]
+    recognized.extend(recognize_candidate_rows(retry_rows, languages))
+
+    best_by_detection: dict[int, dict[str, Any]] = {}
+    for row in recognized:
+        current = best_by_detection.get(row["detection_index"])
+        if current is None or recognition_quality(row) > recognition_quality(current):
+            best_by_detection[row["detection_index"]] = row
+
+    recognized_items: list[dict[str, Any]] = []
+    min_score = float(params.get("text_rec_score_thresh") or 0.0)
+    for det_index, row in best_by_detection.items():
+        text = str(row.get("text") or "").strip()
+        if not text or float(row.get("score") or 0.0) < min_score or is_symbol_only_text(text):
+            continue
+        det = detections[det_index]
+        recognized_items.append(
+            {
+                "text": text,
+                "score": float(row["score"]),
+                "box": det["box"],
+                "polygon": det["polygon"],
+                "det_score": float(det.get("det_score") or 0.0),
+                "rotation_deg": float(det.get("rotation_deg") or 0.0),
+                "orientation_applied": int(row["orientation"]),
+                "lang": row["lang"],
+                "variant": "perspective_fast",
+            }
+        )
+
+    normalized = sort_items(dedupe_items(recognized_items))
+    return {
+        "items": normalized,
+        "boxes": response_boxes(normalized),
+        "imageWidth": image_width,
+        "imageHeight": image_height,
+        "deskew": True,
+        "detections": len(detections),
+        "recognized": len(normalized),
+        "counts": {
+            "paddle_raw_items": len(recognized),
+            "filtered_items": len(recognized_items),
+            "merged_blocks": len(normalized),
+            "variants": 1,
+            "langs": len(languages),
+        },
+    }
+
+
+def run_fast_perspective_ocr(
+    image_bytes: bytes,
+    lang: str,
+    params: dict[str, float],
+    debug: bool,
+    debug_id: str,
+) -> dict[str, Any]:
+    result = _run_slice_ocr_pipeline(image_bytes, lang, params, debug, debug_id)
+    if debug or os.environ.get("LOCAL_OCR_DEBUG_ALWAYS", "1") != "0":
+        debug_stem = safe_debug_stem(debug_id or f"{int(time.time() * 1000)}")
+        debug_paths = {
+            "input": save_debug_input(image_bytes, debug_id),
+            "plugin_input": save_service_plugin_input(image_bytes, debug_stem),
+            "vis": save_service_vis(image_bytes, result["items"], debug_stem),
+        }
+        result["debug"] = debug_paths
+        debug_paths["result_json"] = save_service_result_json(result, debug_stem)
+    else:
+        result["debug"] = {}
+    return result
 
 
 if __name__ == "__main__":

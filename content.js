@@ -121,7 +121,9 @@
     __test: {
       mapKakaoStitchedResult,
       normalizePretranslateMode,
-      textSimilarity
+      textSimilarity,
+      formatTranslationForOriginalLines,
+      normalizeBubbleRotation
     },
     destroy
   };
@@ -1053,6 +1055,12 @@
         ...bubble,
         y: ((topPx - ownerTop) / ownerHeight) * 100,
         h: (heightPx / ownerHeight) * 100,
+        polygon: Array.isArray(bubble.polygon)
+          ? bubble.polygon.map((point) => ({
+              x: Number(point && point.x),
+              y: (((Number(point && point.y) / 100) * compositeHeight - ownerTop) / ownerHeight) * 100
+            }))
+          : null,
         stitch_overflow: true
       };
     });
@@ -1862,7 +1870,10 @@
   function drawEmbeddedBubbles(ctx, canvasWidth, canvasHeight, bubbles, options = {}) {
     const textOptions = options && typeof options === "object" ? options : {};
     bubbles.forEach((bubble) => {
-      const text = cleanRenderableText(bubble.translated_text || bubble.original_text || "");
+      const text = formatTranslationForOriginalLines(
+        cleanRenderableText(bubble.translated_text || bubble.original_text || ""),
+        Number(bubble.source_line_count) || 1
+      );
       if (!text) {
         return;
       }
@@ -1871,6 +1882,14 @@
       let y = (clamp(Number(bubble.y), 0, 100) / 100) * canvasHeight;
       let w = (clamp(Number(bubble.w), 0, 100) / 100) * canvasWidth;
       let h = (clamp(Number(bubble.h), 0, 100) / 100) * canvasHeight;
+      const embeddedGeometry = getEmbeddedPolygonGeometry(bubble.polygon, canvasWidth, canvasHeight);
+      const rotation = normalizeBubbleRotation(bubble.rotation_deg);
+      if (embeddedGeometry) {
+        x = embeddedGeometry.centerX - embeddedGeometry.width / 2;
+        y = embeddedGeometry.centerY - embeddedGeometry.height / 2;
+        w = embeddedGeometry.width;
+        h = embeddedGeometry.height;
+      }
 
       if (w < 2 || h < 2) {
         return;
@@ -1899,18 +1918,49 @@
         h: Math.min(canvasHeight - boxY, h + paddingY * 2)
       };
 
-      fillRoundedRect(
-        ctx,
-        box.x,
-        box.y,
-        box.w,
-        box.h,
-        Math.min(3, Math.min(box.w, box.h) * 0.08),
-        "#ffffff"
-      );
-
-      drawFittedText(ctx, text, box, bgType, textOptions);
+      ctx.save();
+      const centerX = box.x + box.w / 2;
+      const centerY = box.y + box.h / 2;
+      ctx.translate(centerX, centerY);
+      ctx.rotate((rotation * Math.PI) / 180);
+      const localBox = { x: -box.w / 2, y: -box.h / 2, w: box.w, h: box.h };
+      if (bgType === "solid") {
+        fillRoundedRect(
+          ctx,
+          localBox.x,
+          localBox.y,
+          localBox.w,
+          localBox.h,
+          Math.min(3, Math.min(localBox.w, localBox.h) * 0.08),
+          String(bubble.bg_color || "#ffffff")
+        );
+      }
+      drawFittedText(ctx, text, localBox, bgType, textOptions);
+      ctx.restore();
     });
+  }
+
+  function getEmbeddedPolygonGeometry(value, canvasWidth, canvasHeight) {
+    if (!Array.isArray(value) || value.length < 4) {
+      return null;
+    }
+    const points = value.slice(0, 4).map((point) => ({
+      x: (Number(point && point.x) / 100) * canvasWidth,
+      y: (Number(point && point.y) / 100) * canvasHeight
+    }));
+    if (!points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+      return null;
+    }
+    const edges = points.map((point, index) => {
+      const next = points[(index + 1) % points.length];
+      return Math.hypot(next.x - point.x, next.y - point.y);
+    });
+    return {
+      centerX: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+      centerY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+      width: Math.max(8, (edges[0] + edges[2]) / 2),
+      height: Math.max(8, (edges[1] + edges[3]) / 2)
+    };
   }
 
   function drawFittedText(ctx, text, box, bgType, options = {}) {
@@ -1948,6 +1998,10 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
+    if (bgType === "none") {
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.98)";
+      ctx.lineWidth = Math.max(2, best.size * 0.16);
+    }
 
     const lineHeight = best.size * 1.22;
     const startY = box.y + box.h / 2 - ((best.lines.length - 1) * lineHeight) / 2;
@@ -1955,6 +2009,9 @@
 
     best.lines.forEach((line, index) => {
       const lineY = startY + index * lineHeight;
+      if (bgType === "none") {
+        ctx.strokeText(line, centerX, lineY);
+      }
       ctx.fillStyle = "#111827";
       ctx.fillText(line, centerX, lineY);
     });
@@ -2133,6 +2190,11 @@
     node.dataset.mode = "translated";
     node.dataset.original = originalText;
     node.dataset.translated = translatedText;
+    node.dataset.sourceLineCount = String(Math.max(1, Math.round(Number(bubble.source_line_count) || 1)));
+    node.dataset.rotationDeg = String(normalizeBubbleRotation(bubble.rotation_deg));
+    if (Array.isArray(bubble.polygon)) {
+      node.dataset.polygon = JSON.stringify(bubble.polygon);
+    }
     node.dataset.wPercent = String(w);
     node.dataset.hPercent = String(h);
     node.dataset.xPercent = String(x);
@@ -2148,9 +2210,10 @@
     node.style.top = `${centerY}%`;
     node.style.width = `${w}%`;
     node.style.height = `${h}%`;
-    node.style.setProperty("--mt-base-transform", "translate(-50%, -50%)");
+    const rotation = normalizeBubbleRotation(bubble.rotation_deg);
+    node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${rotation.toFixed(2)}deg)`);
 
-    node.textContent = translatedText;
+    node.textContent = formatTranslationForOriginalLines(translatedText, Number(node.dataset.sourceLineCount));
     node.title = originalText || translatedText;
     applyBubbleTextLayout(node, translatedText);
 
@@ -2161,6 +2224,29 @@
     });
 
     return node;
+  }
+
+  function formatTranslationForOriginalLines(text, requestedLines) {
+    const raw = String(text || "").replace(/\s+/g, " ").trim();
+    const lineCount = Math.max(1, Math.min(8, Math.round(Number(requestedLines) || 1)));
+    if (!raw || lineCount <= 1 || raw.includes("\n")) {
+      return raw;
+    }
+    const units = /[\u3400-\u9fff]/.test(raw)
+      ? Array.from(raw.replace(/\s+/g, ""))
+      : raw.split(/\s+/).filter(Boolean);
+    if (units.length <= lineCount) {
+      return raw;
+    }
+    const rows = [];
+    let offset = 0;
+    for (let line = 0; line < lineCount; line += 1) {
+      const remaining = units.length - offset;
+      const take = Math.ceil(remaining / (lineCount - line));
+      rows.push(units.slice(offset, offset + take).join(/[\u3400-\u9fff]/.test(raw) ? "" : " "));
+      offset += take;
+    }
+    return rows.filter(Boolean).join("\n");
   }
 
   function toggleOverlaySourceMode(node) {
@@ -2318,15 +2404,56 @@
 
     // 字号按气泡高度比例计算，并使用 clamp 限制上下界。
     overlayState.bubbleNodes.forEach((node) => {
+      const polygonGeometry = getOverlayPolygonGeometry(node, rect);
       const bubbleWidthPercent = Number(node.dataset.wPercent || "0");
       const bubbleHeightPercent = Number(node.dataset.hPercent || "0");
-      const bubbleWidthPx = (rect.width * bubbleWidthPercent) / 100;
-      const bubbleHeightPx = (rect.height * bubbleHeightPercent) / 100;
+      const bubbleWidthPx = polygonGeometry ? polygonGeometry.width : (rect.width * bubbleWidthPercent) / 100;
+      const bubbleHeightPx = polygonGeometry ? polygonGeometry.height : (rect.height * bubbleHeightPercent) / 100;
+      if (polygonGeometry) {
+        node.style.left = `${polygonGeometry.centerX}px`;
+        node.style.top = `${polygonGeometry.centerY}px`;
+        node.style.width = `${polygonGeometry.width}px`;
+        node.style.height = `${polygonGeometry.height}px`;
+      }
       const fittedSize = fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, {
         backgroundTarget: overlayState.isBackgroundTarget
       });
       node.style.fontSize = `${fittedSize.toFixed(1)}px`;
     });
+  }
+
+  function getOverlayPolygonGeometry(node, rect) {
+    if (!node.dataset.polygon) {
+      return null;
+    }
+    try {
+      const polygon = JSON.parse(node.dataset.polygon);
+      if (!Array.isArray(polygon) || polygon.length < 4) {
+        return null;
+      }
+      const points = polygon.slice(0, 4).map((point) => ({
+        x: (Number(point.x) / 100) * rect.width,
+        y: (Number(point.y) / 100) * rect.height
+      }));
+      if (!points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+        return null;
+      }
+      const edges = points.map((point, index) => {
+        const next = points[(index + 1) % points.length];
+        return Math.hypot(next.x - point.x, next.y - point.y);
+      });
+      // 后端按文字基线方向排列四点，因此 0/2 边是宽度，1/3 边是高度。
+      const width = Math.max(8, (edges[0] + edges[2]) / 2);
+      const height = Math.max(8, (edges[1] + edges[3]) / 2);
+      return {
+        centerX: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+        centerY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+        width: Math.max(8, width),
+        height
+      };
+    } catch {
+      return null;
+    }
   }
 
   function fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, options = {}) {
@@ -3521,6 +3648,9 @@
             bg_type: normalizeBgType(bubble.bg_type),
             bg_color: String(bubble.bg_color || ""),
             bg_confidence: Number(bubble.bg_confidence || 0),
+            polygon: normalizeBubblePolygon(bubble.polygon, bubble.stitch_overflow === true),
+            rotation_deg: normalizeBubbleRotation(bubble.rotation_deg),
+            source_line_count: Math.max(1, Math.round(Number(bubble.source_line_count) || 1)),
             stitch_overflow: bubble.stitch_overflow === true,
             original_text: cleanRenderableText(bubble.original_text || ""),
             translated_text: cleanRenderableText(bubble.translated_text || "")
@@ -3530,6 +3660,26 @@
         .filter((bubble) => bubble.original_text || bubble.translated_text),
       debug: result && result.debug && typeof result.debug === "object" ? result.debug : null
     };
+  }
+
+  function normalizeBubblePolygon(value, allowOverflow) {
+    if (!Array.isArray(value) || value.length < 4) {
+      return null;
+    }
+    const points = value.slice(0, 4).map((point) => {
+      const x = clamp(Number(point && point.x), 0, 100);
+      const rawY = Number(point && point.y);
+      const y = allowOverflow ? rawY : clamp(rawY, 0, 100);
+      return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    });
+    return points.every(Boolean) ? points : null;
+  }
+
+  function normalizeBubbleRotation(value) {
+    let angle = Number(value) || 0;
+    while (angle >= 90) angle -= 180;
+    while (angle < -90) angle += 180;
+    return angle;
   }
 
   function cleanRenderableText(text) {

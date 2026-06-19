@@ -1,0 +1,45 @@
+# === Dependencies ===
+node_modules/
+
+# === Build outputs ===
+dist/
+dist（不太行）/
+
+# === OS files ===
+.DS_Store
+Thumbs.db
+
+# === IDE / Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === Claude / AI tools ===
+.agents/
+.claude/
+.codex/
+
+# === Python cache ===
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# === Test / temporary files ===
+test.png
+test.py
+
+# === Images (typically not source files) ===
+*.png
+*.jpg
+*.jpeg
+
+# === Local OCR service temp files ===
+local-ocr-service/__pycache__/
+local-ocr-service/*.png
+local-ocr-service/debug
+
+# === Documentation generated files ===
+verification.md
+

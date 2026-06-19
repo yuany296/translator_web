@@ -1,0 +1,112 @@
+#manga-image-translator-overlay-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  min-height: 100%;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+
+.mit-debug-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+  color: #064e3b;
+  font: 600 12px/1.2 Arial, sans-serif;
+  padding: 4px;
+  pointer-events: none;
+}
+
+.mit-translation-root {
+  position: absolute;
+  pointer-events: none;
+}
+
+.mit-translation-bubble {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-width: 12px;
+  min-height: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  text-align: center;
+  line-height: 1.18;
+  font-family: "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+  font-weight: 700;
+  letter-spacing: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+  cursor: pointer;
+  transition:
+    opacity 0.14s ease,
+    background-color 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.mit-translation-bubble-dialogue {
+  background: var(--mit-overlay-bg, rgba(255, 255, 255, 0.82));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.32) inset;
+}
+
+.mit-translation-bubble-effect {
+  background: rgba(255, 255, 255, 0.28);
+  text-shadow:
+    calc(var(--mit-stroke-width, 2px) * 1) 0 var(--mit-stroke-color, #fff),
+    calc(var(--mit-stroke-width, 2px) * -1) 0 var(--mit-stroke-color, #fff),
+    0 calc(var(--mit-stroke-width, 2px) * 1) var(--mit-stroke-color, #fff),
+    0 calc(var(--mit-stroke-width, 2px) * -1) var(--mit-stroke-color, #fff),
+    calc(var(--mit-stroke-width, 2px) * 0.8) calc(var(--mit-stroke-width, 2px) * 0.8) 0 var(--mit-stroke-color, #fff);
+}
+
+.mit-translation-bubble:hover,
+.mit-translation-bubble:focus-visible {
+  border-color: rgba(37, 99, 235, 0.45);
+  outline: none;
+}
+
+.mit-translation-root.mit-show-source .mit-translation-bubble {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px dashed rgba(37, 99, 235, 0.3);
+  box-shadow: none;
+  color: transparent !important;
+  opacity: 0.34;
+  text-shadow: none;
+}
+
+.mit-overlay-debug {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 2px 3px;
+  border-radius: 2px;
+  font: 700 10px/1.1 Arial, sans-serif;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.mit-overlay-debug-ocr {
+  border: 1px solid rgba(34, 197, 94, 0.72);
+  background: rgba(34, 197, 94, 0.11);
+  color: #065f46;
+}
+
+.mit-overlay-debug-block {
+  border: 2px dashed rgba(245, 158, 11, 0.85);
+  background: rgba(245, 158, 11, 0.1);
+  color: #92400e;
+}
+
+.mit-overlay-debug-overlay {
+  border: 2px solid rgba(59, 130, 246, 0.8);
+  background: rgba(59, 130, 246, 0.08);
+  color: #1d4ed8;
+}

@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Manga Realtime Translator",
+  "version": "1.0.0",
+  "description": "Detect manga img/canvas, OCR + translate bubbles to Simplified Chinese, then overlay or embed translations in place.",
+  "permissions": ["storage", "tabs", "activeTab", "scripting"],
+  "host_permissions": [
+    "<all_urls>",
+    "https://api.anthropic.com/*",
+    "http://127.0.0.1:*/*",
+    "http://localhost:*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "漫画实时翻译",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "minimum_chrome_version": "114"
+}

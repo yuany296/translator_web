@@ -1,0 +1,3983 @@
+(() => {
+  const existing = globalThis.__MANGA_TRANSLATOR_V3__;
+  if (existing && !existing.invalidated) {
+    if (typeof existing.rescan === "function") {
+      existing.rescan();
+    }
+    return;
+  }
+
+  const IS_PIXIV_COMIC_VIEWER =
+    /(^|\.)comic\.pixiv\.net$/i.test(location.hostname) && /^\/viewer\/stories\/\d+/i.test(location.pathname);
+  const IS_KAKAOPAGE_READER =
+    /(^|\.)page\.kakao\.com$/i.test(location.hostname) ||
+    /(^|\.)kakaopage\.com$/i.test(location.hostname) ||
+    /(^|\.)page\.kakaocdn\.net$/i.test(location.hostname);
+  const TARGET_SELECTOR =
+    IS_PIXIV_COMIC_VIEWER || IS_KAKAOPAGE_READER ? "img, canvas, [id^='page-'], [style*='background-image']" : "img, canvas";
+  const PIXIV_PAGE_ID_RE = /^page-\d+$/;
+  const PIXIV_PLACEHOLDER_BACKGROUND_RE = /\/images\/blank\.png|border_logo\.png/i;
+  const AUTO_MIN_WIDTH = 260;
+  const AUTO_MIN_HEIGHT = 260;
+  const AUTO_MIN_RATIO = 0.22;
+  const MANUAL_MIN_WIDTH = 120;
+  const MANUAL_MIN_HEIGHT = 120;
+  const MAX_MANUAL_TARGETS = 4;
+  const MAX_PARALLEL_TRANSLATIONS = 3;
+  const MANUAL_PARALLEL_TRANSLATIONS = 3;
+  const MAX_PRELOAD_JOBS = 2;
+  const PRELOAD_ROOT_MARGIN = "1400px 0px";
+  const AGGRESSIVE_PRELOAD_JOBS = 5;
+  const AGGRESSIVE_PRELOAD_ROOT_MARGIN = "3200px 0px";
+  const AGGRESSIVE_PRELOAD_BATCH = 12;
+  const AGGRESSIVE_PRELOAD_SWEEP_GAP_MS = 900;
+  const AGGRESSIVE_PRELOAD_MAX_QUEUE = 24;
+  const PAYLOAD_CACHE_TTL_MS = 90 * 1000;
+  const MAX_PAYLOAD_CACHE = 30;
+  const RECOVERY_SCAN_GAP_MS = 650;
+  const RECOVERY_REQUEST_GAP_MS = 5000;
+  const MAX_RECOVERY_TARGETS = 10;
+  const IMAGE_MAX_SIDE = 1536;
+  const IMAGE_JPEG_QUALITY = 0.82;
+  const EMBEDDED_JPEG_QUALITY = 0.9;
+  const EMBEDDED_MAX_CANVAS_PIXELS = 24 * 1000 * 1000;
+  const EMBEDDED_MAX_ORIGINAL_BYTES = 16 * 1024 * 1024;
+  const MAX_LOCAL_RESULT_CACHE = 120;
+  const KAKAO_STITCH_OVERLAP_PX = 300;
+  const PRETRANSLATE_AHEAD_COUNT = 6;
+  const MAX_EMBEDDED_IMAGE_CACHE = 40;
+  const STATUS_INFO_THROTTLE_MS = 1200;
+  const CONTEXT_INVALIDATED_RE = /extension context invalidated/i;
+  const RENDER_MODE_OVERLAY = "overlay";
+  const RENDER_MODE_EMBEDDED = "embedded";
+  const CAPTURE_MODE_DIRECT = "direct";
+  const CAPTURE_MODE_SCREENSHOT = "screenshot";
+  const SCREENSHOT_TARGET_NOT_VISIBLE = "Target is not visible enough for screenshot capture";
+  const IS_CMOA_SPEED_READER =
+    /(^|\.)cmoa\.jp$/i.test(location.hostname) && /^\/bib\/speedreader\//i.test(location.pathname);
+  const CMOA_AUTO_MIN_VISIBLE_AREA = 8000;
+  const CMOA_MANUAL_MIN_VISIBLE_AREA = 2500;
+  const BUBBLE_FONT_MIN = 10;
+  const BUBBLE_FONT_MAX = 48;
+  const BUBBLE_FONT_BASE_RATIO = 0.5;
+  const BUBBLE_FONT_BINARY_STEPS = 9;
+  const BUBBLE_FONT_SAFETY_SCALE = 0.9;
+  const BUBBLE_FONT_VERTICAL_SAFETY_SCALE = 0.84;
+  const MAX_FONT_FIT_CACHE = 600;
+  const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
+  const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
+
+  const state = {
+    enabled: true,
+    autoTranslatePageEnabled: false,
+    pretranslateMode: "manual",
+    invalidated: false,
+    io: null,
+    preloadIo: null,
+    mo: null,
+    overlayLayer: null,
+    overlaysById: new Map(),
+    embeddedById: new Map(),
+    embeddedImageCache: new Map(),
+    targetIdByElement: new WeakMap(),
+    targetIdSeq: 1,
+    observedTargets: new WeakSet(),
+    inflightByTarget: new WeakMap(),
+    queue: [],
+    queuedTargets: new WeakSet(),
+    runningJobs: 0,
+    preloadQueue: [],
+    preloadQueuedTargets: new WeakSet(),
+    preloadRunningJobs: 0,
+    preloadInFlightByTarget: new WeakMap(),
+    aggressivePreload: IS_CMOA_SPEED_READER,
+    lastAggressivePreloadSweepAt: 0,
+    aggressiveSweepTimer: 0,
+    overlayHideDepth: 0,
+    overlayPreviousVisibility: "",
+    payloadCacheByTargetKey: new Map(),
+    localResultCache: new Map(),
+    kakaoGlobalOcrEntries: new Map(),
+    lastRecoveryAt: 0,
+    syncRaf: 0,
+    syncInterval: 0,
+    showFloatingBall: true,
+    captureMode: CAPTURE_MODE_DIRECT,
+    renderMode: RENDER_MODE_OVERLAY,
+    floatingBallWrap: null,
+    floatingBall: null,
+    floatingBallClose: null,
+    bubbleMeasureProbe: null,
+    fontFitCache: new Map(),
+    lastInfoStatusAt: 0
+  };
+
+  const api = {
+    invalidated: false,
+    rescan,
+    manualTranslateVisible,
+    togglePageAutoTranslate,
+    getPageAutoTranslateStatus,
+    __test: {
+      mapKakaoStitchedResult,
+      normalizePretranslateMode,
+      textSimilarity
+    },
+    destroy
+  };
+
+  globalThis.__MANGA_TRANSLATOR_V3__ = api;
+
+  init().catch((error) => {
+    console.warn("[MangaTranslator] content init failed:", error);
+  });
+
+  async function init() {
+    if (!hasExtensionApis()) {
+      state.invalidated = true;
+      api.invalidated = true;
+      console.info("[MangaTranslator] extension APIs are unavailable in this page context, skip init.");
+      return;
+    }
+
+    await loadLocalSettings();
+    ensureOverlayLayer();
+    createFloatingBall();
+    bindRuntimeMessages();
+    bindStorageListener();
+    bindViewportSync();
+    startObservers();
+    rescan();
+
+    await reportStatus("info", "content script ready", {
+      autoEnabled: state.enabled,
+      aggressivePreload: state.aggressivePreload,
+      pageUrl: location.href
+    });
+    scheduleAheadPretranslation("page-load");
+  }
+
+  function hasExtensionApis() {
+    return (
+      typeof chrome !== "undefined" &&
+      !!chrome.runtime &&
+      !!chrome.runtime.id &&
+      !!chrome.runtime.onMessage &&
+      !!chrome.storage &&
+      !!chrome.storage.local
+    );
+  }
+
+  function bindRuntimeMessages() {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (!message || !message.type) {
+        return false;
+      }
+
+      if (message.type === "MANUAL_TRANSLATE_VISIBLE") {
+        manualTranslateVisible()
+          .then((result) => sendResponse({ ok: true, ...result }))
+          .catch((error) => {
+            sendResponse({ ok: false, error: getErrorMessage(error) });
+          });
+        return true;
+      }
+
+      if (message.type === "TOGGLE_PAGE_AUTO_TRANSLATE") {
+        togglePageAutoTranslate(message.enabled)
+          .then((result) => sendResponse({ ok: true, ...result }))
+          .catch((error) => {
+            sendResponse({ ok: false, error: getErrorMessage(error) });
+          });
+        return true;
+      }
+
+      if (message.type === "GET_PAGE_AUTO_TRANSLATE_STATUS") {
+        sendResponse({ ok: true, ...getPageAutoTranslateStatus() });
+        return false;
+      }
+
+      if (message.type === "PING_CONTENT_SCRIPT") {
+        sendResponse({ ok: true, ready: !state.invalidated });
+        return false;
+      }
+
+      return false;
+    });
+  }
+
+  function bindStorageListener() {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local") {
+        return;
+      }
+
+      if (changes.mt_enabled) {
+        state.enabled = changes.mt_enabled.newValue !== false;
+        if (!state.enabled) {
+          state.autoTranslatePageEnabled = false;
+          clearAllRenderedTargets();
+        } else {
+          rescan();
+          scheduleAheadPretranslation("enabled");
+        }
+      }
+
+      if (changes.mt_show_ball) {
+        state.showFloatingBall = changes.mt_show_ball.newValue !== false;
+      }
+
+      if (changes.mt_capture_mode) {
+        const nextMode = normalizeCaptureMode(changes.mt_capture_mode.newValue);
+        if (nextMode !== state.captureMode) {
+          state.captureMode = nextMode;
+          state.payloadCacheByTargetKey.clear();
+          clearAllRenderedTargets();
+          if (state.enabled) {
+            rescan();
+          }
+        }
+      }
+
+      if (changes.mt_render_mode) {
+        const nextMode = normalizeRenderMode(changes.mt_render_mode.newValue);
+        if (nextMode !== state.renderMode) {
+          state.renderMode = nextMode;
+          clearAllRenderedTargets();
+          if (state.enabled) {
+            rescan();
+          }
+        }
+      }
+
+      if (changes.mt_pretranslate_mode) {
+        state.pretranslateMode = normalizePretranslateMode(changes.mt_pretranslate_mode.newValue);
+        state.autoTranslatePageEnabled = state.pretranslateMode === "ahead" && state.enabled;
+        if (state.autoTranslatePageEnabled) {
+          scheduleAheadPretranslation("setting-change");
+        } else {
+          state.queue.length = 0;
+          state.queuedTargets = new WeakSet();
+        }
+      }
+
+      updateFloatingBallState();
+    });
+  }
+
+  function bindViewportSync() {
+    const scheduleSync = () => {
+      if (state.syncRaf) {
+        return;
+      }
+
+      state.syncRaf = window.requestAnimationFrame(() => {
+        state.syncRaf = 0;
+        syncAllOverlays();
+        scheduleAheadPretranslation("viewport");
+      });
+    };
+
+    window.addEventListener("scroll", scheduleSync, {
+      passive: true,
+      capture: true
+    });
+
+    window.addEventListener("resize", scheduleSync, {
+      passive: true,
+      capture: true
+    });
+
+    if (!state.syncInterval) {
+      state.syncInterval = window.setInterval(() => {
+        ensureExtensionUiMounted();
+        syncAllOverlays();
+      }, 1200);
+    }
+  }
+
+  function startObservers() {
+    if (state.invalidated) {
+      return;
+    }
+
+    state.io = new IntersectionObserver(onIntersection, {
+      root: null,
+      rootMargin: "280px 0px",
+      threshold: 0.08
+    });
+    state.preloadIo = new IntersectionObserver(onPreloadIntersection, {
+      root: null,
+      rootMargin: getPreloadRootMargin(),
+      threshold: 0.01
+    });
+
+    state.mo = new MutationObserver(onMutation);
+
+    const observeDom = () => {
+      const root = document.documentElement || document.body;
+      if (!root || state.invalidated) {
+        return;
+      }
+
+      state.mo.observe(root, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["src", "srcset", "data-src", "style", "class", "width", "height", "id"]
+      });
+    };
+
+    observeDom();
+
+    if (!document.body) {
+      document.addEventListener("DOMContentLoaded", observeDom, { once: true });
+    }
+  }
+
+  function rescan() {
+    if (state.invalidated) {
+      return;
+    }
+
+    ensureExtensionUiMounted();
+    scanNode(document.documentElement || document.body);
+    syncAllOverlays();
+  }
+
+  function scanNode(node) {
+    if (!node || state.invalidated) {
+      return;
+    }
+
+    if (node instanceof Element && node.closest("[data-manga-translator-overlay]")) {
+      return;
+    }
+
+    if (node instanceof HTMLImageElement || node instanceof HTMLCanvasElement || isBackgroundImageTarget(node)) {
+      registerTarget(node);
+      return;
+    }
+
+    if (!(node instanceof Element)) {
+      return;
+    }
+
+    node.querySelectorAll(TARGET_SELECTOR).forEach((target) => registerTarget(target));
+  }
+
+  function registerTarget(target) {
+    if (!isSupportedTarget(target) || state.invalidated) {
+      return;
+    }
+    if (!isSitePreferredTarget(target)) {
+      return;
+    }
+
+    if (target instanceof HTMLImageElement && !target.complete) {
+      target.addEventListener(
+        "load",
+        () => {
+          registerTarget(target);
+        },
+        { once: true }
+      );
+    }
+
+    const sourceToken = getQuickSourceToken(target);
+    const oldSourceToken = target.dataset.mtSourceToken || "";
+    if (oldSourceToken && oldSourceToken !== sourceToken) {
+      const oldTranslatedKey = target.dataset.mtLastTranslatedKey || "";
+      if (oldTranslatedKey) {
+        state.payloadCacheByTargetKey.delete(oldTranslatedKey);
+      }
+      clearRenderedTarget(target);
+      target.dataset.mtLastTranslatedKey = "";
+      target.dataset.mtNoTextKey = "";
+      target.dataset.mtRecoveryReqAt = "";
+    }
+    target.dataset.mtSourceToken = sourceToken;
+
+    if (!state.observedTargets.has(target)) {
+      state.io.observe(target);
+      if (state.preloadIo) {
+        state.preloadIo.observe(target);
+      }
+      state.observedTargets.add(target);
+    }
+    if (IS_KAKAOPAGE_READER && target instanceof HTMLImageElement && target.complete && sourceToken) {
+      refreshPreviousKakaoBoundary(target, sourceToken);
+    }
+  }
+
+  function refreshPreviousKakaoBoundary(target, sourceToken) {
+    if (target.dataset.mtBoundaryReadyToken === sourceToken) {
+      return;
+    }
+    target.dataset.mtBoundaryReadyToken = sourceToken;
+    const ordered = collectKakaopageManualTargetCandidates(true).filter(
+      (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected
+    );
+    const index = ordered.indexOf(target);
+    if (index <= 0) {
+      return;
+    }
+    const previous = ordered[index - 1];
+    if (previous.dataset.mtLastTranslatedKey && state.pretranslateMode === "ahead") {
+      state.payloadCacheByTargetKey.delete(computeTargetKey(previous));
+      queueTranslate(previous, { manual: true, force: true, reason: "kakao-boundary-refresh" });
+    }
+  }
+
+  function onIntersection(entries) {
+    if (state.invalidated) {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isIntersecting) {
+        continue;
+      }
+
+      if (state.autoTranslatePageEnabled && state.enabled) {
+        queuePageAutoTranslate(entry.target);
+      }
+    }
+  }
+
+  function onPreloadIntersection(entries) {
+    if (state.invalidated) {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isIntersecting) {
+        continue;
+      }
+
+      const target = entry.target;
+      if (!passesTargetFilter(target, false)) {
+        continue;
+      }
+    }
+  }
+
+  function onMutation(mutations) {
+    if (state.invalidated) {
+      return;
+    }
+
+    let shouldRepairUi = false;
+    for (const mutation of mutations) {
+      if (mutation.type === "childList") {
+        mutation.removedNodes.forEach((node) => {
+          if (node === state.overlayLayer || node === state.floatingBallWrap) {
+            shouldRepairUi = true;
+          }
+        });
+        mutation.addedNodes.forEach((node) => scanNode(node));
+      }
+
+      if (
+        mutation.type === "attributes" &&
+        (mutation.target instanceof HTMLImageElement ||
+          mutation.target instanceof HTMLCanvasElement ||
+          isBackgroundImageTarget(mutation.target))
+      ) {
+        registerTarget(mutation.target);
+      }
+    }
+
+    if (shouldRepairUi || !isExtensionUiMounted()) {
+      ensureExtensionUiMounted();
+    }
+    scheduleAheadPretranslation("mutation");
+  }
+
+  function scheduleAheadPretranslation(reason) {
+    if (!state.enabled || state.pretranslateMode !== "ahead" || state.invalidated) {
+      return;
+    }
+    state.autoTranslatePageEnabled = true;
+    getAheadTranslationTargets().forEach((target) =>
+      queueTranslate(target, { manual: true, reason: `ahead-${reason}` })
+    );
+  }
+
+  function getAheadTranslationTargets() {
+    const candidates = (IS_KAKAOPAGE_READER
+      ? collectKakaopageManualTargetCandidates(true)
+      : Array.from(document.querySelectorAll(TARGET_SELECTOR)))
+      .filter((target) => isSupportedTarget(target) && target.isConnected)
+      .filter((target) => IS_KAKAOPAGE_READER ? passesKakaoAheadTargetFilter(target) : passesTargetFilter(target, true, { relaxed: true }))
+      .filter((target) => {
+        const targetKey = computeTargetKey(target);
+        return target.dataset.mtLastTranslatedKey !== targetKey && target.dataset.mtNoTextKey !== targetKey;
+      });
+    if (candidates.length === 0) {
+      return [];
+    }
+    const viewportAnchor = window.innerHeight * 0.35;
+    let startIndex = candidates.findIndex((target) => target.getBoundingClientRect().bottom >= viewportAnchor);
+    if (startIndex < 0) {
+      startIndex = Math.max(0, candidates.length - 1);
+    }
+    return candidates.slice(startIndex, startIndex + PRETRANSLATE_AHEAD_COUNT + 1).filter((target) => {
+      if (target instanceof HTMLImageElement && !target.complete) {
+        target.loading = "eager";
+        if (target.dataset.mtAheadLoadPending !== "true") {
+          target.dataset.mtAheadLoadPending = "true";
+          target.addEventListener("load", () => {
+            delete target.dataset.mtAheadLoadPending;
+            scheduleAheadPretranslation("image-load");
+          }, { once: true });
+        }
+        return false;
+      }
+      return true;
+    });
+  }
+
+  function passesKakaoAheadTargetFilter(target) {
+    if (!isSupportedTarget(target) || !target.isConnected || !isSitePreferredTarget(target, { allowLoose: true })) {
+      return false;
+    }
+    const rect = target.getBoundingClientRect();
+    if (rect.width < 90 || rect.height < 90) {
+      return false;
+    }
+    if (target instanceof HTMLImageElement) {
+      const naturalWidth = Number(target.naturalWidth || 0);
+      const naturalHeight = Number(target.naturalHeight || 0);
+      if (naturalWidth > 0 && naturalHeight > 0 && (naturalHeight < 220 || naturalHeight / naturalWidth < 0.18)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function queueTranslate(target, options) {
+    if (!isSupportedTarget(target) || !target.isConnected || state.invalidated) {
+      return;
+    }
+
+    if (!options.manual) {
+      return;
+    }
+
+    if (state.queuedTargets.has(target) || state.inflightByTarget.has(target)) {
+      return;
+    }
+
+    state.queue.push({ target, options });
+    state.queuedTargets.add(target);
+    pumpQueue();
+  }
+
+  function queuePreload(target, options = {}) {
+    if (!isSupportedTarget(target) || !target.isConnected || state.invalidated) {
+      return;
+    }
+
+    if (!state.enabled) {
+      return;
+    }
+
+    if (state.preloadQueuedTargets.has(target) || state.preloadInFlightByTarget.has(target)) {
+      return;
+    }
+
+    if (options.priority === "high") {
+      state.preloadQueue.unshift(target);
+    } else {
+      state.preloadQueue.push(target);
+    }
+    state.preloadQueuedTargets.add(target);
+    pumpPreloadQueue();
+  }
+
+  function pumpQueue() {
+    if (state.invalidated) {
+      return;
+    }
+
+    while (state.runningJobs < MAX_PARALLEL_TRANSLATIONS && state.queue.length > 0) {
+      const item = state.queue.shift();
+      state.queuedTargets.delete(item.target);
+
+      if (!item.target.isConnected) {
+        continue;
+      }
+
+      state.runningJobs += 1;
+      translateTarget(item.target, item.options)
+        .catch(() => {
+          // Error is handled in translateTarget.
+        })
+        .finally(() => {
+          state.runningJobs -= 1;
+          pumpQueue();
+        });
+    }
+  }
+
+  function pumpPreloadQueue() {
+    if (state.invalidated) {
+      return;
+    }
+
+    while (state.preloadRunningJobs < getMaxPreloadJobs() && state.preloadQueue.length > 0) {
+      const target = state.preloadQueue.shift();
+      state.preloadQueuedTargets.delete(target);
+
+      if (!target || !target.isConnected) {
+        continue;
+      }
+
+      state.preloadRunningJobs += 1;
+      preloadTargetPayload(target)
+        .catch(() => {
+          // Ignore preload errors to avoid noisy page behavior.
+        })
+        .finally(() => {
+          state.preloadRunningJobs -= 1;
+          pumpPreloadQueue();
+        });
+    }
+  }
+
+  function getMaxPreloadJobs() {
+    return state.aggressivePreload ? AGGRESSIVE_PRELOAD_JOBS : MAX_PRELOAD_JOBS;
+  }
+
+  function getPreloadRootMargin() {
+    return state.aggressivePreload ? AGGRESSIVE_PRELOAD_ROOT_MARGIN : PRELOAD_ROOT_MARGIN;
+  }
+
+  function scheduleAggressivePreloadSweep(reason) {
+    if (!state.aggressivePreload || state.invalidated || !state.enabled) {
+      return;
+    }
+    if (state.preloadQueue.length >= AGGRESSIVE_PRELOAD_MAX_QUEUE) {
+      return;
+    }
+    if (state.aggressiveSweepTimer) {
+      return;
+    }
+
+    const run = () => {
+      state.aggressiveSweepTimer = 0;
+      triggerAggressivePreloadSweep(reason);
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+      state.aggressiveSweepTimer = window.requestIdleCallback(
+        () => {
+          run();
+        },
+        { timeout: 320 }
+      );
+      return;
+    }
+
+    state.aggressiveSweepTimer = window.setTimeout(run, 180);
+  }
+
+  function triggerAggressivePreloadSweep() {
+    if (!state.aggressivePreload || state.invalidated || !state.enabled) {
+      return;
+    }
+    if (state.preloadQueue.length >= AGGRESSIVE_PRELOAD_MAX_QUEUE) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - state.lastAggressivePreloadSweepAt < AGGRESSIVE_PRELOAD_SWEEP_GAP_MS) {
+      return;
+    }
+    state.lastAggressivePreloadSweepAt = now;
+
+    const root = IS_CMOA_SPEED_READER
+      ? document.querySelector("#content") || document.documentElement
+      : document.documentElement;
+    const nodes = root ? root.querySelectorAll(TARGET_SELECTOR) : [];
+    const viewportCenterY = window.innerHeight / 2;
+    const candidates = Array.from(nodes)
+      .filter((target) => isSupportedTarget(target) && target.isConnected)
+      .filter((target) => !state.preloadQueuedTargets.has(target) && !state.preloadInFlightByTarget.has(target))
+      .filter((target) => !state.inflightByTarget.has(target))
+      .filter((target) => passesTargetFilter(target, false))
+      .map((target) => {
+        const rect = target.getBoundingClientRect();
+        return {
+          target,
+          rect,
+          distance: Math.abs(rect.top + rect.height / 2 - viewportCenterY),
+          area: getVisibleArea(rect)
+        };
+      })
+      .filter((item) => item.rect.top < window.innerHeight + 2800 && item.rect.bottom > -2800)
+      .sort((left, right) => left.distance - right.distance || right.area - left.area)
+      .slice(0, AGGRESSIVE_PRELOAD_BATCH);
+
+    for (const item of candidates) {
+      queuePreload(item.target, { priority: "high" });
+      if (state.preloadQueue.length >= AGGRESSIVE_PRELOAD_MAX_QUEUE) {
+        break;
+      }
+    }
+  }
+
+  async function translateTarget(target, options) {
+    if (state.invalidated) {
+      throw new Error("Extension context invalidated");
+    }
+
+    if (!isSupportedTarget(target) || !target.isConnected) {
+      return { ok: false, skipped: true, reason: "target disconnected" };
+    }
+
+    if (!options.manual && !state.enabled) {
+      return { ok: false, skipped: true, reason: "plugin disabled" };
+    }
+
+    if (!passesTargetFilter(target, options.manual)) {
+      return { ok: false, skipped: true, reason: "filtered as non-manga target" };
+    }
+
+    if (state.inflightByTarget.has(target)) {
+      return state.inflightByTarget.get(target);
+    }
+
+    const task = (async () => {
+      try {
+        const targetKey = computeTargetKey(target);
+        const targetId = getTargetId(target);
+
+        if (isScreenshotCaptureMode() && !getVisibleViewportRect(target)) {
+          return {
+            ok: false,
+            skipped: true,
+            reason: SCREENSHOT_TARGET_NOT_VISIBLE
+          };
+        }
+
+        const existingRendered = getExistingRenderedState(targetId);
+        if (!options.force && existingRendered && existingRendered.targetKey === targetKey) {
+          if (isBackgroundImageTarget(target) && existingRendered.mode === "embedded") {
+            restoreEmbeddedForTarget(target);
+          } else if (existingRendered.mode === "embedded" && !isEmbeddedRenderStillApplied(existingRendered)) {
+            state.embeddedById.delete(targetId);
+          } else if (existingRendered.mode === "embedded") {
+            return { ok: true, reused: true, bubbles: existingRendered.bubbleCount };
+          } else {
+            syncOverlayPosition(existingRendered);
+            return { ok: true, reused: true, bubbles: existingRendered.bubbleCount };
+          }
+        }
+
+        const refreshedRendered = getExistingRenderedState(targetId);
+        if (!options.force && refreshedRendered && refreshedRendered.targetKey === targetKey) {
+          if (isBackgroundImageTarget(target) && refreshedRendered.mode === "embedded") {
+            restoreEmbeddedForTarget(target);
+          } else if (refreshedRendered.mode === "embedded") {
+            return { ok: true, reused: true, bubbles: refreshedRendered.bubbleCount };
+          } else {
+            syncOverlayPosition(refreshedRendered);
+            return { ok: true, reused: true, bubbles: refreshedRendered.bubbleCount };
+          }
+        }
+
+        const localCachedResult = state.localResultCache.get(targetKey);
+        if (!options.force && localCachedResult) {
+          if (localCachedResult.bubbles.length > 0) {
+            if (shouldUseEmbeddedRender(target)) {
+              renderLoadingOverlay(target, targetKey, "生成嵌入图片中...");
+            }
+            const cachedPayload = shouldUseEmbeddedRender(target)
+              ? await extractTargetPayload(target, targetKey)
+              : null;
+            await renderTranslationResult(target, targetKey, localCachedResult, cachedPayload);
+          } else {
+            clearRenderedTarget(target);
+          }
+          return { ok: true, reused: true, bubbles: localCachedResult.bubbles.length };
+        }
+
+        renderLoadingOverlay(target, targetKey, "OCR + 翻译中...");
+        const payload = await extractTargetPayload(target, targetKey);
+        updateLoadingOverlayText(target, targetKey, "模型翻译中...");
+        const response = await sendRuntimeMessage({
+          type: "TRANSLATE_DATA_URL",
+          dataUrl: payload.dataUrl,
+          imageUrl: payload.imageUrl,
+          targetKey: payload.stitchKey || targetKey,
+          imageMeta: buildPayloadImageMeta(payload)
+        });
+
+        if (!response || !response.ok) {
+          throw new Error(response && response.error ? response.error : "Translate request failed");
+        }
+
+        const result = normalizeResult(mapKakaoStitchedResult(response.result, payload, target, targetKey));
+        rememberLocalResult(targetKey, result);
+
+        if (result.bubbles.length > 0) {
+          updateLoadingOverlayText(target, targetKey, shouldUseEmbeddedRender(target) ? "生成嵌入图片中..." : "排版中...");
+          await renderTranslationResult(target, targetKey, result, payload, { stream: true });
+          target.dataset.mtNoTextKey = "";
+        } else {
+          console.warn("[MangaTranslator] OCR returned no text for target", {
+            targetTag: target.tagName.toLowerCase(),
+            targetKey: targetKey.slice(0, 80),
+          });
+          updateLoadingOverlayText(target, targetKey, "未识别到文本");
+          await sleep(1500);
+          clearRenderedTarget(target);
+          target.dataset.mtNoTextKey = targetKey;
+        }
+
+        target.dataset.mtLastTranslatedKey = targetKey;
+
+        await reportStatus("info", "translation done", {
+          reason: options.reason,
+          bubbles: result.bubbles.length,
+          cached: !!response.cached
+        });
+
+        return { ok: true, bubbles: result.bubbles.length, cached: !!response.cached };
+      } catch (error) {
+        const reason = getErrorMessage(error);
+        clearRenderedTarget(target);
+        if (isScreenshotTargetNotVisibleError(reason)) {
+          return {
+            ok: false,
+            skipped: true,
+            reason
+          };
+        }
+
+        if (CONTEXT_INVALIDATED_RE.test(reason)) {
+          markInvalidated(reason);
+        } else {
+          await reportStatus("error", reason, {
+            reason: options.reason,
+            targetTag: target.tagName.toLowerCase()
+          });
+        }
+
+        return { ok: false, error: reason };
+      } finally {
+        state.inflightByTarget.delete(target);
+      }
+    })();
+
+    state.inflightByTarget.set(target, task);
+    return task;
+  }
+
+  async function preloadTargetPayload(target) {
+    if (state.invalidated || !state.enabled) {
+      return;
+    }
+
+    if (state.inflightByTarget.has(target)) {
+      return;
+    }
+
+    if (!passesTargetFilter(target, false)) {
+      return;
+    }
+
+    if (state.preloadInFlightByTarget.has(target)) {
+      return state.preloadInFlightByTarget.get(target);
+    }
+
+    if (isScreenshotCaptureMode()) {
+      return;
+    }
+
+    const task = (async () => {
+      const targetKey = computeTargetKey(target);
+      if (state.localResultCache.has(targetKey) || getPayloadCache(targetKey)) {
+        return;
+      }
+
+      await extractTargetPayload(target, targetKey);
+    })().finally(() => {
+      state.preloadInFlightByTarget.delete(target);
+    });
+
+    state.preloadInFlightByTarget.set(target, task);
+    return task;
+  }
+
+  async function extractTargetPayload(target, targetKey) {
+    const cacheKey = String(targetKey || computeTargetKey(target));
+    const cached = getPayloadCache(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    let payload = null;
+    if (isScreenshotCaptureMode()) {
+      payload = await captureVisibleTargetPayload(target, null, buildScreenshotImageUrl(target));
+      rememberPayloadCache(cacheKey, payload);
+      return payload;
+    }
+
+    if (target instanceof HTMLImageElement) {
+      payload = await extractImagePayload(target);
+    } else if (target instanceof HTMLCanvasElement) {
+      payload = await extractCanvasPayload(target);
+    } else if (isBackgroundImageTarget(target)) {
+      payload = await extractBackgroundImagePayload(target);
+    } else {
+      throw new Error("Unsupported target element");
+    }
+
+    payload = await normalizeKakaopagePayload(target, payload);
+    if (shouldUseKakaoStitchedOcr(target, payload)) {
+      payload = await buildKakaoStitchedPayload(target, payload);
+    }
+    rememberPayloadCache(cacheKey, payload);
+    return payload;
+  }
+
+  function shouldUseKakaoStitchedOcr(target, payload) {
+    return (
+      IS_KAKAOPAGE_READER &&
+      state.captureMode === CAPTURE_MODE_DIRECT &&
+      state.renderMode === RENDER_MODE_OVERLAY &&
+      target instanceof HTMLImageElement &&
+      payload &&
+      isDataUrl(payload.dataUrl)
+    );
+  }
+
+  async function buildKakaoStitchedPayload(target, ownerPayload) {
+    const ordered = collectKakaopageManualTargetCandidates(true).filter(
+      (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
+    );
+    const ownerIndex = ordered.indexOf(target);
+    if (ownerIndex < 0) {
+      return ownerPayload;
+    }
+
+    const previousTarget = ownerIndex > 0 ? ordered[ownerIndex - 1] : null;
+    const nextTarget = ownerIndex + 1 < ordered.length ? ordered[ownerIndex + 1] : null;
+    const previousPayload = previousTarget ? await extractAdjacentKakaoPayload(previousTarget) : null;
+    const nextPayload = nextTarget ? await extractAdjacentKakaoPayload(nextTarget) : null;
+    const payloads = [previousPayload, ownerPayload, nextPayload].filter(Boolean);
+    const decoded = await Promise.all(payloads.map((payload) => loadImageFromDataUrl(payload.dataUrl)));
+    let decodedIndex = 0;
+    const previousImage = previousPayload ? decoded[decodedIndex++] : null;
+    const ownerImage = decoded[decodedIndex++];
+    const nextImage = nextPayload ? decoded[decodedIndex] : null;
+    const canonicalWidth = Math.max(
+      1,
+      Math.min(IMAGE_MAX_SIDE, Number(ownerPayload.width) || ownerImage.naturalWidth || ownerImage.width)
+    );
+    const scaledHeight = (image) =>
+      Math.max(1, Math.round(((image.naturalHeight || image.height) / Math.max(1, image.naturalWidth || image.width)) * canonicalWidth));
+    const ownerHeight = scaledHeight(ownerImage);
+    const previousHeight = previousImage ? scaledHeight(previousImage) : 0;
+    const nextHeight = nextImage ? scaledHeight(nextImage) : 0;
+    const previousSlice = previousImage ? Math.min(KAKAO_STITCH_OVERLAP_PX, previousHeight) : 0;
+    const nextSlice = nextImage ? Math.min(KAKAO_STITCH_OVERLAP_PX, nextHeight) : 0;
+    const canvas = document.createElement("canvas");
+    canvas.width = canonicalWidth;
+    canvas.height = previousSlice + ownerHeight + nextSlice;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return ownerPayload;
+    }
+
+    if (previousImage && previousSlice > 0) {
+      const naturalHeight = previousImage.naturalHeight || previousImage.height;
+      const naturalWidth = previousImage.naturalWidth || previousImage.width;
+      const sourceHeight = naturalHeight * (previousSlice / previousHeight);
+      context.drawImage(previousImage, 0, naturalHeight - sourceHeight, naturalWidth, sourceHeight, 0, 0, canonicalWidth, previousSlice);
+    }
+    context.drawImage(ownerImage, 0, 0, canonicalWidth, ownerHeight, 0, previousSlice, canonicalWidth, ownerHeight);
+    if (nextImage && nextSlice > 0) {
+      const naturalHeight = nextImage.naturalHeight || nextImage.height;
+      const naturalWidth = nextImage.naturalWidth || nextImage.width;
+      const sourceHeight = naturalHeight * (nextSlice / nextHeight);
+      context.drawImage(nextImage, 0, 0, naturalWidth, sourceHeight, 0, previousSlice + ownerHeight, canonicalWidth, nextSlice);
+    }
+
+    const sourceKeys = [previousTarget, target, nextTarget].map((item) => (item ? getQuickSourceToken(item) : "edge"));
+    return {
+      ...ownerPayload,
+      dataUrl: canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY),
+      imageUrl: `kakao-stitch:${sourceKeys.join("|")}`,
+      width: canonicalWidth,
+      height: canvas.height,
+      stitchKey: `${computeTargetKey(target)}|stitch:${KAKAO_STITCH_OVERLAP_PX}|${sourceKeys.join("|")}`,
+      stitch: {
+        ownerTop: previousSlice,
+        ownerHeight,
+        compositeWidth: canonicalWidth,
+        compositeHeight: canvas.height,
+        overlap: KAKAO_STITCH_OVERLAP_PX,
+        sourceKeys
+      }
+    };
+  }
+
+  async function extractAdjacentKakaoPayload(target) {
+    try {
+      const payload = await extractImagePayload(target);
+      return payload && isDataUrl(payload.dataUrl) ? payload : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function mapKakaoStitchedResult(result, payload, target, targetKey) {
+    if (!payload || !payload.stitch || !result || !Array.isArray(result.bubbles)) {
+      return result;
+    }
+    const ownerTop = Number(payload.stitch.ownerTop) || 0;
+    const ownerHeight = Math.max(1, Number(payload.stitch.ownerHeight) || 1);
+    const compositeHeight = Math.max(1, Number(payload.stitch.compositeHeight) || Number(payload.height) || 1);
+    const targetRect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
+    const mapped = result.bubbles.filter((bubble) => {
+      const centerPx = ((Number(bubble.y) + Number(bubble.h) / 2) / 100) * compositeHeight;
+      return centerPx >= ownerTop && centerPx < ownerTop + ownerHeight;
+    }).map((bubble) => {
+      const topPx = (Number(bubble.y) / 100) * compositeHeight;
+      const heightPx = (Number(bubble.h) / 100) * compositeHeight;
+      return {
+        ...bubble,
+        y: ((topPx - ownerTop) / ownerHeight) * 100,
+        h: (heightPx / ownerHeight) * 100,
+        stitch_overflow: true
+      };
+    });
+    const deduped = dedupeKakaoGlobalBubbles(mapped, targetRect, targetKey);
+    return {
+      ...result,
+      bubbles: deduped
+    };
+  }
+
+  function dedupeKakaoGlobalBubbles(bubbles, targetRect, targetKey) {
+    if (!targetRect || !targetKey) {
+      return bubbles;
+    }
+    state.kakaoGlobalOcrEntries.delete(targetKey);
+    const existing = Array.from(state.kakaoGlobalOcrEntries.values()).flat();
+    const accepted = [];
+    const entries = [];
+    for (const bubble of bubbles) {
+      const box = {
+        left: targetRect.left + window.scrollX + (Number(bubble.x) / 100) * targetRect.width,
+        top: targetRect.top + window.scrollY + (Number(bubble.y) / 100) * targetRect.height,
+        width: (Number(bubble.w) / 100) * targetRect.width,
+        height: (Number(bubble.h) / 100) * targetRect.height
+      };
+      const text = normalizeOcrSimilarityText(bubble.original_text);
+      const duplicate = existing.concat(entries).some((entry) => {
+        const overlap = pageBoxIntersectionRatio(box, entry.box);
+        return overlap >= 0.58 && textSimilarity(text, entry.text) >= 0.82;
+      });
+      if (!duplicate) {
+        accepted.push(bubble);
+        entries.push({ box, text });
+      }
+    }
+    state.kakaoGlobalOcrEntries.set(targetKey, entries);
+    return accepted;
+  }
+
+  function pageBoxIntersectionRatio(left, right) {
+    const width = Math.max(0, Math.min(left.left + left.width, right.left + right.width) - Math.max(left.left, right.left));
+    const height = Math.max(0, Math.min(left.top + left.height, right.top + right.height) - Math.max(left.top, right.top));
+    return (width * height) / Math.max(1, Math.min(left.width * left.height, right.width * right.height));
+  }
+
+  function normalizeOcrSimilarityText(value) {
+    return String(value || "").normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  }
+
+  function textSimilarity(first, second) {
+    if (first === second) {
+      return first ? 1 : 0;
+    }
+    if (!first || !second) {
+      return 0;
+    }
+    const firstChars = Array.from(first);
+    const secondChars = Array.from(second);
+    let previous = Array.from({ length: secondChars.length + 1 }, (_, index) => index);
+    firstChars.forEach((firstChar, firstIndex) => {
+      const current = [firstIndex + 1];
+      secondChars.forEach((secondChar, secondIndex) => {
+        current.push(Math.min(current[secondIndex] + 1, previous[secondIndex + 1] + 1, previous[secondIndex] + (firstChar === secondChar ? 0 : 1)));
+      });
+      previous = current;
+    });
+    return 1 - previous[previous.length - 1] / Math.max(firstChars.length, secondChars.length);
+  }
+
+  async function normalizeKakaopagePayload(target, payload) {
+    if (!IS_KAKAOPAGE_READER || !payload || !isSupportedTarget(target)) {
+      return payload;
+    }
+
+    const rect = target.getBoundingClientRect();
+    const payloadHeight = Number(payload.height || 0);
+    const payloadWidth = Number(payload.width || 0);
+    const cssHeight = Number(payload.cssHeight || rect.height || 0);
+    const cssWidth = Number(payload.cssWidth || rect.width || 0);
+    const looksLikeStrip =
+      payloadHeight < 220 ||
+      cssHeight < 180 ||
+      payloadWidth / Math.max(1, payloadHeight) > 5.2 ||
+      cssWidth / Math.max(1, cssHeight) > 5.2;
+
+    if (!looksLikeStrip) {
+      return payload;
+    }
+
+    const captureRect = getVisibleViewportRect(target);
+    if (!captureRect || captureRect.height < 180 || captureRect.width < 180) {
+      throw new Error("Kakao target looks like a small lazy-loaded strip, skip OCR");
+    }
+
+    return captureVisibleTargetPayload(target, new Error("Kakao source image is a strip"), payload.imageUrl || "kakao-strip");
+  }
+
+  async function extractImagePayload(img) {
+    if (!img.complete) {
+      throw new Error("Image is not loaded yet");
+    }
+
+    const imageUrl = resolveImageUrl(img);
+
+    if (isDataUrl(imageUrl)) {
+      return {
+        dataUrl: imageUrl,
+        imageUrl: imageUrl.slice(0, 120),
+        width: img.naturalWidth || img.width || 0,
+        height: img.naturalHeight || img.height || 0,
+        cssWidth: img.getBoundingClientRect().width,
+        cssHeight: img.getBoundingClientRect().height,
+        source: "img-data-url"
+      };
+    }
+
+    if (isHttpUrl(imageUrl)) {
+      const fetched = await sendRuntimeMessage({
+        type: "FETCH_IMAGE_DATA_URL",
+        url: imageUrl
+      });
+
+      if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
+        return {
+          dataUrl: fetched.dataUrl,
+          imageUrl,
+          width: img.naturalWidth || img.width || 0,
+          height: img.naturalHeight || img.height || 0,
+          cssWidth: img.getBoundingClientRect().width,
+          cssHeight: img.getBoundingClientRect().height,
+          source: "img-fetch"
+        };
+      }
+    }
+
+    try {
+      const fallbackDataUrl = imageElementToDataUrl(img);
+      return {
+        dataUrl: fallbackDataUrl,
+        imageUrl,
+        width: img.naturalWidth || img.width || 0,
+        height: img.naturalHeight || img.height || 0,
+        cssWidth: img.getBoundingClientRect().width,
+        cssHeight: img.getBoundingClientRect().height,
+        source: "img-canvas"
+      };
+    } catch (error) {
+      return captureVisibleTargetPayload(img, error, imageUrl || "visible-tab-image-crop");
+    }
+  }
+
+  async function extractCanvasPayload(canvas) {
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      throw new Error("Invalid canvas target");
+    }
+
+    let firstError = null;
+
+    try {
+      const jpeg = canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY);
+      if (isDataUrl(jpeg)) {
+        return {
+          dataUrl: jpeg,
+          imageUrl: "",
+          width: canvas.width,
+          height: canvas.height,
+          cssWidth: canvas.getBoundingClientRect().width,
+          cssHeight: canvas.getBoundingClientRect().height,
+          source: "canvas"
+        };
+      }
+    } catch (error) {
+      firstError = error;
+      // Ignore and fallback to png.
+    }
+
+    try {
+      const png = canvas.toDataURL("image/png");
+      if (isDataUrl(png)) {
+        return {
+          dataUrl: png,
+          imageUrl: "",
+          width: canvas.width,
+          height: canvas.height,
+          cssWidth: canvas.getBoundingClientRect().width,
+          cssHeight: canvas.getBoundingClientRect().height,
+          source: "canvas"
+        };
+      }
+    } catch (error) {
+      firstError = firstError || error;
+      return captureVisibleTargetPayload(canvas, firstError, "visible-tab-canvas-crop");
+    }
+
+    throw new Error("Canvas data extraction failed");
+  }
+
+  async function captureVisibleTargetPayload(target, originalError, imageUrl) {
+    const captureRect = getVisibleViewportRect(target);
+    if (!captureRect) {
+      throw new Error(SCREENSHOT_TARGET_NOT_VISIBLE);
+    }
+
+    const payload = await withOverlayLayerHidden(async () => {
+      await waitForPaint();
+      const captured = await sendRuntimeMessage({
+        type: "CAPTURE_VISIBLE_TARGET_DATA_URL",
+        rect: {
+          left: captureRect.left,
+          top: captureRect.top,
+          width: captureRect.width,
+          height: captureRect.height
+        },
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight
+        },
+        devicePixelRatio: window.devicePixelRatio || 1
+      });
+
+      if (!captured || !captured.ok || !isDataUrl(captured.dataUrl)) {
+        const fallbackError = captured && captured.error ? captured.error : "visible tab screenshot failed";
+        const originalMessage = originalError && originalError.message ? originalError.message : "";
+        throw new Error(
+          originalMessage
+            ? `Target screenshot fallback failed: ${fallbackError}; original error: ${originalMessage}`
+            : `Target screenshot fallback failed: ${fallbackError}`
+        );
+      }
+
+      return captured;
+    });
+
+    const targetRect = target.getBoundingClientRect();
+    return {
+      dataUrl: payload.dataUrl,
+      imageUrl: String(imageUrl || "visible-tab-target-crop"),
+      width: Number(payload.width || 0),
+      height: Number(payload.height || 0),
+      bitmapWidth: Number(payload.bitmapWidth || 0),
+      bitmapHeight: Number(payload.bitmapHeight || 0),
+      cropX: Number(payload.cropX || 0),
+      cropY: Number(payload.cropY || 0),
+      devicePixelRatio: window.devicePixelRatio || 1,
+      cssWidth: captureRect.width,
+      cssHeight: captureRect.height,
+      source: "visible-tab-crop",
+      displayRect: {
+        offsetX: captureRect.left - targetRect.left,
+        offsetY: captureRect.top - targetRect.top,
+        width: captureRect.width,
+        height: captureRect.height
+      }
+    };
+  }
+
+  function getVisibleViewportRect(target) {
+    const rect = target.getBoundingClientRect();
+    const left = clamp(rect.left, 0, window.innerWidth);
+    const top = clamp(rect.top, 0, window.innerHeight);
+    const right = clamp(rect.right, 0, window.innerWidth);
+    const bottom = clamp(rect.bottom, 0, window.innerHeight);
+    const width = right - left;
+    const height = bottom - top;
+
+    if (!(width >= 2 && height >= 2)) {
+      return null;
+    }
+
+    return { left, top, width, height };
+  }
+
+  async function withOverlayLayerHidden(callback) {
+    const overlayLayer = state.overlayLayer;
+    const floatingBallWrap = state.floatingBallWrap;
+    const markedOverlays = Array.from(document.querySelectorAll("[data-manga-translator-overlay]"));
+    const shouldHideOverlay = overlayLayer && overlayLayer.isConnected;
+    const shouldHideBall = floatingBallWrap && floatingBallWrap.isConnected;
+    const previousFloatingVisibility = shouldHideBall ? floatingBallWrap.style.visibility : "";
+    const previousMarkedVisibility = markedOverlays.map((node) => ({
+      node,
+      visibility: node.style.visibility
+    }));
+
+    if (shouldHideOverlay && state.overlayHideDepth === 0) {
+      state.overlayPreviousVisibility = overlayLayer.style.visibility;
+    }
+    if (shouldHideOverlay) {
+      state.overlayHideDepth += 1;
+      overlayLayer.style.visibility = "hidden";
+    }
+    if (shouldHideBall) {
+      floatingBallWrap.style.visibility = "hidden";
+    }
+    markedOverlays.forEach((node) => {
+      node.style.visibility = "hidden";
+    });
+    try {
+      return await callback();
+    } finally {
+      if (shouldHideOverlay) {
+        state.overlayHideDepth = Math.max(0, state.overlayHideDepth - 1);
+        if (state.overlayHideDepth === 0) {
+          overlayLayer.style.visibility = state.overlayPreviousVisibility;
+          state.overlayPreviousVisibility = "";
+        }
+      }
+      if (shouldHideBall && floatingBallWrap.isConnected) {
+        floatingBallWrap.style.visibility = previousFloatingVisibility;
+      }
+      previousMarkedVisibility.forEach((entry) => {
+        if (entry.node && entry.node.isConnected) {
+          entry.node.style.visibility = entry.visibility;
+        }
+      });
+      ensureExtensionUiMounted();
+    }
+  }
+
+  function waitForPaint() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(resolve);
+      });
+    });
+  }
+
+  async function extractBackgroundImagePayload(target) {
+    const imageUrl = resolveBackgroundImageUrl(target);
+    if (!imageUrl) {
+      throw new Error("Background image is unavailable");
+    }
+
+    if (isDataUrl(imageUrl)) {
+      const size = await decodeDataUrlImageSize(imageUrl);
+      return {
+        dataUrl: imageUrl,
+        imageUrl: imageUrl.slice(0, 120),
+        width: size.width,
+        height: size.height
+      };
+    }
+
+    let dataUrl = "";
+    if (isBlobUrl(imageUrl)) {
+      dataUrl = await fetchPageImageDataUrl(imageUrl);
+    } else if (isHttpUrl(imageUrl)) {
+      const fetched = await sendRuntimeMessage({
+        type: "FETCH_IMAGE_DATA_URL",
+        url: imageUrl
+      });
+      if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
+        dataUrl = fetched.dataUrl;
+      }
+    }
+
+    if (!isDataUrl(dataUrl)) {
+      return captureVisibleTargetPayload(target, new Error("Background image data extraction failed"), imageUrl);
+    }
+
+    const size = await decodeDataUrlImageSize(dataUrl);
+    return {
+      dataUrl,
+      imageUrl,
+      width: size.width,
+      height: size.height
+    };
+  }
+
+  function imageElementToDataUrl(img) {
+    const srcWidth = img.naturalWidth || img.width || img.clientWidth;
+    const srcHeight = img.naturalHeight || img.height || img.clientHeight;
+
+    if (!srcWidth || !srcHeight) {
+      throw new Error("Image size is unavailable");
+    }
+
+    const maxSide = IMAGE_MAX_SIDE;
+    const longest = Math.max(srcWidth, srcHeight);
+    const scale = longest > maxSide ? maxSide / longest : 1;
+    const targetWidth = Math.max(1, Math.round(srcWidth * scale));
+    const targetHeight = Math.max(1, Math.round(srcHeight * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Canvas context is unavailable");
+    }
+
+    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+    try {
+      return canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY);
+    } catch {
+      return canvas.toDataURL("image/png");
+    }
+  }
+
+  async function renderTranslationResult(target, targetKey, result, payload, options = {}) {
+    if (IS_KAKAOPAGE_READER) {
+      const renderable = isKakaopageTargetStillRenderable(target);
+      if (!renderable.ok) {
+        console.debug("[MangaTranslator][KakaoPage] overlay hidden (target outside viewport, auto-shows on scroll-back):", renderable.reason);
+      } else {
+        const rect = target.getBoundingClientRect();
+        console.debug("[MangaTranslator][KakaoPage] render check complete", {
+          rect: { w: Math.round(rect.width), h: Math.round(rect.height) },
+          bubbles: Array.isArray(result.bubbles) ? result.bubbles.length : 0,
+          renderMode: options.renderMode || state.renderMode || "overlay",
+          targetTag: target.tagName.toLowerCase(),
+        });
+      }
+    }
+
+    if (shouldUseEmbeddedRender(target) && !getPayloadDisplayRect(payload)) {
+      await renderEmbeddedTranslation(target, targetKey, result, payload);
+      removeOverlayForTarget(target);
+      return;
+    }
+
+    restoreEmbeddedForTarget(target);
+    renderOverlay(target, targetKey, result, {
+      ...options,
+      imageMeta: getPayloadImageMeta(payload),
+      displayRect: getPayloadDisplayRect(payload)
+    });
+  }
+
+  function isKakaopageTargetStillRenderable(target) {
+    if (!target || !target.isConnected) {
+      return { ok: false, reason: "target disconnected" };
+    }
+
+    const rect = target.getBoundingClientRect();
+    if (rect.width < 180 || rect.height < 120) {
+      return { ok: false, reason: `target too small: ${rect.width.toFixed(0)}x${rect.height.toFixed(0)}` };
+    }
+
+    const visibleRect = getVisibleViewportRect(target);
+    if (!visibleRect) {
+      return { ok: false, reason: "no visible viewport rect" };
+    }
+
+    if (visibleRect.width < 160 || visibleRect.height < 100) {
+      return {
+        ok: false,
+        reason: `visible rect too small: ${visibleRect.width.toFixed(0)}x${visibleRect.height.toFixed(0)}`,
+      };
+    }
+
+    const visibleArea = getVisibleArea(rect);
+    if (visibleArea < 12000) {
+      return { ok: false, reason: `visible area too small: ${visibleArea.toFixed(0)}` };
+    }
+
+    return { ok: true, reason: "" };
+  }
+
+  function isEmbeddedRenderMode() {
+    return state.renderMode === RENDER_MODE_EMBEDDED;
+  }
+
+  function shouldUseEmbeddedRender(target) {
+    return isEmbeddedRenderMode() && !isBackgroundImageTarget(target);
+  }
+
+  function getExistingRenderedState(targetId) {
+    return state.embeddedById.get(targetId) || state.overlaysById.get(targetId) || null;
+  }
+
+  function isEmbeddedRenderStillApplied(renderedState) {
+    if (!renderedState || renderedState.mode !== "embedded") {
+      return true;
+    }
+
+    const target = renderedState.target;
+    if (renderedState.kind === "background" && target instanceof HTMLElement) {
+      const backgroundImage = String(getComputedStyle(target).backgroundImage || target.style.backgroundImage || "");
+      return target.dataset.mtEmbeddedActive === "true" && /url\((["']?)data:/i.test(backgroundImage);
+    }
+
+    if (renderedState.kind !== "image" || !(target instanceof HTMLImageElement)) {
+      return true;
+    }
+
+    const currentSource = String(target.currentSrc || target.getAttribute("src") || "").trim();
+    return target.dataset.mtEmbeddedActive === "true" && isDataUrl(currentSource);
+  }
+
+  function renderOverlay(target, targetKey, result, options = {}) {
+    const bubbles = Array.isArray(result.bubbles) ? result.bubbles : [];
+    const stream = options.stream === true;
+
+    if (bubbles.length === 0) {
+      removeOverlayForTarget(target);
+      return;
+    }
+
+    ensureOverlayLayer();
+
+    const targetId = getTargetId(target);
+    const oldOverlay = state.overlaysById.get(targetId);
+    if (oldOverlay) {
+      oldOverlay.root.remove();
+      state.overlaysById.delete(targetId);
+    }
+
+    const root = document.createElement("div");
+    root.className = "mt-overlay-root";
+    root.dataset.mangaTranslatorOverlay = "true";
+    root.dataset.targetId = targetId;
+
+    const bubbleNodes = [];
+    const backgroundTarget = IS_PIXIV_COMIC_VIEWER && isBackgroundImageTarget(target);
+    bubbles.forEach((bubble, index) => {
+      const bubbleNode = createBubbleNode(bubble, index, { backgroundTarget });
+      if (bubbleNode) {
+        if (stream) {
+          const delayMs = Math.min(index * 34, 320);
+          bubbleNode.classList.add("mt-stream-enter");
+          bubbleNode.style.setProperty("--mt-stream-delay", `${delayMs}ms`);
+        }
+        bubbleNodes.push(bubbleNode);
+        root.appendChild(bubbleNode);
+      }
+    });
+
+    if (bubbleNodes.length === 0) {
+      return;
+    }
+
+    const overlayState = {
+      target,
+      targetId,
+      targetKey,
+      root,
+      bubbleNodes,
+      bubbleCount: bubbleNodes.length,
+      isBackgroundTarget: backgroundTarget,
+      mode: "bubbles",
+      imageMeta: options.imageMeta || null,
+      displayRect: options.displayRect || null
+    };
+
+    state.overlayLayer.appendChild(root);
+    state.overlaysById.set(targetId, overlayState);
+    syncOverlayPosition(overlayState);
+    logOcrDebugMapping(overlayState, result);
+    if (result && result.debug) {
+      console.info("[MangaTranslator][OCR chain] rendered", {
+        frontendRenderedOverlays: bubbleNodes.length,
+        targetKey,
+        targetId
+      });
+    }
+
+    if (stream) {
+      bubbleNodes.forEach((node, index) => {
+        const clearDelay = Math.min(index * 34, 320) + 420;
+        window.setTimeout(() => {
+          if (node.isConnected) {
+            node.classList.remove("mt-stream-enter");
+            node.style.removeProperty("--mt-stream-delay");
+          }
+        }, clearDelay);
+      });
+    }
+  }
+
+  async function renderEmbeddedTranslation(target, targetKey, result, payload) {
+    const bubbles = Array.isArray(result.bubbles) ? result.bubbles : [];
+    if (bubbles.length === 0) {
+      clearRenderedTarget(target);
+      return;
+    }
+
+    if (target instanceof HTMLImageElement) {
+      await renderEmbeddedImageTarget(target, targetKey, bubbles, payload);
+      return;
+    }
+
+    if (target instanceof HTMLCanvasElement) {
+      await renderEmbeddedCanvasTarget(target, targetKey, bubbles, payload);
+      return;
+    }
+
+    if (isBackgroundImageTarget(target)) {
+      await renderEmbeddedBackgroundTarget(target, targetKey, bubbles, payload);
+      return;
+    }
+
+    throw new Error("Unsupported embedded render target");
+  }
+
+  async function renderEmbeddedImageTarget(img, targetKey, bubbles, payload) {
+    const targetId = getTargetId(img);
+    const cachedDataUrl = state.embeddedImageCache.get(targetKey);
+    const outputDataUrl =
+      cachedDataUrl || (await composeEmbeddedImageDataUrl(await getEmbeddedBaseDataUrl(img, payload), bubbles));
+
+    if (!cachedDataUrl) {
+      rememberEmbeddedImageCache(targetKey, outputDataUrl);
+    }
+
+    const existing = state.embeddedById.get(targetId);
+    if (existing && existing.kind !== "image") {
+      restoreEmbeddedForTarget(img);
+    }
+
+    if (!img.dataset.mtEmbeddedOriginalSource) {
+      img.dataset.mtEmbeddedOriginalSource = resolveImageUrl(img);
+    }
+    if (!img.dataset.mtEmbeddedOriginalSrc) {
+      img.dataset.mtEmbeddedOriginalSrc = img.getAttribute("src") || "";
+    }
+    if (!img.dataset.mtEmbeddedOriginalSrcset) {
+      img.dataset.mtEmbeddedOriginalSrcset = img.getAttribute("srcset") || "";
+    }
+
+    img.dataset.mtEmbeddedActive = "true";
+    img.dataset.mtEmbeddedOutputKey = targetKey;
+    img.removeAttribute("srcset");
+    img.src = outputDataUrl;
+
+    state.embeddedById.set(targetId, {
+      target: img,
+      targetId,
+      targetKey,
+      kind: "image",
+      mode: "embedded",
+      bubbleCount: bubbles.length
+    });
+  }
+
+  async function renderEmbeddedCanvasTarget(canvas, targetKey, bubbles, payload) {
+    const targetId = getTargetId(canvas);
+    const existing = state.embeddedById.get(targetId);
+    const originalDataUrl =
+      existing && existing.kind === "canvas" && existing.originalDataUrl
+        ? existing.originalDataUrl
+        : payload && isDataUrl(payload.dataUrl)
+          ? payload.dataUrl
+          : "";
+
+    if (!originalDataUrl) {
+      throw new Error("Canvas original image is unavailable for embedded rendering");
+    }
+
+    const image = await loadImageFromDataUrl(originalDataUrl);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Canvas context is unavailable");
+    }
+
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    drawEmbeddedBubbles(ctx, canvas.width, canvas.height, bubbles);
+    ctx.restore();
+
+    state.embeddedById.set(targetId, {
+      target: canvas,
+      targetId,
+      targetKey,
+      kind: "canvas",
+      mode: "embedded",
+      bubbleCount: bubbles.length,
+      originalDataUrl
+    });
+  }
+
+  async function renderEmbeddedBackgroundTarget(target, targetKey, bubbles, payload) {
+    const targetId = getTargetId(target);
+    const cachedDataUrl = state.embeddedImageCache.get(targetKey);
+    const baseDataUrl = payload && isDataUrl(payload.dataUrl) ? payload.dataUrl : "";
+    const originalSource = resolveBackgroundImageUrl(target);
+    if (!baseDataUrl) {
+      throw new Error("Background image is unavailable for embedded rendering");
+    }
+
+    const outputDataUrl =
+      cachedDataUrl ||
+      (await composeEmbeddedImageDataUrl(baseDataUrl, bubbles, {
+        heightUsage: 0.86,
+        maxFont: 44,
+        minFont: 9,
+        paddingScale: 3,
+        textScale: 1.55,
+        widthUsage: 0.9,
+        boxScale: 1.28
+      }));
+    if (!cachedDataUrl) {
+      rememberEmbeddedImageCache(targetKey, outputDataUrl);
+    }
+
+    const existing = state.embeddedById.get(targetId);
+    if (existing && existing.kind !== "background") {
+      restoreEmbeddedForTarget(target);
+    }
+
+    if (!target.dataset.mtEmbeddedOriginalBackground) {
+      target.dataset.mtEmbeddedOriginalBackground = target.style.backgroundImage || "";
+    }
+    if (!target.dataset.mtEmbeddedOriginalBackgroundSource) {
+      target.dataset.mtEmbeddedOriginalBackgroundSource = originalSource;
+    }
+
+    target.dataset.mtEmbeddedActive = "true";
+    target.dataset.mtEmbeddedOutputKey = targetKey;
+    target.style.backgroundImage = `url("${outputDataUrl}")`;
+
+    state.embeddedById.set(targetId, {
+      target,
+      targetId,
+      targetKey,
+      kind: "background",
+      mode: "embedded",
+      bubbleCount: bubbles.length
+    });
+  }
+
+  async function getEmbeddedBaseDataUrl(img, payload) {
+    try {
+      return imageElementToEmbeddedDataUrl(img);
+    } catch {
+      const imageUrl = resolveImageUrl(img);
+      if (isHttpUrl(imageUrl)) {
+        try {
+          const fetched = await sendRuntimeMessage({
+            type: "FETCH_IMAGE_DATA_URL",
+            url: imageUrl,
+            preserveSize: true,
+            maxOriginalBytes: EMBEDDED_MAX_ORIGINAL_BYTES
+          });
+          if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
+            return fetched.dataUrl;
+          }
+        } catch {
+          // 跨域原图抓取失败时降级到模型输入图，保持功能可用。
+        }
+      }
+
+      if (payload && isDataUrl(payload.dataUrl)) {
+        return payload.dataUrl;
+      }
+      throw new Error("Image data extraction failed for embedded rendering");
+    }
+  }
+
+  function imageElementToEmbeddedDataUrl(img) {
+    const srcWidth = img.naturalWidth || img.width || img.clientWidth;
+    const srcHeight = img.naturalHeight || img.height || img.clientHeight;
+
+    if (!srcWidth || !srcHeight) {
+      throw new Error("Image size is unavailable");
+    }
+
+    const pixelCount = srcWidth * srcHeight;
+    const scale = pixelCount > EMBEDDED_MAX_CANVAS_PIXELS ? Math.sqrt(EMBEDDED_MAX_CANVAS_PIXELS / pixelCount) : 1;
+    const targetWidth = Math.max(1, Math.round(srcWidth * scale));
+    const targetHeight = Math.max(1, Math.round(srcHeight * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Canvas context is unavailable");
+    }
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+    return canvas.toDataURL("image/jpeg", EMBEDDED_JPEG_QUALITY);
+  }
+
+  async function composeEmbeddedImageDataUrl(baseDataUrl, bubbles, options = {}) {
+    const image = await loadImageFromDataUrl(baseDataUrl);
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+
+    if (!width || !height) {
+      throw new Error("Embedded base image size is unavailable");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Canvas context is unavailable");
+    }
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(image, 0, 0, width, height);
+    drawEmbeddedBubbles(ctx, width, height, bubbles, options);
+
+    return canvas.toDataURL("image/jpeg", EMBEDDED_JPEG_QUALITY);
+  }
+
+  function drawEmbeddedBubbles(ctx, canvasWidth, canvasHeight, bubbles, options = {}) {
+    const textOptions = options && typeof options === "object" ? options : {};
+    bubbles.forEach((bubble) => {
+      const text = cleanRenderableText(bubble.translated_text || bubble.original_text || "");
+      if (!text) {
+        return;
+      }
+
+      let x = (clamp(Number(bubble.x), 0, 100) / 100) * canvasWidth;
+      let y = (clamp(Number(bubble.y), 0, 100) / 100) * canvasHeight;
+      let w = (clamp(Number(bubble.w), 0, 100) / 100) * canvasWidth;
+      let h = (clamp(Number(bubble.h), 0, 100) / 100) * canvasHeight;
+
+      if (w < 2 || h < 2) {
+        return;
+      }
+
+      const boxScale = Math.max(1, Number(textOptions.boxScale || 1));
+      if (boxScale > 1) {
+        const centerX = x + w / 2;
+        const centerY = y + h / 2;
+        w = Math.min(canvasWidth, w * boxScale);
+        h = Math.min(canvasHeight, h * boxScale);
+        x = clamp(centerX - w / 2, 0, Math.max(0, canvasWidth - w));
+        y = clamp(centerY - h / 2, 0, Math.max(0, canvasHeight - h));
+      }
+
+      const bgType = normalizeBgType(bubble.bg_type);
+      const paddingScale = Number(textOptions.paddingScale || 1);
+      const paddingX = Math.max(1, paddingScale);
+      const paddingY = Math.max(1, paddingScale);
+      const boxX = Math.max(0, x - paddingX);
+      const boxY = Math.max(0, y - paddingY);
+      const box = {
+        x: boxX,
+        y: boxY,
+        w: Math.min(canvasWidth - boxX, w + paddingX * 2),
+        h: Math.min(canvasHeight - boxY, h + paddingY * 2)
+      };
+
+      fillRoundedRect(
+        ctx,
+        box.x,
+        box.y,
+        box.w,
+        box.h,
+        Math.min(3, Math.min(box.w, box.h) * 0.08),
+        "#ffffff"
+      );
+
+      drawFittedText(ctx, text, box, bgType, textOptions);
+    });
+  }
+
+  function drawFittedText(ctx, text, box, bgType, options = {}) {
+    const textScale = Number(options.textScale || 1);
+    const minFont = Number(options.minFont || 6);
+    const maxFont = Number(options.maxFont || 30);
+    const maxWidth = Math.max(6, box.w * Number(options.widthUsage || 0.82));
+    const maxHeight = Math.max(6, box.h * Number(options.heightUsage || 0.68));
+    const family = '"Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    let best = {
+      size: minFont,
+      lines: [text]
+    };
+    let low = minFont;
+    let high = Math.max(minFont + 1, Math.min(maxFont, box.h * 0.42 * textScale, box.w * 0.22 * textScale));
+
+    for (let index = 0; index < 9; index += 1) {
+      const size = (low + high) / 2;
+      ctx.font = `600 ${size}px ${family}`;
+      const lines = wrapCanvasText(ctx, text, maxWidth);
+      const lineHeight = size * 1.22;
+      const totalHeight = lines.length * lineHeight;
+      const widest = lines.reduce((max, line) => Math.max(max, ctx.measureText(line).width), 0);
+
+      if (totalHeight <= maxHeight && widest <= maxWidth) {
+        best = { size, lines };
+        low = size;
+      } else {
+        high = size;
+      }
+    }
+
+    ctx.save();
+    ctx.font = `500 ${best.size}px ${family}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+
+    const lineHeight = best.size * 1.22;
+    const startY = box.y + box.h / 2 - ((best.lines.length - 1) * lineHeight) / 2;
+    const centerX = box.x + box.w / 2;
+
+    best.lines.forEach((line, index) => {
+      const lineY = startY + index * lineHeight;
+      ctx.fillStyle = "#111827";
+      ctx.fillText(line, centerX, lineY);
+    });
+
+    ctx.restore();
+  }
+
+  function wrapCanvasText(ctx, text, maxWidth) {
+    const paragraphs = String(text || "")
+      .split(/\n+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const lines = [];
+
+    paragraphs.forEach((paragraph) => {
+      const tokens = segmentCanvasText(paragraph);
+      const joiner = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(paragraph) ? "" : " ";
+      let current = "";
+
+      tokens.forEach((token) => {
+        const next = current ? `${current}${joiner}${token}` : token;
+        if (ctx.measureText(next).width <= maxWidth || !current) {
+          current = next;
+          return;
+        }
+
+        lines.push(current);
+        current = token;
+      });
+
+      if (current) {
+        lines.push(current);
+      }
+    });
+
+    return lines.length > 0 ? lines : [String(text || "")];
+  }
+
+  function segmentCanvasText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) {
+      return [];
+    }
+
+    if (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(raw)) {
+      return Array.from(raw.replace(/\s+/g, ""));
+    }
+
+    return raw.split(/(\s+)/).filter((token) => token && !/^\s+$/.test(token));
+  }
+
+  function fillRoundedRect(ctx, x, y, width, height, radius, fillStyle) {
+    const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+    ctx.save();
+    ctx.fillStyle = fillStyle;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function loadImageFromDataUrl(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Embedded image decode failed"));
+      image.src = dataUrl;
+    });
+  }
+
+  async function decodeDataUrlImageSize(dataUrl) {
+    const image = await loadImageFromDataUrl(dataUrl);
+    return {
+      width: image.naturalWidth || image.width || 0,
+      height: image.naturalHeight || image.height || 0
+    };
+  }
+
+  function renderLoadingOverlay(target, targetKey, text) {
+    ensureOverlayLayer();
+
+    const targetId = getTargetId(target);
+    const oldOverlay = state.overlaysById.get(targetId);
+    if (oldOverlay && oldOverlay.targetKey === targetKey && oldOverlay.mode === "loading") {
+      updateLoadingOverlayText(target, targetKey, text);
+      syncOverlayPosition(oldOverlay);
+      return;
+    }
+    if (oldOverlay) {
+      oldOverlay.root.remove();
+      state.overlaysById.delete(targetId);
+    }
+
+    const root = document.createElement("div");
+    root.className = "mt-overlay-root mt-overlay-loading";
+    root.dataset.mangaTranslatorOverlay = "true";
+    root.dataset.targetId = targetId;
+
+    const loadingCard = document.createElement("div");
+    loadingCard.className = "mt-loading-card";
+    loadingCard.dataset.mangaTranslatorOverlay = "true";
+    loadingCard.textContent = String(text || "OCR + 翻译中...");
+    root.appendChild(loadingCard);
+
+    const overlayState = {
+      target,
+      targetId,
+      targetKey,
+      root,
+      bubbleNodes: [],
+      bubbleCount: 0,
+      mode: "loading"
+    };
+
+    state.overlayLayer.appendChild(root);
+    state.overlaysById.set(targetId, overlayState);
+    syncOverlayPosition(overlayState);
+  }
+
+  function updateLoadingOverlayText(target, targetKey, text) {
+    const targetId = state.targetIdByElement.get(target);
+    if (!targetId) {
+      return;
+    }
+    const overlayState = state.overlaysById.get(targetId);
+    if (!overlayState || overlayState.mode !== "loading" || overlayState.targetKey !== targetKey) {
+      return;
+    }
+
+    const node = overlayState.root.querySelector(".mt-loading-card");
+    if (!node) {
+      return;
+    }
+    node.textContent = String(text || "OCR + 翻译中...");
+  }
+
+  function createBubbleNode(bubble, index, options = {}) {
+    let x = clamp(Number(bubble.x), 0, 100);
+    let y = bubble.stitch_overflow === true ? Number(bubble.y) : clamp(Number(bubble.y), 0, 100);
+    let w = clamp(Number(bubble.w), 0, 100);
+    let h = clamp(Number(bubble.h), 0, 100);
+
+    if (w <= 0 || h <= 0) {
+      return null;
+    }
+
+    if (options.backgroundTarget) {
+      const centerX = x + w / 2;
+      const centerY = y + h / 2;
+      w = clamp(Math.max(w * 2.6, 18), 1, 92);
+      h = clamp(Math.max(h * 2.2, 10), 1, 62);
+      x = clamp(centerX - w / 2, 0, 100 - w);
+      y = clamp(centerY - h / 2, 0, 100 - h);
+    }
+
+    const originalText = cleanRenderableText(bubble.original_text || "");
+    const translatedText = cleanRenderableText(bubble.translated_text || "") || originalText;
+    if (!translatedText) {
+      return null;
+    }
+    const bgType = normalizeBgType(bubble.bg_type);
+
+    const node = document.createElement("div");
+    node.className = `mt-bubble mt-bg-${bgType}`;
+    node.dataset.mangaTranslatorOverlay = "true";
+    node.dataset.index = String(index);
+    node.dataset.mode = "translated";
+    node.dataset.original = originalText;
+    node.dataset.translated = translatedText;
+    node.dataset.wPercent = String(w);
+    node.dataset.hPercent = String(h);
+    node.dataset.xPercent = String(x);
+    node.dataset.yPercent = String(y);
+    node.dataset.backgroundTarget = options.backgroundTarget ? "true" : "";
+    if (bubble.bg_color) {
+      node.style.setProperty("--mt-adaptive-bg", String(bubble.bg_color));
+    }
+
+    const centerX = clamp(x + w / 2, 0, 100);
+    const centerY = bubble.stitch_overflow === true ? y + h / 2 : clamp(y + h / 2, 0, 100);
+    node.style.left = `${centerX}%`;
+    node.style.top = `${centerY}%`;
+    node.style.width = `${w}%`;
+    node.style.height = `${h}%`;
+    node.style.setProperty("--mt-base-transform", "translate(-50%, -50%)");
+
+    node.textContent = translatedText;
+    node.title = originalText || translatedText;
+    applyBubbleTextLayout(node, translatedText);
+
+    node.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleOverlaySourceMode(node);
+    });
+
+    return node;
+  }
+
+  function toggleOverlaySourceMode(node) {
+    const root = node.closest(".mt-overlay-root");
+    if (!root) {
+      return;
+    }
+    root.classList.toggle("mt-show-source");
+  }
+
+  function applyBubbleTextLayout(node, text) {
+    const vertical = shouldUseVerticalJapaneseLayout(node, text);
+    node.classList.toggle("mt-jp-vertical", vertical);
+  }
+
+  function shouldUseVerticalJapaneseLayout(node, text) {
+    const backgroundTarget = node.dataset.backgroundTarget === "true";
+    if (backgroundTarget && looksLikeCjkText(text)) {
+      const hPercent = Number(node.dataset.hPercent || "0");
+      const wPercent = Number(node.dataset.wPercent || "1");
+      return hPercent / Math.max(wPercent, 0.1) >= 0.5;
+    }
+
+    if (!looksLikeJapaneseText(text)) {
+      return false;
+    }
+
+    const hPercent = Number(node.dataset.hPercent || "0");
+    const wPercent = Number(node.dataset.wPercent || "1");
+    const ratio = hPercent / Math.max(wPercent, 0.1);
+
+    // Prefer vertical layout on tall/narrow bubbles to keep reading natural.
+    return ratio >= 0.82;
+  }
+
+  function looksLikeCjkText(text) {
+    return /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(String(text || ""));
+  }
+
+  function looksLikeJapaneseText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) {
+      return false;
+    }
+
+    if (/[\u3040-\u30ff\u31f0-\u31ff\u30fc\uff66-\uff9f]/.test(raw)) {
+      return true;
+    }
+
+    if (/[\u3001\u3002\u30fb\u300c\u300d\u300e\u300f\u301c]/.test(raw) && /[\u4e00-\u9fff]/.test(raw)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function syncAllOverlays() {
+    if (state.invalidated) {
+      return;
+    }
+
+    if (state.overlaysById.size > 0) {
+      for (const overlayState of state.overlaysById.values()) {
+        syncOverlayPosition(overlayState);
+      }
+    }
+
+    recoverRenderedTargets();
+  }
+
+  function recoverRenderedTargets() {
+    const now = Date.now();
+    if (now - state.lastRecoveryAt < RECOVERY_SCAN_GAP_MS) {
+      return;
+    }
+    state.lastRecoveryAt = now;
+
+    const candidates = Array.from(document.querySelectorAll(TARGET_SELECTOR))
+      .filter((target) => isSupportedTarget(target))
+      .filter((target) => target.isConnected)
+      .filter((target) => passesTargetFilter(target, false))
+      .filter((target) => isRectVisible(target.getBoundingClientRect()))
+      .map((target) => ({
+        target,
+        area: getVisibleArea(target.getBoundingClientRect())
+      }))
+      .sort((left, right) => right.area - left.area)
+      .slice(0, MAX_RECOVERY_TARGETS);
+
+    for (const item of candidates) {
+      const target = item.target;
+      registerTarget(target);
+
+      if (state.inflightByTarget.has(target) || state.queuedTargets.has(target)) {
+        continue;
+      }
+
+      const targetId = state.targetIdByElement.get(target);
+      if (targetId) {
+        const renderedState = getExistingRenderedState(targetId);
+        if (renderedState && isEmbeddedRenderStillApplied(renderedState)) {
+          continue;
+        }
+        if (renderedState && renderedState.mode === "embedded") {
+          state.embeddedById.delete(targetId);
+        }
+      }
+
+      const targetKey = computeTargetKey(target);
+      if ((target.dataset.mtLastTranslatedKey || "") !== targetKey) {
+        continue;
+      }
+
+      const localCachedResult = state.localResultCache.get(targetKey);
+      if (localCachedResult && Array.isArray(localCachedResult.bubbles) && localCachedResult.bubbles.length > 0) {
+        if (shouldUseEmbeddedRender(target)) {
+          extractTargetPayload(target, targetKey)
+            .then((payload) => renderTranslationResult(target, targetKey, localCachedResult, payload))
+            .catch(() => {
+              // 当前图片不可读时跳过恢复，避免自动触发新的翻译请求。
+            });
+        } else {
+          renderOverlay(target, targetKey, localCachedResult);
+        }
+        target.dataset.mtLastTranslatedKey = targetKey;
+        continue;
+      }
+    }
+  }
+
+  function syncOverlayPosition(overlayState) {
+    if (!overlayState || !overlayState.target || !overlayState.root.isConnected) {
+      return;
+    }
+
+    if (!overlayState.target.isConnected) {
+      overlayState.root.remove();
+      state.overlaysById.delete(overlayState.targetId);
+      return;
+    }
+
+    const rect = getOverlayDisplayRect(overlayState);
+    const visible = isRectVisible(rect);
+
+    if (!visible || rect.width < 2 || rect.height < 2) {
+      overlayState.root.style.display = "none";
+      return;
+    }
+
+    overlayState.root.style.display = "block";
+    overlayState.root.style.left = `${Math.round(rect.left)}px`;
+    overlayState.root.style.top = `${Math.round(rect.top)}px`;
+    overlayState.root.style.width = `${Math.round(rect.width)}px`;
+    overlayState.root.style.height = `${Math.round(rect.height)}px`;
+
+    // 字号按气泡高度比例计算，并使用 clamp 限制上下界。
+    overlayState.bubbleNodes.forEach((node) => {
+      const bubbleWidthPercent = Number(node.dataset.wPercent || "0");
+      const bubbleHeightPercent = Number(node.dataset.hPercent || "0");
+      const bubbleWidthPx = (rect.width * bubbleWidthPercent) / 100;
+      const bubbleHeightPx = (rect.height * bubbleHeightPercent) / 100;
+      const fittedSize = fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, {
+        backgroundTarget: overlayState.isBackgroundTarget
+      });
+      node.style.fontSize = `${fittedSize.toFixed(1)}px`;
+    });
+  }
+
+  function fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, options = {}) {
+    const width = Math.max(8, Math.round(bubbleWidthPx));
+    const height = Math.max(8, Math.round(bubbleHeightPx));
+    const text = String(node.textContent || "").trim();
+    if (!text) {
+      return BUBBLE_FONT_MIN;
+    }
+
+    const vertical = node.classList.contains("mt-jp-vertical");
+    if (options.backgroundTarget) {
+      return fitPixivBubbleFontSize(node, width, height, text, vertical);
+    }
+
+    const maxFont = options.backgroundTarget ? 34 : BUBBLE_FONT_MAX;
+    const baseRatio = options.backgroundTarget ? 0.42 : BUBBLE_FONT_BASE_RATIO;
+    const safetyScale = options.backgroundTarget ? 0.96 : BUBBLE_FONT_SAFETY_SCALE;
+    const verticalSafetyScale = options.backgroundTarget ? 0.94 : BUBBLE_FONT_VERTICAL_SAFETY_SCALE;
+    const startSize = Math.min(maxFont, clamp(height * baseRatio, BUBBLE_FONT_MIN, maxFont));
+    const cacheKey = `${options.backgroundTarget ? "bg" : "std"}|${vertical ? "v" : "h"}|${width}x${height}|${text}`;
+    const cachedSize = state.fontFitCache.get(cacheKey);
+    if (typeof cachedSize === "number" && Number.isFinite(cachedSize)) {
+      return cachedSize;
+    }
+
+    const probe = ensureBubbleMeasureProbe();
+    probe.className = node.className;
+    probe.classList.add("mt-measure-probe");
+    probe.classList.remove("mt-show-original");
+    probe.style.width = `${width}px`;
+    probe.style.height = `${height}px`;
+    probe.textContent = text;
+
+    let low = BUBBLE_FONT_MIN;
+    let high = startSize;
+    let best = BUBBLE_FONT_MIN;
+    for (let index = 0; index < BUBBLE_FONT_BINARY_STEPS; index += 1) {
+      const mid = (low + high) / 2;
+      probe.style.fontSize = `${mid}px`;
+      if (isProbeOverflowing(probe)) {
+        high = mid;
+      } else {
+        best = mid;
+        low = mid;
+      }
+    }
+
+    const safeScale = vertical ? verticalSafetyScale : safetyScale;
+    const safeSize = clamp(best * safeScale, BUBBLE_FONT_MIN, maxFont);
+    const normalized = Math.round(safeSize * 10) / 10;
+    rememberFontFitCache(cacheKey, normalized);
+    return normalized;
+  }
+
+  function fitPixivBubbleFontSize(node, width, height, text, vertical) {
+    const compactText = String(text || "").replace(/\s+/g, "");
+    const length = Math.max(1, Array.from(compactText).length);
+    const minReadable = vertical ? 17 : 16;
+    const maxReadable = vertical ? 36 : 32;
+    const area = Math.max(1, width * height);
+    const areaSize = Math.sqrt(area / Math.max(1, length)) * (vertical ? 0.95 : 0.78);
+    const dimensionSize = vertical
+      ? Math.min(width * 0.72, height / Math.min(length, 8) * 1.28)
+      : Math.min(height * 0.48, width / Math.min(length, 10) * 1.45);
+    const targetSize = clamp(Math.max(areaSize, dimensionSize), minReadable, maxReadable);
+    const cacheKey = `pixiv|${vertical ? "v" : "h"}|${width}x${height}|${text}`;
+    const cachedSize = state.fontFitCache.get(cacheKey);
+    if (typeof cachedSize === "number" && Number.isFinite(cachedSize)) {
+      return cachedSize;
+    }
+
+    const probe = ensureBubbleMeasureProbe();
+    probe.className = node.className;
+    probe.classList.add("mt-measure-probe");
+    probe.classList.remove("mt-show-original");
+    probe.style.width = `${width}px`;
+    probe.style.height = `${height}px`;
+    probe.style.fontSize = `${targetSize}px`;
+    probe.textContent = text;
+
+    let size = targetSize;
+    while (size > minReadable && isProbeOverflowing(probe)) {
+      size -= 1;
+      probe.style.fontSize = `${size}px`;
+    }
+
+    const normalized = Math.round(clamp(size, minReadable, maxReadable) * 10) / 10;
+    rememberFontFitCache(cacheKey, normalized);
+    return normalized;
+  }
+
+  function ensureBubbleMeasureProbe() {
+    if (state.bubbleMeasureProbe && state.bubbleMeasureProbe.isConnected) {
+      return state.bubbleMeasureProbe;
+    }
+
+    const probe = document.createElement("div");
+    probe.className = "mt-bubble mt-measure-probe";
+    document.documentElement.appendChild(probe);
+    state.bubbleMeasureProbe = probe;
+    return probe;
+  }
+
+  function isProbeOverflowing(probe) {
+    return probe.scrollHeight > probe.clientHeight + 0.5 || probe.scrollWidth > probe.clientWidth + 0.5;
+  }
+
+  function rememberFontFitCache(key, value) {
+    state.fontFitCache.set(key, value);
+    if (state.fontFitCache.size <= MAX_FONT_FIT_CACHE) {
+      return;
+    }
+
+    const firstKey = state.fontFitCache.keys().next().value;
+    if (firstKey) {
+      state.fontFitCache.delete(firstKey);
+    }
+  }
+
+  function removeOverlayForTarget(target) {
+    const targetId = state.targetIdByElement.get(target);
+    if (!targetId) {
+      return;
+    }
+
+    const overlayState = state.overlaysById.get(targetId);
+    if (!overlayState) {
+      return;
+    }
+
+    overlayState.root.remove();
+    state.overlaysById.delete(targetId);
+  }
+
+  function restoreEmbeddedForTarget(target) {
+    const targetId = state.targetIdByElement.get(target);
+    if (!targetId) {
+      return;
+    }
+
+    const embeddedState = state.embeddedById.get(targetId);
+    if (!embeddedState) {
+      return;
+    }
+
+    if (embeddedState.kind === "image" && target instanceof HTMLImageElement) {
+      const originalSrc = target.dataset.mtEmbeddedOriginalSrc || target.dataset.mtEmbeddedOriginalSource || "";
+      const originalSrcset = target.dataset.mtEmbeddedOriginalSrcset || "";
+
+      target.dataset.mtEmbeddedActive = "";
+      target.dataset.mtEmbeddedOutputKey = "";
+      target.dataset.mtEmbeddedOriginalSource = "";
+      target.dataset.mtEmbeddedOriginalSrc = "";
+      target.dataset.mtEmbeddedOriginalSrcset = "";
+      delete target.dataset.mtEmbeddedActive;
+      delete target.dataset.mtEmbeddedOutputKey;
+      delete target.dataset.mtEmbeddedOriginalSource;
+      delete target.dataset.mtEmbeddedOriginalSrc;
+      delete target.dataset.mtEmbeddedOriginalSrcset;
+
+      if (originalSrcset) {
+        target.setAttribute("srcset", originalSrcset);
+      } else {
+        target.removeAttribute("srcset");
+      }
+      if (originalSrc) {
+        target.setAttribute("src", originalSrc);
+      }
+    } else if (embeddedState.kind === "canvas" && target instanceof HTMLCanvasElement && embeddedState.originalDataUrl) {
+      restoreCanvasFromDataUrl(target, embeddedState.originalDataUrl);
+    } else if (embeddedState.kind === "background" && target instanceof HTMLElement) {
+      const originalBackground = target.dataset.mtEmbeddedOriginalBackground || "";
+      target.dataset.mtEmbeddedActive = "";
+      target.dataset.mtEmbeddedOutputKey = "";
+      target.dataset.mtEmbeddedOriginalBackground = "";
+      target.dataset.mtEmbeddedOriginalBackgroundSource = "";
+      delete target.dataset.mtEmbeddedActive;
+      delete target.dataset.mtEmbeddedOutputKey;
+      delete target.dataset.mtEmbeddedOriginalBackground;
+      delete target.dataset.mtEmbeddedOriginalBackgroundSource;
+      target.style.backgroundImage = originalBackground;
+    }
+
+    state.embeddedById.delete(targetId);
+  }
+
+  function restoreCanvasFromDataUrl(canvas, dataUrl) {
+    loadImageFromDataUrl(dataUrl)
+      .then((image) => {
+        if (!canvas.isConnected) {
+          return;
+        }
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          return;
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      })
+      .catch(() => {
+        // 还原失败时保持当前画面，避免破坏页面渲染。
+      });
+  }
+
+  function clearRenderedTarget(target) {
+    removeOverlayForTarget(target);
+    restoreEmbeddedForTarget(target);
+  }
+
+  function clearAllOverlays() {
+    for (const overlayState of state.overlaysById.values()) {
+      overlayState.root.remove();
+    }
+    state.overlaysById.clear();
+    state.fontFitCache.clear();
+    if (state.bubbleMeasureProbe && state.bubbleMeasureProbe.isConnected) {
+      state.bubbleMeasureProbe.remove();
+    }
+    state.bubbleMeasureProbe = null;
+  }
+
+  function clearAllEmbeddedTargets() {
+    const targets = Array.from(state.embeddedById.values()).map((item) => item.target).filter(Boolean);
+    targets.forEach((target) => restoreEmbeddedForTarget(target));
+    state.embeddedById.clear();
+    state.embeddedImageCache.clear();
+  }
+
+  function clearAllRenderedTargets() {
+    clearAllOverlays();
+    clearAllEmbeddedTargets();
+  }
+
+  function ensureOverlayLayer() {
+    if (state.overlayLayer && state.overlayLayer.isConnected) {
+      return state.overlayLayer;
+    }
+
+    const layer = document.createElement("div");
+    layer.className = "mt-overlay-layer";
+    layer.dataset.mangaTranslatorOverlay = "true";
+    document.documentElement.appendChild(layer);
+
+    state.overlayLayer = layer;
+    reattachOverlayRoots(layer);
+    return layer;
+  }
+
+  function reattachOverlayRoots(layer) {
+    if (!layer || !layer.isConnected) {
+      return;
+    }
+
+    state.overlaysById.forEach((overlayState) => {
+      if (overlayState && overlayState.root && !overlayState.root.isConnected) {
+        layer.appendChild(overlayState.root);
+      }
+    });
+  }
+
+  function isExtensionUiMounted() {
+    const overlayOk = !!(state.overlayLayer && state.overlayLayer.isConnected);
+    const ballOk = !state.showFloatingBall || !!(state.floatingBallWrap && state.floatingBallWrap.isConnected);
+    return overlayOk && ballOk;
+  }
+
+  function ensureExtensionUiMounted() {
+    if (state.invalidated) {
+      return;
+    }
+
+    const layer = ensureOverlayLayer();
+    reattachOverlayRoots(layer);
+    if (state.overlayHideDepth === 0 && layer && layer.style.visibility === "hidden") {
+      layer.style.visibility = state.overlayPreviousVisibility || "";
+      state.overlayPreviousVisibility = "";
+    }
+
+    if (!state.floatingBallWrap || !state.floatingBallWrap.isConnected) {
+      state.floatingBallWrap = null;
+      state.floatingBall = null;
+      state.floatingBallClose = null;
+      createFloatingBall();
+    }
+
+    if (
+      state.overlayHideDepth === 0 &&
+      state.floatingBallWrap &&
+      state.floatingBallWrap.isConnected &&
+      state.floatingBallWrap.style.visibility === "hidden"
+    ) {
+      state.floatingBallWrap.style.visibility = "";
+    }
+
+    updateFloatingBallState();
+  }
+
+  function stopExtensionUiEvent(event) {
+    if (!event) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function stopExtensionUiPropagation(event) {
+    if (!event) {
+      return;
+    }
+
+    event.stopPropagation();
+  }
+
+  function createFloatingBall() {
+    if (state.floatingBallWrap && state.floatingBallWrap.isConnected) {
+      return;
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "mt-floating-ball-wrap";
+    wrap.dataset.mangaTranslatorOverlay = "true";
+    wrap.addEventListener("click", stopExtensionUiEvent);
+    wrap.addEventListener("mousedown", stopExtensionUiPropagation);
+    wrap.addEventListener("mouseup", stopExtensionUiPropagation);
+    wrap.addEventListener("pointerdown", stopExtensionUiPropagation);
+    wrap.addEventListener("pointerup", stopExtensionUiPropagation);
+
+    const ball = document.createElement("button");
+    ball.type = "button";
+    ball.className = "mt-floating-ball";
+    ball.textContent = "译";
+    ball.title = "翻译当前视口漫画目标";
+
+    ball.addEventListener("click", async (event) => {
+      stopExtensionUiEvent(event);
+      if (state.invalidated) {
+        return;
+      }
+
+      await togglePageAutoTranslate(!state.autoTranslatePageEnabled);
+    });
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "mt-floating-close";
+    closeBtn.textContent = "×";
+    closeBtn.title = "关闭悬浮球";
+    closeBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      await closeFloatingBall();
+    });
+
+    wrap.appendChild(ball);
+    wrap.appendChild(closeBtn);
+
+    document.documentElement.appendChild(wrap);
+    state.floatingBallWrap = wrap;
+    state.floatingBall = ball;
+    state.floatingBallClose = closeBtn;
+    updateFloatingBallState();
+  }
+
+  function updateFloatingBallState() {
+    if (!state.floatingBallWrap || !state.floatingBall) {
+      return;
+    }
+
+    state.floatingBallWrap.classList.toggle("mt-hidden", !state.showFloatingBall);
+    state.floatingBall.classList.toggle("mt-disabled", !state.enabled || state.invalidated);
+    state.floatingBall.classList.toggle("mt-auto-enabled", state.autoTranslatePageEnabled && state.enabled);
+    state.floatingBall.textContent = state.autoTranslatePageEnabled && state.enabled ? "停" : "译";
+    state.floatingBall.title =
+      state.autoTranslatePageEnabled && state.enabled ? "关闭本页自动翻译" : "开启本页自动翻译";
+  }
+
+  function setFloatingBallWorking(working) {
+    if (!state.floatingBall) {
+      return;
+    }
+
+    state.floatingBall.classList.toggle("mt-working", !!working);
+  }
+
+  async function closeFloatingBall() {
+    state.showFloatingBall = false;
+    updateFloatingBallState();
+
+    try {
+      await storageSet({ mt_show_ball: false });
+    } catch {
+      // Ignore persistence failure, keep current page hidden state.
+    }
+  }
+
+  async function manualTranslateVisible() {
+    if (state.invalidated) {
+      return {
+        visibleCount: 0,
+        successCount: 0,
+        failCount: 0,
+        errors: ["Extension context invalidated"]
+      };
+    }
+
+    setFloatingBallWorking(true);
+
+    try {
+      let targets = collectVisibleTargets();
+      if (targets.length === 0 && IS_CMOA_SPEED_READER) {
+        targets = collectVisibleTargets({ relaxed: true });
+      }
+
+      if (targets.length === 0) {
+        await reportStatus("info", "no visible manga target", {
+          pageUrl: location.href
+        });
+
+        return {
+          visibleCount: 0,
+          successCount: 0,
+          failCount: 0,
+          errors: []
+        };
+      }
+
+      let successCount = 0;
+      let failCount = 0;
+      const errors = [];
+
+      const tasks = targets.map((target) => async () =>
+        translateTarget(target, {
+          manual: true,
+          reason: "manual"
+        })
+      );
+      const results = await runWithConcurrency(tasks, MANUAL_PARALLEL_TRANSLATIONS);
+
+      for (const result of results) {
+        if (result && result.ok) {
+          successCount += 1;
+        } else if (result && result.skipped) {
+          // 滚动或虚拟列表会让截图目标在执行前离屏，此类目标不计为失败。
+        } else {
+          failCount += 1;
+          if (result && result.error) {
+            errors.push(result.error);
+          }
+        }
+      }
+
+      const uniqueErrors = [...new Set(errors)].slice(0, 3);
+      const summaryMessage =
+        failCount > 0
+          ? `manual translate finished (${successCount}/${targets.length}), first error: ${
+              uniqueErrors[0] || "unknown"
+            }`
+          : `manual translate finished (${successCount}/${targets.length})`;
+
+      await reportStatus(failCount > 0 ? "error" : "info", summaryMessage, {
+        visibleCount: targets.length,
+        successCount,
+        failCount,
+        firstError: uniqueErrors[0] || ""
+      });
+
+      return {
+        visibleCount: targets.length,
+        successCount,
+        failCount,
+        errors: uniqueErrors
+      };
+    } finally {
+      setFloatingBallWorking(false);
+    }
+  }
+
+  async function togglePageAutoTranslate(enabled) {
+    if (state.invalidated) {
+      return {
+        enabled: false,
+        visibleCount: 0,
+        successCount: 0,
+        failCount: 0,
+        errors: ["Extension context invalidated"]
+      };
+    }
+
+    const nextEnabled = typeof enabled === "boolean" ? enabled : !state.autoTranslatePageEnabled;
+    state.autoTranslatePageEnabled = nextEnabled && state.enabled;
+    state.pretranslateMode = state.autoTranslatePageEnabled ? "ahead" : "manual";
+    await storageSet({ mt_pretranslate_mode: state.pretranslateMode });
+    updateFloatingBallState();
+
+    if (!state.autoTranslatePageEnabled) {
+      clearAutoTranslateRetryTimers();
+      await reportStatus("info", "page auto translate stopped", {
+        pageUrl: location.href
+      });
+      return {
+        enabled: false,
+        visibleCount: 0,
+        successCount: 0,
+        failCount: 0,
+        errors: []
+      };
+    }
+
+    rescan();
+    const result = await manualTranslateVisible();
+    queueVisiblePageAutoTargets();
+
+    await reportStatus("info", "page auto translate started", {
+      pageUrl: location.href,
+      visibleCount: result.visibleCount,
+      successCount: result.successCount,
+      failCount: result.failCount
+    });
+
+    return {
+      enabled: true,
+      ...result
+    };
+  }
+
+  function getPageAutoTranslateStatus() {
+    return {
+      enabled: state.autoTranslatePageEnabled && state.enabled,
+      queuedCount: state.queue.length,
+      runningCount: state.runningJobs
+    };
+  }
+
+  function queueVisiblePageAutoTargets() {
+    const targets = collectVisibleTargets({ includeLimit: false });
+    targets.forEach((target) => queuePageAutoTranslate(target));
+  }
+
+  function queuePageAutoTranslate(target) {
+    if (!state.autoTranslatePageEnabled || !state.enabled || state.invalidated) {
+      return;
+    }
+
+    if (!isSupportedTarget(target) || !target.isConnected) {
+      return;
+    }
+
+    const targetKey = computeTargetKey(target);
+    if (target.dataset.mtLastTranslatedKey === targetKey || target.dataset.mtNoTextKey === targetKey) {
+      return;
+    }
+
+    if (!passesTargetFilter(target, true)) {
+      // KakaoPage: IntersectionObserver fires early (8% visible) but geometry check
+      // needs more (180px+ visible). Schedule retry so scroll-into-view images
+      // don't get stuck untranslated.
+      if (IS_KAKAOPAGE_READER) {
+        scheduleAutoTranslateRetry(target);
+      }
+      return;
+    }
+
+    if (isScreenshotCaptureMode() && !getVisibleViewportRect(target)) {
+      return;
+    }
+
+    queueTranslate(target, {
+      manual: true,
+      reason: "page-auto"
+    });
+  }
+
+  const autoTranslateRetryTimers = new Map();
+  const AUTO_TRANSLATE_RETRY_DELAY_MS = 1200;
+
+  function scheduleAutoTranslateRetry(target) {
+    if (autoTranslateRetryTimers.has(target)) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      autoTranslateRetryTimers.delete(target);
+      if (!target.isConnected || state.invalidated) {
+        return;
+      }
+      queuePageAutoTranslate(target);
+    }, AUTO_TRANSLATE_RETRY_DELAY_MS);
+
+    autoTranslateRetryTimers.set(target, timer);
+  }
+
+  function clearAutoTranslateRetryTimers() {
+    for (const timer of autoTranslateRetryTimers.values()) {
+      window.clearTimeout(timer);
+    }
+    autoTranslateRetryTimers.clear();
+  }
+
+  function collectVisibleTargets(options = {}) {
+    const relaxed = options.relaxed === true;
+    const includeLimit = options.includeLimit !== false;
+    const limit = IS_CMOA_SPEED_READER ? 6 : MAX_MANUAL_TARGETS;
+    const targets = getManualTargetCandidates(relaxed)
+      .filter((target) => isSupportedTarget(target) && passesTargetFilter(target, true, { relaxed }))
+      .filter((target) => isRectVisible(target.getBoundingClientRect()))
+      .map((target) => ({
+        target,
+        area: getVisibleArea(target.getBoundingClientRect())
+      }))
+      .sort((left, right) => right.area - left.area)
+      .map((item) => item.target);
+
+    if (IS_KAKAOPAGE_READER) {
+      console.info(
+        "[MangaTranslator][KakaoPage] visible OCR targets",
+        targets.slice(0, includeLimit ? limit : 6).map((target) => {
+          const rect = target.getBoundingClientRect();
+          const url = target instanceof HTMLImageElement ? resolveImageUrl(target) : "";
+          const filename = (url.match(/filename=([^&]+)/) || [])[1] || "";
+          return {
+            filename,
+            rect: {
+              left: Math.round(rect.left),
+              top: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            },
+            visibleArea: Math.round(getVisibleArea(rect))
+          };
+        })
+      );
+    }
+
+    return includeLimit ? targets.slice(0, limit) : targets;
+  }
+
+  function getManualTargetCandidates(relaxed) {
+    if (IS_KAKAOPAGE_READER) {
+      return collectKakaopageManualTargetCandidates(relaxed);
+    }
+
+    if (!IS_CMOA_SPEED_READER || relaxed) {
+      return Array.from(document.querySelectorAll(TARGET_SELECTOR));
+    }
+
+    const selectors = [
+      "#content .pt-img img",
+      "#content [id^='content-p'] img",
+      "#content img",
+      "#content canvas",
+      TARGET_SELECTOR
+    ];
+    const seen = new Set();
+    const result = [];
+
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((target) => {
+        if (!seen.has(target)) {
+          seen.add(target);
+          result.push(target);
+        }
+      });
+    }
+
+    return result.sort((left, right) => {
+      if (left === right) {
+        return 0;
+      }
+      return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_PRECEDING ? 1 : -1;
+    });
+  }
+
+  function collectKakaopageManualTargetCandidates(relaxed) {
+    const selectors = [
+      TARGET_SELECTOR,
+      "main img",
+      "main canvas",
+      "main [style*='background-image']",
+      "[class*='viewer'] img",
+      "[class*='viewer'] canvas",
+      "[class*='viewer'] [style*='background-image']",
+      "[class*='page'] img",
+      "[class*='page'] canvas",
+      "[class*='page'] [style*='background-image']"
+    ];
+    const seen = new Set();
+    const result = [];
+
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((target) => {
+        if (!seen.has(target)) {
+          seen.add(target);
+          result.push(target);
+        }
+      });
+    }
+
+    const scanLimit = relaxed ? 1400 : 800;
+    const candidates = Array.from(document.querySelectorAll("main *, body *")).slice(0, scanLimit);
+    candidates.forEach((target) => {
+      if (!seen.has(target) && target instanceof HTMLElement && isBackgroundImageTarget(target)) {
+        seen.add(target);
+        result.push(target);
+      }
+    });
+
+    return result.sort((left, right) => {
+      if (left === right) {
+        return 0;
+      }
+      return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_PRECEDING ? 1 : -1;
+    });
+  }
+
+  async function runWithConcurrency(taskFactories, parallel) {
+    const limit = Math.max(1, Math.min(parallel, taskFactories.length || 1));
+    const results = new Array(taskFactories.length);
+    let cursor = 0;
+
+    const worker = async () => {
+      while (cursor < taskFactories.length) {
+        const index = cursor;
+        cursor += 1;
+        try {
+          results[index] = await taskFactories[index]();
+        } catch (error) {
+          results[index] = { ok: false, error: getErrorMessage(error) };
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: limit }, () => worker()));
+    return results;
+  }
+
+  function passesTargetFilter(target, manual, options = {}) {
+    const relaxed = options.relaxed === true;
+    if (!isSupportedTarget(target) || !target.isConnected) {
+      return false;
+    }
+    if (!isSitePreferredTarget(target, { allowLoose: relaxed })) {
+      return false;
+    }
+
+    if (target instanceof HTMLImageElement && !target.complete) {
+      return false;
+    }
+
+    const rect = target.getBoundingClientRect();
+    if (rect.width <= 1 || rect.height <= 1) {
+      return false;
+    }
+
+    const widthLimit = manual ? MANUAL_MIN_WIDTH : AUTO_MIN_WIDTH;
+    const heightLimit = manual ? MANUAL_MIN_HEIGHT : AUTO_MIN_HEIGHT;
+    const effectiveWidthLimit = relaxed ? Math.max(90, Math.min(widthLimit, 100)) : widthLimit;
+    const effectiveHeightLimit = relaxed ? Math.max(90, Math.min(heightLimit, 100)) : heightLimit;
+
+    if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
+      return false;
+    }
+
+    if (IS_KAKAOPAGE_READER && !passesKakaopageTargetGeometry(target, rect, manual, relaxed)) {
+      return false;
+    }
+
+    const ratio = rect.height / rect.width;
+    const minRatio = relaxed ? 0.12 : AUTO_MIN_RATIO;
+    const maxRatio = relaxed ? 14 : 9;
+    if (ratio < minRatio || ratio > maxRatio) {
+      return false;
+    }
+
+    if (IS_CMOA_SPEED_READER) {
+      const area = getVisibleArea(rect);
+      const baseMinVisibleArea = manual ? CMOA_MANUAL_MIN_VISIBLE_AREA : CMOA_AUTO_MIN_VISIBLE_AREA;
+      const minVisibleArea = relaxed ? Math.max(1200, Math.floor(baseMinVisibleArea * 0.2)) : baseMinVisibleArea;
+      if (area < minVisibleArea) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function passesKakaopageTargetGeometry(target, rect, manual, relaxed) {
+    const visibleArea = getVisibleArea(rect);
+    const visibleRect = getVisibleViewportRect(target);
+    const minVisibleArea = relaxed ? 14000 : manual ? 32000 : 52000;
+    if (!visibleRect || visibleArea < minVisibleArea) {
+      return false;
+    }
+
+    const minVisibleHeight = relaxed ? 120 : manual ? 180 : 220;
+    const minVisibleWidth = relaxed ? 180 : 260;
+    if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
+      return false;
+    }
+
+    const visibleRatio = visibleRect.height / Math.max(1, visibleRect.width);
+    if (visibleRatio < 0.2 || visibleRatio > 8.5) {
+      return false;
+    }
+
+    if (target instanceof HTMLImageElement) {
+      const naturalWidth = Number(target.naturalWidth || 0);
+      const naturalHeight = Number(target.naturalHeight || 0);
+      if (naturalWidth > 0 && naturalHeight > 0) {
+        const naturalRatio = naturalHeight / Math.max(1, naturalWidth);
+        if (naturalHeight < 220 || naturalRatio < 0.18) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  function isSitePreferredTarget(target, options = {}) {
+    const allowLoose = options.allowLoose === true;
+    if (IS_PIXIV_COMIC_VIEWER) {
+      return isBackgroundImageTarget(target) || target instanceof HTMLImageElement || target instanceof HTMLCanvasElement;
+    }
+
+    if (!IS_CMOA_SPEED_READER) {
+      return true;
+    }
+
+    const inReader = !!target.closest("#content .pt-img, #content [id^='content-p'], #content");
+    if (inReader) {
+      return true;
+    }
+
+    if (!allowLoose) {
+      return false;
+    }
+
+    if (target.closest("[id*='reader'], [class*='reader'], [class*='comic'], [class*='page']")) {
+      return true;
+    }
+
+    if (!(target instanceof HTMLImageElement)) {
+      return false;
+    }
+
+    const src = resolveImageUrl(target);
+    return !!src;
+  }
+
+  function computeTargetKey(target) {
+    const captureSegment = getCaptureModeTargetKeySegment(target);
+    if (target instanceof HTMLImageElement) {
+      const url = resolveImageUrl(target);
+      const width = target.naturalWidth || target.width || Math.round(target.getBoundingClientRect().width);
+      const height = target.naturalHeight || target.height || Math.round(target.getBoundingClientRect().height);
+      return `${captureSegment}|img|${url}|${width}x${height}`;
+    }
+
+    if (target instanceof HTMLCanvasElement) {
+      const signature = computeCanvasSignature(target);
+      return `${captureSegment}|canvas|${signature}`;
+    }
+
+    if (isBackgroundImageTarget(target)) {
+      const rect = target.getBoundingClientRect();
+      return `${captureSegment}|background|${resolveBackgroundImageUrl(target)}|${Math.round(rect.width)}x${Math.round(
+        rect.height
+      )}`;
+    }
+
+    return `${captureSegment}|unknown|${Date.now()}`;
+  }
+
+  function getCaptureModeTargetKeySegment(target) {
+    if (!isScreenshotCaptureMode()) {
+      return CAPTURE_MODE_DIRECT;
+    }
+
+    const visibleRect = getVisibleViewportRect(target);
+    if (!visibleRect) {
+      return `${CAPTURE_MODE_SCREENSHOT}|not-visible`;
+    }
+
+    const targetRect = target.getBoundingClientRect();
+    const offsetX = Math.round(visibleRect.left - targetRect.left);
+    const offsetY = Math.round(visibleRect.top - targetRect.top);
+    const width = Math.round(visibleRect.width);
+    const height = Math.round(visibleRect.height);
+    return `${CAPTURE_MODE_SCREENSHOT}|${offsetX},${offsetY},${width}x${height}`;
+  }
+
+  function buildScreenshotImageUrl(target) {
+    const tag = target && target.tagName ? target.tagName.toLowerCase() : "target";
+    return `visible-tab-${tag}-crop`;
+  }
+
+  function getPayloadImageMeta(payload) {
+    const width = Number(payload && payload.width);
+    const height = Number(payload && payload.height);
+    if (width > 0 && height > 0) {
+      return {
+        width,
+        height,
+        cssWidth: Number(payload && payload.cssWidth) || 0,
+        cssHeight: Number(payload && payload.cssHeight) || 0,
+        bitmapWidth: Number(payload && payload.bitmapWidth) || width,
+        bitmapHeight: Number(payload && payload.bitmapHeight) || height,
+        cropX: Number(payload && payload.cropX) || 0,
+        cropY: Number(payload && payload.cropY) || 0,
+        devicePixelRatio: Number(payload && payload.devicePixelRatio) || window.devicePixelRatio || 1,
+        source: String((payload && payload.source) || "")
+      };
+    }
+
+    return null;
+  }
+
+  function getPayloadDisplayRect(payload) {
+    const rect = payload && payload.displayRect;
+    if (!rect || typeof rect !== "object") {
+      return null;
+    }
+
+    const offsetX = Number(rect.offsetX);
+    const offsetY = Number(rect.offsetY);
+    const width = Number(rect.width);
+    const height = Number(rect.height);
+    if (!(Number.isFinite(offsetX) && Number.isFinite(offsetY) && width > 0 && height > 0)) {
+      return null;
+    }
+
+    return { offsetX, offsetY, width, height };
+  }
+
+  function computeCanvasSignature(canvas) {
+    const width = canvas.width || Math.round(canvas.getBoundingClientRect().width);
+    const height = canvas.height || Math.round(canvas.getBoundingClientRect().height);
+    const signature = `${width}x${height}`;
+
+    if (width <= 1 || height <= 1) {
+      return signature;
+    }
+
+    try {
+      const probe = document.createElement("canvas");
+      probe.width = 16;
+      probe.height = 16;
+      const probeCtx = probe.getContext("2d", { alpha: false, desynchronized: true });
+      if (!probeCtx) {
+        return signature;
+      }
+
+      probeCtx.drawImage(canvas, 0, 0, probe.width, probe.height);
+      const tinyDataUrl = probe.toDataURL("image/jpeg", 0.45);
+      return `${signature}|${tinyDataUrl.slice(-128)}`;
+    } catch {
+      const rect = canvas.getBoundingClientRect();
+      const timeBucket = Math.floor(Date.now() / 5000);
+      return `${signature}|tainted|${Math.round(rect.left)}x${Math.round(rect.top)}|${Math.round(
+        window.scrollX
+      )}x${Math.round(window.scrollY)}|${timeBucket}`;
+    }
+  }
+
+  function resolveImageUrl(img) {
+    if (img.dataset.mtEmbeddedActive === "true") {
+      const currentSource = String(img.currentSrc || img.getAttribute("src") || "").trim();
+      if (isDataUrl(currentSource) && img.dataset.mtEmbeddedOriginalSource) {
+        return img.dataset.mtEmbeddedOriginalSource;
+      }
+      if (currentSource && !isDataUrl(currentSource)) {
+        delete img.dataset.mtEmbeddedActive;
+        delete img.dataset.mtEmbeddedOutputKey;
+        delete img.dataset.mtEmbeddedOriginalSource;
+        delete img.dataset.mtEmbeddedOriginalSrc;
+        delete img.dataset.mtEmbeddedOriginalSrcset;
+      }
+    }
+
+    const candidates = [
+      img.currentSrc,
+      img.getAttribute("src"),
+      img.getAttribute("data-src"),
+      img.getAttribute("data-original"),
+      img.getAttribute("data-lazy-src")
+    ].filter(Boolean);
+
+    if (candidates.length === 0) {
+      return "";
+    }
+
+    const first = String(candidates[0]).trim();
+    if (!first) {
+      return "";
+    }
+
+    if (first.startsWith("data:")) {
+      return first;
+    }
+
+    if (first.startsWith("blob:")) {
+      return first;
+    }
+
+    try {
+      if (first.startsWith("//")) {
+        return `${location.protocol}${first}`;
+      }
+      return new URL(first, location.href).href;
+    } catch {
+      return first;
+    }
+  }
+
+  function resolveBackgroundImageUrl(target) {
+    if (!(target instanceof Element)) {
+      return "";
+    }
+
+    const backgroundImage = String(getComputedStyle(target).backgroundImage || target.style.backgroundImage || "").trim();
+    if (!backgroundImage || backgroundImage === "none") {
+      return "";
+    }
+
+    const match = backgroundImage.match(/url\((["']?)(.*?)\1\)/i);
+    const rawUrl = match ? match[2] : "";
+    if (!rawUrl) {
+      return "";
+    }
+
+    if (target instanceof HTMLElement && target.dataset.mtEmbeddedActive === "true") {
+      if (rawUrl.startsWith("data:") && target.dataset.mtEmbeddedOriginalBackgroundSource) {
+        return target.dataset.mtEmbeddedOriginalBackgroundSource;
+      }
+      if (rawUrl && !rawUrl.startsWith("data:")) {
+        delete target.dataset.mtEmbeddedActive;
+        delete target.dataset.mtEmbeddedOutputKey;
+        delete target.dataset.mtEmbeddedOriginalBackground;
+        delete target.dataset.mtEmbeddedOriginalBackgroundSource;
+      }
+    }
+
+    try {
+      if (rawUrl.startsWith("//")) {
+        return `${location.protocol}${rawUrl}`;
+      }
+      if (rawUrl.startsWith("blob:") || rawUrl.startsWith("data:")) {
+        return rawUrl;
+      }
+      return new URL(rawUrl, location.href).href;
+    } catch {
+      return rawUrl;
+    }
+  }
+
+  function isBackgroundImageTarget(target) {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    const imageUrl = resolveBackgroundImageUrl(target);
+    if (!imageUrl || PIXIV_PLACEHOLDER_BACKGROUND_RE.test(imageUrl)) {
+      return false;
+    }
+
+    if (IS_PIXIV_COMIC_VIEWER) {
+      return PIXIV_PAGE_ID_RE.test(target.id || "");
+    }
+
+    if (!IS_KAKAOPAGE_READER) {
+      return false;
+    }
+
+    if (isDataUrl(imageUrl) || isBlobUrl(imageUrl)) {
+      return true;
+    }
+
+    if (!isHttpUrl(imageUrl)) {
+      return false;
+    }
+
+    try {
+      const host = new URL(imageUrl, location.href).hostname;
+      return /(^|\.)kakao(?:cdn)?\.net$/i.test(host) || /(^|\.)kakaocdn\.net$/i.test(host);
+    } catch {
+      return /kakao|kakaocdn/i.test(imageUrl);
+    }
+  }
+
+  function getQuickSourceToken(target) {
+    if (target instanceof HTMLImageElement) {
+      return resolveImageUrl(target);
+    }
+
+    if (target instanceof HTMLCanvasElement) {
+      return `canvas:${target.width}x${target.height}`;
+    }
+
+    if (isBackgroundImageTarget(target)) {
+      return resolveBackgroundImageUrl(target);
+    }
+
+    return "";
+  }
+
+  function buildPayloadImageMeta(payload) {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+
+    const displayRect = getPayloadDisplayRect(payload);
+    return {
+      width: Number(payload.width || 0),
+      height: Number(payload.height || 0),
+      cssWidth: Number(payload.cssWidth || (displayRect && displayRect.width) || 0),
+      cssHeight: Number(payload.cssHeight || (displayRect && displayRect.height) || 0),
+      bitmapWidth: Number(payload.bitmapWidth || payload.width || 0),
+      bitmapHeight: Number(payload.bitmapHeight || payload.height || 0),
+      cropX: Number(payload.cropX || 0),
+      cropY: Number(payload.cropY || 0),
+      cropCssX: Number(displayRect && displayRect.offsetX ? displayRect.offsetX : 0),
+      cropCssY: Number(displayRect && displayRect.offsetY ? displayRect.offsetY : 0),
+      cropCssWidth: Number(displayRect && displayRect.width ? displayRect.width : payload.cssWidth || 0),
+      cropCssHeight: Number(displayRect && displayRect.height ? displayRect.height : payload.cssHeight || 0),
+      devicePixelRatio: Number(payload.devicePixelRatio || window.devicePixelRatio || 1),
+      source: String(payload.source || ""),
+      stitch: payload.stitch || null
+    };
+  }
+
+  function logOcrDebugMapping(overlayState, result) {
+    const debug = result && result.debug;
+    if (!debug || !Array.isArray(debug.items) || debug.items.length === 0) {
+      return;
+    }
+
+    const rect = getOverlayDisplayRect(overlayState);
+    const targetRect = overlayState.target.getBoundingClientRect();
+    const imageMeta = debug.imageMeta || {};
+    const rows = debug.items.map((item, index) => {
+      const percent = item.percent || {};
+      const raw = item.box || {};
+      const cssLeft = rect.left + (Number(percent.x || 0) / 100) * rect.width;
+      const cssTop = rect.top + (Number(percent.y || 0) / 100) * rect.height;
+      const cssWidth = (Number(percent.w || 0) / 100) * rect.width;
+      const cssHeight = (Number(percent.h || 0) / 100) * rect.height;
+      return {
+        index,
+        text: item.text || "",
+        confidence: item.confidence || 0,
+        rawLeft: raw.left,
+        rawTop: raw.top,
+        rawWidth: raw.width,
+        rawHeight: raw.height,
+        rawWithCropLeft: Number(raw.left || 0) + Number(imageMeta.cropX || 0),
+        rawWithCropTop: Number(raw.top || 0) + Number(imageMeta.cropY || 0),
+        cssLeft: Math.round(cssLeft),
+        cssTop: Math.round(cssTop),
+        cssWidth: Math.round(cssWidth),
+        cssHeight: Math.round(cssHeight),
+        targetRelativeLeft: Math.round(cssLeft - targetRect.left),
+        targetRelativeTop: Math.round(cssTop - targetRect.top)
+      };
+    });
+
+    console.info("[MangaTranslator][OCR debug]", {
+      imageMeta,
+      localOcrDebug: debug.localOcr || {},
+      overlayRect: {
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      }
+    });
+    console.table(rows);
+  }
+
+  function normalizeResult(result) {
+    const bubbles = result && Array.isArray(result.bubbles) ? result.bubbles : [];
+
+    return {
+      bubbles: bubbles
+        .map((bubble) => {
+          return {
+            x: clamp(Number(bubble.x), 0, 100),
+            y: bubble.stitch_overflow === true ? Number(bubble.y) : clamp(Number(bubble.y), 0, 100),
+            w: clamp(Number(bubble.w), 0, 100),
+            h: clamp(Number(bubble.h), 0, 100),
+            bg_type: normalizeBgType(bubble.bg_type),
+            bg_color: String(bubble.bg_color || ""),
+            bg_confidence: Number(bubble.bg_confidence || 0),
+            stitch_overflow: bubble.stitch_overflow === true,
+            original_text: cleanRenderableText(bubble.original_text || ""),
+            translated_text: cleanRenderableText(bubble.translated_text || "")
+          };
+        })
+        .filter((bubble) => bubble.w > 0 && bubble.h > 0)
+        .filter((bubble) => bubble.original_text || bubble.translated_text),
+      debug: result && result.debug && typeof result.debug === "object" ? result.debug : null
+    };
+  }
+
+  function cleanRenderableText(text) {
+    return String(text || "")
+      .replace(MODEL_IMAGE_PLACEHOLDER_BRACKET_RE, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(MODEL_IMAGE_PLACEHOLDER_ONLY_RE, "");
+  }
+
+  function normalizeBgType(value) {
+    const text = String(value || "").toLowerCase();
+    if (text === "solid" || text === "transparent" || text === "none") {
+      return text;
+    }
+
+    return "solid";
+  }
+
+  function rememberLocalResult(targetKey, result) {
+    state.localResultCache.set(targetKey, result);
+
+    if (state.localResultCache.size <= MAX_LOCAL_RESULT_CACHE) {
+      return;
+    }
+
+    const firstKey = state.localResultCache.keys().next().value;
+    if (firstKey) {
+      state.localResultCache.delete(firstKey);
+    }
+  }
+
+  function rememberEmbeddedImageCache(targetKey, dataUrl) {
+    state.embeddedImageCache.set(targetKey, dataUrl);
+
+    if (state.embeddedImageCache.size <= MAX_EMBEDDED_IMAGE_CACHE) {
+      return;
+    }
+
+    const firstKey = state.embeddedImageCache.keys().next().value;
+    if (firstKey) {
+      state.embeddedImageCache.delete(firstKey);
+    }
+  }
+
+  function getPayloadCache(targetKey) {
+    const entry = state.payloadCacheByTargetKey.get(targetKey);
+    if (!entry || typeof entry !== "object") {
+      return null;
+    }
+
+    if (Date.now() - Number(entry.timestamp || 0) > PAYLOAD_CACHE_TTL_MS) {
+      state.payloadCacheByTargetKey.delete(targetKey);
+      return null;
+    }
+
+    return entry.payload || null;
+  }
+
+  function rememberPayloadCache(targetKey, payload) {
+    state.payloadCacheByTargetKey.set(targetKey, {
+      timestamp: Date.now(),
+      payload
+    });
+
+    if (state.payloadCacheByTargetKey.size <= MAX_PAYLOAD_CACHE) {
+      return;
+    }
+
+    const firstKey = state.payloadCacheByTargetKey.keys().next().value;
+    if (firstKey) {
+      state.payloadCacheByTargetKey.delete(firstKey);
+    }
+  }
+
+  async function loadLocalSettings() {
+    try {
+      const result = await storageGet([
+        "mt_enabled",
+        "mt_show_ball",
+        "mt_aggressive_preload",
+        "mt_capture_mode",
+        "mt_render_mode",
+        "mt_pretranslate_mode"
+      ]);
+      state.enabled = result.mt_enabled !== false;
+      state.showFloatingBall = result.mt_show_ball !== false;
+      state.captureMode = normalizeCaptureMode(result.mt_capture_mode);
+      state.renderMode = normalizeRenderMode(result.mt_render_mode);
+      state.pretranslateMode = normalizePretranslateMode(result.mt_pretranslate_mode);
+      state.autoTranslatePageEnabled = state.pretranslateMode === "ahead" && state.enabled;
+      if (typeof result.mt_aggressive_preload === "boolean") {
+        state.aggressivePreload = result.mt_aggressive_preload;
+      } else {
+        state.aggressivePreload = IS_CMOA_SPEED_READER;
+      }
+    } catch {
+      state.enabled = true;
+      state.showFloatingBall = true;
+      state.captureMode = CAPTURE_MODE_DIRECT;
+      state.renderMode = RENDER_MODE_OVERLAY;
+      state.pretranslateMode = "manual";
+      state.autoTranslatePageEnabled = false;
+      state.aggressivePreload = IS_CMOA_SPEED_READER;
+    }
+  }
+
+  function normalizeRenderMode(value) {
+    const text = String(value || "").trim().toLowerCase();
+    return text === RENDER_MODE_EMBEDDED ? RENDER_MODE_EMBEDDED : RENDER_MODE_OVERLAY;
+  }
+
+  function normalizePretranslateMode(value) {
+    return String(value || "").trim().toLowerCase() === "ahead" ? "ahead" : "manual";
+  }
+
+  function normalizeCaptureMode(value) {
+    const text = String(value || "").trim().toLowerCase();
+    return text === CAPTURE_MODE_SCREENSHOT ? CAPTURE_MODE_SCREENSHOT : CAPTURE_MODE_DIRECT;
+  }
+
+  function isScreenshotCaptureMode() {
+    return state.captureMode === CAPTURE_MODE_SCREENSHOT;
+  }
+
+  function isScreenshotTargetNotVisibleError(reason) {
+    return String(reason || "") === SCREENSHOT_TARGET_NOT_VISIBLE;
+  }
+
+  async function reportStatus(level, message, details) {
+    if (state.invalidated) {
+      return;
+    }
+
+    const safeLevel = level === "error" ? "error" : "info";
+    if (safeLevel === "info") {
+      const now = Date.now();
+      if (now - state.lastInfoStatusAt < STATUS_INFO_THROTTLE_MS) {
+        return;
+      }
+      state.lastInfoStatusAt = now;
+    }
+
+    try {
+      await sendRuntimeMessage({
+        type: "REPORT_STATUS",
+        level: safeLevel,
+        message: String(message || ""),
+        details: details && typeof details === "object" ? details : {},
+        pageUrl: location.href
+      });
+    } catch {
+      // Ignore status reporting errors.
+    }
+  }
+
+  function sendRuntimeMessage(message) {
+    if (state.invalidated) {
+      return Promise.reject(new Error("Extension context invalidated"));
+    }
+
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          const reason = chrome.runtime.lastError.message || "runtime message failed";
+          if (CONTEXT_INVALIDATED_RE.test(reason)) {
+            markInvalidated(reason);
+          }
+          reject(new Error(reason));
+          return;
+        }
+
+        resolve(response || null);
+      });
+    });
+  }
+
+  function markInvalidated(reason) {
+    if (state.invalidated) {
+      return;
+    }
+
+    state.invalidated = true;
+    api.invalidated = true;
+
+    try {
+      if (state.io) {
+        state.io.disconnect();
+      }
+    } catch {
+      // Ignore.
+    }
+
+    try {
+      if (state.preloadIo) {
+        state.preloadIo.disconnect();
+      }
+    } catch {
+      // Ignore.
+    }
+
+    try {
+      if (state.mo) {
+        state.mo.disconnect();
+      }
+    } catch {
+      // Ignore.
+    }
+
+    clearAllOverlays();
+    clearAutoTranslateRetryTimers();
+    state.queue.length = 0;
+    state.preloadQueue.length = 0;
+    state.payloadCacheByTargetKey.clear();
+    state.lastRecoveryAt = 0;
+    state.lastAggressivePreloadSweepAt = 0;
+
+    if (state.aggressiveSweepTimer) {
+      try {
+        if (typeof window.cancelIdleCallback === "function") {
+          window.cancelIdleCallback(state.aggressiveSweepTimer);
+        } else {
+          window.clearTimeout(state.aggressiveSweepTimer);
+        }
+      } catch {
+        // Ignore timer cleanup failure.
+      }
+      state.aggressiveSweepTimer = 0;
+    }
+
+    if (state.syncInterval) {
+      window.clearInterval(state.syncInterval);
+      state.syncInterval = 0;
+    }
+
+    updateFloatingBallState();
+    console.info("[MangaTranslator] context invalidated, waiting for reinjection:", reason);
+  }
+
+  function destroy() {
+    markInvalidated("destroy called");
+    if (state.floatingBallWrap && state.floatingBallWrap.isConnected) {
+      state.floatingBallWrap.remove();
+    }
+  }
+
+  function getTargetId(target) {
+    let id = state.targetIdByElement.get(target);
+    if (id) {
+      return id;
+    }
+
+    id = String(state.targetIdSeq);
+    state.targetIdSeq += 1;
+    state.targetIdByElement.set(target, id);
+    return id;
+  }
+
+  function isSupportedTarget(target) {
+    return target instanceof HTMLImageElement || target instanceof HTMLCanvasElement || isBackgroundImageTarget(target);
+  }
+
+  function isRectVisible(rect) {
+    return getVisibleArea(rect) >= 4;
+  }
+
+  function getVisibleArea(rect) {
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(window.innerWidth, rect.right);
+    const bottom = Math.min(window.innerHeight, rect.bottom);
+    return Math.max(0, right - left) * Math.max(0, bottom - top);
+  }
+
+  async function fetchPageImageDataUrl(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Background image fetch failed: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    if (!blob || blob.size <= 0) {
+      throw new Error("Background image fetch returned empty data");
+    }
+
+    return blobToDataUrl(blob);
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Blob data URL conversion failed"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function getOverlayDisplayRect(overlayState) {
+    const target = overlayState.target;
+    const rect = target.getBoundingClientRect();
+    if (overlayState.displayRect) {
+      return computeTargetSubRect(rect, overlayState.displayRect);
+    }
+
+    if (!isBackgroundImageTarget(target) || !overlayState.imageMeta) {
+      return rect;
+    }
+
+    return computeBackgroundImageRect(target, rect, overlayState.imageMeta);
+  }
+
+  function computeTargetSubRect(rect, displayRect) {
+    const offsetX = Number(displayRect && displayRect.offsetX);
+    const offsetY = Number(displayRect && displayRect.offsetY);
+    const width = Number(displayRect && displayRect.width);
+    const height = Number(displayRect && displayRect.height);
+    if (!(Number.isFinite(offsetX) && Number.isFinite(offsetY) && width > 0 && height > 0)) {
+      return rect;
+    }
+
+    return {
+      left: rect.left + offsetX,
+      top: rect.top + offsetY,
+      right: rect.left + offsetX + width,
+      bottom: rect.top + offsetY + height,
+      width,
+      height
+    };
+  }
+
+  function computeBackgroundImageRect(target, rect, imageMeta) {
+    const imageWidth = Number(imageMeta && imageMeta.width);
+    const imageHeight = Number(imageMeta && imageMeta.height);
+    if (!(imageWidth > 0 && imageHeight > 0 && rect.width > 0 && rect.height > 0)) {
+      return rect;
+    }
+
+    const style = getComputedStyle(target);
+    const size = String(style.backgroundSize || "auto").trim().toLowerCase();
+    if (size !== "contain") {
+      return rect;
+    }
+
+    const imageRatio = imageWidth / imageHeight;
+    const boxRatio = rect.width / rect.height;
+    let width = rect.width;
+    let height = rect.height;
+    if (boxRatio > imageRatio) {
+      height = rect.height;
+      width = height * imageRatio;
+    } else {
+      width = rect.width;
+      height = width / imageRatio;
+    }
+
+    const offsetX = (rect.width - width) * parseBackgroundPositionRatio(style.backgroundPositionX);
+    const offsetY = (rect.height - height) * parseBackgroundPositionRatio(style.backgroundPositionY);
+
+    return {
+      left: rect.left + offsetX,
+      top: rect.top + offsetY,
+      right: rect.left + offsetX + width,
+      bottom: rect.top + offsetY + height,
+      width,
+      height
+    };
+  }
+
+  function parseBackgroundPositionRatio(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (text === "left" || text === "top") {
+      return 0;
+    }
+    if (text === "right" || text === "bottom") {
+      return 1;
+    }
+    if (text === "center") {
+      return 0.5;
+    }
+
+    const percent = text.match(/(-?\d+(?:\.\d+)?)%/);
+    if (percent) {
+      return clamp(Number(percent[1]) / 100, 0, 1);
+    }
+
+    const pixel = text.match(/(-?\d+(?:\.\d+)?)px/);
+    if (pixel) {
+      return Number(pixel[1]) > 0 ? 1 : 0;
+    }
+
+    return 0.5;
+  }
+
+  function clamp(value, min, max) {
+    const num = Number(value);
+    const safe = Number.isFinite(num) ? num : min;
+    return Math.min(max, Math.max(min, safe));
+  }
+
+  function isDataUrl(value) {
+    return /^data:[^;]+;base64,/i.test(String(value || ""));
+  }
+
+  function isBlobUrl(value) {
+    return /^blob:/i.test(String(value || "").trim());
+  }
+
+  function isHttpUrl(value) {
+    return /^https?:\/\//i.test(String(value || "").trim());
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
+  }
+
+  function getErrorMessage(error) {
+    if (!error) {
+      return "Unknown error";
+    }
+
+    if (typeof error.message === "string" && error.message.trim()) {
+      return error.message;
+    }
+
+    return String(error);
+  }
+
+  function storageGet(keys) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.get(keys, (result) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(result || {});
+        }
+      });
+    });
+  }
+
+  function storageSet(value) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.set(value, () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve();
+        }
+      });
+    });
+  }
+})();

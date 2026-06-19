@@ -1,0 +1,134 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", "Microsoft YaHei UI", Arial, sans-serif;
+}
+
+body {
+  width: 390px;
+  margin: 0;
+  color: #111827;
+  background: #f5f7fb;
+}
+
+button,
+input,
+select,
+summary {
+  font: inherit;
+}
+
+.popup {
+  padding: 14px;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d7dde8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: #334155;
+}
+
+input,
+select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #111827;
+  background: #ffffff;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 96px;
+  gap: 8px;
+}
+
+.actions.secondary {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #2563eb;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.secondary button {
+  color: #0f172a;
+  background: #e2e8f0;
+}
+
+.save {
+  background: #059669;
+}
+
+details {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+details[open] {
+  display: grid;
+  gap: 8px;
+}
+
+summary {
+  cursor: pointer;
+  color: #334155;
+}
+
+.switches {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.switches label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.switches input {
+  width: auto;
+  min-height: auto;
+}
+
+.status,
+.meta {
+  margin: 0;
+  font-size: 12px;
+  color: #475569;
+}

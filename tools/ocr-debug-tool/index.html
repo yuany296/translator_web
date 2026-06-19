@@ -1,0 +1,1923 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Manga OCR Compare</title>
+    <style>
+      :root { color-scheme: light; --bg: #f3f5f7; --panel: #fff; --line: #d9dee5; --text: #172033; --muted: #667386; --blue: #1769e0; --green: #087f5b; --red: #c92a2a; --amber: #b26a00; }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei UI", Arial, sans-serif; color: var(--text); background: var(--bg); }
+      .drop-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; pointer-events: none; opacity: 0; background: rgba(243,245,247,.9); transition: opacity .12s ease; }
+      .drop-overlay strong { border: 2px dashed var(--blue); border-radius: 8px; padding: 24px 34px; color: var(--blue); background: #fff; font-size: 18px; }
+      body.dragging-files .drop-overlay { opacity: 1; }
+      button, input, select { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; background: #fff; }
+      button { cursor: pointer; font-weight: 700; }
+      button:disabled { cursor: wait; opacity: .55; }
+
+      button.primary { color: #fff; border-color: var(--blue); background: var(--blue); }
+      button.secondary { color: #172033; background: #eef2f6; }
+      .topbar { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.97); }
+      .topbar-main { display: flex; align-items: end; gap: 10px; padding: 12px 16px 10px; }
+      .brand { min-width: 190px; align-self: center; }
+      h1 { margin: 0; font-size: 18px; }
+      .brand small { color: var(--muted); }
+      .field { display: grid; gap: 4px; min-width: 105px; }
+      .field.grow { flex: 1; min-width: 180px; }
+      .field label, .advanced label { color: var(--muted); font-size: 11px; }
+      .file-button { display: inline-flex; align-items: center; justify-content: center; height: 36px; border: 1px solid var(--line); border-radius: 6px; padding: 0 12px; background: #fff; color: #172033; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+      .file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+      .top-actions { display: flex; gap: 8px; }
+      .top-actions button { white-space: nowrap; }
+      .parameter-bar { display: flex; align-items: center; gap: 8px; padding: 0 16px 12px; overflow-x: auto; }
+      .parameter-bar > strong { font-size: 12px; white-space: nowrap; }
+      .parameter-groups { display: flex; gap: 8px; }
+      .parameter-group { flex: 0 0 330px; border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; background: #f8fafc; }
+      .parameter-group.enabled { border-color: var(--blue); background: #edf5ff; }
+      .parameter-group.invalid { border-color: var(--red); }
+      .parameter-group-head { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+      .parameter-group-head input { width: 15px; height: 15px; margin: 0; padding: 0; }
+      .parameter-group-head strong { margin-right: auto; font-size: 12px; }
+      .parameter-group-head button { width: 25px; height: 25px; padding: 0; font-size: 16px; line-height: 1; }
+      .parameter-fields { display: grid; grid-template-columns: repeat(4, minmax(62px, 1fr)); gap: 5px; }
+      .parameter-field { display: grid; gap: 2px; color: var(--muted); font-size: 9px; }
+      .parameter-field input { min-width: 0; width: 100%; padding: 5px 6px; font-size: 11px; }
+      .parameter-field input:invalid { border-color: var(--red); background: #fff5f5; }
+      .add-parameter-group { flex: 0 0 36px; align-self: stretch; min-height: 70px; padding: 0; color: var(--blue); font-size: 22px; }
+      .status { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .status.bad { color: var(--red); }
+      .file-strip { display: flex; gap: 10px; min-height: 94px; padding: 12px 16px; overflow-x: auto; border-bottom: 1px solid var(--line); background: #e9edf1; }
+      .file-empty { align-self: center; color: var(--muted); font-size: 13px; }
+      .file-item { display: grid; grid-template-columns: 64px 130px; gap: 8px; flex: 0 0 216px; height: 70px; border: 1px solid var(--line); border-radius: 6px; padding: 3px; background: #fff; text-align: left; }
+      .file-item.active { border: 2px solid var(--blue); padding: 2px; }
+      .file-thumb { width: 64px; height: 62px; object-fit: cover; border-radius: 4px; background: #e5e7eb; }
+      .file-meta { min-width: 0; padding: 5px 4px 3px 0; }
+      .file-name { display: block; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 700; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+      .file-state { display: block; margin-top: 8px; color: var(--muted); font-size: 10px; }
+      .workspace { padding: 12px 16px 18px; }
+      .workspace-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+      .workspace-tools h2 { min-width: 0; margin: 0 auto 0 0; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+      .stage-tabs { display: flex; gap: 5px; }
+      .stage-tabs button { padding: 6px 9px; font-size: 11px; }
+      .stage-tabs button.active { color: #fff; border-color: var(--blue); background: var(--blue); }
+      #previewMode { width: 112px; padding: 6px 8px; font-size: 11px; }
+      .comparison-grid { display: grid; gap: 10px; overflow-x: auto; }
+      .filter-workbench { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+      .filter-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+      .filter-toolbar h2 { margin: 0; font-size: 14px; }
+      .filter-source { min-width: 0; margin-right: auto; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .filter-parameter-bar { display: flex; align-items: stretch; gap: 8px; margin-bottom: 10px; overflow-x: auto; padding-bottom: 3px; }
+      .filter-parameter-groups { display: flex; gap: 8px; }
+      .filter-parameter-group { flex-basis: 470px; }
+      .filter-parameter-group .parameter-fields { grid-template-columns: repeat(6, minmax(66px, 1fr)); }
+      .filter-grid-empty { padding: 28px 12px; border: 1px dashed var(--line); color: var(--muted); font-size: 12px; text-align: center; }
+      .source-badge { display: inline-block; margin-top: 4px; color: var(--blue); font-size: 10px; font-weight: 700; }
+      .result-card { min-width: 250px; border: 1px solid var(--line); border-radius: 6px; background: #fff; overflow: hidden; transition: border-color .12s ease, box-shadow .12s ease; }
+      .result-card.selectable { cursor: pointer; }
+      .result-card.selectable:hover { border-color: #73a7ed; }
+      .result-card.selectable:focus-visible { outline: 3px solid rgba(23,105,224,.28); outline-offset: 2px; }
+      .result-card.active { border: 2px solid var(--blue); box-shadow: 0 0 0 3px rgba(23,105,224,.18); }
+      .result-card.best { border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
+      .result-card.active.best { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(23,105,224,.18); }
+      .result-head { display: flex; align-items: start; gap: 8px; min-height: 72px; padding: 10px; border-bottom: 1px solid var(--line); }
+      .result-title { margin-right: auto; }
+      .result-title strong { display: block; font-size: 13px; }
+      .result-title small { color: var(--muted); font-size: 10px; line-height: 1.35; }
+      .result-head button { padding: 5px 7px; font-size: 10px; }
+      .result-head button.best { color: #fff; border-color: var(--green); background: var(--green); }
+      .result-status { min-height: 28px; padding: 7px 10px; color: var(--muted); font-size: 11px; }
+      .result-status.running, .result-status.queued { color: var(--amber); }
+      .result-status.error { color: var(--red); }
+      .result-status.done { color: var(--green); }
+      .card-metrics { display: grid; grid-template-columns: repeat(4,1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+      .card-metrics span { padding: 6px 4px; color: var(--muted); font-size: 9px; text-align: center; }
+      .card-metrics strong { display: block; color: var(--text); font-size: 14px; }
+      .canvas-shell { display: grid; place-items: center; height: min(46vh, 480px); min-height: 280px; overflow: auto; padding: 8px; background: #f6f7f9; }
+      .canvas-shell canvas { display: block; max-width: 100%; max-height: 100%; border: 1px solid var(--line); background: #fff; }
+      .canvas-placeholder { color: #8a94a4; font-size: 12px; text-align: center; }
+      .advanced { margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+      .advanced summary { cursor: pointer; padding: 10px 12px; font-size: 12px; font-weight: 700; }
+      .advanced-body { display: grid; grid-template-columns: minmax(480px, 1fr) minmax(360px, .8fr); gap: 14px; padding: 0 12px 12px; }
+      .advanced-actions { display: flex; gap: 8px; margin-top: 10px; }
+      .history { max-height: 190px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+      .run-item { display: flex; gap: 8px; align-items: center; padding: 7px 8px; border-bottom: 1px solid #edf0f3; font-size: 10px; }
+      .run-item-body { min-width: 0; flex: 1; cursor: pointer; white-space: pre-wrap; }
+      .run-item button { padding: 4px 6px; font-size: 10px; }
+      pre { max-height: 190px; overflow: auto; margin: 8px 0 0; padding: 9px; border-radius: 6px; background: #101827; color: #dbeafe; font-size: 10px; white-space: pre-wrap; }
+      @media (max-width: 1050px) { .topbar-main { flex-wrap: wrap; } .brand { width: 100%; } .advanced-body { grid-template-columns: 1fr; } }
+      @media (max-width: 650px) { .workspace-tools, .filter-toolbar { align-items: start; flex-wrap: wrap; } .workspace-tools h2, .filter-toolbar h2 { width: 100%; } .filter-source { width: 100%; } }
+    </style>
+  </head>
+  <body>
+    <div class="drop-overlay" aria-hidden="true"><strong>Drop images to add</strong></div>
+    <header class="topbar">
+      <div class="topbar-main">
+        <div class="brand"><h1>Manga OCR Compare</h1><small>Local parameter workbench</small></div>
+        <label class="file-button">Add images<input id="fileInput" type="file" accept="image/*" multiple /></label>
+        <label class="file-button">Add folder<input id="folderInput" type="file" accept="image/*" multiple webkitdirectory /></label>
+        <div class="field grow"><label for="serviceUrl">OCR service</label><input id="serviceUrl" value="http://127.0.0.1:8765" /></div>
+        <div class="field"><label for="lang">Language</label><select id="lang"><option value="auto">auto</option><option value="korean">korean</option><option value="japan">japan</option></select></div>
+        <div class="field"><label for="ocrMode">Mode</label><select id="ocrMode"><option value="fast">fast</option><option value="enhanced">enhanced</option></select></div>
+        <div class="top-actions"><button id="runOne" class="primary">Run pending</button><button id="runAll" class="secondary">Run pending for all images</button></div>
+      </div>
+      <div class="parameter-bar" id="parameterBar">
+        <strong>Compare</strong>
+        <div id="parameterGroups" class="parameter-groups"></div>
+        <button id="addParameterGroup" class="add-parameter-group secondary" type="button" title="Add parameter group" aria-label="Add parameter group">+</button>
+        <div id="status" class="status">Add images to begin.</div>
+      </div>
+    </header>
+
+    <nav id="fileList" class="file-strip" aria-label="Images"><div class="file-empty">No images loaded.</div></nav>
+
+    <main class="workspace">
+      <div class="workspace-tools">
+        <h2 id="currentFileName">No image selected</h2>
+        <div class="stage-tabs">
+          <button type="button" data-stage="raw" class="active">Raw</button>
+          <button type="button" data-stage="filtered">Filtered</button>
+          <button type="button" data-stage="merged">Merged</button>
+          <button type="button" data-stage="final">Overwrite</button>
+        </div>
+        <select id="previewMode" aria-label="Overwrite preview"><option value="full">Full overwrite</option><option value="cover">Cover only</option><option value="text">Text only</option></select>
+      </div>
+      <section id="comparisonGrid" class="comparison-grid" aria-label="OCR parameter comparison"></section>
+
+      <section class="filter-workbench" aria-labelledby="filterHeading">
+        <div class="filter-toolbar">
+          <h2 id="filterHeading">Filter comparison</h2>
+          <div id="filterSource" class="filter-source">Select a completed OCR result above.</div>
+          <button id="applyFilters" class="primary" type="button" disabled>Apply filter comparison</button>
+        </div>
+        <div id="filterParameterBar" class="filter-parameter-bar">
+          <div id="filterParameterGroups" class="filter-parameter-groups"></div>
+          <button id="addFilterGroup" class="add-parameter-group secondary" type="button" title="Add filter group" aria-label="Add filter group">+</button>
+        </div>
+        <section id="filterComparisonGrid" class="comparison-grid" aria-label="Filter parameter comparison"></section>
+      </section>
+
+      <details class="advanced">
+        <summary>History, JSON and exports</summary>
+        <div class="advanced-body">
+          <section>
+            <div class="advanced-actions">
+              <button id="copyHistory" class="secondary" type="button">Copy history</button>
+              <button id="copyBestParams" class="secondary" type="button">Copy best params</button>
+              <button id="downloadJson" class="secondary" type="button">Export active JSON</button>
+              <button id="downloadPng" class="secondary" type="button">Export active PNG</button>
+            </div>
+            <h3>Run history</h3><div id="runHistory" class="history"></div>
+          </section>
+          <section><h3>Active result JSON</h3><pre id="jsonView">{}</pre></section>
+        </div>
+      </details>
+    </main>
+
+    <script>
+      const PARAMETER_STORAGE_KEY = "manga-ocr-parameter-groups-v1";
+      const PARAMETER_STORAGE_VERSION = 1;
+      const FILTER_STORAGE_KEY = "manga-ocr-filter-groups-v1";
+      const FILTER_STORAGE_VERSION = 1;
+      const PARAMETER_FIELDS = [
+        { key: "textDetThresh", label: "det", min: 0.01, max: 0.99, step: 0.01 },
+        { key: "textDetBoxThresh", label: "box", min: 0.01, max: 0.99, step: 0.01 },
+        { key: "textDetUnclipRatio", label: "unclip", min: 1, max: 5, step: 0.1 },
+        { key: "textRecScoreThresh", label: "rec", min: 0, max: 1, step: 0.01 }
+      ];
+      const DEFAULT_PARAMETER_SETS = [
+        { textDetThresh: 0.3, textDetBoxThresh: 0.6, textDetUnclipRatio: 1.2, textRecScoreThresh: 0 },
+        { textDetThresh: 0.2, textDetBoxThresh: 0.35, textDetUnclipRatio: 1.5, textRecScoreThresh: 0 },
+        { textDetThresh: 0.15, textDetBoxThresh: 0.3, textDetUnclipRatio: 2, textRecScoreThresh: 0 },
+        { textDetThresh: 0.1, textDetBoxThresh: 0.25, textDetUnclipRatio: 2.5, textRecScoreThresh: 0 }
+      ];
+      const FILTER_FIELDS = [
+        { key: "confidenceThreshold", label: "confidence", min: 0, max: 1, step: 0.01 },
+        { key: "minBoxArea", label: "min area", min: 0, max: Number.MAX_SAFE_INTEGER, step: 1 },
+        { key: "maxBoxArea", label: "max area", min: 0.001, max: 1, step: 0.001 },
+        { key: "maxAspectRatio", label: "max aspect", min: 1, max: Number.MAX_SAFE_INTEGER, step: 0.5 },
+        { key: "mergeLineGap", label: "merge gap", min: 0.2, max: 8, step: 0.05 },
+        { key: "fontScale", label: "font scale", min: 0.5, max: 2.5, step: 0.05 }
+      ];
+      const DEFAULT_FILTER_SETS = [
+        { confidenceThreshold: 0.45, minBoxArea: 12, maxBoxArea: 0.6, maxAspectRatio: 30, mergeLineGap: 2.2, fontScale: 1 },
+        { confidenceThreshold: 0.72, minBoxArea: 36, maxBoxArea: 0.35, maxAspectRatio: 18, mergeLineGap: 1.65, fontScale: 1 },
+        { confidenceThreshold: 0.85, minBoxArea: 64, maxBoxArea: 0.25, maxAspectRatio: 12, mergeLineGap: 1.25, fontScale: 1 },
+        { confidenceThreshold: 0.65, minBoxArea: 24, maxBoxArea: 0.45, maxAspectRatio: 24, mergeLineGap: 2.8, fontScale: 1 }
+      ];
+      let parameterGroupSequence = 0;
+      let filterGroupSequence = 0;
+
+      function createParameterGroup(params, id = createParameterGroupId()) {
+        return { id, enabled: true, params: { ...params } };
+      }
+
+      function createParameterGroupId() {
+        parameterGroupSequence += 1;
+        return globalThis.crypto?.randomUUID ? `group-${globalThis.crypto.randomUUID()}` : `group-${Date.now()}-${parameterGroupSequence}`;
+      }
+
+      function defaultParameterGroups() {
+        return DEFAULT_PARAMETER_SETS.map((params) => createParameterGroup(params));
+      }
+
+      function loadParameterGroups() {
+        try {
+          const stored = JSON.parse(localStorage.getItem(PARAMETER_STORAGE_KEY) || "null");
+          if (!stored || stored.version !== PARAMETER_STORAGE_VERSION || !Array.isArray(stored.groups) || !stored.groups.length) throw new Error("invalid stored groups");
+          const ids = new Set();
+          return stored.groups.map((group) => {
+            if (!group || typeof group.id !== "string" || !group.id || ids.has(group.id)) throw new Error("invalid group id");
+            ids.add(group.id);
+            const params = normalizeOcrParams(group.params);
+            if (!params) throw new Error("invalid group params");
+            return { id: group.id, enabled: group.enabled !== false, params };
+          });
+        } catch {
+          return defaultParameterGroups();
+        }
+      }
+
+      function normalizeOcrParams(raw) {
+        if (!raw || typeof raw !== "object") return null;
+        const params = {};
+        for (const field of PARAMETER_FIELDS) {
+          const value = Number(raw[field.key]);
+          if (!Number.isFinite(value) || value < field.min || value > field.max) return null;
+          params[field.key] = value;
+        }
+        return params;
+      }
+
+      function saveParameterGroups() {
+        try {
+          localStorage.setItem(PARAMETER_STORAGE_KEY, JSON.stringify({ version: PARAMETER_STORAGE_VERSION, groups: state.parameterGroups }));
+        } catch {
+          setStatus("Parameter groups could not be saved locally.", true);
+        }
+      }
+
+      function createFilterGroup(params, id = createFilterGroupId()) {
+        return { id, enabled: true, params: { ...params } };
+      }
+
+      function createFilterGroupId() {
+        filterGroupSequence += 1;
+        return globalThis.crypto?.randomUUID ? `filter-${globalThis.crypto.randomUUID()}` : `filter-${Date.now()}-${filterGroupSequence}`;
+      }
+
+      function defaultFilterGroups() {
+        return DEFAULT_FILTER_SETS.map((params) => createFilterGroup(params));
+      }
+
+      function normalizeFilterParams(raw) {
+        if (!raw || typeof raw !== "object") return null;
+        const params = {};
+        for (const field of FILTER_FIELDS) {
+          const value = Number(raw[field.key]);
+          if (!Number.isFinite(value) || value < field.min || value > field.max) return null;
+          params[field.key] = value;
+        }
+        return params;
+      }
+
+      function loadFilterGroups() {
+        try {
+          const stored = JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY) || "null");
+          if (!stored || stored.version !== FILTER_STORAGE_VERSION || !Array.isArray(stored.groups) || !stored.groups.length) throw new Error("invalid stored filter groups");
+          const ids = new Set();
+          return stored.groups.map((group) => {
+            if (!group || typeof group.id !== "string" || !group.id || ids.has(group.id)) throw new Error("invalid filter group id");
+            ids.add(group.id);
+            const params = normalizeFilterParams(group.params);
+            if (!params) throw new Error("invalid filter group params");
+            return { id: group.id, enabled: group.enabled !== false, params };
+          });
+        } catch {
+          return defaultFilterGroups();
+        }
+      }
+
+      function saveFilterGroups() {
+        try {
+          localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({ version: FILTER_STORAGE_VERSION, groups: state.filterGroups }));
+        } catch {
+          setStatus("Filter groups could not be saved locally.", true);
+        }
+      }
+
+      const state = {
+        files: [],
+        currentIndex: -1,
+        stage: "raw",
+        parameterGroups: loadParameterGroups(),
+        filterGroups: loadFilterGroups(),
+        resultsByFile: new Map(),
+        filterResultsByFile: new Map(),
+        historyByFile: new Map(),
+        activeOcrGroupByFile: new Map(),
+        activeFilterGroupBySource: new Map(),
+        bestCombinationByFile: new Map(),
+        previewUrls: new Map(),
+        sourcesByFile: new Map(),
+        runSeq: 0,
+        filterRunSeq: 0,
+        supplementRunSeq: 0,
+        running: false,
+        filtering: false,
+        supplementingSource: ""
+      };
+
+      const $ = (id) => document.getElementById(id);
+      state.ocrContextKey = ocrContextKey(readOcrContext());
+
+      $("fileInput").addEventListener("change", () => loadSelectedFiles($("fileInput").files));
+      $("folderInput").addEventListener("change", () => loadSelectedFiles($("folderInput").files));
+      $("lang").addEventListener("change", () => handleOcrContextChange());
+      $("ocrMode").addEventListener("change", () => handleOcrContextChange());
+      $("serviceUrl").addEventListener("change", () => handleOcrContextChange());
+      let fileDragDepth = 0;
+      window.addEventListener("dragenter", (event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        fileDragDepth += 1;
+        document.body.classList.add("dragging-files");
+      });
+      window.addEventListener("dragover", (event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      });
+      window.addEventListener("dragleave", (event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        fileDragDepth = Math.max(0, fileDragDepth - 1);
+        if (!fileDragDepth) document.body.classList.remove("dragging-files");
+      });
+      window.addEventListener("drop", (event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        fileDragDepth = 0;
+        document.body.classList.remove("dragging-files");
+        loadSelectedFiles(event.dataTransfer?.files || []);
+      });
+      window.addEventListener("dragend", () => {
+        fileDragDepth = 0;
+        document.body.classList.remove("dragging-files");
+      });
+      $("runOne").addEventListener("click", () => runSelected());
+      $("runAll").addEventListener("click", () => runAll());
+      $("addParameterGroup").addEventListener("click", () => addParameterGroup());
+      $("addFilterGroup").addEventListener("click", () => addFilterGroup());
+      $("applyFilters").addEventListener("click", () => applyFilterComparison());
+      $("copyHistory").addEventListener("click", () => copyRunHistorySummary());
+      $("copyBestParams").addEventListener("click", () => copyBestParams());
+      $("downloadJson").addEventListener("click", () => downloadCurrentJson());
+      $("downloadPng").addEventListener("click", () => downloadActivePng());
+      $("previewMode").addEventListener("change", () => renderComparison());
+      document.querySelectorAll("[data-stage]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.stage = button.dataset.stage;
+          document.querySelectorAll("[data-stage]").forEach((item) => item.classList.toggle("active", item === button));
+          renderComparison();
+        });
+      });
+
+      function renderParameterGroups() {
+        const container = $("parameterGroups");
+        container.innerHTML = "";
+        state.parameterGroups.forEach((group, index) => {
+          const node = document.createElement("div");
+          node.className = `parameter-group${group.enabled ? " enabled" : ""}`;
+          node.dataset.groupId = group.id;
+          const head = document.createElement("div");
+          head.className = "parameter-group-head";
+          const enabled = document.createElement("input");
+          enabled.type = "checkbox";
+          enabled.checked = group.enabled;
+          enabled.disabled = state.running || state.filtering;
+          enabled.setAttribute("aria-label", `Include parameter group ${index + 1}`);
+          enabled.onchange = () => {
+            group.enabled = enabled.checked;
+            if (!group.enabled) {
+              for (const [fileKeyValue, activeGroupId] of state.activeOcrGroupByFile) {
+                if (activeGroupId === group.id) state.activeOcrGroupByFile.delete(fileKeyValue);
+              }
+            }
+            saveParameterGroups();
+            renderParameterGroups();
+            renderRunHistory();
+            renderComparison();
+          };
+          const sequence = document.createElement("strong");
+          sequence.textContent = `#${index + 1}`;
+          const rerun = document.createElement("button");
+          rerun.type = "button";
+          rerun.textContent = "↻";
+          rerun.title = `Rerun parameter group ${index + 1}`;
+          rerun.setAttribute("aria-label", `Rerun parameter group ${index + 1}`);
+          rerun.dataset.runGroup = group.id;
+          rerun.disabled = state.running || state.filtering || !group.enabled || state.currentIndex < 0;
+          rerun.onclick = () => runParameterGroup(group.id);
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "×";
+          remove.title = `Remove parameter group ${index + 1}`;
+          remove.setAttribute("aria-label", `Remove parameter group ${index + 1}`);
+          remove.disabled = state.running || state.filtering || state.parameterGroups.length === 1;
+          remove.onclick = () => removeParameterGroup(group.id);
+          head.append(enabled, sequence, rerun, remove);
+          const fields = document.createElement("div");
+          fields.className = "parameter-fields";
+          for (const field of PARAMETER_FIELDS) {
+            const label = document.createElement("label");
+            label.className = "parameter-field";
+            label.textContent = field.label;
+            const input = document.createElement("input");
+            input.type = "number";
+            input.value = group.params[field.key];
+            input.min = field.min;
+            input.max = field.max;
+            input.step = field.step;
+            input.disabled = state.running || state.filtering;
+            input.dataset.paramKey = field.key;
+            input.setAttribute("aria-label", `Parameter group ${index + 1} ${field.label}`);
+            input.oninput = () => commitParameterField(group.id, field, input, node);
+            label.appendChild(input);
+            fields.appendChild(label);
+          }
+          node.append(head, fields);
+          container.appendChild(node);
+        });
+        $("addParameterGroup").disabled = state.running || state.filtering;
+      }
+
+      function commitParameterField(groupId, field, input, groupNode) {
+        const group = state.parameterGroups.find((item) => item.id === groupId);
+        const value = Number(input.value);
+        if (!group || !input.validity.valid || !Number.isFinite(value) || value < field.min || value > field.max) {
+          groupNode.classList.add("invalid");
+          const rerun = groupNode.querySelector("[data-run-group]");
+          if (rerun) rerun.disabled = true;
+          setStatus(`Enter a valid ${field.label} value.`, true);
+          return;
+        }
+        const hasInvalidInput = Boolean(groupNode.querySelector("input:invalid"));
+        groupNode.classList.toggle("invalid", hasInvalidInput);
+        const rerun = groupNode.querySelector("[data-run-group]");
+        if (rerun) rerun.disabled = state.running || state.filtering || !group.enabled || state.currentIndex < 0 || hasInvalidInput;
+        if (group.params[field.key] === value) return;
+        group.params[field.key] = value;
+        invalidateGroupResults(groupId);
+        saveParameterGroups();
+        const ordinal = groupOrdinal(groupId);
+        setStatus(`Parameters for #${ordinal} changed. Run comparison again.`);
+        renderFileList();
+        renderRunHistory();
+        renderComparison();
+      }
+
+      function addParameterGroup() {
+        const source = state.parameterGroups.at(-1)?.params || DEFAULT_PARAMETER_SETS[0];
+        state.parameterGroups.push(createParameterGroup(source));
+        saveParameterGroups();
+        renderParameterGroups();
+        renderComparison();
+        setStatus(`Added parameter group #${state.parameterGroups.length}.`);
+        $("parameterBar").scrollLeft = $("parameterBar").scrollWidth;
+      }
+
+      function removeParameterGroup(groupId) {
+        if (state.parameterGroups.length <= 1 || state.running || state.filtering) return;
+        const ordinal = groupOrdinal(groupId);
+        invalidateGroupResults(groupId);
+        state.parameterGroups = state.parameterGroups.filter((group) => group.id !== groupId);
+        saveParameterGroups();
+        renderFileList();
+        renderRunHistory();
+        renderParameterGroups();
+        renderComparison();
+        setStatus(`Removed parameter group #${ordinal}.`);
+      }
+
+      function invalidateGroupResults(groupId) {
+        for (const entries of state.resultsByFile.values()) entries.delete(groupId);
+        for (const [key, history] of state.historyByFile) state.historyByFile.set(key, history.filter((result) => result.groupId !== groupId));
+        for (const sources of state.filterResultsByFile.values()) sources.delete(groupId);
+        for (const [key, best] of state.bestCombinationByFile) if (best.ocrGroupId === groupId) state.bestCombinationByFile.delete(key);
+        for (const [key, activeGroupId] of state.activeOcrGroupByFile) if (activeGroupId === groupId) state.activeOcrGroupByFile.delete(key);
+        for (const key of state.activeFilterGroupBySource.keys()) if (key.endsWith(`::${groupId}`)) state.activeFilterGroupBySource.delete(key);
+      }
+
+      function renderFilterGroups() {
+        const container = $("filterParameterGroups");
+        container.innerHTML = "";
+        state.filterGroups.forEach((group, index) => {
+          const node = document.createElement("div");
+          node.className = `parameter-group filter-parameter-group${group.enabled ? " enabled" : ""}`;
+          node.dataset.filterGroupId = group.id;
+          const head = document.createElement("div");
+          head.className = "parameter-group-head";
+          const enabled = document.createElement("input");
+          enabled.type = "checkbox";
+          enabled.checked = group.enabled;
+          enabled.disabled = state.running || state.filtering;
+          enabled.setAttribute("aria-label", `Include filter group ${index + 1}`);
+          enabled.onchange = () => {
+            group.enabled = enabled.checked;
+            if (!group.enabled) {
+              for (const [key, activeGroupId] of state.activeFilterGroupBySource) {
+                if (activeGroupId === group.id) state.activeFilterGroupBySource.delete(key);
+              }
+            }
+            saveFilterGroups();
+            renderFilterGroups();
+            renderFilterComparison();
+            updateActiveJson();
+          };
+          const sequence = document.createElement("strong");
+          sequence.textContent = `#${index + 1}`;
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "×";
+          remove.title = `Remove filter group ${index + 1}`;
+          remove.setAttribute("aria-label", `Remove filter group ${index + 1}`);
+          remove.disabled = state.running || state.filtering || state.filterGroups.length === 1;
+          remove.onclick = () => removeFilterGroup(group.id);
+          head.append(enabled, sequence, remove);
+          const fields = document.createElement("div");
+          fields.className = "parameter-fields";
+          for (const field of FILTER_FIELDS) {
+            const label = document.createElement("label");
+            label.className = "parameter-field";
+            label.textContent = field.label;
+            const input = document.createElement("input");
+            input.type = "number";
+            input.value = group.params[field.key];
+            input.min = field.min;
+            if (field.max !== Number.MAX_SAFE_INTEGER) input.max = field.max;
+            input.step = field.step;
+            input.disabled = state.running || state.filtering;
+            input.setAttribute("aria-label", `Filter group ${index + 1} ${field.label}`);
+            input.oninput = () => commitFilterField(group.id, field, input, node);
+            label.appendChild(input);
+            fields.appendChild(label);
+          }
+          node.append(head, fields);
+          container.appendChild(node);
+        });
+        $("addFilterGroup").disabled = state.running || state.filtering;
+      }
+
+      function commitFilterField(groupId, field, input, groupNode) {
+        const group = state.filterGroups.find((item) => item.id === groupId);
+        const value = Number(input.value);
+        if (!group || !input.validity.valid || !Number.isFinite(value) || value < field.min || value > field.max) {
+          groupNode.classList.add("invalid");
+          setStatus(`Enter a valid ${field.label} value.`, true);
+          return;
+        }
+        groupNode.classList.remove("invalid");
+        if (group.params[field.key] === value) return;
+        group.params[field.key] = value;
+        invalidateFilterGroupResults(groupId);
+        saveFilterGroups();
+        setStatus(`Filter parameters for #${filterGroupOrdinal(groupId)} changed. Apply filters again.`);
+        renderFilterComparison();
+        updateActiveJson();
+      }
+
+      function addFilterGroup() {
+        const source = state.filterGroups.at(-1)?.params || DEFAULT_FILTER_SETS[0];
+        state.filterGroups.push(createFilterGroup(source));
+        saveFilterGroups();
+        renderFilterGroups();
+        renderFilterComparison();
+        updateActiveJson();
+        setStatus(`Added filter group #${state.filterGroups.length}.`);
+        $("filterParameterBar").scrollLeft = $("filterParameterBar").scrollWidth;
+      }
+
+      function removeFilterGroup(groupId) {
+        if (state.filterGroups.length <= 1 || state.running || state.filtering) return;
+        const ordinal = filterGroupOrdinal(groupId);
+        invalidateFilterGroupResults(groupId);
+        state.filterGroups = state.filterGroups.filter((group) => group.id !== groupId);
+        saveFilterGroups();
+        renderFilterGroups();
+        renderFilterComparison();
+        updateActiveJson();
+        setStatus(`Removed filter group #${ordinal}.`);
+      }
+
+      function invalidateFilterGroupResults(groupId) {
+        for (const sources of state.filterResultsByFile.values()) {
+          for (const entries of sources.values()) entries.delete(groupId);
+        }
+        for (const [key, activeGroupId] of state.activeFilterGroupBySource) if (activeGroupId === groupId) state.activeFilterGroupBySource.delete(key);
+        for (const [key, best] of state.bestCombinationByFile) if (best.filterGroupId === groupId) state.bestCombinationByFile.delete(key);
+      }
+
+      function filterGroupOrdinal(groupId) {
+        const index = state.filterGroups.findIndex((group) => group.id === groupId);
+        return index >= 0 ? index + 1 : 0;
+      }
+
+      function groupOrdinal(groupId) {
+        const index = state.parameterGroups.findIndex((group) => group.id === groupId);
+        return index >= 0 ? index + 1 : 0;
+      }
+
+      function isFileDrag(event) {
+        return Array.from(event.dataTransfer?.types || []).includes("Files");
+      }
+
+      function loadSelectedFiles(fileList) {
+        const incoming = Array.from(fileList || []).filter((file) => /^image\//.test(file.type));
+        const known = new Set(state.files.map(fileKey));
+        for (const file of incoming) {
+          const key = fileKey(file);
+          if (known.has(key)) continue;
+          known.add(key);
+          state.files.push(file);
+          state.previewUrls.set(key, URL.createObjectURL(file));
+        }
+        if (state.currentIndex < 0 && state.files.length) state.currentIndex = 0;
+        $("fileInput").value = "";
+        $("folderInput").value = "";
+        renderParameterGroups();
+        renderFileList();
+        renderRunHistory();
+        renderComparison();
+        setStatus(incoming.length ? `${state.files.length} image(s) ready.` : "No image files selected.", !incoming.length);
+      }
+
+      function renderFileList() {
+        $("fileList").innerHTML = "";
+        if (!state.files.length) {
+          $("fileList").innerHTML = '<div class="file-empty">No images loaded.</div>';
+          return;
+        }
+        state.files.forEach((file, index) => {
+          const key = fileKey(file);
+          const node = document.createElement("button");
+          node.type = "button";
+          node.className = `file-item${index === state.currentIndex ? " active" : ""}`;
+          node.title = file.webkitRelativePath || file.name;
+          const image = document.createElement("img");
+          image.className = "file-thumb";
+          image.src = state.previewUrls.get(key) || "";
+          image.alt = "";
+          const meta = document.createElement("span");
+          meta.className = "file-meta";
+          const name = document.createElement("span");
+          name.className = "file-name";
+          name.textContent = file.webkitRelativePath || file.name;
+          const progress = document.createElement("span");
+          progress.className = "file-state";
+          progress.textContent = fileStateText(key);
+          meta.append(name, progress);
+          node.append(image, meta);
+          node.onclick = () => {
+            state.currentIndex = index;
+            renderFileList();
+            renderRunHistory();
+            renderComparison();
+            setStatus(`Selected: ${file.webkitRelativePath || file.name}`);
+          };
+          $("fileList").appendChild(node);
+        });
+      }
+
+      function fileStateText(key) {
+        const entries = state.resultsByFile.get(key);
+        if (!entries || !entries.size) return "Not run";
+        const values = Array.from(entries.values());
+        const running = values.filter((entry) => entry.status === "running" || entry.status === "queued").length;
+        const done = values.filter((entry) => entry.status === "done").length;
+        const failed = values.filter((entry) => entry.status === "error").length;
+        if (running) return `${done} done · ${running} pending`;
+        return `${done} done${failed ? ` · ${failed} failed` : ""}`;
+      }
+
+      function selectedParameterGroups() {
+        return state.parameterGroups.filter((group) => group.enabled);
+      }
+
+      function readOcrContext(modeOverride = "") {
+        return {
+          serviceUrl: $("serviceUrl").value.trim().replace(/\/+$/, ""),
+          lang: $("lang").value,
+          mode: modeOverride || $("ocrMode").value
+        };
+      }
+
+      function ocrContextKey(context) {
+        return JSON.stringify([context.serviceUrl, context.lang, context.mode]);
+      }
+
+      function handleOcrContextChange() {
+        const nextKey = ocrContextKey(readOcrContext());
+        if (nextKey === state.ocrContextKey) return;
+        state.ocrContextKey = nextKey;
+        state.resultsByFile.clear();
+        state.historyByFile.clear();
+        state.filterResultsByFile.clear();
+        state.activeOcrGroupByFile.clear();
+        state.activeFilterGroupBySource.clear();
+        state.bestCombinationByFile.clear();
+        renderFileList();
+        renderRunHistory();
+        renderComparison();
+        setStatus("OCR context changed. Previous results were cleared.");
+      }
+
+      function buildRunTasks(files, groups, forceGroupIds = null, context = readOcrContext()) {
+        const forced = forceGroupIds ? new Set(forceGroupIds) : null;
+        const contextKey = ocrContextKey(context);
+        const tasks = [];
+        for (const file of files) {
+          const entries = state.resultsByFile.get(fileKey(file));
+          for (const group of groups) {
+            const entry = entries?.get(group.id);
+            const current = entry?.status === "done" && entry.result?.ocrContextKey === contextKey;
+            const shouldRun = forced ? forced.has(group.id) : !current;
+            if (shouldRun) tasks.push({ file, group: { id: group.id, params: { ...group.params } }, context: { ...context }, contextKey });
+          }
+        }
+        return tasks;
+      }
+
+      async function runParameterGroup(groupId) {
+        const file = state.files[state.currentIndex];
+        const group = state.parameterGroups.find((item) => item.id === groupId);
+        if (!file) {
+          setStatus("No image selected.", true);
+          return;
+        }
+        if (!group?.enabled) {
+          setStatus("Enable the parameter group before rerunning it.", true);
+          return;
+        }
+        await runFiles([file], { forceGroupIds: [groupId] });
+      }
+
+      async function runSelected() {
+        const file = state.files[state.currentIndex];
+        if (!file) {
+          setStatus("No image selected.", true);
+          return;
+        }
+        await runFiles([file]);
+      }
+
+      async function runAll() {
+        if (!state.files.length) {
+          setStatus("No images selected.", true);
+          return;
+        }
+        await runFiles(state.files);
+      }
+
+      async function runFiles(files, options = {}) {
+        const groups = selectedParameterGroups();
+        if (!groups.length) {
+          setStatus("Enable at least one parameter group.", true);
+          return;
+        }
+        const context = Object.freeze(readOcrContext());
+        const tasks = buildRunTasks(files, groups, options.forceGroupIds || null, context);
+        if (!tasks.length) {
+          setStatus("All enabled parameter groups are up to date.");
+          return;
+        }
+        const invalidTask = tasks.find(({ group }) => $("parameterGroups").querySelector(`[data-group-id="${group.id}"] input:invalid`));
+        if (invalidTask) {
+          setStatus(`Fix invalid values in parameter group #${groupOrdinal(invalidTask.group.id)} before running.`, true);
+          return;
+        }
+        setRunning(true);
+        for (const task of tasks) ensureResultMap(task.file).set(task.group.id, { status: "queued", result: null, error: "" });
+        renderFileList();
+        renderComparison();
+        let completed = 0;
+        let failed = 0;
+        const total = tasks.length;
+        try {
+          for (const task of tasks) {
+            setStatus(`Running ${completed + 1}/${total}: ${task.file.name} · #${groupOrdinal(task.group.id)}`);
+            const succeeded = await runGroupForFile(task.file, task.group, task.context, task.contextKey);
+            if (!succeeded) failed += 1;
+            completed += 1;
+          }
+          setStatus(`Comparison finished: ${completed - failed} succeeded${failed ? ` · ${failed} failed` : ""}.`, failed > 0);
+        } finally {
+          setRunning(false);
+          renderFileList();
+          renderRunHistory();
+          renderComparison();
+        }
+      }
+
+      async function runGroupForFile(file, group, context, contextKey) {
+        const key = fileKey(file);
+        const entries = ensureResultMap(file);
+        invalidateFilterSource(key, group.id);
+        entries.set(group.id, { status: "running", result: null, error: "" });
+        if (state.files[state.currentIndex] === file) renderComparison();
+        renderFileList();
+        const params = Object.freeze({ ...group.params });
+        const runId = buildRunId(params);
+        try {
+          const { dataUrl, image } = await getFileSource(file);
+          const payload = await requestLocalOcr(dataUrl, `${stripExt(file.name)}-${group.id}-${runId}`, params, context);
+          const processed = processOcrPayload(payload, image, { ...params, ...DEFAULT_FILTER_SETS[1], coverPadding: 2 });
+          processed.runId = runId;
+          processed.groupId = group.id;
+          processed.ocrParams = { ...params };
+          processed.ocrContext = { ...context };
+          processed.ocrContextKey = contextKey;
+          processed.displayMode = context.mode;
+          processed.paramLabel = buildOcrParamLabel(params);
+          processed.fileName = file.webkitRelativePath || file.name;
+          processed.dataUrl = dataUrl;
+          entries.set(group.id, { status: "done", result: processed, error: "" });
+          const activeGroupId = state.activeOcrGroupByFile.get(key);
+          if (!activeGroupId || entries.get(activeGroupId)?.status !== "done") state.activeOcrGroupByFile.set(key, group.id);
+          rememberHistory(file, processed);
+          return true;
+        } catch (error) {
+          entries.set(group.id, { status: "error", result: null, error: error instanceof Error ? error.message : String(error) });
+          return false;
+        } finally {
+          renderFileList();
+          if (state.files[state.currentIndex] === file) {
+            renderRunHistory();
+            renderComparison();
+          }
+        }
+      }
+
+      function ensureResultMap(file) {
+        const key = fileKey(file);
+        if (!state.resultsByFile.has(key)) state.resultsByFile.set(key, new Map());
+        return state.resultsByFile.get(key);
+      }
+
+      function getFileSource(file) {
+        const key = fileKey(file);
+        if (!state.sourcesByFile.has(key)) {
+          state.sourcesByFile.set(key, readFileAsDataUrl(file).then(async (dataUrl) => ({ dataUrl, image: await loadImage(dataUrl) })));
+        }
+        return state.sourcesByFile.get(key);
+      }
+
+      function setRunning(running) {
+        state.running = running;
+        $("runOne").disabled = running || state.filtering;
+        $("runAll").disabled = running || state.filtering;
+        $("serviceUrl").disabled = running || state.filtering;
+        $("lang").disabled = running || state.filtering;
+        $("ocrMode").disabled = running || state.filtering;
+        renderParameterGroups();
+        renderFilterGroups();
+        updateFilterAction();
+      }
+
+      function setFiltering(filtering) {
+        state.filtering = filtering;
+        $("runOne").disabled = filtering || state.running;
+        $("runAll").disabled = filtering || state.running;
+        $("serviceUrl").disabled = filtering || state.running;
+        $("lang").disabled = filtering || state.running;
+        $("ocrMode").disabled = filtering || state.running;
+        renderParameterGroups();
+        renderFilterGroups();
+        updateFilterAction();
+      }
+
+      function invalidateFilterSource(fileKeyValue, ocrGroupId) {
+        state.filterResultsByFile.get(fileKeyValue)?.delete(ocrGroupId);
+        state.activeFilterGroupBySource.delete(filterSourceKey(fileKeyValue, ocrGroupId));
+        const best = state.bestCombinationByFile.get(fileKeyValue);
+        if (best?.ocrGroupId === ocrGroupId) state.bestCombinationByFile.delete(fileKeyValue);
+      }
+
+      async function supplementEnhancedResult(file, groupId) {
+        const key = fileKey(file);
+        const entry = state.resultsByFile.get(key)?.get(groupId);
+        const source = entry?.status === "done" ? entry.result : null;
+        if (!source || source.ocrContext?.mode !== "fast") {
+          setStatus("Select a completed Fast result before enhancing.", true);
+          return;
+        }
+        const sourceKey = filterSourceKey(key, groupId);
+        const params = Object.freeze(pickOcrParams(source.ocrParams || source.params));
+        const context = Object.freeze({ ...source.ocrContext, mode: "enhanced" });
+        state.supplementingSource = sourceKey;
+        setRunning(true);
+        setStatus(`Enhancing missing text for OCR #${groupOrdinal(groupId)}…`);
+        renderComparison();
+        try {
+          const { dataUrl, image } = await getFileSource(file);
+          const supplementRunId = buildSupplementRunId();
+          const enhancedPayload = await requestLocalOcr(dataUrl, `${stripExt(file.name)}-${groupId}-${supplementRunId}`, params, context);
+          const supplements = selectEnhancedSupplements(source.rawPayload, enhancedPayload);
+          if (!supplements.length) {
+            setStatus(`OCR #${groupOrdinal(groupId)}: no reliable enhanced additions found.`);
+            return;
+          }
+          const baseItems = Array.isArray(source.rawPayload?.items) ? source.rawPayload.items : [];
+          const combinedPayload = {
+            ...source.rawPayload,
+            items: [...baseItems, ...supplements],
+            supplementRawItems: enhancedPayload.rawItems || [],
+            supplementCounts: enhancedPayload.counts || {}
+          };
+          const processed = processOcrPayload(combinedPayload, image, { ...source.params });
+          Object.assign(processed, {
+            runId: source.runId,
+            supplementRunId,
+            supplementCount: Number(source.supplementCount || 0) + supplements.length,
+            groupId,
+            ocrParams: { ...params },
+            ocrContext: { ...source.ocrContext },
+            ocrContextKey: source.ocrContextKey,
+            displayMode: "fast+enhanced",
+            paramLabel: source.paramLabel,
+            fileName: source.fileName,
+            dataUrl
+          });
+          invalidateFilterSource(key, groupId);
+          ensureResultMap(file).set(groupId, { status: "done", result: processed, error: "" });
+          const activeGroupId = state.activeOcrGroupByFile.get(key);
+          if (!activeGroupId || activeGroupId === groupId || ensureResultMap(file).get(activeGroupId)?.status !== "done") {
+            state.activeOcrGroupByFile.set(key, groupId);
+          }
+          rememberHistory(file, processed);
+          setStatus(`OCR #${groupOrdinal(groupId)}: added ${supplements.length} reliable enhanced item(s).`);
+        } catch (error) {
+          setStatus(`Enhanced supplement failed: ${error instanceof Error ? error.message : String(error)}`, true);
+        } finally {
+          state.supplementingSource = "";
+          setRunning(false);
+          renderFileList();
+          renderRunHistory();
+          renderComparison();
+        }
+      }
+
+      function selectEnhancedSupplements(fastPayload, enhancedPayload) {
+        const fastItems = normalizePayloadItems(fastPayload);
+        const candidates = normalizePayloadItems(enhancedPayload)
+          .filter(({ normalized }) => {
+            const score = normalized.confidence;
+            const support = normalized.enhancedVariantSupport;
+            if (scriptChars(normalized.text) < 2 || score < 0.82) return false;
+            if (support < 2 && score < 0.92) return false;
+            return !fastItems.some((fast) => boxIntersectionRatio(normalized.box, fast.normalized.box) >= 0.55);
+          })
+          .sort((first, second) => supplementRank(second.normalized) - supplementRank(first.normalized));
+        const kept = [];
+        for (const candidate of candidates) {
+          if (kept.some((other) => boxIntersectionRatio(candidate.normalized.box, other.normalized.box) >= 0.65)) continue;
+          kept.push(candidate);
+        }
+        return kept.map(({ raw }) => ({ ...raw, supplemented: true }));
+      }
+
+      function normalizePayloadItems(payload) {
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        return items.map((raw, index) => ({ raw, normalized: normalizeItem(raw, index) })).filter((item) => item.normalized);
+      }
+
+      function supplementRank(item) {
+        return item.enhancedVariantSupport * 1000 + item.confidence * 100 + compactOcrText(item.text).length;
+      }
+
+      function ensureFilterResultMap(file, ocrGroupId) {
+        const key = fileKey(file);
+        if (!state.filterResultsByFile.has(key)) state.filterResultsByFile.set(key, new Map());
+        const sources = state.filterResultsByFile.get(key);
+        if (!sources.has(ocrGroupId)) sources.set(ocrGroupId, new Map());
+        return sources.get(ocrGroupId);
+      }
+
+      function filterSourceKey(fileKeyValue, ocrGroupId) {
+        return `${fileKeyValue}::${ocrGroupId}`;
+      }
+
+      function selectedFilterGroups() {
+        return state.filterGroups.filter((group) => group.enabled);
+      }
+
+      async function applyFilterComparison() {
+        const file = state.files[state.currentIndex];
+        const source = getSelectedOcrResult();
+        if (!file || !source) {
+          setStatus("Select a completed OCR result before applying filters.", true);
+          return;
+        }
+        if ($("filterParameterGroups").querySelector(".parameter-group.enabled input:invalid")) {
+          setStatus("Fix invalid filter values before applying.", true);
+          return;
+        }
+        const groups = selectedFilterGroups().map((group) => ({ id: group.id, params: { ...group.params } }));
+        if (!groups.length) {
+          setStatus("Enable at least one filter group.", true);
+          return;
+        }
+        const key = fileKey(file);
+        const ocrGroupId = source.groupId;
+        const entries = ensureFilterResultMap(file, ocrGroupId);
+        setFiltering(true);
+        groups.forEach((group) => entries.set(group.id, { status: "queued", result: null, error: "" }));
+        renderFilterComparison();
+        let failed = 0;
+        for (let index = 0; index < groups.length; index += 1) {
+          const group = groups[index];
+          entries.set(group.id, { status: "running", result: null, error: "" });
+          setStatus(`Filtering ${index + 1}/${groups.length}: OCR #${groupOrdinal(ocrGroupId)} · filter #${filterGroupOrdinal(group.id)}`);
+          renderFilterComparison();
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          try {
+            const params = Object.freeze({ ...pickOcrParams(source.ocrParams || source.params), ...group.params, coverPadding: 2 });
+            const result = processOcrPayload(source.rawPayload, source.image, params);
+            Object.assign(result, {
+              runId: source.runId,
+              filterRunId: buildFilterRunId(group.params),
+              groupId: ocrGroupId,
+              ocrGroupId,
+              filterGroupId: group.id,
+              ocrParams: pickOcrParams(source.ocrParams || source.params),
+              ocrContext: source.ocrContext ? { ...source.ocrContext } : null,
+              displayMode: source.displayMode || source.ocrContext?.mode,
+              supplementRunId: source.supplementRunId || "",
+              supplementCount: Number(source.supplementCount || 0),
+              filterParams: { ...group.params },
+              paramLabel: buildCombinedParamLabel(params),
+              fileName: source.fileName,
+              dataUrl: source.dataUrl
+            });
+            entries.set(group.id, { status: "done", result, error: "" });
+            state.activeFilterGroupBySource.set(filterSourceKey(key, ocrGroupId), group.id);
+          } catch (error) {
+            failed += 1;
+            entries.set(group.id, { status: "error", result: null, error: error instanceof Error ? error.message : String(error) });
+          }
+          renderFilterComparison();
+        }
+        setFiltering(false);
+        setStatus(`Filter comparison finished: ${groups.length - failed} succeeded${failed ? ` · ${failed} failed` : ""}.`, failed > 0);
+        updateActiveJson();
+      }
+
+      function rememberHistory(file, result) {
+        const key = fileKey(file);
+        const list = state.historyByFile.get(key) || [];
+        list.unshift(result);
+        state.historyByFile.set(key, list.slice(0, 24));
+      }
+
+      function renderRunHistory() {
+        const file = state.files[state.currentIndex];
+        const key = file ? fileKey(file) : "";
+        const list = file ? state.historyByFile.get(key) || [] : [];
+        const activeGroupId = key ? state.activeOcrGroupByFile.get(key) : "";
+        $("runHistory").innerHTML = "";
+        if (!list.length) $("runHistory").innerHTML = '<div class="run-item"><span class="run-item-body">No runs for this image.</span></div>';
+        list.forEach((result) => {
+          const node = document.createElement("div");
+          const runId = result.runId || "run";
+          const isActive = activeGroupId === result.groupId;
+          node.className = "run-item";
+          const body = document.createElement("div");
+          body.className = "run-item-body";
+          body.textContent = `#${groupOrdinal(result.groupId)}${isActive ? " [FILTER SOURCE]" : ""} · ${runId}\n${result.paramLabel || ""}`;
+          body.onclick = () => {
+            invalidateFilterSource(key, result.groupId);
+            ensureResultMap(file).set(result.groupId, { status: "done", result, error: "" });
+            state.activeOcrGroupByFile.set(key, result.groupId);
+            renderRunHistory();
+            renderComparison();
+          };
+          node.append(body);
+          $("runHistory").appendChild(node);
+        });
+      }
+
+      async function copyRunHistorySummary() {
+        const file = state.files[state.currentIndex];
+        if (!file) {
+          setStatus("No image selected.", true);
+          return;
+        }
+        const key = fileKey(file);
+        const list = state.historyByFile.get(key) || [];
+        if (!list.length) {
+          setStatus("No run history to copy.", true);
+          return;
+        }
+        const best = getBestCombinationForCurrentFile();
+        const lines = [`OCR debug history: ${file.webkitRelativePath || file.name}`];
+        lines.push(`best=${best ? `${best.result.runId || "run"} | ${best.result.paramLabel || ""}` : "unmarked"}`);
+        list.forEach((result, index) => {
+          const counts = result.counts || {};
+          const runId = result.runId || "run";
+          lines.push(
+            [
+              `${index + 1}. #${groupOrdinal(result.groupId)} · ${runId}`,
+              result.paramLabel || "",
+              `raw=${counts.raw ?? 0}`,
+              `filtered=${counts.filtered ?? 0}`,
+              `merged=${counts.merged ?? 0}`,
+              `final=${counts.final ?? 0}`,
+              `overflow=${counts.overflow ?? 0}`
+            ].filter(Boolean).join(" | ")
+          );
+        });
+        await copyText(lines.join("\n"));
+        setStatus(`Copied ${list.length} run history item(s).`);
+      }
+
+      async function copyBestParams() {
+        const best = getBestCombinationForCurrentFile();
+        if (!best) {
+          setStatus("Mark a best filter combination first.", true);
+          return;
+        }
+        const ocr = best.result.ocrParams;
+        const filter = best.result.filterParams;
+        const text = [
+          "OCR best params:",
+          `run=${best.result.runId || "run"}`,
+          `mode=${best.result.displayMode || best.result.ocrContext?.mode || "unknown"}`,
+          `supplements=${best.result.supplementCount || 0}`,
+          `filter_run=${best.result.filterRunId || "filter"}`,
+          `det=${ocr.textDetThresh}`,
+          `box=${ocr.textDetBoxThresh}`,
+          `unclip=${ocr.textDetUnclipRatio}`,
+          `rec=${ocr.textRecScoreThresh}`,
+          `confidence=${filter.confidenceThreshold}`,
+          `min_area=${filter.minBoxArea}`,
+          `max_area=${filter.maxBoxArea}`,
+          `max_aspect=${filter.maxAspectRatio}`,
+          `merge_gap=${filter.mergeLineGap}`,
+          `font_scale=${filter.fontScale}`
+        ].join("\n");
+        await copyText(text);
+        setStatus(`Copied best OCR #${groupOrdinal(best.ocrGroupId)} + filter #${filterGroupOrdinal(best.filterGroupId)}.`);
+      }
+
+      function getBestCombinationForCurrentFile() {
+        const file = state.files[state.currentIndex];
+        if (!file) return null;
+        const key = fileKey(file);
+        const best = state.bestCombinationByFile.get(key);
+        if (!best) return null;
+        const result = state.filterResultsByFile.get(key)?.get(best.ocrGroupId)?.get(best.filterGroupId)?.result;
+        return result ? { ...best, result } : null;
+      }
+
+      function markBestCombination(file, ocrGroupId, filterGroupId) {
+        const key = fileKey(file);
+        state.bestCombinationByFile.set(key, { ocrGroupId, filterGroupId });
+        state.activeOcrGroupByFile.set(key, ocrGroupId);
+        state.activeFilterGroupBySource.set(filterSourceKey(key, ocrGroupId), filterGroupId);
+        setStatus(`Best for ${file.name}: OCR #${groupOrdinal(ocrGroupId)} + filter #${filterGroupOrdinal(filterGroupId)}`);
+        renderFileList();
+        renderRunHistory();
+        renderComparison();
+      }
+
+      async function requestLocalOcr(dataUrl, debugId, params, context) {
+        const response = await fetch(`${context.serviceUrl}/ocr`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            image: dataUrl,
+            lang: context.lang,
+            mode: context.mode,
+            text_det_thresh: params.textDetThresh,
+            text_det_box_thresh: params.textDetBoxThresh,
+            text_det_unclip_ratio: params.textDetUnclipRatio,
+            text_rec_score_thresh: params.textRecScoreThresh,
+            debug: true,
+            debug_id: debugId
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.detail || payload.error || response.statusText);
+        }
+        return payload;
+      }
+
+      function processOcrPayload(payload, image, params) {
+        const normalizedSource = Array.isArray(payload.items) && payload.items.length ? payload.items : payload.rawItems || [];
+        const rawItems = dedupeOverlappingTextItems(normalizedSource.map((item, index) => normalizeItem(item, index)).filter(Boolean), 0.3);
+        const filterReasons = [];
+        const filteredItems = rawItems.filter((item) => {
+          const reason = dropReason(item, image, params);
+          if (reason) {
+            filterReasons.push({ id: item.id, text: item.text, reason, box: item.box, confidence: item.confidence });
+            return false;
+          }
+          return true;
+        });
+        const mergedItems = dedupeOverlappingTextItems(mergeItems(filteredItems, params), 0.3);
+        const finalBubbles = mergedItems.map((item, index) => buildFinalBubble(item, index, image, params));
+        return {
+          rawPayload: payload,
+          image,
+          params,
+          rawItems,
+          filteredItems,
+          mergedItems,
+          finalBubbles,
+          filterReasons,
+          counts: {
+            raw: rawItems.length,
+            filtered: filteredItems.length,
+            filteredOut: rawItems.length - filteredItems.length,
+            merged: mergedItems.length,
+            final: finalBubbles.length,
+            overflow: finalBubbles.filter((item) => item.overflow).length,
+            emptyTranslation: finalBubbles.filter((item) => !item.translatedText).length,
+            invalidCoordinates: finalBubbles.filter((item) => item.invalidCoordinates).length
+          }
+        };
+      }
+
+      function normalizeItem(item, index) {
+        const box = normalizeBox(item.box || item.location || item.rawBox || item.boundingBox);
+        const text = String(item.text || item.words || "").trim();
+        if (!box || !text) return null;
+        return {
+          id: `ocr-${index}`,
+          text,
+          confidence: Number(item.score ?? item.confidence ?? 0),
+          box,
+          source: item.variant || item.lang || "ocr",
+          variantSupport: Number(item.variantSupport || 0),
+          enhancedVariantSupport: Number(item.enhancedVariantSupport || 0),
+          supplemented: item.supplemented === true,
+          raw: item
+        };
+      }
+
+      function normalizeBox(box) {
+        const left = Number(box && (box.left ?? box.x));
+        const top = Number(box && (box.top ?? box.y));
+        const width = Number(box && (box.width ?? box.w));
+        const height = Number(box && (box.height ?? box.h));
+        if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+        return { left, top, width, height, right: left + width, bottom: top + height };
+      }
+
+      function dropReason(item, image, params) {
+        const text = item.text.replace(/\s+/g, "");
+        const area = item.box.width * item.box.height;
+        const areaRatio = area / Math.max(1, image.width * image.height);
+        const aspect = Math.max(item.box.width / item.box.height, item.box.height / item.box.width);
+        if (isSymbolOnly(text)) return "symbol-only";
+        if (item.confidence > 0 && item.confidence < params.confidenceThreshold && scriptChars(text) <= 2) {
+          return "low-confidence";
+        }
+        if (area < params.minBoxArea) return "too-small-area";
+        if (areaRatio > params.maxBoxArea) return "too-large-area";
+        if (aspect > params.maxAspectRatio) return "bad-aspect-ratio";
+        if (scriptChars(text) <= 1 && areaRatio < 0.003 && item.confidence < 0.98) return "tiny-single-character";
+        return "";
+      }
+
+      function dedupeOverlappingTextItems(items, threshold) {
+        const kept = [];
+        for (const item of items) {
+          const duplicateIndex = kept.findIndex((other) => compactOcrText(item.text || item.sourceText) === compactOcrText(other.text || other.sourceText) && boxIntersectionRatio(item.box, other.box) >= threshold);
+          if (duplicateIndex < 0) {
+            kept.push(item);
+            continue;
+          }
+          if (preferOcrItem(item, kept[duplicateIndex])) kept[duplicateIndex] = item;
+        }
+        return kept;
+      }
+
+      function preferOcrItem(candidate, existing) {
+        const candidateSupport = Number(candidate.enhancedVariantSupport || candidate.variantSupport || 0);
+        const existingSupport = Number(existing.enhancedVariantSupport || existing.variantSupport || 0);
+        if (candidateSupport !== existingSupport) return candidateSupport > existingSupport;
+        const candidateScore = Number(candidate.confidence ?? candidate.score ?? 0);
+        const existingScore = Number(existing.confidence ?? existing.score ?? 0);
+        return candidateScore > existingScore;
+      }
+
+      function compactOcrText(value) {
+        return String(value || "").replace(/\s+/g, "");
+      }
+
+      function boxIntersectionRatio(first, second) {
+        if (!first || !second) return 0;
+        const left = Math.max(first.left, second.left);
+        const top = Math.max(first.top, second.top);
+        const right = Math.min(first.right ?? first.left + first.width, second.right ?? second.left + second.width);
+        const bottom = Math.min(first.bottom ?? first.top + first.height, second.bottom ?? second.top + second.height);
+        if (right <= left || bottom <= top) return 0;
+        const firstArea = Math.max(1, first.width * first.height);
+        const secondArea = Math.max(1, second.width * second.height);
+        return ((right - left) * (bottom - top)) / Math.min(firstArea, secondArea);
+      }
+
+      function mergeItems(items, params) {
+        const sorted = [...items].sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left);
+        const groups = [];
+        for (const item of sorted) {
+          const group = groups.find((candidate) => shouldMerge(candidate, item, params));
+          if (group) group.push(item);
+          else groups.push([item]);
+        }
+        return groups.map((group, index) => {
+          const box = unionBox(group.map((item) => item.box));
+          return {
+            id: `merged-${index}`,
+            text: group.map((item) => item.text).join("\n"),
+            confidence: Math.max(...group.map((item) => item.confidence || 0)),
+            box,
+            items: group
+          };
+        });
+      }
+
+      function shouldMerge(group, item, params) {
+        const box = unionBox(group.map((entry) => entry.box));
+        const avgHeight = [...group, item].reduce((sum, entry) => sum + entry.box.height, 0) / (group.length + 1);
+        const verticalOverlap = Math.min(box.bottom, item.box.bottom) - Math.max(box.top, item.box.top);
+        const sameLine = verticalOverlap >= Math.min(box.height, item.box.height) * 0.45;
+        const horizontalGap = item.box.left > box.right ? item.box.left - box.right : box.left > item.box.right ? box.left - item.box.right : 0;
+        if (sameLine) return horizontalGap <= avgHeight * 2.2;
+        const verticalGap = item.box.top - box.bottom;
+        const overlapX = Math.min(box.right, item.box.right) - Math.max(box.left, item.box.left);
+        const overlapRatio = overlapX > 0 ? overlapX / Math.max(1, Math.min(box.width, item.box.width)) : 0;
+        return verticalGap >= -avgHeight * 0.5 && verticalGap <= avgHeight * params.mergeLineGap && overlapRatio >= 0.18;
+      }
+
+      function unionBox(boxes) {
+        const left = Math.min(...boxes.map((box) => box.left));
+        const top = Math.min(...boxes.map((box) => box.top));
+        const right = Math.max(...boxes.map((box) => box.right));
+        const bottom = Math.max(...boxes.map((box) => box.bottom));
+        return { left, top, right, bottom, width: right - left, height: bottom - top };
+      }
+
+      function buildFinalBubble(item, index, image, params) {
+        const padding = Math.max(0, Number(params.coverPadding || 2));
+        const box = {
+          left: Math.max(0, item.box.left - padding),
+          top: Math.max(0, item.box.top - padding),
+          right: Math.min(image.width, item.box.right + padding),
+          bottom: Math.min(image.height, item.box.bottom + padding)
+        };
+        box.width = box.right - box.left;
+        box.height = box.bottom - box.top;
+        const translatedText = `给你看！`;
+        const fit = fitText(translatedText, box.width * 0.9, box.height * 0.75, params.fontScale);
+        return {
+          id: `final-${index}`,
+          sourceText: item.text,
+          translatedText,
+          confidence: item.confidence,
+          box,
+          fontSize: fit.fontSize,
+          lines: fit.lines,
+          overflow: fit.overflow,
+          invalidCoordinates: box.width <= 0 || box.height <= 0
+        };
+      }
+
+      function fitText(text, width, height, fontScale) {
+        const chars = Array.from(String(text || ""));
+        let best = { fontSize: 8, lines: [text], overflow: true };
+        for (let size = Math.min(42, height * 0.55 * fontScale); size >= 8; size -= 1) {
+          const maxChars = Math.max(1, Math.floor(width / (size * 0.62)));
+          const lines = [];
+          for (let i = 0; i < chars.length; i += maxChars) lines.push(chars.slice(i, i + maxChars).join(""));
+          const overflow = lines.length * size * 1.22 > height;
+          best = { fontSize: size, lines, overflow };
+          if (!overflow) return best;
+        }
+        return best;
+      }
+
+      function renderComparison() {
+        const file = state.files[state.currentIndex];
+        const grid = $("comparisonGrid");
+        grid.innerHTML = "";
+        $("currentFileName").textContent = file ? file.webkitRelativePath || file.name : "No image selected";
+        if (!file) {
+          grid.style.gridTemplateColumns = "1fr";
+          grid.innerHTML = '<div class="canvas-placeholder">Add images from the toolbar to compare OCR parameters.</div>';
+          renderFilterComparison();
+          updateActiveJson();
+          return;
+        }
+        const key = fileKey(file);
+        const entries = state.resultsByFile.get(key) || new Map();
+        const groups = selectedParameterGroups();
+        if (!groups.length) {
+          grid.style.gridTemplateColumns = "1fr";
+          grid.innerHTML = '<div class="canvas-placeholder">Enable at least one parameter group.</div>';
+          renderFilterComparison();
+          updateActiveJson();
+          return;
+        }
+        grid.style.gridTemplateColumns = `repeat(${groups.length}, minmax(250px, 1fr))`;
+        const activeGroupId = state.activeOcrGroupByFile.get(key) || "";
+        for (const group of groups) {
+          const entry = entries.get(group.id) || { status: "idle", result: null, error: "" };
+          const result = entry.result;
+          const isSelected = activeGroupId === group.id;
+          const selectable = entry.status === "done";
+          const card = document.createElement("article");
+          card.className = `result-card${selectable ? " selectable" : ""}${isSelected ? " active" : ""}`;
+          card.dataset.groupId = group.id;
+          card.setAttribute("aria-pressed", String(isSelected));
+          if (selectable) {
+            card.setAttribute("role", "button");
+            card.tabIndex = 0;
+          }
+          card.onclick = () => {
+            if (selectable) selectOcrResult(file, group.id);
+          };
+          card.onkeydown = (event) => {
+            if (!selectable || (event.key !== "Enter" && event.key !== " ")) return;
+            event.preventDefault();
+            selectOcrResult(file, group.id);
+          };
+          const head = document.createElement("div");
+          head.className = "result-head";
+          const title = document.createElement("div");
+          title.className = "result-title";
+          const titleStrong = document.createElement("strong");
+          titleStrong.textContent = `#${groupOrdinal(group.id)}`;
+          const titleParams = document.createElement("small");
+          titleParams.textContent = compactParamLabel(group.params);
+          title.append(titleStrong, titleParams);
+          if (isSelected && selectable) {
+            const badge = document.createElement("span");
+            badge.className = "source-badge";
+            badge.textContent = "✓ Selected";
+            title.appendChild(badge);
+          }
+          head.appendChild(title);
+          if (isSelected && result?.ocrContext?.mode === "fast") {
+            const enhanceButton = document.createElement("button");
+            enhanceButton.type = "button";
+            const sourceKey = filterSourceKey(key, group.id);
+            const supplementing = state.supplementingSource === sourceKey;
+            enhanceButton.textContent = supplementing ? "Enhancing…" : "Enhance missing";
+            enhanceButton.disabled = state.running || state.filtering || supplementing;
+            enhanceButton.onclick = (event) => {
+              event.stopPropagation();
+              supplementEnhancedResult(file, group.id);
+            };
+            head.appendChild(enhanceButton);
+          }
+          const status = document.createElement("div");
+          status.className = `result-status ${entry.status}`;
+          status.textContent = resultStatusText(entry);
+          const metrics = document.createElement("div");
+          metrics.className = "card-metrics";
+          const counts = result?.counts || {};
+          metrics.innerHTML = `<span><strong>${counts.raw ?? 0}</strong>raw</span><span><strong>${counts.filtered ?? 0}</strong>kept</span><span><strong>${counts.merged ?? 0}</strong>merged</span><span><strong>${counts.overflow ?? 0}</strong>overflow</span>`;
+          const shell = document.createElement("div");
+          shell.className = "canvas-shell";
+          if (result) {
+            const canvas = document.createElement("canvas");
+            canvas.dataset.groupCanvas = group.id;
+            shell.appendChild(canvas);
+            drawResultCanvas(canvas, result);
+          } else {
+            const placeholder = document.createElement("div");
+            placeholder.className = "canvas-placeholder";
+            placeholder.textContent = entry.status === "error" ? "OCR failed" : entry.status === "running" ? "Processing image…" : entry.status === "queued" ? "Waiting to run…" : "Not run yet";
+            shell.appendChild(placeholder);
+          }
+          card.append(head, status, metrics, shell);
+          grid.appendChild(card);
+        }
+        renderFilterComparison();
+        updateActiveJson();
+      }
+
+      function selectOcrResult(file, groupId) {
+        const key = fileKey(file);
+        if (state.resultsByFile.get(key)?.get(groupId)?.status !== "done") return;
+        state.activeOcrGroupByFile.set(key, groupId);
+        setStatus(`OCR #${groupOrdinal(groupId)} selected for filtering and enhancement.`);
+        renderRunHistory();
+        renderComparison();
+      }
+
+      function getSelectedOcrResult() {
+        const file = state.files[state.currentIndex];
+        if (!file) return null;
+        const key = fileKey(file);
+        const groupId = state.activeOcrGroupByFile.get(key);
+        const entry = groupId ? state.resultsByFile.get(key)?.get(groupId) : null;
+        return entry?.status === "done" ? entry.result : null;
+      }
+
+      function updateFilterAction() {
+        const source = getSelectedOcrResult();
+        const button = $("applyFilters");
+        button.disabled = state.running || state.filtering || !source;
+        $("filterSource").textContent = source
+          ? `Source: OCR #${groupOrdinal(source.groupId)} · ${source.runId}`
+          : "Select a completed OCR result above.";
+      }
+
+      function renderFilterComparison() {
+        const grid = $("filterComparisonGrid");
+        grid.innerHTML = "";
+        updateFilterAction();
+        const file = state.files[state.currentIndex];
+        const source = getSelectedOcrResult();
+        const groups = selectedFilterGroups();
+        if (!file || !source) {
+          grid.style.gridTemplateColumns = "1fr";
+          grid.innerHTML = '<div class="filter-grid-empty">Run OCR, then select one completed result above to compare filtering.</div>';
+          return;
+        }
+        if (!groups.length) {
+          grid.style.gridTemplateColumns = "1fr";
+          grid.innerHTML = '<div class="filter-grid-empty">Enable at least one filter group.</div>';
+          return;
+        }
+        const key = fileKey(file);
+        const entries = state.filterResultsByFile.get(key)?.get(source.groupId) || new Map();
+        const sourceKey = filterSourceKey(key, source.groupId);
+        const activeFilterId = state.activeFilterGroupBySource.get(sourceKey) || "";
+        const best = state.bestCombinationByFile.get(key);
+        grid.style.gridTemplateColumns = `repeat(${groups.length}, minmax(250px, 1fr))`;
+        for (const group of groups) {
+          const entry = entries.get(group.id) || { status: "idle", result: null, error: "" };
+          const result = entry.result;
+          const isBest = best?.ocrGroupId === source.groupId && best?.filterGroupId === group.id;
+          const selectable = entry.status === "done";
+          const isSelected = activeFilterId === group.id;
+          const card = document.createElement("article");
+          card.className = `result-card${selectable ? " selectable" : ""}${isSelected ? " active" : ""}${isBest ? " best" : ""}`;
+          card.dataset.filterGroupId = group.id;
+          card.setAttribute("aria-pressed", String(isSelected));
+          if (selectable) {
+            card.setAttribute("role", "button");
+            card.tabIndex = 0;
+          }
+          card.onclick = () => {
+            if (!selectable) return;
+            state.activeFilterGroupBySource.set(sourceKey, group.id);
+            renderFilterComparison();
+            updateActiveJson();
+          };
+          card.onkeydown = (event) => {
+            if (!selectable || (event.key !== "Enter" && event.key !== " ")) return;
+            event.preventDefault();
+            state.activeFilterGroupBySource.set(sourceKey, group.id);
+            renderFilterComparison();
+            updateActiveJson();
+          };
+          const head = document.createElement("div");
+          head.className = "result-head";
+          const title = document.createElement("div");
+          title.className = "result-title";
+          const titleStrong = document.createElement("strong");
+          titleStrong.textContent = `#${filterGroupOrdinal(group.id)}`;
+          const titleParams = document.createElement("small");
+          titleParams.textContent = compactFilterLabel(group.params);
+          title.append(titleStrong, titleParams);
+          const bestButton = document.createElement("button");
+          bestButton.type = "button";
+          bestButton.disabled = entry.status !== "done";
+          bestButton.className = isBest ? "best" : "";
+          bestButton.textContent = isBest ? "Best" : "Set best";
+          bestButton.onclick = (event) => {
+            event.stopPropagation();
+            markBestCombination(file, source.groupId, group.id);
+          };
+          head.append(title, bestButton);
+          const status = document.createElement("div");
+          status.className = `result-status ${entry.status}`;
+          status.textContent = filterResultStatusText(entry);
+          const metrics = document.createElement("div");
+          metrics.className = "card-metrics";
+          const counts = result?.counts || {};
+          metrics.innerHTML = `<span><strong>${counts.raw ?? 0}</strong>raw</span><span><strong>${counts.filtered ?? 0}</strong>kept</span><span><strong>${counts.merged ?? 0}</strong>merged</span><span><strong>${counts.overflow ?? 0}</strong>overflow</span>`;
+          const shell = document.createElement("div");
+          shell.className = "canvas-shell";
+          if (result) {
+            const canvas = document.createElement("canvas");
+            canvas.dataset.filterCanvas = `${source.groupId}:${group.id}`;
+            shell.appendChild(canvas);
+            drawResultCanvas(canvas, result);
+          } else {
+            const placeholder = document.createElement("div");
+            placeholder.className = "canvas-placeholder";
+            placeholder.textContent = entry.status === "error" ? "Filtering failed" : entry.status === "running" ? "Applying filters…" : entry.status === "queued" ? "Waiting to filter…" : "Not applied yet";
+            shell.appendChild(placeholder);
+          }
+          card.append(head, status, metrics, shell);
+          grid.appendChild(card);
+        }
+      }
+
+      function compactFilterLabel(params) {
+        return `conf ${params.confidenceThreshold} · min ${params.minBoxArea} · max ${params.maxBoxArea} · aspect ${params.maxAspectRatio} · gap ${params.mergeLineGap} · font ${params.fontScale}`;
+      }
+
+      function filterResultStatusText(entry) {
+        if (entry.status === "queued") return "Queued";
+        if (entry.status === "running") return "Applying filters…";
+        if (entry.status === "error") return `Failed: ${entry.error || "Unknown error"}`;
+        if (entry.status === "done") return `Complete · ${entry.result.filterRunId}`;
+        return "Ready to apply";
+      }
+
+      function compactParamLabel(params) {
+        return `det ${params.textDetThresh} · box ${params.textDetBoxThresh} · unclip ${params.textDetUnclipRatio} · rec ${params.textRecScoreThresh}`;
+      }
+
+      function resultStatusText(entry) {
+        if (entry.status === "queued") return "Queued";
+        if (entry.status === "running") return "Running OCR…";
+        if (entry.status === "error") return `Failed: ${entry.error || "Unknown error"}`;
+        if (entry.status === "done") {
+          const supplemented = entry.result.supplementCount ? ` · +${entry.result.supplementCount} enhanced` : "";
+          return `Complete · ${entry.result.runId}${supplemented}`;
+        }
+        return "Ready to run";
+      }
+
+      function drawResultCanvas(canvas, result) {
+        const image = result.image;
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(image, 0, 0);
+        const stageItems = state.stage === "raw" ? result.rawItems : state.stage === "filtered" ? result.filteredItems : state.stage === "merged" ? result.mergedItems : result.finalBubbles;
+        if (state.stage === "final") drawOverwrite(ctx, result.finalBubbles, $("previewMode").value);
+        drawBoxes(ctx, stageItems, state.stage);
+      }
+
+      function drawBoxes(ctx, items, stage) {
+        ctx.save();
+        ctx.lineWidth = 3;
+        ctx.font = "16px Segoe UI";
+        const color = stage === "raw" ? "#ef4444" : stage === "filtered" ? "#2563eb" : stage === "merged" ? "#f59e0b" : "#059669";
+        items.forEach((item, index) => {
+          const box = item.box;
+          if (!box) return;
+          ctx.strokeStyle = color;
+          ctx.fillStyle = "rgba(255,255,255,0.88)";
+          ctx.strokeRect(box.left, box.top, box.width, box.height);
+          const label = `${index + 1} ${(item.confidence || 0).toFixed(2)} ${item.text || item.sourceText || ""}`.slice(0, 80);
+          ctx.fillRect(box.left, Math.max(0, box.top - 22), Math.min(460, label.length * 8 + 10), 22);
+          ctx.fillStyle = color;
+          ctx.fillText(label, box.left + 4, Math.max(15, box.top - 6));
+        });
+        ctx.restore();
+      }
+
+      function drawOverwrite(ctx, bubbles, mode) {
+        bubbles.forEach((bubble) => {
+          const box = bubble.box;
+          if (mode !== "text") {
+            ctx.fillStyle = "rgba(255,255,255,0.94)";
+            roundRect(ctx, box.left, box.top, box.width, box.height, Math.min(8, box.height * 0.12));
+            ctx.fill();
+          }
+          if (mode !== "cover") {
+            ctx.fillStyle = "#111827";
+            ctx.font = `700 ${bubble.fontSize}px "Microsoft YaHei", sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            const lineHeight = bubble.fontSize * 1.22;
+            const startY = box.top + box.height / 2 - ((bubble.lines.length - 1) * lineHeight) / 2;
+            bubble.lines.forEach((line, index) => ctx.fillText(line, box.left + box.width / 2, startY + index * lineHeight));
+          }
+        });
+      }
+
+      function roundRect(ctx, x, y, width, height, radius) {
+        const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + width - r, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+        ctx.lineTo(x + width, y + height - r);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+        ctx.lineTo(x + r, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+      }
+
+      function updateActiveJson() {
+        const result = getActiveResult();
+        $("jsonView").textContent = JSON.stringify(result ? sanitizeForJson(result) : {}, null, 2);
+      }
+
+      function getActiveResult() {
+        const file = state.files[state.currentIndex];
+        if (!file) return null;
+        const key = fileKey(file);
+        const entries = state.resultsByFile.get(key);
+        if (!entries) return null;
+        const enabledIds = new Set(selectedParameterGroups().map((group) => group.id));
+        const activeGroupId = state.activeOcrGroupByFile.get(key);
+        if (enabledIds.has(activeGroupId)) {
+          const filterGroupId = state.activeFilterGroupBySource.get(filterSourceKey(key, activeGroupId));
+          const filtered = filterGroupId ? state.filterResultsByFile.get(key)?.get(activeGroupId)?.get(filterGroupId)?.result : null;
+          if (filtered) return filtered;
+          if (entries.get(activeGroupId)?.result) return entries.get(activeGroupId).result;
+        }
+        for (const group of selectedParameterGroups()) {
+          if (entries.get(group.id)?.result) return entries.get(group.id).result;
+        }
+        return null;
+      }
+
+      function sanitizeForJson(result) {
+        const { image, rawPayload, dataUrl, groupId, ...rest } = result;
+        return {
+          ...rest,
+          serviceDiagnostics: rawPayload ? {
+            counts: rawPayload.counts || {},
+            rawItems: rawPayload.rawItems || [],
+            supplementCounts: rawPayload.supplementCounts || {},
+            supplementRawItems: rawPayload.supplementRawItems || []
+          } : {}
+        };
+      }
+
+      function pickOcrParams(params) {
+        return {
+          textDetThresh: Number(params.textDetThresh),
+          textDetBoxThresh: Number(params.textDetBoxThresh),
+          textDetUnclipRatio: Number(params.textDetUnclipRatio),
+          textRecScoreThresh: Number(params.textRecScoreThresh)
+        };
+      }
+
+
+      function buildRunId(params) {
+        state.runSeq += 1;
+        const time = new Date();
+        const hh = String(time.getHours()).padStart(2, "0");
+        const mm = String(time.getMinutes()).padStart(2, "0");
+        const ss = String(time.getSeconds()).padStart(2, "0");
+        return `run-${String(state.runSeq).padStart(3, "0")}-${hh}${mm}${ss}-${ocrParamSlug(params)}`;
+      }
+
+      function buildFilterRunId(params) {
+        state.filterRunSeq += 1;
+        return `filter-${String(state.filterRunSeq).padStart(3, "0")}-${filterParamSlug(params)}`;
+      }
+
+      function buildSupplementRunId() {
+        state.supplementRunSeq += 1;
+        return `enhance-${String(state.supplementRunSeq).padStart(3, "0")}-${Date.now()}`;
+      }
+
+      function buildOcrParamLabel(params) {
+        return `det=${params.textDetThresh} box=${params.textDetBoxThresh} unclip=${params.textDetUnclipRatio} rec=${params.textRecScoreThresh}`;
+      }
+
+      function buildCombinedParamLabel(params) {
+        return `det=${params.textDetThresh} box=${params.textDetBoxThresh} unclip=${params.textDetUnclipRatio} rec=${params.textRecScoreThresh} | conf=${params.confidenceThreshold} minA=${params.minBoxArea} maxA=${params.maxBoxArea} asp=${params.maxAspectRatio} gap=${params.mergeLineGap} fs=${params.fontScale}`;
+      }
+
+      function ocrParamSlug(params) {
+        return `d${params.textDetThresh}_b${params.textDetBoxThresh}_u${params.textDetUnclipRatio}_r${params.textRecScoreThresh}`
+          .replace(/[^a-z0-9_.-]+/gi, "-")
+          .slice(0, 96);
+      }
+
+      function filterParamSlug(params) {
+        return `c${params.confidenceThreshold}_a${params.minBoxArea}_m${params.maxBoxArea}_x${params.maxAspectRatio}_g${params.mergeLineGap}_f${params.fontScale}`
+          .replace(/[^a-z0-9_.-]+/gi, "-")
+          .slice(0, 96);
+      }
+
+      function readFileAsDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(reader.error || new Error("read failed"));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      function loadImage(dataUrl) {
+        return new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = () => reject(new Error("image decode failed"));
+          image.src = dataUrl;
+        });
+      }
+
+      function isSymbolOnly(text) {
+        return !/[0-9A-Za-z\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(String(text || ""));
+      }
+
+      function scriptChars(text) {
+        return (String(text || "").match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g) || []).length;
+      }
+
+      function fileKey(file) {
+        return `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`;
+      }
+
+      function setStatus(text, error = false) {
+        $("status").textContent = text;
+        $("status").classList.toggle("bad", error);
+      }
+
+      function downloadCurrentJson() {
+        const file = state.files[state.currentIndex];
+        const result = getActiveResult();
+        if (!file || !result) {
+          setStatus("No active result to export.", true);
+          return;
+        }
+        downloadText(JSON.stringify(sanitizeForJson(result), null, 2), `${stripExt(file.name)}-${result.runId || "run"}.ocr-debug.json`, "application/json");
+      }
+
+      function downloadText(text, name, type) {
+        const blob = new Blob([text], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      async function copyText(text) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return;
+        } catch {
+          const node = document.createElement("textarea");
+          node.value = text;
+          node.style.position = "fixed";
+          node.style.left = "-9999px";
+          document.body.appendChild(node);
+          node.select();
+          document.execCommand("copy");
+          node.remove();
+        }
+      }
+
+      function downloadActivePng() {
+        const file = state.files[state.currentIndex];
+        const result = getActiveResult();
+        if (!file || !result) {
+          setStatus("No active result to export.", true);
+          return;
+        }
+        const key = fileKey(file);
+        const activeGroupId = state.activeOcrGroupByFile.get(key) || result.groupId;
+        const activeFilterId = state.activeFilterGroupBySource.get(filterSourceKey(key, activeGroupId));
+        const canvas = activeFilterId
+          ? document.querySelector(`[data-filter-canvas="${activeGroupId}:${activeFilterId}"]`)
+          : document.querySelector(`[data-group-canvas="${activeGroupId}"]`);
+        if (!canvas) {
+          setStatus("Active preview is not visible.", true);
+          return;
+        }
+        const a = document.createElement("a");
+        a.href = canvas.toDataURL("image/png");
+        a.download = `${stripExt(file.name)}-${result.runId || "run"}-${state.stage}.png`;
+        a.click();
+      }
+
+      function stripExt(name) {
+        return String(name || "image").replace(/\.[^.]+$/, "");
+      }
+
+      window.addEventListener("beforeunload", () => state.previewUrls.forEach((url) => URL.revokeObjectURL(url)));
+      saveParameterGroups();
+      saveFilterGroups();
+      renderParameterGroups();
+      renderFilterGroups();
+      renderRunHistory();
+      renderComparison();
+    </script>
+  </body>
+</html>

@@ -1,23 +1,35 @@
 # 漫画图片翻译扩展加载指南
 
-日期：2026-06-06  
+日期：2026-06-21
 执行者：Codex
 
-## 运行与打包
+## 唯一源码与加载目录
+
+扩展只保留根目录实现，正式源码为：
+
+- `manifest.json`
+- `background.js`
+- `content.js`
+- `popup.html` / `popup.js`
+- `styles.css`
+
+Chrome / Edge 开发调试时直接加载仓库根目录：
+`C:\homework\AI_work\translator`。
+
+## 可选打包
 
 ```powershell
-npm install
 npm run build
 ```
 
-构建产物位于 `dist/`。Chrome / Edge 加载扩展时请选择 `dist` 目录，而不是仓库根目录。
+构建不再编译另一套源码，只校验根目录 JavaScript 和 manifest，然后将同一套文件复制到 `dist/`。`dist/` 可用于分发，但日常开发应加载根目录，避免忘记重新构建。
 
 ## Chrome / Edge 加载
 
 1. 打开 `chrome://extensions` 或 `edge://extensions`。
 2. 启用“开发者模式”。
 3. 点击“加载已解压的扩展程序”。
-4. 选择 `C:\homework\AI_work\translator\dist`。
+4. 选择 `C:\homework\AI_work\translator`。
 
 ## 第一阶段验收
 
@@ -26,6 +38,11 @@ npm run build
 - 开启“调试框”并保存后，网页上出现候选图片绿色框。
 - “清缓存”能清理 `chrome.storage.local` 中的翻译缓存。
 
-## 后续功能说明
+## 验证命令
 
-当前 TypeScript 架构已经固定 OCR Provider、Translator Provider、文本块合并、Overlay/Embedded Renderer 的模块边界。真实翻译调用需要配置百度 OCR 与 OpenAI-compatible 或自定义 HTTP 翻译服务。
+```powershell
+npm test
+npm run build
+```
+
+真实翻译调用仍需要配置本地/百度 OCR 与 OpenAI-compatible 翻译服务。

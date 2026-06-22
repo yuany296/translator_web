@@ -49,6 +49,7 @@
   const KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX = 32;
   const KAKAO_STITCH_MIN_WIDTH_RATIO = 0.82;
   const PRETRANSLATE_AHEAD_COUNT = 6;
+  const RUNTIME_OWNER_ATTRIBUTE = "data-manga-translator-runtime-owner";
   const MAX_EMBEDDED_IMAGE_CACHE = 40;
   const STATUS_INFO_THROTTLE_MS = 1200;
   const CONTEXT_INVALIDATED_RE = /extension context invalidated/i;
@@ -114,7 +115,8 @@
     floatingBallClose: null,
     bubbleMeasureProbe: null,
     fontFitCache: new Map(),
-    lastInfoStatusAt: 0
+    lastInfoStatusAt: 0,
+    runtimeOwnerToken: `${Date.now()}-${Math.random().toString(36).slice(2)}`
   };
 
   const api = {
@@ -162,6 +164,7 @@
       return;
     }
 
+    claimRuntimeOwnership();
     await loadLocalSettings();
     ensureOverlayLayer();
     createFloatingBall();
@@ -613,7 +616,7 @@
     if (startIndex < 0) {
       startIndex = Math.max(0, candidates.length - 1);
     }
-    return candidates.slice(startIndex, startIndex + aheadCount + 1).filter(isPending);
+    return candidates.slice(startIndex).filter(isPending).slice(0, aheadCount + 1);
   }
 
 
@@ -3116,6 +3119,10 @@
     if (state.invalidated) {
       return;
     }
+    if (!isCurrentRuntimeOwner()) {
+      destroy();
+      return;
+    }
 
     const layer = ensureOverlayLayer();
     reattachOverlayRoots(layer);
@@ -4380,9 +4387,28 @@
 
   function destroy() {
     markInvalidated("destroy called");
+    if (state.overlayLayer && state.overlayLayer.isConnected) {
+      state.overlayLayer.remove();
+    }
     if (state.floatingBallWrap && state.floatingBallWrap.isConnected) {
       state.floatingBallWrap.remove();
     }
+  }
+
+  function claimRuntimeOwnership() {
+    const root = document.documentElement;
+    if (!root) {
+      return;
+    }
+    root.setAttribute(RUNTIME_OWNER_ATTRIBUTE, state.runtimeOwnerToken);
+    document
+      .querySelectorAll(".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe")
+      .forEach((node) => node.remove());
+  }
+
+  function isCurrentRuntimeOwner() {
+    const root = document.documentElement;
+    return !root || root.getAttribute(RUNTIME_OWNER_ATTRIBUTE) === state.runtimeOwnerToken;
   }
 
   function getTargetId(target) {

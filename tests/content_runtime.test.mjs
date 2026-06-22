@@ -209,7 +209,7 @@ test("Kakao strip screenshot waits until a useful target area is visible", () =>
   assert.match(contentSource, /isScreenshotTargetNotVisibleError\(reason\)[\s\S]*scheduleAutoTranslateRetry\(target\)/);
 });
 
-test("completed ahead window does not slide forward through the chapter", () => {
+test("ahead window refills after completed images when the reader scrolls forward", () => {
   const candidates = Array.from({ length: 12 }, (_, index) => ({
     index,
     done: index < 7,
@@ -224,7 +224,16 @@ test("completed ahead window does not slide forward through the chapter", () => 
     (candidate) => !candidate.done,
     6
   );
-  assert.deepEqual(pending, []);
+  assert.deepEqual(
+    pending.map((candidate) => candidate.index),
+    [7, 8, 9, 10, 11]
+  );
+});
+
+test("a new content runtime takes ownership and removes stale extension UI", () => {
+  assert.match(contentSource, /claimRuntimeOwnership\(\);[\s\S]*await loadLocalSettings\(\)/);
+  assert.match(contentSource, /\.mt-overlay-layer, \.mt-floating-ball-wrap, \.mt-measure-probe/);
+  assert.match(contentSource, /if \(!isCurrentRuntimeOwner\(\)\)\s*\{\s*destroy\(\)/);
 });
 
 test("ahead window contains the current image and the next six images", () => {

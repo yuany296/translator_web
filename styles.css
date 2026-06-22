@@ -66,12 +66,11 @@
   --mt-stroke-width: 2px;
   --mt-base-transform: none;
   transform: var(--mt-base-transform);
-  transition: transform 0.15s ease, opacity 0.15s ease;
+  transition: opacity 0.15s ease;
 }
 
 .mt-bubble.mt-stream-enter {
   opacity: 0;
-  transform: var(--mt-base-transform) translateY(3px) scale(0.985);
   animation: mt-bubble-in 0.24s ease forwards;
   animation-delay: var(--mt-stream-delay, 0ms);
 }
@@ -85,10 +84,6 @@
   pointer-events: none !important;
   z-index: -1 !important;
   transform: none !important;
-}
-
-.mt-bubble:hover {
-  transform: var(--mt-base-transform) scale(1.02);
 }
 
 .mt-bubble.mt-jp-vertical {
@@ -263,11 +258,9 @@
 @keyframes mt-bubble-in {
   from {
     opacity: 0;
-    transform: var(--mt-base-transform) translateY(3px) scale(0.985);
   }
 
   to {
     opacity: 1;
-    transform: var(--mt-base-transform) translateY(0) scale(1);
   }
 }

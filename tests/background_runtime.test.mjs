@@ -22,7 +22,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage };`,
+  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage };`,
   context,
   { filename: "background.js" }
 );
@@ -303,4 +303,40 @@ test("same-line OCR fragments merge their solid paint boxes", () => {
   assert.equal(merged.bg_type, "solid");
   assert.deepEqual({ ...merged.fill_box }, { x: 8, y: 18.5, w: 54.5, h: 13 });
   assert.ok(merged.fill_box.w * merged.fill_box.h <= merged.w * merged.h * 2);
+});
+
+test("overlapping translated substring keeps only the complete sentence", () => {
+  const collapse = context.__backgroundTest.collapseDuplicateLocalPaddleTranslations;
+  const result = collapse([
+    {
+      x: 35, y: 20, w: 20, h: 10,
+      fill_box: { x: 34, y: 19, w: 22, h: 12 },
+      original_text: "아, 물론",
+      translated_text: "啊，当然",
+      source_line_count: 1
+    },
+    {
+      x: 20, y: 18, w: 60, h: 36,
+      fill_box: { x: 18, y: 16, w: 64, h: 40 },
+      original_text: "아, 물론 이대로 모든 게 끝나는 건 아닙니다!",
+      translated_text: "啊，当然——一切不会就这么结束的！",
+      source_line_count: 3
+    }
+  ]);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].translated_text, "啊，当然——一切不会就这么结束的！");
+  assert.equal(result[0].original_text, "아, 물론 이대로 모든 게 끝나는 건 아닙니다!");
+  assert.equal(result[0].source_line_count, 3);
+  assert.deepEqual({ ...result[0].fill_box }, { x: 18, y: 16, w: 64, h: 40 });
+});
+
+test("translated substring in a separate region is not collapsed", () => {
+  const collapse = context.__backgroundTest.collapseDuplicateLocalPaddleTranslations;
+  const result = collapse([
+    { x: 10, y: 10, w: 20, h: 8, original_text: "아, 물론", translated_text: "啊，当然" },
+    { x: 60, y: 60, w: 30, h: 20, original_text: "full", translated_text: "啊，当然还有别的事情" }
+  ]);
+
+  assert.equal(result.length, 2);
 });

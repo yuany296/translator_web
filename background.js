@@ -98,7 +98,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v6:";
+const CACHE_PREFIX = "mt_cache_v7:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -3632,7 +3632,15 @@ function collapseDuplicateLocalPaddleTranslations(bubbles) {
 function shouldCollapseDuplicateTranslationGroup(group, bubble) {
   const baseText = normalizeDuplicateTranslationText(group[0] && group[0].translated_text);
   const nextText = normalizeDuplicateTranslationText(bubble && bubble.translated_text);
-  if (!baseText || baseText.length < 8 || baseText !== nextText) {
+  if (!baseText || !nextText) {
+    return false;
+  }
+
+  const exactDuplicate = baseText === nextText && baseText.length >= 8;
+  const shorterText = baseText.length <= nextText.length ? baseText : nextText;
+  const longerText = baseText.length > nextText.length ? baseText : nextText;
+  const containedDuplicate = shorterText.length >= 3 && longerText.includes(shorterText);
+  if (!exactDuplicate && !containedDuplicate) {
     return false;
   }
 
@@ -3649,20 +3657,40 @@ function shouldCollapseDuplicateTranslationGroup(group, bubble) {
   const unionWidth = Math.max(groupBox.right, nextBox.right) - Math.min(groupBox.left, nextBox.left);
   const avgHeight = Math.max(1, (groupBox.height + nextBox.height) / 2);
 
+  if (containedDuplicate && !exactDuplicate) {
+    const overlapWidth = Math.max(0, Math.min(groupBox.right, nextBox.right) - Math.max(groupBox.left, nextBox.left));
+    const overlapHeight = Math.max(0, Math.min(groupBox.bottom, nextBox.bottom) - Math.max(groupBox.top, nextBox.top));
+    const overlapArea = overlapWidth * overlapHeight;
+    const smallerArea = Math.max(0.1, Math.min(groupBox.width * groupBox.height, nextBox.width * nextBox.height));
+    return overlapArea / smallerArea >= 0.3;
+  }
+
   return verticalGap <= avgHeight * 2.4 && unionWidth <= 86 && (overlapRatio >= 0.12 || centerDistance <= 26);
 }
 
 function mergeDuplicateTranslationBubbles(group) {
   const box = getPercentBubbleGroupBox(group);
-  const first = group[0];
+  const preferred = [...group].sort((left, right) => {
+    const textLengthDelta = normalizeDuplicateTranslationText(right && right.translated_text).length -
+      normalizeDuplicateTranslationText(left && left.translated_text).length;
+    if (textLengthDelta !== 0) {
+      return textLengthDelta;
+    }
+    const leftBox = getPercentBubbleBox(left);
+    const rightBox = getPercentBubbleBox(right);
+    return (rightBox ? rightBox.width * rightBox.height : 0) - (leftBox ? leftBox.width * leftBox.height : 0);
+  })[0];
+  const mergedFillBox = mergePercentFillBoxes(group);
   return {
-    ...first,
+    ...preferred,
     x: clamp(box.left, 0, 100),
     y: clamp(box.top, 0, 100),
     w: clamp(box.width, 0.1, 100),
     h: clamp(box.height, 0.1, 100),
-    original_text: group.map((bubble) => String(bubble.original_text || "").trim()).filter(Boolean).join(" "),
-    translated_text: first.translated_text
+    fill_box: mergedFillBox || preferred.fill_box || null,
+    original_text: preferred.original_text,
+    translated_text: preferred.translated_text,
+    source_line_count: Math.max(1, ...group.map((item) => Number(item && item.source_line_count) || 1))
   };
 }
 

@@ -200,6 +200,15 @@ test("Kakao ahead geometry accepts a valid image outside the viewport", () => {
   assert.equal(runtime.__test.passesKakaopageTargetGeometry(image, rect, true, true, true), true);
 });
 
+test("Kakao strip screenshot waits until a useful target area is visible", () => {
+  assert.equal(runtime.__test.hasUsableKakaoStripCaptureRect(null), false);
+  assert.equal(runtime.__test.hasUsableKakaoStripCaptureRect({ width: 760, height: 179 }), false);
+  assert.equal(runtime.__test.hasUsableKakaoStripCaptureRect({ width: 179, height: 800 }), false);
+  assert.equal(runtime.__test.hasUsableKakaoStripCaptureRect({ width: 180, height: 180 }), true);
+  assert.equal(contentSource.includes("Kakao target looks like a small lazy-loaded strip, skip OCR"), false);
+  assert.match(contentSource, /isScreenshotTargetNotVisibleError\(reason\)[\s\S]*scheduleAutoTranslateRetry\(target\)/);
+});
+
 test("completed ahead window does not slide forward through the chapter", () => {
   const candidates = Array.from({ length: 12 }, (_, index) => ({
     index,

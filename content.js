@@ -139,6 +139,7 @@
       buildAheadTranslationOptions,
       compareOverlayViewportRects,
       passesKakaopageTargetGeometry,
+      hasUsableKakaoStripCaptureRect,
       selectPendingAheadCandidates,
       selectPendingContinuousCandidates,
       isAutomaticPretranslateMode,
@@ -977,6 +978,9 @@
         const reason = getErrorMessage(error);
         clearRenderedTarget(target);
         if (isScreenshotTargetNotVisibleError(reason)) {
+          if (IS_KAKAOPAGE_READER && state.autoTranslatePageEnabled) {
+            scheduleAutoTranslateRetry(target);
+          }
           return {
             ok: false,
             skipped: true,
@@ -1430,11 +1434,16 @@
     }
 
     const captureRect = getVisibleViewportRect(target);
-    if (!captureRect || captureRect.height < 180 || captureRect.width < 180) {
-      throw new Error("Kakao target looks like a small lazy-loaded strip, skip OCR");
+    if (!hasUsableKakaoStripCaptureRect(captureRect)) {
+      // 页面滚动或虚拟列表重排可能让目标在提取期间只露出一小部分；这是可重试状态，不应上报为 OCR 错误。
+      throw new Error(SCREENSHOT_TARGET_NOT_VISIBLE);
     }
 
     return captureVisibleTargetPayload(target, new Error("Kakao source image is a strip"), payload.imageUrl || "kakao-strip");
+  }
+
+  function hasUsableKakaoStripCaptureRect(captureRect) {
+    return !!captureRect && captureRect.height >= 180 && captureRect.width >= 180;
   }
 
   async function extractImagePayload(img) {

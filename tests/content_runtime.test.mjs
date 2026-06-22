@@ -234,6 +234,8 @@ test("a new content runtime takes ownership and removes stale extension UI", () 
   assert.match(contentSource, /claimRuntimeOwnership\(\);[\s\S]*await loadLocalSettings\(\)/);
   assert.match(contentSource, /\.mt-overlay-layer, \.mt-floating-ball-wrap, \.mt-measure-probe/);
   assert.match(contentSource, /if \(!isCurrentRuntimeOwner\(\)\)\s*\{\s*destroy\(\)/);
+  assert.match(contentSource, /delete target\.dataset\.mtLastTranslatedKey/);
+  assert.match(contentSource, /delete target\.dataset\.mtNoTextKey/);
 });
 
 test("ahead window contains the current image and the next six images", () => {

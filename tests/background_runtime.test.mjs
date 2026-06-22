@@ -331,6 +331,17 @@ test("overlapping translated substring keeps only the complete sentence", () => 
   assert.deepEqual({ ...result[0].fill_box }, { x: 18, y: 16, w: 64, h: 40 });
 });
 
+test("lightly touching translated substring boxes keep only the complete sentence", () => {
+  const collapse = context.__backgroundTest.collapseDuplicateLocalPaddleTranslations;
+  const result = collapse([
+    { x: 35, y: 20, w: 20, h: 8, original_text: "short", translated_text: "啊，当然" },
+    { x: 25, y: 27, w: 50, h: 24, original_text: "full", translated_text: "啊，当然一切不会这样结束" }
+  ]);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].translated_text, "啊，当然一切不会这样结束");
+});
+
 test("translated substring in a separate region is not collapsed", () => {
   const collapse = context.__backgroundTest.collapseDuplicateLocalPaddleTranslations;
   const result = collapse([

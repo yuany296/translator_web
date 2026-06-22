@@ -4472,10 +4472,18 @@
     if (!root) {
       return;
     }
+    const previousOwner = root.getAttribute(RUNTIME_OWNER_ATTRIBUTE);
+    const staleUiExists = !!document.querySelector(".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe");
     root.setAttribute(RUNTIME_OWNER_ATTRIBUTE, state.runtimeOwnerToken);
     document
       .querySelectorAll(".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe")
       .forEach((node) => node.remove());
+    if ((previousOwner && previousOwner !== state.runtimeOwnerToken) || staleUiExists) {
+      document.querySelectorAll(TARGET_SELECTOR).forEach((target) => {
+        delete target.dataset.mtLastTranslatedKey;
+        delete target.dataset.mtNoTextKey;
+      });
+    }
   }
 
   function isCurrentRuntimeOwner() {

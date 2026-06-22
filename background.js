@@ -3658,11 +3658,12 @@ function shouldCollapseDuplicateTranslationGroup(group, bubble) {
   const avgHeight = Math.max(1, (groupBox.height + nextBox.height) / 2);
 
   if (containedDuplicate && !exactDuplicate) {
-    const overlapWidth = Math.max(0, Math.min(groupBox.right, nextBox.right) - Math.max(groupBox.left, nextBox.left));
-    const overlapHeight = Math.max(0, Math.min(groupBox.bottom, nextBox.bottom) - Math.max(groupBox.top, nextBox.top));
-    const overlapArea = overlapWidth * overlapHeight;
-    const smallerArea = Math.max(0.1, Math.min(groupBox.width * groupBox.height, nextBox.width * nextBox.height));
-    return overlapArea / smallerArea >= 0.3;
+    const groupRegionId = String(group[0] && group[0].region_id || "");
+    const nextRegionId = String(bubble && bubble.region_id || "");
+    const sameRegion = Boolean(groupRegionId && groupRegionId === nextRegionId);
+    const closeOverlap = verticalGap <= avgHeight * 0.35 &&
+      (overlapRatio >= 0.35 || centerDistance <= Math.max(groupBox.width, nextBox.width) * 0.35);
+    return unionWidth <= 86 && (sameRegion || closeOverlap);
   }
 
   return verticalGap <= avgHeight * 2.4 && unionWidth <= 86 && (overlapRatio >= 0.12 || centerDistance <= 26);

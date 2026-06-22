@@ -163,6 +163,46 @@ test("global Kakao dedupe replaces an earlier partial sentence with the later co
   assert.equal(second.bubbles[0].translated_text, "啊当然一切不会就这样结束");
 });
 
+test("Kakao page-level dedupe also removes a single-image fragment covered by a stitched sentence", () => {
+  const complete = runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 18, y: -10, w: 56, h: 20,
+        block_id: "complete-cross-page",
+        original_text: "아,물론 이대로모든게 끝나는 건 아닙니다!",
+        translated_text: "啊，当然，事情不会就这样结束！"
+      }],
+      debug: {
+        finalBubbles: [{ blockId: "complete-cross-page" }],
+        items: [{ blockId: "complete-cross-page" }]
+      }
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 1000, width: 600, height: 1000 }) },
+    "complete-page-level"
+  );
+  const fragment = runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 32, y: 90, w: 25, h: 7,
+        block_id: "fragment-single-image",
+        original_text: "아물론",
+        translated_text: "啊当然"
+      }],
+      debug: {
+        finalBubbles: [{ blockId: "fragment-single-image" }],
+        items: [{ blockId: "fragment-single-image" }]
+      }
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 1000 }) },
+    "fragment-page-level"
+  );
+
+  assert.equal(complete.bubbles.length, 1);
+  assert.equal(fragment.bubbles.length, 0);
+  assert.deepEqual(fragment.debug.finalBubbles, []);
+  assert.deepEqual(fragment.debug.items, []);
+});
+
 test("pretranslation mode defaults to manual", () => {
   assert.equal(runtime.__test.normalizePretranslateMode("ahead"), "ahead");
   assert.equal(runtime.__test.normalizePretranslateMode("continuous"), "continuous");

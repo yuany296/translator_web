@@ -127,6 +127,7 @@
     getPageAutoTranslateStatus,
     __test: {
       mapKakaoStitchedResult,
+      dedupeKakaoResultByPageCoordinates,
       buildKakaoStitchWindowPlan,
       isVerifiedKakaoStitchNeighbor,
       shouldFallbackFromKakaoStitch,
@@ -898,18 +899,20 @@
 
         const localCachedResult = state.localResultCache.get(targetKey);
         if (!options.force && localCachedResult) {
-          if (localCachedResult.bubbles.length > 0) {
+          const dedupedCachedResult = dedupeKakaoResultByPageCoordinates(localCachedResult, target, targetKey);
+          state.localResultCache.set(targetKey, dedupedCachedResult);
+          if (dedupedCachedResult.bubbles.length > 0) {
             if (shouldUseEmbeddedRender(target)) {
               renderLoadingOverlay(target, targetKey, "生成嵌入图片中...");
             }
             const cachedPayload = shouldUseEmbeddedRender(target)
               ? await extractTargetPayload(target, targetKey)
               : null;
-            await renderTranslationResult(target, targetKey, localCachedResult, cachedPayload);
+            await renderTranslationResult(target, targetKey, dedupedCachedResult, cachedPayload);
           } else {
             clearRenderedTarget(target);
           }
-          return { ok: true, reused: true, bubbles: localCachedResult.bubbles.length };
+          return { ok: true, reused: true, bubbles: dedupedCachedResult.bubbles.length };
         }
 
         renderLoadingOverlay(target, targetKey, "OCR + 翻译中...");
@@ -960,6 +963,7 @@
           }
           result = normalizeResult(response.result);
         }
+        result = dedupeKakaoResultByPageCoordinates(result, target, targetKey);
         const expectedSourceImageId = String(renderPayload && renderPayload.sourceImageId || payload && payload.sourceImageId || "");
         if (!target.isConnected || (expectedSourceImageId && getSourceImageIdForTarget(target) !== expectedSourceImageId)) {
           clearRenderedTarget(target);
@@ -1432,6 +1436,47 @@
     };
   }
 
+  function dedupeKakaoResultByPageCoordinates(result, target, targetKey) {
+    if (!IS_KAKAOPAGE_READER || !result || !Array.isArray(result.bubbles) || !targetKey) {
+      return result;
+    }
+    const targetRect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
+    if (!targetRect || !(Number(targetRect.width) > 0) || !(Number(targetRect.height) > 0)) {
+      return result;
+    }
+    const bubbles = result.bubbles.map((bubble) => ({
+      ...bubble,
+      global_box: bubble.global_box || {
+        left: targetRect.left + window.scrollX + (Number(bubble.x) / 100) * targetRect.width,
+        top: targetRect.top + window.scrollY + (Number(bubble.y) / 100) * targetRect.height,
+        width: (Number(bubble.w) / 100) * targetRect.width,
+        height: (Number(bubble.h) / 100) * targetRect.height
+      }
+    }));
+    const deduped = dedupeKakaoGlobalBubbles(bubbles, target, targetRect, targetKey);
+    return {
+      ...result,
+      bubbles: deduped,
+      debug: filterOcrDebugFinalBubbles(result.debug, deduped)
+    };
+  }
+
+  function filterOcrDebugFinalBubbles(debug, bubbles) {
+    if (!debug || typeof debug !== "object") {
+      return debug;
+    }
+    const keptBlockIds = new Set((Array.isArray(bubbles) ? bubbles : [])
+      .map((bubble) => String(bubble && (bubble.block_id || bubble.id) || ""))
+      .filter(Boolean));
+    const finalBubbles = (Array.isArray(debug.finalBubbles) ? debug.finalBubbles : [])
+      .filter((item) => keptBlockIds.has(String(item && (item.blockId || item.block_id || item.id) || "")));
+    return {
+      ...debug,
+      finalBubbles,
+      items: finalBubbles
+    };
+  }
+
   function mapKakaoStitchedPercentBox(box, ownerTop, ownerHeight, compositeHeight) {
     if (!box || typeof box !== "object") {
       return null;
@@ -1569,7 +1614,11 @@
     if (remaining.length === cached.bubbles.length) {
       return;
     }
-    const nextResult = { ...cached, bubbles: remaining };
+    const nextResult = {
+      ...cached,
+      bubbles: remaining,
+      debug: filterOcrDebugFinalBubbles(cached.debug, remaining)
+    };
     state.localResultCache.set(entry.targetKey, nextResult);
     if (!entry.target || entry.target.isConnected === false) {
       return;

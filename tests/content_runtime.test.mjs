@@ -381,6 +381,37 @@ test("solid background covers both the original fill and translated text boxes",
   );
 });
 
+test("stitched solid background can extend upward into the previous page", () => {
+  assert.deepEqual(
+    { ...runtime.__test.buildSolidBackgroundBox(
+      { x: 20, y: -12, w: 50, h: 28 },
+      { x: 18, y: -15, w: 54, h: 32 },
+      true
+    ) },
+    { x: 18, y: -15, w: 54, h: 32 }
+  );
+});
+
+test("overlay visibility includes stitched content crossing into the previous page", () => {
+  const rect = runtime.__test.getOverlayVisibilityRect(
+    {
+      bubbleNodes: [{
+        dataset: { stitchOverflow: "true", yPercent: "-30", hPercent: "20" }
+      }]
+    },
+    { left: 0, right: 600, top: 900, bottom: 1500, width: 600, height: 600 }
+  );
+
+  assert.deepEqual(rect, {
+    left: 0,
+    right: 600,
+    top: 720,
+    bottom: 1500,
+    width: 600,
+    height: 780
+  });
+});
+
 test("cleaned image patch aligns the source OCR box inside an overlay bubble", () => {
   assert.deepEqual(
     { ...runtime.__test.getCleanedPatchStyle({ x: 40, y: 25, w: 20, h: 10 }) },

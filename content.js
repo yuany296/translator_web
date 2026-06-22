@@ -141,6 +141,7 @@
       buildSolidBackgroundBox,
       buildAheadTranslationOptions,
       compareOverlayViewportRects,
+      getOverlayVisibilityRect,
       passesKakaopageTargetGeometry,
       hasUsableKakaoStripCaptureRect,
       selectPendingAheadCandidates,
@@ -2653,6 +2654,7 @@
     node.dataset.xPercent = String(x);
     node.dataset.yPercent = String(y);
     node.dataset.backgroundTarget = options.backgroundTarget ? "true" : "";
+    node.dataset.stitchOverflow = bubble.stitch_overflow === true ? "true" : "";
     if (bgType === "none") {
       const sourceBox = normalizeFillBox(bubble.cleaned_source_box) || { x, y, w, h };
       const patchStyle = getCleanedPatchStyle(sourceBox);
@@ -2674,7 +2676,7 @@
     );
     node.dataset.regionType = String(bubble.region_type || "plain_text");
     const fillBox = bgType === "solid"
-      ? buildSolidBackgroundBox({ x, y, w, h }, bubble.fill_box)
+      ? buildSolidBackgroundBox({ x, y, w, h }, bubble.fill_box, bubble.stitch_overflow === true)
       : null;
     if (fillBox) {
       node.style.setProperty("--mt-fill-left", ((fillBox.x - x) / w) * 100 + "%");
@@ -2899,7 +2901,7 @@
     }
 
     const rect = getOverlayDisplayRect(overlayState);
-    const visible = isRectVisible(rect);
+    const visible = isRectVisible(getOverlayVisibilityRect(overlayState, rect));
 
     if (!visible || rect.width < 2 || rect.height < 2) {
       overlayState.root.style.display = "none";
@@ -2956,6 +2958,31 @@
     return {
       positionChanged: previous.left !== next.left || previous.top !== next.top,
       sizeChanged: previous.width !== next.width || previous.height !== next.height
+    };
+  }
+
+  function getOverlayVisibilityRect(overlayState, rect) {
+    let minY = 0;
+    let maxY = 100;
+    Array.from(overlayState && overlayState.bubbleNodes || []).forEach((node) => {
+      if (!node || !node.dataset || node.dataset.stitchOverflow !== "true") {
+        return;
+      }
+      const y = Number(node.dataset.yPercent);
+      const h = Number(node.dataset.hPercent);
+      if (!Number.isFinite(y) || !Number.isFinite(h) || h <= 0) {
+        return;
+      }
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y + h);
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top + (minY / 100) * rect.height,
+      bottom: rect.top + (maxY / 100) * rect.height,
+      width: rect.width,
+      height: ((maxY - minY) / 100) * rect.height
     };
   }
 
@@ -4196,7 +4223,7 @@
             y: bubble.stitch_overflow === true ? Number(bubble.y) : clamp(Number(bubble.y), 0, 100),
             w: clamp(Number(bubble.w), 0, 100),
             h: clamp(Number(bubble.h), 0, 100),
-            fill_box: normalizeFillBox(bubble.fill_box),
+            fill_box: normalizeFillBox(bubble.fill_box, bubble.stitch_overflow === true),
             cleaned_source_box: normalizeFillBox(bubble.cleaned_source_box),
             bg_type: normalizeBgType(bubble.bg_type),
             bg_color: String(bubble.bg_color || ""),
@@ -4220,22 +4247,29 @@
     };
   }
 
-  function normalizeFillBox(value) {
+  function normalizeFillBox(value, allowVerticalOverflow = false) {
     if (!value || typeof value !== "object") {
       return null;
     }
+    const rawX = Number(value.x);
+    const rawY = Number(value.y);
+    const rawW = Number(value.w);
+    const rawH = Number(value.h);
+    if (![rawX, rawY, rawW, rawH].every(Number.isFinite) || rawW <= 0 || rawH <= 0) {
+      return null;
+    }
     const box = {
-      x: clamp(Number(value.x), 0, 100),
-      y: clamp(Number(value.y), 0, 100),
-      w: clamp(Number(value.w), 0, 100),
-      h: clamp(Number(value.h), 0, 100)
+      x: clamp(rawX, 0, 100),
+      y: allowVerticalOverflow ? rawY : clamp(rawY, 0, 100),
+      w: clamp(rawW, 0, 100),
+      h: clamp(rawH, 0, 100)
     };
     return box.w > 0 && box.h > 0 ? box : null;
   }
 
-  function buildSolidBackgroundBox(textBox, fillBoxValue) {
-    const text = normalizeFillBox(textBox);
-    const fill = normalizeFillBox(fillBoxValue);
+  function buildSolidBackgroundBox(textBox, fillBoxValue, allowVerticalOverflow = false) {
+    const text = normalizeFillBox(textBox, allowVerticalOverflow);
+    const fill = normalizeFillBox(fillBoxValue, allowVerticalOverflow);
     if (!text) {
       return fill;
     }

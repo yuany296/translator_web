@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "description": "2026-06-21 浏览器实际送入本地 OCR 的固定视觉回归输入",
+  "cases": [
+    {
+      "id": "kakao_solid_bubble",
+      "file": "kakao_solid_bubble.png",
+      "sha256": "0242903d4d09184a7b4c4085bd8e445e60abdf1e236da7b3453de02efd269ad3",
+      "expected_text_fragments": ["거기다", "1위발표때는", "무려7.6퍼센트"],
+      "min_items": 3,
+      "max_items": 3,
+      "min_regions": 1,
+      "max_regions": 1,
+      "max_duplicate_ratio": 0.0,
+      "max_region_area_ratio": 0.2
+    },
+    {
+      "id": "kakao_blank_boundary",
+      "file": "kakao_blank_boundary.png",
+      "sha256": "c03546e082e0a00cafe36ace9792da167af9d2ddcbc45b6fee24ebfd2142d277",
+      "expected_text_fragments": [],
+      "min_items": 0,
+      "max_items": 0,
+      "min_regions": 0,
+      "max_regions": 0,
+      "max_duplicate_ratio": 0.0,
+      "max_region_area_ratio": 0.0
+    },
+    {
+      "id": "kakao_effect_title",
+      "file": "kakao_effect_title.png",
+      "sha256": "ed916952cbceef93c81d3830a0b9203a2d4975b0ec72fa0c987c363bc9c43ee4",
+      "expected_text_fragments": ["망나니PD", "아이돌로살아남기", "각색우주감자"],
+      "min_items": 3,
+      "max_items": 6,
+      "min_regions": 0,
+      "max_regions": 0,
+      "max_duplicate_ratio": 0.0,
+      "max_region_area_ratio": 0.0
+    }
+  ]
+}

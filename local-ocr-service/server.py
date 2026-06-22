@@ -36,7 +36,7 @@ if os.environ.get("LOCAL_OCR_DISABLE_MODELSCOPE", "1") != "0":
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 try:
     from paddleocr import PaddleOCR, TextDetection, TextRecognition
@@ -64,6 +64,9 @@ DEFAULT_OCR_DEVICE = "gpu:0"
 DEFAULT_TEXT_DET_THRESH = 0.3
 DEFAULT_TEXT_DET_BOX_THRESH = 0.6
 DEFAULT_TEXT_DET_UNCLIP_RATIO = 1.2
+SOLID_BACKGROUND_MAX_LAB_VARIANCE = 90.0
+SOLID_BACKGROUND_MAX_DELTA_E_P90 = 20.0
+SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE = 0.78
 DEBUG_DIR = Path(__file__).resolve().parent / "debug-ocr"
 SERVICE_DEBUG_ROOT = Path(__file__).resolve().parent / "debug"
 
@@ -89,6 +92,16 @@ class OcrRequest(BaseModel):
     text_rec_score_thresh: float | None = None
     debug: bool = False
     debug_id: str = ""
+    return_cleaned_image: bool = False
+
+
+class BackgroundDebugRequest(BaseModel):
+    """独立背景调参请求；字段与生产 OCR 请求完全隔离。"""
+
+    image: str
+    ocr: list[dict[str, Any]]
+    labels: dict[str, str] = Field(default_factory=dict)
+    parameterGroups: list[dict[str, Any]]
 
 
 app = FastAPI(title="Manga Translator Local OCR")
@@ -143,9 +156,10 @@ async def ocr(payload: OcrRequest) -> dict[str, Any]:
             bool(payload.debug),
             payload.debug_id,
         )
-    return {
+    response = {
         "items": result["items"],
         "boxes": result["boxes"],
+        "regions": result.get("regions", []),
         "lang": lang,
         "mode": mode,
         "imageWidth": result["imageWidth"],
@@ -154,6 +168,33 @@ async def ocr(payload: OcrRequest) -> dict[str, Any]:
         "counts": result.get("counts", {}),
         "rawItems": result.get("rawItems", []),
     }
+    if payload.return_cleaned_image:
+        cleaned_image = build_cleaned_image_data_url(image_bytes, result["items"])
+        if cleaned_image:
+            response["cleanedImage"] = cleaned_image
+    return response
+
+
+@app.post("/debug-background")
+async def debug_background(payload: BackgroundDebugRequest) -> dict[str, Any]:
+    """运行独立背景判定实验，不获取模型锁，也不改变生产阈值。"""
+    if not CV2_AVAILABLE:
+        raise HTTPException(status_code=503, detail="OpenCV is unavailable")
+    if not payload.parameterGroups:
+        raise HTTPException(status_code=400, detail="parameterGroups must not be empty")
+    try:
+        from background_debug import run_background_debug
+
+        image_bytes = decode_data_url(payload.image)
+        return await asyncio.to_thread(
+            run_background_debug,
+            image_bytes,
+            payload.ocr,
+            payload.labels,
+            payload.parameterGroups,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def normalize_lang(value: str) -> str:
@@ -297,6 +338,7 @@ def run_ocr(
         )
         if not return_raw and filter_ui_text:
             normalized = [item for item in normalized if not is_symbol_only_text(item.get("text"))]
+        regions = annotate_visual_regions(image_bytes, normalized)
         boxes = response_boxes(normalized)
         counts = {
             "paddle_raw_items": len(raw_items),
@@ -308,6 +350,7 @@ def run_ocr(
         result_payload = {
             "items": normalized,
             "boxes": boxes,
+            "regions": regions,
             "imageWidth": image_width,
             "imageHeight": image_height,
             "debug": debug_paths,
@@ -346,9 +389,583 @@ def response_boxes(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "det_score": float(item.get("det_score") or 0.0),
             "rotation_deg": float(item.get("rotation_deg") or 0.0),
             "orientation_applied": int(item.get("orientation_applied") or 0),
+            "region_id": str(item.get("region_id") or ""),
+            "region_type": str(item.get("region_type") or "plain_text"),
+            "region_polygon": item.get("region_polygon"),
+            "bg_color": str(item.get("bg_color") or ""),
+            "text_color": str(item.get("text_color") or ""),
+            "stroke_color": str(item.get("stroke_color") or ""),
+            "region_confidence": float(item.get("region_confidence") or 0.0),
         }
         for item in items
     ]
+
+
+def annotate_visual_regions(image_bytes: bytes, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge adjacent OCR lines and validate solid backgrounds at near and far scales."""
+    if not CV2_AVAILABLE or not items:
+        return []
+    encoded = np.frombuffer(image_bytes, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if image is None or image.size == 0:
+        return []
+
+    height, width = image.shape[:2]
+    scale = min(1.0, 760.0 / max(width, height))
+    sample = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else image
+    lab = cv2.cvtColor(sample, cv2.COLOR_BGR2LAB)
+    regions: list[dict[str, Any]] = []
+
+    for block in merge_visual_text_blocks(items):
+        candidate = detect_solid_region_for_box(
+            sample,
+            lab,
+            block["box"],
+            scale,
+            [item.get("polygon") for item in block["items"] if item.get("polygon")],
+        )
+        if candidate:
+            candidate["id"] = f"region-{len(regions) + 1}"
+            regions.append(candidate)
+        for item in block["items"]:
+            apply_visual_style_to_item(item, image, candidate)
+    return regions
+
+
+def merge_visual_text_blocks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge only clearly adjacent OCR lines before background classification."""
+    blocks: list[dict[str, Any]] = []
+    ordered = sorted(
+        items,
+        key=lambda value: (
+            float((value.get("box") or {}).get("top") or 0),
+            float((value.get("box") or {}).get("left") or 0),
+        ),
+    )
+    for item in ordered:
+        box = item.get("box") if isinstance(item.get("box"), dict) else None
+        if not box:
+            continue
+        block = next(
+            (candidate for candidate in blocks if text_boxes_belong_to_same_block(candidate["box"], box)),
+            None,
+        )
+        if block is None:
+            blocks.append({"box": dict(box), "items": [item]})
+        else:
+            block["items"].append(item)
+            block["box"] = union_boxes(block["box"], box)
+    for block in blocks:
+        block["box"]["line_height"] = float(np.median([
+            float((item.get("box") or {}).get("height") or 0)
+            for item in block["items"]
+        ]))
+    return blocks
+
+
+def text_boxes_belong_to_same_block(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    first_left, first_top = float(first.get("left") or 0), float(first.get("top") or 0)
+    second_left, second_top = float(second.get("left") or 0), float(second.get("top") or 0)
+    first_width, first_height = float(first.get("width") or 0), float(first.get("height") or 0)
+    second_width, second_height = float(second.get("width") or 0), float(second.get("height") or 0)
+    vertical_gap = max(0.0, second_top - (first_top + first_height), first_top - (second_top + second_height))
+    horizontal_overlap = max(
+        0.0,
+        min(first_left + first_width, second_left + second_width) - max(first_left, second_left),
+    )
+    center_distance = abs((first_left + first_width / 2) - (second_left + second_width / 2))
+    average_height = max(1.0, (first_height + second_height) / 2)
+    return vertical_gap <= average_height * 1.15 and (
+        horizontal_overlap / max(1.0, min(first_width, second_width)) >= 0.2
+        or center_distance <= max(first_width, second_width) * 0.35
+    )
+
+
+def union_boxes(first: dict[str, Any], second: dict[str, Any]) -> dict[str, float]:
+    left = min(float(first.get("left") or 0), float(second.get("left") or 0))
+    top = min(float(first.get("top") or 0), float(second.get("top") or 0))
+    right = max(
+        float(first.get("left") or 0) + float(first.get("width") or 0),
+        float(second.get("left") or 0) + float(second.get("width") or 0),
+    )
+    bottom = max(
+        float(first.get("top") or 0) + float(first.get("height") or 0),
+        float(second.get("top") or 0) + float(second.get("height") or 0),
+    )
+    return {"left": left, "top": top, "width": right - left, "height": bottom - top}
+
+
+def detect_solid_region_for_box(
+    image: Any,
+    lab: Any,
+    source_box: dict[str, Any],
+    scale: float,
+    text_polygons: list[Any] | None = None,
+) -> dict[str, Any] | None:
+    """近区必须通过；远区仅在指标通过时用于扩大纯色覆盖区域。"""
+    image_height, image_width = image.shape[:2]
+    left = max(0, int(float(source_box.get("left") or 0) * scale))
+    top = max(0, int(float(source_box.get("top") or 0) * scale))
+    right = min(
+        image_width,
+        int(math.ceil((float(source_box.get("left") or 0) + float(source_box.get("width") or 0)) * scale)),
+    )
+    bottom = min(
+        image_height,
+        int(math.ceil((float(source_box.get("top") or 0) + float(source_box.get("height") or 0)) * scale)),
+    )
+    if right - left < 4 or bottom - top < 4:
+        return None
+
+    merged_height = max(1, bottom - top)
+    line_height = max(1, int(math.ceil(float(source_box.get("line_height") or source_box.get("height") or 0) * scale)))
+    near = measure_solid_background_scale(
+        lab,
+        (left, top, right, bottom),
+        0.12,
+        0.35,
+        text_polygons or [],
+        scale,
+        merged_height,
+    )
+    if near is None:
+        return None
+    far = measure_solid_background_scale(
+        lab,
+        (left, top, right, bottom),
+        0.28,
+        1.0,
+        text_polygons or [],
+        scale,
+        line_height,
+        enforce_thresholds=False,
+    )
+    if far is None:
+        return None
+    far_x, far_y, far_w, far_h = far["roi"]
+    if (far_x <= 1 and far_x + far_w >= image_width - 1) or (far_y <= 1 and far_y + far_h >= image_height - 1):
+        return None
+    selected = far if far["passes_thresholds"] else near
+    statistics = [near, far] if far["passes_thresholds"] else [near]
+    x, y, w, h = selected["roi"]
+    dominant_bgr = selected["median_bgr"]
+    polygon = [
+        [round(x / scale, 2), round(y / scale, 2)],
+        [round((x + w) / scale, 2), round(y / scale, 2)],
+        [round((x + w) / scale, 2), round((y + h) / scale, 2)],
+        [round(x / scale, 2), round((y + h) / scale, 2)],
+    ]
+    bgr = [int(value) for value in dominant_bgr]
+    brightness = (bgr[2] * 299 + bgr[1] * 587 + bgr[0] * 114) / 1000
+    region_type = classify_solid_region_type(image, (x, y, w, h), bgr)
+    return {
+        "id": "",
+        "region_type": region_type,
+        "polygon": polygon,
+        "box": {
+            "left": round(x / scale, 2),
+            "top": round(y / scale, 2),
+            "width": round(w / scale, 2),
+            "height": round(h / scale, 2),
+        },
+        "bg_color": bgr_to_hex(bgr),
+        "confidence": round(min(stat["dominant_coverage"] for stat in statistics), 4),
+        "rectangularity": 1.0,
+        "brightness": round(brightness, 2),
+        "background_variance": round(max(stat["lab_variance"] for stat in statistics), 4),
+        "delta_e_p90": round(max(stat["delta_e_p90"] for stat in statistics), 4),
+        "dominant_coverage": round(min(stat["dominant_coverage"] for stat in statistics), 4),
+        "sampling_strategy": "near_priority",
+        "far_scale_passed": bool(far["passes_thresholds"]),
+    }
+
+
+def measure_solid_background_scale(
+    lab: Any,
+    text_box: tuple[int, int, int, int],
+    pad_x_ratio: float,
+    pad_y_ratio: float,
+    text_polygons: list[Any],
+    scale: float,
+    vertical_reference: int,
+    enforce_thresholds: bool = True,
+) -> dict[str, Any] | None:
+    """测量单个采样尺度；结构风险始终拒绝，颜色阈值可仅记录不拒绝。"""
+    image_height, image_width = lab.shape[:2]
+    left, top, right, bottom = text_box
+    box_width, box_height = right - left, bottom - top
+    pad_x = max(2, int(math.ceil(box_width * pad_x_ratio)))
+    pad_y = max(2, int(math.ceil(vertical_reference * pad_y_ratio)))
+    roi_left, roi_top = max(0, left - pad_x), max(0, top - pad_y)
+    roi_right, roi_bottom = min(image_width, right + pad_x), min(image_height, bottom + pad_y)
+    roi_lab = lab[roi_top:roi_bottom, roi_left:roi_right]
+    if roi_lab.size == 0:
+        return None
+
+    text_mask = np.zeros(roi_lab.shape[:2], dtype=np.uint8)
+    polygons = text_polygons or [[
+        [left / scale, top / scale],
+        [right / scale, top / scale],
+        [right / scale, bottom / scale],
+        [left / scale, bottom / scale],
+    ]]
+    for polygon in polygons:
+        points = np.asarray(
+            [
+                [
+                    round(float(point[0]) * scale) - roi_left,
+                    round(float(point[1]) * scale) - roi_top,
+                ]
+                for point in polygon
+                if isinstance(point, (list, tuple)) and len(point) >= 2
+            ],
+            dtype=np.int32,
+        )
+        if len(points) >= 3:
+            cv2.fillPoly(text_mask, [points], 1)
+
+    outside = roi_lab[text_mask == 0]
+    minimum_samples = max(48, int(roi_lab.shape[0] * roi_lab.shape[1] * 0.2))
+    if len(outside) < minimum_samples:
+        return None
+    median_lab = np.median(outside, axis=0)
+    all_distances = np.linalg.norm(roi_lab.astype(np.float32) - median_lab.astype(np.float32), axis=2)
+    outside_outliers = ((text_mask == 0) & (all_distances > SOLID_BACKGROUND_MAX_DELTA_E_P90)).astype(np.uint8)
+    if has_interior_spanning_outlier(outside_outliers):
+        return None
+    keep_mask = (text_mask == 0) | (all_distances <= SOLID_BACKGROUND_MAX_DELTA_E_P90)
+    pixels = roi_lab[keep_mask].astype(np.float32)
+    if len(pixels) < minimum_samples:
+        return None
+    distances = np.linalg.norm(pixels - median_lab.astype(np.float32), axis=1)
+    dominant_pixels = pixels[distances <= SOLID_BACKGROUND_MAX_DELTA_E_P90]
+    if len(dominant_pixels) < minimum_samples and enforce_thresholds:
+        return None
+    variance_pixels = dominant_pixels if len(dominant_pixels) else pixels
+    lab_variance = float(np.mean(np.var(variance_pixels, axis=0)))
+    delta_e_p90 = float(np.percentile(distances, 90))
+    dominant_coverage = float(np.mean(distances <= SOLID_BACKGROUND_MAX_DELTA_E_P90))
+    passes_thresholds = bool(
+        len(dominant_pixels) >= minimum_samples
+        and lab_variance <= SOLID_BACKGROUND_MAX_LAB_VARIANCE
+        and delta_e_p90 <= SOLID_BACKGROUND_MAX_DELTA_E_P90
+        and dominant_coverage >= SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE
+    )
+    if enforce_thresholds and not passes_thresholds:
+        return None
+    median_bgr = cv2.cvtColor(
+        np.uint8([[np.clip(median_lab, 0, 255)]]),
+        cv2.COLOR_LAB2BGR,
+    )[0, 0]
+    return {
+        "roi": (roi_left, roi_top, roi_right - roi_left, roi_bottom - roi_top),
+        "median_bgr": median_bgr,
+        "lab_variance": lab_variance,
+        "delta_e_p90": delta_e_p90,
+        "dominant_coverage": dominant_coverage,
+        "passes_thresholds": passes_thresholds,
+    }
+
+
+def has_interior_spanning_outlier(mask: Any) -> bool:
+    """Reject scene boundaries or effects that cross through the sampled background."""
+    if mask is None or mask.size == 0 or int(np.count_nonzero(mask)) == 0:
+        return False
+    height, width = mask.shape[:2]
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+    edge_margin_y = max(2, int(round(height * 0.06)))
+    for label in range(1, count):
+        x, y, component_width, component_height, area = [int(value) for value in stats[label]]
+        if area < 12:
+            continue
+        spans_width = component_width >= width * 0.72
+        crosses_interior_horizontally = spans_width and y + component_height > edge_margin_y and y < height - edge_margin_y
+        if crosses_interior_horizontally:
+            return True
+    return False
+
+
+def classify_solid_region_type(image: Any, roi: tuple[int, int, int, int], bgr: list[int]) -> str:
+    """Classify a validated local solid region for presentation metadata."""
+    if not CV2_AVAILABLE:
+        return "caption_panel"
+    image_height, image_width = image.shape[:2]
+    x, y, w, h = roi
+    pad = max(3, min(18, int(round(min(w, h) * 0.08))))
+    outer_left, outer_top = max(0, x - pad), max(0, y - pad)
+    outer_right, outer_bottom = min(image_width, x + w + pad), min(image_height, y + h + pad)
+    if outer_right <= outer_left or outer_bottom <= outer_top:
+        return "caption_panel"
+    outer = image[outer_top:outer_bottom, outer_left:outer_right]
+    mask = np.ones(outer.shape[:2], dtype=np.uint8)
+    inner_left, inner_top = x - outer_left, y - outer_top
+    inner_right, inner_bottom = inner_left + w, inner_top + h
+    mask[max(0, inner_top):max(0, inner_bottom), max(0, inner_left):max(0, inner_right)] = 0
+    ring = outer[mask == 1]
+    if len(ring) < 24:
+        return "caption_panel"
+    background = np.asarray(bgr, dtype=np.int16)
+    ring_distance = np.linalg.norm(ring.astype(np.int16) - background, axis=1)
+    bright_background = relative_luminance(bgr_to_hex([int(value) for value in bgr])) >= 0.72
+    has_border = float(np.mean(ring_distance >= 70)) >= 0.04
+    return "speech_bubble" if bright_background and has_border else "caption_panel"
+
+
+def build_cleaned_image_data_url(image_bytes: bytes, items: list[dict[str, Any]]) -> str | None:
+    """Inpaint complex-background OCR polygons and return the cleaned base image."""
+    if not CV2_AVAILABLE:
+        return None
+    encoded = np.frombuffer(image_bytes, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if image is None or image.size == 0:
+        return None
+    mask = build_complex_text_inpaint_mask(image.shape[:2], items)
+    if mask is None or int(np.count_nonzero(mask)) == 0:
+        return None
+    cleaned = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
+    ok, buffer = cv2.imencode(".png", cleaned)
+    if not ok:
+        return None
+    payload = base64.b64encode(buffer.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
+
+
+def build_complex_text_inpaint_mask(shape: tuple[int, int], items: list[dict[str, Any]]) -> Any | None:
+    """Build a 2-8px dilated mask only for text without a solid region."""
+    image_height, image_width = shape
+    mask = np.zeros((image_height, image_width), dtype=np.uint8)
+    changed = False
+    for item in items:
+        if str(item.get("region_id") or "").strip():
+            continue
+        box = item.get("box") if isinstance(item.get("box"), dict) else None
+        if not box:
+            continue
+        box_height = max(1.0, float(box.get("height") or 0))
+        polygon = item.get("polygon")
+        points = normalize_mask_polygon(polygon, box, image_width, image_height)
+        if len(points) < 3:
+            continue
+        item_mask = np.zeros((image_height, image_width), dtype=np.uint8)
+        cv2.fillPoly(item_mask, [np.asarray(points, dtype=np.int32)], 255)
+        radius = int(max(2, min(8, round(box_height * 0.08))))
+        kernel_size = radius * 2 + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        mask = cv2.bitwise_or(mask, cv2.dilate(item_mask, kernel, iterations=1))
+        changed = True
+    return mask if changed else None
+
+
+def normalize_mask_polygon(polygon: Any, box: dict[str, Any], image_width: int, image_height: int) -> list[list[int]]:
+    if isinstance(polygon, list) and len(polygon) >= 3:
+        points: list[list[int]] = []
+        for point in polygon:
+            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                x, y = point[0], point[1]
+            elif isinstance(point, dict):
+                x, y = point.get("x"), point.get("y")
+            else:
+                continue
+            try:
+                points.append([
+                    int(max(0, min(image_width - 1, round(float(x))))),
+                    int(max(0, min(image_height - 1, round(float(y))))),
+                ])
+            except (TypeError, ValueError):
+                continue
+        if len(points) >= 3:
+            return points
+    left = max(0.0, float(box.get("left") or 0))
+    top = max(0.0, float(box.get("top") or 0))
+    right = min(float(image_width - 1), left + max(1.0, float(box.get("width") or 0)))
+    bottom = min(float(image_height - 1), top + max(1.0, float(box.get("height") or 0)))
+    return [
+        [int(round(left)), int(round(top))],
+        [int(round(right)), int(round(top))],
+        [int(round(right)), int(round(bottom))],
+        [int(round(left)), int(round(bottom))],
+    ]
+
+def calculate_background_color_variance(roi: Any, dominant_bgr: Any) -> float:
+    """排除与主背景明暗反差明显的文字像素后，计算整个背景块的 Lab 颜色方差。"""
+    if roi is None or roi.size == 0:
+        return float("inf")
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    dominant_gray = float(cv2.cvtColor(np.asarray(dominant_bgr, dtype=np.uint8).reshape(1, 1, 3), cv2.COLOR_BGR2GRAY)[0, 0])
+    if dominant_gray >= 140:
+        background_mask = gray >= max(32.0, dominant_gray - 72.0)
+    elif dominant_gray <= 110:
+        background_mask = gray <= min(223.0, dominant_gray + 72.0)
+    else:
+        background_mask = np.abs(gray.astype(np.float32) - dominant_gray) <= 72.0
+    minimum_pixels = max(32, int(gray.size * 0.35))
+    if int(np.count_nonzero(background_mask)) < minimum_pixels:
+        return float("inf")
+    lab_pixels = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)[background_mask].astype(np.float32)
+    if len(lab_pixels) < minimum_pixels:
+        return float("inf")
+    channel_variance = np.var(lab_pixels, axis=0)
+    return float(np.mean(channel_variance))
+
+
+def visual_regions_match(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    first_box, second_box = first.get("box", {}), second.get("box", {})
+    left = max(float(first_box.get("left") or 0), float(second_box.get("left") or 0))
+    top = max(float(first_box.get("top") or 0), float(second_box.get("top") or 0))
+    right = min(float(first_box.get("left") or 0) + float(first_box.get("width") or 0), float(second_box.get("left") or 0) + float(second_box.get("width") or 0))
+    bottom = min(float(first_box.get("top") or 0) + float(first_box.get("height") or 0), float(second_box.get("top") or 0) + float(second_box.get("height") or 0))
+    overlap = max(0.0, right - left) * max(0.0, bottom - top)
+    first_area = max(1.0, float(first_box.get("width") or 0) * float(first_box.get("height") or 0))
+    second_area = max(1.0, float(second_box.get("width") or 0) * float(second_box.get("height") or 0))
+    first_color = np.asarray(hex_to_bgr(str(first.get("bg_color") or "")), dtype=np.int16)
+    second_color = np.asarray(hex_to_bgr(str(second.get("bg_color") or "")), dtype=np.int16)
+    return overlap / min(first_area, second_area) >= 0.68 and float(np.linalg.norm(first_color - second_color)) <= 64
+
+
+def visual_region_quality(region: dict[str, Any]) -> tuple[float, float]:
+    """同一物理容器的多个候选中，优先保留更可靠且更完整的轮廓。"""
+    box = region.get("box") or {}
+    area = max(0.0, float(box.get("width") or 0) * float(box.get("height") or 0))
+    return float(region.get("confidence") or 0.0), area
+
+
+def find_best_visual_region(box: dict[str, Any], regions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """为文字框选择真实包含它、覆盖充分且面积较小的容器。"""
+    if not box or not regions:
+        return None
+    box_left = float(box.get("left") or 0)
+    box_top = float(box.get("top") or 0)
+    box_width = max(0.0, float(box.get("width") or 0))
+    box_height = max(0.0, float(box.get("height") or 0))
+    box_right = box_left + box_width
+    box_bottom = box_top + box_height
+    box_area = max(1.0, box_width * box_height)
+    center_x = box_left + box_width / 2
+    center_y = box_top + box_height / 2
+    candidates: list[tuple[tuple[float, float, float, float], dict[str, Any]]] = []
+
+    for region in regions:
+        region_box = region.get("box") or {}
+        region_left = float(region_box.get("left") or 0)
+        region_top = float(region_box.get("top") or 0)
+        region_width = max(0.0, float(region_box.get("width") or 0))
+        region_height = max(0.0, float(region_box.get("height") or 0))
+        region_right = region_left + region_width
+        region_bottom = region_top + region_height
+        overlap = max(0.0, min(box_right, region_right) - max(box_left, region_left)) * max(
+            0.0,
+            min(box_bottom, region_bottom) - max(box_top, region_top),
+        )
+        overlap_ratio = overlap / box_area
+        polygon = region.get("polygon") or []
+        polygon_contains_center = False
+        if len(polygon) >= 3:
+            contour = np.asarray(polygon, dtype=np.float32).reshape((-1, 1, 2))
+            polygon_contains_center = cv2.pointPolygonTest(contour, (center_x, center_y), False) >= 0
+        box_contains_center = region_left <= center_x <= region_right and region_top <= center_y <= region_bottom
+        if not ((polygon_contains_center and overlap_ratio >= 0.18) or (box_contains_center and overlap_ratio >= 0.55)):
+            continue
+        region_area = max(1.0, region_width * region_height)
+        score = (
+            1.0 if polygon_contains_center else 0.0,
+            overlap_ratio,
+            -region_area,
+            float(region.get("confidence") or 0.0),
+        )
+        candidates.append((score, region))
+
+    return max(candidates, key=lambda entry: entry[0])[1] if candidates else None
+
+
+def box_belongs_to_visual_region(box: dict[str, Any], region: dict[str, Any]) -> bool:
+    return find_best_visual_region(box, [region]) is not None
+
+
+def apply_visual_style_to_item(item: dict[str, Any], image: Any, region: dict[str, Any] | None) -> None:
+    box = item.get("box") or {}
+    polygon = item.get("polygon") or []
+    bg_color = str(region.get("bg_color") if region else sample_box_background_color(image, box))
+    if region:
+        ink_color = sample_text_ink_color(image, polygon, box, bg_color)
+        text_color, stroke_color = choose_readable_text_colors(ink_color, bg_color)
+    else:
+        text_color, stroke_color = "#000000", "#ffffff"
+    item["region_id"] = str(region.get("id") if region else "")
+    item["region_type"] = str(region.get("region_type") if region else "effect_text")
+    item["region_polygon"] = region.get("polygon") if region else None
+    item["region_box"] = region.get("box") if region else None
+    item["bg_color"] = bg_color if region else ""
+    item["text_color"] = text_color
+    item["stroke_color"] = stroke_color
+    item["region_confidence"] = float(region.get("confidence") if region else 0.0)
+
+
+def sample_box_background_color(image: Any, box: dict[str, Any]) -> str:
+    height, width = image.shape[:2]
+    left = max(0, int(float(box.get("left") or 0)))
+    top = max(0, int(float(box.get("top") or 0)))
+    right = min(width, int(math.ceil(left + float(box.get("width") or 0))))
+    bottom = min(height, int(math.ceil(top + float(box.get("height") or 0))))
+    if right <= left or bottom <= top:
+        return "#ffffff"
+    roi = image[top:bottom, left:right]
+    border = max(1, min(roi.shape[:2]) // 8)
+    pixels = np.concatenate((roi[:border].reshape(-1, 3), roi[-border:].reshape(-1, 3), roi[:, :border].reshape(-1, 3), roi[:, -border:].reshape(-1, 3)))
+    return bgr_to_hex([int(value) for value in np.median(pixels, axis=0)])
+
+
+def sample_text_ink_color(image: Any, polygon: Any, box: dict[str, Any], bg_color: str) -> str:
+    height, width = image.shape[:2]
+    left = max(0, int(float(box.get("left") or 0)))
+    top = max(0, int(float(box.get("top") or 0)))
+    right = min(width, int(math.ceil(left + float(box.get("width") or 0))))
+    bottom = min(height, int(math.ceil(top + float(box.get("height") or 0))))
+    if right <= left or bottom <= top:
+        return "#111827"
+    roi = image[top:bottom, left:right]
+    background = np.asarray(hex_to_bgr(bg_color), dtype=np.int16)
+    pixels = roi.reshape(-1, 3)
+    distances = np.linalg.norm(pixels.astype(np.int16) - background, axis=1)
+    ink = pixels[distances >= 42]
+    if len(ink) < 8:
+        return "#111827" if relative_luminance(bg_color) > 0.45 else "#ffffff"
+    quantized = (ink // 24).astype(np.int16)
+    keys, counts = np.unique(quantized, axis=0, return_counts=True)
+    dominant = np.clip(keys[int(np.argmax(counts))] * 24 + 12, 0, 255)
+    return bgr_to_hex([int(value) for value in dominant])
+
+
+def choose_readable_text_colors(original: str, background: str) -> tuple[str, str]:
+    if contrast_ratio(original, background) >= 4.5:
+        text = original
+    else:
+        text = "#000000" if contrast_ratio("#000000", background) >= contrast_ratio("#ffffff", background) else "#ffffff"
+    stroke = "#ffffff" if relative_luminance(text) < 0.45 else "#000000"
+    return text, stroke
+
+
+def bgr_to_hex(bgr: list[int]) -> str:
+    return f"#{int(bgr[2]):02x}{int(bgr[1]):02x}{int(bgr[0]):02x}"
+
+
+def hex_to_bgr(value: str) -> list[int]:
+    raw = str(value or "#ffffff").lstrip("#")
+    if len(raw) != 6:
+        raw = "ffffff"
+    red, green, blue = int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+    return [blue, green, red]
+
+
+def relative_luminance(value: str) -> float:
+    bgr = hex_to_bgr(value)
+    channels = [bgr[2] / 255, bgr[1] / 255, bgr[0] / 255]
+    linear = [channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4 for channel in channels]
+    return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722
+
+
+def contrast_ratio(first: str, second: str) -> float:
+    high, low = sorted((relative_luminance(first), relative_luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
 
 
 def get_image_size(image_bytes: bytes) -> tuple[int, int]:
@@ -1780,9 +2397,11 @@ def _run_slice_ocr_pipeline(
         )
 
     normalized = sort_items(dedupe_items(recognized_items))
+    regions = annotate_visual_regions(image_bytes, normalized)
     return {
         "items": normalized,
         "boxes": response_boxes(normalized),
+        "regions": regions,
         "imageWidth": image_width,
         "imageHeight": image_height,
         "deskew": True,

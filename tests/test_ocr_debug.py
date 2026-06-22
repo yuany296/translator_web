@@ -5,7 +5,7 @@ from pathlib import Path
 import io
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -15,6 +15,7 @@ from ocr_debug_common import count_hangul, predict_ocr, prepare_paddleocr_import
 
 FIXTURE = ROOT / "tests" / "fixtures" / "ocr" / "korean_comment.png"
 VERTICAL_FIXTURE = ROOT / "tests" / "fixtures" / "ocr" / "vertical_korean_photo.png"
+PROBLEM_FIXTURE_DIR = ROOT / "image" / "promblems"
 PARAMS = {
     "text_det_thresh": 0.2,
     "text_det_box_thresh": 0.35,
@@ -27,6 +28,327 @@ def test_local_ocr_request_defaults_to_fast_mode() -> None:
     import server
 
     assert server.OcrRequest(image="placeholder").mode == "fast"
+
+
+def build_visual_region_fixture(background: str, panel: str, ink: str) -> tuple[bytes, list[dict]]:
+    image = Image.new("RGB", (420, 300), background)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((55, 15, 365, 285), fill=panel)
+    boxes = [
+        {"left": 130, "top": 80, "width": 160, "height": 30},
+        {"left": 155, "top": 130, "width": 110, "height": 30},
+        {"left": 120, "top": 180, "width": 180, "height": 30},
+    ]
+    items = []
+    for index, box in enumerate(boxes):
+        draw.rectangle(
+            (box["left"], box["top"] + 8, box["left"] + box["width"], box["top"] + box["height"] - 8),
+            fill=ink,
+        )
+        items.append({"text": f"line-{index}", "score": 0.98, "box": box})
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue(), items
+
+
+def test_visual_region_analysis_groups_three_lines_in_one_colored_panel() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image_bytes, items = build_visual_region_fixture("white", "#d8c49a", "black")
+    regions = server.annotate_visual_regions(image_bytes, items)
+
+    assert len(regions) == 1
+    assert {item["region_id"] for item in items} == {"region-1"}
+    assert all(item["region_type"] == "caption_panel" for item in items)
+    assert all(item["bg_color"] for item in items)
+
+
+def test_visual_region_analysis_backfills_an_earlier_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image_bytes, items = build_visual_region_fixture("white", "#d8c49a", "black")
+    detected_region = {
+        "id": "",
+        "region_type": "caption_panel",
+        "polygon": [[80, 45], [340, 45], [340, 250], [80, 250]],
+        "box": {"left": 80, "top": 45, "width": 260, "height": 205},
+        "bg_color": "#d8c49a",
+        "confidence": 0.92,
+        "rectangularity": 1.0,
+        "brightness": 200.0,
+    }
+    calls = 0
+
+    def detect_merged_block(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return dict(detected_region)
+
+    monkeypatch.setattr(server, "detect_solid_region_for_box", detect_merged_block)
+    regions = server.annotate_visual_regions(image_bytes, items)
+
+    assert len(regions) == 1
+    assert {item["region_id"] for item in items} == {"region-1"}
+    assert all(item["region_polygon"] == detected_region["polygon"] for item in items)
+
+
+def test_visual_region_assignment_prefers_the_smallest_containing_panel() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    box = {"left": 120, "top": 100, "width": 80, "height": 30}
+    regions = [
+        {
+            "id": "outer",
+            "polygon": [[20, 20], [380, 20], [380, 280], [20, 280]],
+            "box": {"left": 20, "top": 20, "width": 360, "height": 260},
+            "confidence": 0.95,
+        },
+        {
+            "id": "inner",
+            "polygon": [[80, 60], [260, 60], [260, 190], [80, 190]],
+            "box": {"left": 80, "top": 60, "width": 180, "height": 130},
+            "confidence": 0.90,
+        },
+    ]
+
+    assert server.find_best_visual_region(box, regions)["id"] == "inner"
+
+
+def test_visual_region_analysis_uses_light_text_on_black_panel() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image_bytes, items = build_visual_region_fixture("white", "black", "white")
+    server.annotate_visual_regions(image_bytes, items)
+
+    assert {item["region_id"] for item in items} == {"region-1"}
+    assert all(server.contrast_ratio(item["text_color"], item["bg_color"]) >= 4.5 for item in items)
+    assert all(item["stroke_color"].lower() == "#000000" for item in items)
+
+
+def test_visual_region_analysis_rejects_patterned_effect_background() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = Image.new("RGB", (240, 180), "white")
+    draw = ImageDraw.Draw(image)
+    for y in range(0, 180, 12):
+        for x in range(0, 240, 12):
+            draw.rectangle((x, y, x + 11, y + 11), fill="#335577" if (x // 12 + y // 12) % 2 else "#d9b4d0")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    items = [{"text": "effect", "score": 0.95, "box": {"left": 50, "top": 55, "width": 140, "height": 60}}]
+
+    regions = server.annotate_visual_regions(buffer.getvalue(), items)
+
+    assert regions == []
+    assert items[0]["region_id"] == ""
+    assert items[0]["region_type"] == "effect_text"
+    assert items[0]["text_color"] == "#000000"
+    assert items[0]["stroke_color"] == "#ffffff"
+
+
+def test_visual_region_analysis_prefers_near_scale_when_far_metrics_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = server.np.full((120, 160, 3), 220, dtype=server.np.uint8)
+    lab = server.cv2.cvtColor(image, server.cv2.COLOR_BGR2LAB)
+    near = {
+        "roi": (50, 45, 60, 30),
+        "median_bgr": server.np.asarray([210, 215, 220], dtype=server.np.uint8),
+        "lab_variance": 8.0,
+        "delta_e_p90": 5.0,
+        "dominant_coverage": 0.94,
+        "passes_thresholds": True,
+    }
+    far = {
+        "roi": (35, 25, 90, 70),
+        "median_bgr": server.np.asarray([120, 130, 140], dtype=server.np.uint8),
+        "lab_variance": 130.0,
+        "delta_e_p90": 28.0,
+        "dominant_coverage": 0.61,
+        "passes_thresholds": False,
+    }
+    measurements = iter((near, far))
+    monkeypatch.setattr(server, "measure_solid_background_scale", lambda *_args, **_kwargs: next(measurements))
+
+    region = server.detect_solid_region_for_box(
+        image,
+        lab,
+        {"left": 60, "top": 50, "width": 40, "height": 20},
+        1.0,
+    )
+
+    assert region is not None
+    assert region["box"] == {"left": 50.0, "top": 45.0, "width": 60.0, "height": 30.0}
+    assert region["sampling_strategy"] == "near_priority"
+    assert region["far_scale_passed"] is False
+    assert region["background_variance"] == near["lab_variance"]
+
+
+def test_cleaned_image_inpaints_only_complex_background_text() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = Image.new("RGB", (160, 100), "#f0f0f0")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((34, 32, 126, 58), fill="black")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    items = [
+        {
+            "text": "effect",
+            "box": {"left": 30, "top": 28, "width": 100, "height": 36},
+            "polygon": [[30, 28], [130, 28], [130, 64], [30, 64]],
+            "region_id": "",
+        },
+        {
+            "text": "panel",
+            "box": {"left": 10, "top": 10, "width": 20, "height": 12},
+            "polygon": [[10, 10], [30, 10], [30, 22], [10, 22]],
+            "region_id": "region-1",
+        },
+    ]
+
+    cleaned = server.build_cleaned_image_data_url(buffer.getvalue(), items)
+
+    assert cleaned and cleaned.startswith("data:image/png;base64,")
+
+
+def test_visual_region_analysis_prefers_white_bubble_over_white_page() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = Image.new("RGB", (540, 420), "white")
+    draw = ImageDraw.Draw(image)
+    bubble = [(85, 75), (410, 65), (470, 135), (455, 295), (330, 330), (275, 395), (250, 325), (95, 305), (55, 190)]
+    bubble_inner = [(90, 85), (400, 78), (455, 140), (440, 285), (325, 315), (275, 370), (255, 315), (105, 290), (70, 190)]
+    draw.polygon(bubble, fill="black")
+    draw.polygon(bubble_inner, fill="white")
+    boxes = [
+        {"left": 220, "top": 145, "width": 100, "height": 52},
+        {"left": 200, "top": 215, "width": 140, "height": 55},
+    ]
+    for box in boxes:
+        draw.rectangle(
+            (box["left"] + 20, box["top"] + 14, box["left"] + box["width"] - 20, box["top"] + box["height"] - 14),
+            fill="black",
+        )
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    items = [{"text": f"line-{index}", "score": 0.98, "box": box} for index, box in enumerate(boxes)]
+
+    regions = server.annotate_visual_regions(buffer.getvalue(), items)
+
+    assert len(regions) == 1
+    assert regions[0]["region_type"] == "speech_bubble"
+    assert regions[0]["background_variance"] <= server.SOLID_BACKGROUND_MAX_LAB_VARIANCE
+    assert regions[0]["dominant_coverage"] >= server.SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE
+    assert regions[0]["box"]["width"] < image.width * 0.88
+    assert {item["region_id"] for item in items} == {"region-1"}
+
+
+
+def test_visual_region_analysis_keeps_thin_bubble_border_when_downscaled() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = Image.new("RGB", (864, 1403), "white")
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((120, 500, 650, 1000), fill="black")
+    draw.ellipse((132, 512, 638, 988), fill="white")
+    boxes = [
+        {"left": 350, "top": 635, "width": 105, "height": 70},
+        {"left": 335, "top": 705, "width": 135, "height": 70},
+    ]
+    for box in boxes:
+        draw.rectangle(
+            (box["left"] + 20, box["top"] + 25, box["left"] + box["width"] - 20, box["top"] + box["height"] - 25),
+            fill="black",
+        )
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    items = [{"text": f"line-{index}", "score": 0.98, "box": box} for index, box in enumerate(boxes)]
+
+    regions = server.annotate_visual_regions(buffer.getvalue(), items)
+
+    assert len(regions) == 1
+    assert {item["region_id"] for item in items} == {"region-1"}
+    assert regions[0]["box"]["height"] <= 350
+
+
+
+def test_visual_region_analysis_rejects_page_spanning_background() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = Image.new("RGB", (360, 300), "white")
+    draw = ImageDraw.Draw(image)
+    draw.line((0, 158, 360, 158), fill="black", width=12)
+    box = {"left": 100, "top": 80, "width": 160, "height": 48}
+    draw.rectangle((125, 94, 235, 114), fill="black")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    items = [{"text": "effect", "score": 0.95, "box": box}]
+
+    regions = server.annotate_visual_regions(buffer.getvalue(), items)
+
+    assert regions == []
+    assert items[0]["region_type"] == "effect_text"
+    assert items[0]["text_color"] == "#000000"
+    assert items[0]["stroke_color"] == "#ffffff"
+
+def test_problem_screenshots_distinguish_panels_from_effect_text() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    required = [
+        PROBLEM_FIXTURE_DIR / "1781878788148.png",
+        PROBLEM_FIXTURE_DIR / "1781879291545.png",
+        PROBLEM_FIXTURE_DIR / "1781878948031.png",
+    ]
+    if not all(path.exists() for path in required):
+        pytest.skip("local problem screenshots unavailable")
+
+    black_items = [{"text": "caption", "box": {"left": 70, "top": 70, "width": 320, "height": 105}}]
+    black_regions = server.annotate_visual_regions(required[0].read_bytes(), black_items)
+    assert black_regions == []
+    assert black_items[0]["region_type"] == "effect_text"
+    assert black_items[0]["text_color"] == "#000000"
+    assert black_items[0]["stroke_color"] == "#ffffff"
+
+    beige_items = [
+        {"text": "line-1", "box": {"left": 110, "top": 135, "width": 400, "height": 48}},
+        {"text": "line-2", "box": {"left": 205, "top": 185, "width": 210, "height": 52}},
+        {"text": "line-3", "box": {"left": 145, "top": 240, "width": 305, "height": 56}},
+    ]
+    beige_regions = server.annotate_visual_regions(required[1].read_bytes(), beige_items)
+    assert beige_regions == []
+    assert {item["region_type"] for item in beige_items} == {"effect_text"}
+    assert {item["text_color"] for item in beige_items} == {"#000000"}
+    assert {item["stroke_color"] for item in beige_items} == {"#ffffff"}
+
+    effect_items = [{"text": "effect", "box": {"left": 35, "top": 25, "width": 675, "height": 175}}]
+    effect_regions = server.annotate_visual_regions(required[2].read_bytes(), effect_items)
+    assert effect_regions == []
+    assert effect_items[0]["region_type"] == "effect_text"
 
 
 def test_polygon_rotation_and_perspective_crop_support_arbitrary_tilt() -> None:

@@ -34,6 +34,7 @@ test.py
 *.png
 *.jpg
 *.jpeg
+!tests/fixtures/visual/*.png
 
 # === Local OCR service temp files ===
 local-ocr-service/__pycache__/
@@ -42,4 +43,3 @@ local-ocr-service/debug
 
 # === Documentation generated files ===
 verification.md
-

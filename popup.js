@@ -90,6 +90,9 @@ const showBallSwitch = document.getElementById("showBallSwitch");
 const captureModeSelect = document.getElementById("captureModeSelect");
 const renderModeSelect = document.getElementById("renderModeSelect");
 const pretranslateModeSelect = document.getElementById("pretranslateModeSelect");
+const pretranslateModeStatus = document.createElement("div");
+pretranslateModeStatus.className = "mode-status";
+pretranslateModeSelect.insertAdjacentElement("afterend", pretranslateModeStatus);
 const ignoreZhSwitch = document.getElementById("ignoreZhSwitch");
 const saveBtn = document.getElementById("saveBtn");
 const clearCacheBtn = document.getElementById("clearCacheBtn");
@@ -109,6 +112,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 function bindEvents() {
   providerSelect.addEventListener("change", onProviderChanged);
+  pretranslateModeSelect.addEventListener("change", updatePretranslateModeStatus);
 
   saveBtn.addEventListener("click", async () => {
     await saveSettings();
@@ -145,6 +149,17 @@ function onProviderChanged() {
       visionOcrModelInput.value = DEFAULTS.visionOcrModel;
     }
   }
+}
+
+function updatePretranslateModeStatus() {
+  const mode = normalizePretranslateMode(pretranslateModeSelect.value);
+  if (mode === "continuous") {
+    pretranslateModeStatus.textContent = "\u5df2\u5f00\u542f\uff1a\u4ece\u5f53\u524d\u4f4d\u7f6e\u8fde\u7eed\u5904\u7406\u5230\u672c\u7ae0\u672b\u5c3e";
+    return;
+  }
+  pretranslateModeStatus.textContent = normalizePretranslateMode(pretranslateModeSelect.value) === "ahead"
+    ? "已开启：自动处理当前位置及后续 6 张图片"
+    : "手动模式：仅在点击翻译时处理图片";
 }
 
 async function loadSettings() {
@@ -192,6 +207,7 @@ async function loadSettings() {
     captureModeSelect.value = normalizeCaptureMode(data[STORAGE_KEYS.captureMode]);
     renderModeSelect.value = normalizeRenderMode(data[STORAGE_KEYS.renderMode]);
     pretranslateModeSelect.value = normalizePretranslateMode(data[STORAGE_KEYS.pretranslateMode]);
+    updatePretranslateModeStatus();
     ignoreZhSwitch.checked = data[STORAGE_KEYS.ignoreSimplifiedChinese] === true;
 
     applyProviderUi(provider);
@@ -790,7 +806,11 @@ function normalizeRenderMode(value) {
 }
 
 function normalizePretranslateMode(value) {
-  return String(value || "").trim().toLowerCase() === "ahead" ? "ahead" : "manual";
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "ahead" || mode === "continuous") {
+    return mode;
+  }
+  return "manual";
 }
 
 function normalizeCaptureMode(value) {

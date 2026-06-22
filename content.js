@@ -43,7 +43,11 @@
   const EMBEDDED_MAX_CANVAS_PIXELS = 24 * 1000 * 1000;
   const EMBEDDED_MAX_ORIGINAL_BYTES = 16 * 1024 * 1024;
   const MAX_LOCAL_RESULT_CACHE = 120;
-  const KAKAO_STITCH_OVERLAP_PX = 300;
+  const KAKAO_STITCH_MAX_CONTEXT_PX = 300;
+  const KAKAO_STITCH_MIN_CONTEXT_PX = 96;
+  const KAKAO_STITCH_CONTEXT_CSS_PX = 180;
+  const KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX = 32;
+  const KAKAO_STITCH_MIN_WIDTH_RATIO = 0.82;
   const PRETRANSLATE_AHEAD_COUNT = 6;
   const MAX_EMBEDDED_IMAGE_CACHE = 40;
   const STATUS_INFO_THROTTLE_MS = 1200;
@@ -100,6 +104,7 @@
     kakaoGlobalOcrEntries: new Map(),
     lastRecoveryAt: 0,
     syncRaf: 0,
+    overlayFrameRaf: 0,
     syncInterval: 0,
     showFloatingBall: true,
     captureMode: CAPTURE_MODE_DIRECT,
@@ -120,10 +125,24 @@
     getPageAutoTranslateStatus,
     __test: {
       mapKakaoStitchedResult,
+      buildKakaoStitchWindowPlan,
+      isVerifiedKakaoStitchNeighbor,
+      shouldFallbackFromKakaoStitch,
       normalizePretranslateMode,
       textSimilarity,
       formatTranslationForOriginalLines,
-      normalizeBubbleRotation
+      normalizeBubbleRotation,
+      buildRegionClipPath,
+      getBubbleRenderColors,
+      getDynamicStrokeWidth,
+      getCleanedPatchStyle,
+      buildAheadTranslationOptions,
+      compareOverlayViewportRects,
+      passesKakaopageTargetGeometry,
+      selectPendingAheadCandidates,
+      selectPendingContinuousCandidates,
+      isAutomaticPretranslateMode,
+      shouldSchedulePagePretranslation
     },
     destroy
   };
@@ -254,12 +273,8 @@
 
       if (changes.mt_pretranslate_mode) {
         state.pretranslateMode = normalizePretranslateMode(changes.mt_pretranslate_mode.newValue);
-        state.autoTranslatePageEnabled = state.pretranslateMode === "ahead" && state.enabled;
-        if (state.autoTranslatePageEnabled) {
+        if (shouldSchedulePagePretranslation()) {
           scheduleAheadPretranslation("setting-change");
-        } else {
-          state.queue.length = 0;
-          state.queuedTargets = new WeakSet();
         }
       }
 
@@ -296,6 +311,34 @@
         syncAllOverlays();
       }, 1200);
     }
+  }
+
+  function overlayFrameSyncTick() {
+    state.overlayFrameRaf = 0;
+    if (state.invalidated || state.overlaysById.size === 0) {
+      return;
+    }
+
+    for (const overlayState of state.overlaysById.values()) {
+      syncOverlayPosition(overlayState);
+    }
+    state.overlayFrameRaf = window.requestAnimationFrame(overlayFrameSyncTick);
+  }
+
+  function ensureOverlayFrameSync() {
+    if (state.invalidated || state.overlayFrameRaf || state.overlaysById.size === 0) {
+      return;
+    }
+    // 阅读器可能用 transform 平滑移动画面，此时不会持续触发原生 scroll 事件。
+    state.overlayFrameRaf = window.requestAnimationFrame(overlayFrameSyncTick);
+  }
+
+  function stopOverlayFrameSync() {
+    if (!state.overlayFrameRaf) {
+      return;
+    }
+    window.cancelAnimationFrame(state.overlayFrameRaf);
+    state.overlayFrameRaf = 0;
   }
 
   function startObservers() {
@@ -425,7 +468,11 @@
       return;
     }
     const previous = ordered[index - 1];
-    if (previous.dataset.mtLastTranslatedKey && state.pretranslateMode === "ahead") {
+    if (
+      previous.dataset.mtLastTranslatedKey &&
+      state.autoTranslatePageEnabled &&
+      isAutomaticPretranslateMode(state.pretranslateMode)
+    ) {
       state.payloadCacheByTargetKey.delete(computeTargetKey(previous));
       queueTranslate(previous, { manual: true, force: true, reason: "kakao-boundary-refresh" });
     }
@@ -497,13 +544,30 @@
   }
 
   function scheduleAheadPretranslation(reason) {
-    if (!state.enabled || state.pretranslateMode !== "ahead" || state.invalidated) {
+    if (!shouldSchedulePagePretranslation()) {
       return;
     }
-    state.autoTranslatePageEnabled = true;
     getAheadTranslationTargets().forEach((target) =>
-      queueTranslate(target, { manual: true, reason: `ahead-${reason}` })
+      queueTranslate(target, buildAheadTranslationOptions(reason))
     );
+  }
+
+  function shouldSchedulePagePretranslation({
+    enabled = state.enabled,
+    pageEnabled = state.autoTranslatePageEnabled,
+    mode = state.pretranslateMode,
+    invalidated = state.invalidated
+  } = {}) {
+    return enabled && pageEnabled && !invalidated && isAutomaticPretranslateMode(mode);
+  }
+
+  function buildAheadTranslationOptions(reason) {
+    return {
+      manual: true,
+      relaxed: true,
+      allowOffscreen: true,
+      reason: `ahead-${String(reason || "unknown")}`
+    };
   }
 
   function getAheadTranslationTargets() {
@@ -511,20 +575,23 @@
       ? collectKakaopageManualTargetCandidates(true)
       : Array.from(document.querySelectorAll(TARGET_SELECTOR)))
       .filter((target) => isSupportedTarget(target) && target.isConnected)
-      .filter((target) => IS_KAKAOPAGE_READER ? passesKakaoAheadTargetFilter(target) : passesTargetFilter(target, true, { relaxed: true }))
-      .filter((target) => {
-        const targetKey = computeTargetKey(target);
-        return target.dataset.mtLastTranslatedKey !== targetKey && target.dataset.mtNoTextKey !== targetKey;
-      });
+      .filter((target) => IS_KAKAOPAGE_READER ? passesKakaoAheadTargetFilter(target) : passesTargetFilter(target, true, { relaxed: true }));
     if (candidates.length === 0) {
       return [];
     }
     const viewportAnchor = window.innerHeight * 0.35;
-    let startIndex = candidates.findIndex((target) => target.getBoundingClientRect().bottom >= viewportAnchor);
-    if (startIndex < 0) {
-      startIndex = Math.max(0, candidates.length - 1);
-    }
-    return candidates.slice(startIndex, startIndex + PRETRANSLATE_AHEAD_COUNT + 1).filter((target) => {
+    const isPending = (target) => {
+      const targetKey = computeTargetKey(target);
+      return target.dataset.mtLastTranslatedKey !== targetKey && target.dataset.mtNoTextKey !== targetKey;
+    };
+    const pendingTargets = state.pretranslateMode === "continuous"
+      ? selectPendingContinuousCandidates(candidates, viewportAnchor, isPending)
+      : selectPendingAheadCandidates(
+        candidates,
+        viewportAnchor,
+        isPending
+      );
+    return pendingTargets.filter((target) => {
       if (target instanceof HTMLImageElement && !target.complete) {
         target.loading = "eager";
         if (target.dataset.mtAheadLoadPending !== "true") {
@@ -540,6 +607,22 @@
     });
   }
 
+  function selectPendingAheadCandidates(candidates, viewportAnchor, isPending, aheadCount = PRETRANSLATE_AHEAD_COUNT) {
+    let startIndex = candidates.findIndex((target) => target.getBoundingClientRect().bottom >= viewportAnchor);
+    if (startIndex < 0) {
+      startIndex = Math.max(0, candidates.length - 1);
+    }
+    return candidates.slice(startIndex, startIndex + aheadCount + 1).filter(isPending);
+  }
+
+
+  function selectPendingContinuousCandidates(candidates, viewportAnchor, isPending) {
+    let startIndex = candidates.findIndex((target) => target.getBoundingClientRect().bottom >= viewportAnchor);
+    if (startIndex < 0) {
+      startIndex = Math.max(0, candidates.length - 1);
+    }
+    return candidates.slice(startIndex).filter(isPending);
+  }
   function passesKakaoAheadTargetFilter(target) {
     if (!isSupportedTarget(target) || !target.isConnected || !isSitePreferredTarget(target, { allowLoose: true })) {
       return false;
@@ -743,7 +826,10 @@
       return { ok: false, skipped: true, reason: "plugin disabled" };
     }
 
-    if (!passesTargetFilter(target, options.manual)) {
+    if (!passesTargetFilter(target, options.manual, {
+      relaxed: options.relaxed === true,
+      allowOffscreen: options.allowOffscreen === true
+    })) {
       return { ok: false, skipped: true, reason: "filtered as non-manga target" };
     }
 
@@ -809,29 +895,68 @@
         renderLoadingOverlay(target, targetKey, "OCR + 翻译中...");
         const payload = await extractTargetPayload(target, targetKey);
         updateLoadingOverlayText(target, targetKey, "模型翻译中...");
-        const response = await sendRuntimeMessage({
-          type: "TRANSLATE_DATA_URL",
-          dataUrl: payload.dataUrl,
-          imageUrl: payload.imageUrl,
-          targetKey: payload.stitchKey || targetKey,
-          imageMeta: buildPayloadImageMeta(payload)
-        });
+        let renderPayload = payload;
+        let response = null;
+        try {
+          response = await requestTranslationForPayload(payload, payload.stitchKey || targetKey);
+        } catch (error) {
+          if (!payload.stitch || !payload.singleImagePayload) {
+            throw error;
+          }
+          console.warn("[MangaTranslator][KakaoPage] 拼接 OCR 抛出异常，回退当前单图", {
+            targetKey: targetKey.slice(0, 80),
+            error: getErrorMessage(error)
+          });
+          renderPayload = payload.singleImagePayload;
+          response = await requestTranslationForPayload(renderPayload, `${targetKey}|single-fallback`);
+        }
+
+        if ((!response || !response.ok) && renderPayload === payload && payload.stitch && payload.singleImagePayload) {
+          console.warn("[MangaTranslator][KakaoPage] 拼接 OCR 请求失败，回退当前单图", {
+            targetKey: targetKey.slice(0, 80),
+            error: response && response.error ? response.error : "unknown stitched request failure"
+          });
+          renderPayload = payload.singleImagePayload;
+          response = await requestTranslationForPayload(renderPayload, `${targetKey}|single-fallback`);
+        }
 
         if (!response || !response.ok) {
           throw new Error(response && response.error ? response.error : "Translate request failed");
         }
 
-        const result = normalizeResult(mapKakaoStitchedResult(response.result, payload, target, targetKey));
+        let result = normalizeResult(mapKakaoStitchedResult(response.result, renderPayload, target, targetKey));
+        const fallbackReason = renderPayload === payload
+          ? shouldFallbackFromKakaoStitch(payload, response.result, result)
+          : "";
+        if (fallbackReason && payload.singleImagePayload) {
+          console.warn("[MangaTranslator][KakaoPage] 拼接 OCR 结果异常，回退当前单图", {
+            targetKey: targetKey.slice(0, 80),
+            reason: fallbackReason
+          });
+          renderPayload = payload.singleImagePayload;
+          response = await requestTranslationForPayload(renderPayload, `${targetKey}|single-fallback`);
+          if (!response || !response.ok) {
+            throw new Error(response && response.error ? response.error : "Single-image OCR fallback failed");
+          }
+          result = normalizeResult(response.result);
+        }
         rememberLocalResult(targetKey, result);
+
+        console.debug("[MangaTranslator] Received", result.bubbles.length, "bubbles, translated:", result.bubbles.filter((b) => b.translated_text && b.translated_text !== b.original_text).length, "of", result.bubbles.length);
 
         if (result.bubbles.length > 0) {
           updateLoadingOverlayText(target, targetKey, shouldUseEmbeddedRender(target) ? "生成嵌入图片中..." : "排版中...");
-          await renderTranslationResult(target, targetKey, result, payload, { stream: true });
+          await renderTranslationResult(target, targetKey, result, renderPayload, { stream: true });
           target.dataset.mtNoTextKey = "";
         } else {
           console.warn("[MangaTranslator] OCR returned no text for target", {
             targetTag: target.tagName.toLowerCase(),
             targetKey: targetKey.slice(0, 80),
+            responseOk: response && response.ok,
+            resultBubbles: response && response.result && response.result.bubbles ? response.result.bubbles.length : 0,
+            resultCleaned: response && response.result && typeof response.result.cleanedImage === "string" ? response.result.cleanedImage.slice(0, 40) + "..." : "none",
+            resultKeys: response && response.result ? Object.keys(response.result) : null,
+            error: response && response.error || null
           });
           updateLoadingOverlayText(target, targetKey, "未识别到文本");
           await sleep(1500);
@@ -966,8 +1091,22 @@
       return ownerPayload;
     }
 
-    const previousTarget = ownerIndex > 0 ? ordered[ownerIndex - 1] : null;
-    const nextTarget = ownerIndex + 1 < ordered.length ? ordered[ownerIndex + 1] : null;
+    const ownerDescriptor = describeKakaoStitchTarget(target);
+    const previousCandidate = ownerIndex > 0 ? ordered[ownerIndex - 1] : null;
+    const nextCandidate = ownerIndex + 1 < ordered.length ? ordered[ownerIndex + 1] : null;
+    const previousTarget = isVerifiedKakaoStitchNeighbor(
+      ownerDescriptor,
+      describeKakaoStitchTarget(previousCandidate),
+      "previous"
+    ) ? previousCandidate : null;
+    const nextTarget = isVerifiedKakaoStitchNeighbor(
+      ownerDescriptor,
+      describeKakaoStitchTarget(nextCandidate),
+      "next"
+    ) ? nextCandidate : null;
+    if (!previousTarget && !nextTarget) {
+      return ownerPayload;
+    }
     const previousPayload = previousTarget ? await extractAdjacentKakaoPayload(previousTarget) : null;
     const nextPayload = nextTarget ? await extractAdjacentKakaoPayload(nextTarget) : null;
     const payloads = [previousPayload, ownerPayload, nextPayload].filter(Boolean);
@@ -985,8 +1124,20 @@
     const ownerHeight = scaledHeight(ownerImage);
     const previousHeight = previousImage ? scaledHeight(previousImage) : 0;
     const nextHeight = nextImage ? scaledHeight(nextImage) : 0;
-    const previousSlice = previousImage ? Math.min(KAKAO_STITCH_OVERLAP_PX, previousHeight) : 0;
-    const nextSlice = nextImage ? Math.min(KAKAO_STITCH_OVERLAP_PX, nextHeight) : 0;
+    const plan = buildKakaoStitchWindowPlan({
+      owner: ownerDescriptor,
+      previous: previousTarget ? describeKakaoStitchTarget(previousTarget) : null,
+      next: nextTarget ? describeKakaoStitchTarget(nextTarget) : null,
+      canonicalWidth,
+      ownerHeight,
+      previousHeight,
+      nextHeight
+    });
+    const previousSlice = previousImage ? plan.previousSlice : 0;
+    const nextSlice = nextImage ? plan.nextSlice : 0;
+    if (previousSlice <= 0 && nextSlice <= 0) {
+      return ownerPayload;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = canonicalWidth;
     canvas.height = previousSlice + ownerHeight + nextSlice;
@@ -1016,16 +1167,113 @@
       imageUrl: `kakao-stitch:${sourceKeys.join("|")}`,
       width: canonicalWidth,
       height: canvas.height,
-      stitchKey: `${computeTargetKey(target)}|stitch:${KAKAO_STITCH_OVERLAP_PX}|${sourceKeys.join("|")}`,
+      stitchKey: `${computeTargetKey(target)}|stitch:${previousSlice}:${nextSlice}|${sourceKeys.join("|")}`,
+      singleImagePayload: ownerPayload,
       stitch: {
         ownerTop: previousSlice,
         ownerHeight,
         compositeWidth: canonicalWidth,
         compositeHeight: canvas.height,
-        overlap: KAKAO_STITCH_OVERLAP_PX,
-        sourceKeys
+        previousSlice,
+        nextSlice,
+        sourceKeys,
+        verified: true,
+        coordinateSpace: "page-css-v1",
+        ownerPageRect: plan.ownerPageRect
       }
     };
+  }
+
+  function describeKakaoStitchTarget(target) {
+    if (!target || typeof target.getBoundingClientRect !== "function") {
+      return null;
+    }
+    const rect = target.getBoundingClientRect();
+    const width = Number(rect.width || 0);
+    const height = Number(rect.height || 0);
+    if (!(width > 0 && height > 0)) {
+      return null;
+    }
+    return {
+      left: Number(rect.left || 0),
+      top: Number(rect.top || 0),
+      right: Number(rect.right || (Number(rect.left || 0) + width)),
+      bottom: Number(rect.bottom || (Number(rect.top || 0) + height)),
+      width,
+      height,
+      sourceKey: getQuickSourceToken(target)
+    };
+  }
+
+  function isVerifiedKakaoStitchNeighbor(owner, candidate, direction) {
+    if (!owner || !candidate || !candidate.sourceKey || candidate.sourceKey === owner.sourceKey) {
+      return false;
+    }
+    const widthRatio = Math.min(owner.width, candidate.width) / Math.max(owner.width, candidate.width);
+    const ownerCenter = owner.left + owner.width / 2;
+    const candidateCenter = candidate.left + candidate.width / 2;
+    const centerDelta = Math.abs(ownerCenter - candidateCenter);
+    const seamGap = direction === "previous" ? owner.top - candidate.bottom : candidate.top - owner.bottom;
+    const ordered = direction === "previous" ? candidate.top < owner.top : candidate.top > owner.top;
+    return (
+      ordered &&
+      widthRatio >= KAKAO_STITCH_MIN_WIDTH_RATIO &&
+      centerDelta <= Math.max(owner.width, candidate.width) * 0.12 &&
+      Math.abs(seamGap) <= KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX
+    );
+  }
+
+  function buildKakaoStitchWindowPlan({ owner, previous, next, canonicalWidth, ownerHeight, previousHeight, nextHeight }) {
+    if (!owner || !(owner.width > 0) || !(ownerHeight > 0) || !(canonicalWidth > 0)) {
+      return { previousSlice: 0, nextSlice: 0, ownerPageRect: null };
+    }
+    const bitmapPerCssPixel = canonicalWidth / owner.width;
+    const desiredContext = clamp(
+      Math.round(Math.min(KAKAO_STITCH_CONTEXT_CSS_PX, owner.height * 0.2) * bitmapPerCssPixel),
+      KAKAO_STITCH_MIN_CONTEXT_PX,
+      KAKAO_STITCH_MAX_CONTEXT_PX
+    );
+    return {
+      previousSlice: previous && previousHeight > 0 ? Math.min(desiredContext, previousHeight) : 0,
+      nextSlice: next && nextHeight > 0 ? Math.min(desiredContext, nextHeight) : 0,
+      ownerPageRect: {
+        left: owner.left + Number(window.scrollX || 0),
+        top: owner.top + Number(window.scrollY || 0),
+        width: owner.width,
+        height: owner.height
+      }
+    };
+  }
+
+  async function requestTranslationForPayload(payload, requestKey) {
+    return sendRuntimeMessage({
+      type: "TRANSLATE_DATA_URL",
+      dataUrl: payload.dataUrl,
+      imageUrl: payload.imageUrl,
+      targetKey: requestKey,
+      imageMeta: buildPayloadImageMeta(payload)
+    });
+  }
+
+  function shouldFallbackFromKakaoStitch(payload, rawResult, mappedResult) {
+    if (!payload || !payload.stitch || !payload.singleImagePayload) {
+      return "";
+    }
+    const rawBubbles = rawResult && Array.isArray(rawResult.bubbles) ? rawResult.bubbles : [];
+    const mappedBubbles = mappedResult && Array.isArray(mappedResult.bubbles) ? mappedResult.bubbles : [];
+    if (rawBubbles.length === 0) {
+      return "stitched OCR produced no owner text";
+    }
+    const invalid = mappedBubbles.some((bubble) => (
+      ![bubble.x, bubble.y, bubble.w, bubble.h].every((value) => Number.isFinite(Number(value))) ||
+      Number(bubble.w) <= 0 ||
+      Number(bubble.h) <= 0 ||
+      Number(bubble.x) < -5 ||
+      Number(bubble.x) + Number(bubble.w) > 105 ||
+      Number(bubble.y) < -45 ||
+      Number(bubble.y) + Number(bubble.h) > 145
+    ));
+    return invalid ? "stitched OCR produced implausible owner coordinates" : "";
   }
 
   async function extractAdjacentKakaoPayload(target) {
@@ -1053,6 +1301,12 @@
       const heightPx = (Number(bubble.h) / 100) * compositeHeight;
       return {
         ...bubble,
+        cleaned_source_box: {
+          x: Number(bubble.x),
+          y: Number(bubble.y),
+          w: Number(bubble.w),
+          h: Number(bubble.h)
+        },
         y: ((topPx - ownerTop) / ownerHeight) * 100,
         h: (heightPx / ownerHeight) * 100,
         polygon: Array.isArray(bubble.polygon)
@@ -1061,10 +1315,23 @@
               y: (((Number(point && point.y) / 100) * compositeHeight - ownerTop) / ownerHeight) * 100
             }))
           : null,
+        region_polygon: Array.isArray(bubble.region_polygon)
+          ? bubble.region_polygon.map((point) => ({
+              x: Number(point && point.x),
+              y: (((Number(point && point.y) / 100) * compositeHeight - ownerTop) / ownerHeight) * 100
+            }))
+          : null,
         stitch_overflow: true
       };
     });
-    const deduped = dedupeKakaoGlobalBubbles(mapped, targetRect, targetKey);
+    const ownerPageRect = payload.stitch.ownerPageRect && typeof payload.stitch.ownerPageRect === "object"
+      ? payload.stitch.ownerPageRect
+      : null;
+    const withGlobalBoxes = mapped.map((bubble) => ({
+      ...bubble,
+      global_box: buildKakaoGlobalBox(bubble, ownerPageRect)
+    }));
+    const deduped = dedupeKakaoGlobalBubbles(withGlobalBoxes, targetRect, targetKey);
     return {
       ...result,
       bubbles: deduped
@@ -1080,7 +1347,7 @@
     const accepted = [];
     const entries = [];
     for (const bubble of bubbles) {
-      const box = {
+      const box = bubble.global_box || {
         left: targetRect.left + window.scrollX + (Number(bubble.x) / 100) * targetRect.width,
         top: targetRect.top + window.scrollY + (Number(bubble.y) / 100) * targetRect.height,
         width: (Number(bubble.w) / 100) * targetRect.width,
@@ -1098,6 +1365,18 @@
     }
     state.kakaoGlobalOcrEntries.set(targetKey, entries);
     return accepted;
+  }
+
+  function buildKakaoGlobalBox(bubble, ownerPageRect) {
+    if (!ownerPageRect || !(Number(ownerPageRect.width) > 0) || !(Number(ownerPageRect.height) > 0)) {
+      return null;
+    }
+    return {
+      left: Number(ownerPageRect.left) + (Number(bubble.x) / 100) * Number(ownerPageRect.width),
+      top: Number(ownerPageRect.top) + (Number(bubble.y) / 100) * Number(ownerPageRect.height),
+      width: (Number(bubble.w) / 100) * Number(ownerPageRect.width),
+      height: (Number(bubble.h) / 100) * Number(ownerPageRect.height)
+    };
   }
 
   function pageBoxIntersectionRatio(left, right) {
@@ -1575,6 +1854,9 @@
     root.className = "mt-overlay-root";
     root.dataset.mangaTranslatorOverlay = "true";
     root.dataset.targetId = targetId;
+    if (result && isDataUrl(result.cleanedImage)) {
+      root.style.setProperty("--mt-cleaned-image", `url("${result.cleanedImage}")`);
+    }
 
     const bubbleNodes = [];
     const backgroundTarget = IS_PIXIV_COMIC_VIEWER && isBackgroundImageTarget(target);
@@ -1611,6 +1893,7 @@
     state.overlayLayer.appendChild(root);
     state.overlaysById.set(targetId, overlayState);
     syncOverlayPosition(overlayState);
+    ensureOverlayFrameSync();
     logOcrDebugMapping(overlayState, result);
     if (result && result.debug) {
       console.info("[MangaTranslator][OCR chain] rendered", {
@@ -1639,7 +1922,6 @@
       clearRenderedTarget(target);
       return;
     }
-
     if (target instanceof HTMLImageElement) {
       await renderEmbeddedImageTarget(target, targetKey, bubbles, payload);
       return;
@@ -1707,7 +1989,6 @@
         : payload && isDataUrl(payload.dataUrl)
           ? payload.dataUrl
           : "";
-
     if (!originalDataUrl) {
       throw new Error("Canvas original image is unavailable for embedded rendering");
     }
@@ -1917,6 +2198,28 @@
         w: Math.min(canvasWidth - boxX, w + paddingX * 2),
         h: Math.min(canvasHeight - boxY, h + paddingY * 2)
       };
+      const fillBox = getCanvasFillBox(bubble.fill_box, canvasWidth, canvasHeight) || box;
+
+      if (bgType === "solid" && Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3) {
+        ctx.save();
+        ctx.beginPath();
+        bubble.region_polygon.forEach((point, index) => {
+          const pointX = (Number(point && point.x) / 100) * canvasWidth;
+          const pointY = (Number(point && point.y) / 100) * canvasHeight;
+          if (index === 0) ctx.moveTo(pointX, pointY);
+          else ctx.lineTo(pointX, pointY);
+        });
+        ctx.closePath();
+        ctx.clip();
+        ctx.fillStyle = String(bubble.bg_color || "#ffffff");
+        ctx.fillRect(fillBox.x, fillBox.y, fillBox.w, fillBox.h);
+        ctx.restore();
+      } else if (bgType === "solid") {
+        ctx.save();
+        ctx.fillStyle = String(bubble.bg_color || "#ffffff");
+        ctx.fillRect(fillBox.x, fillBox.y, fillBox.w, fillBox.h);
+        ctx.restore();
+      }
 
       ctx.save();
       const centerX = box.x + box.w / 2;
@@ -1924,20 +2227,25 @@
       ctx.translate(centerX, centerY);
       ctx.rotate((rotation * Math.PI) / 180);
       const localBox = { x: -box.w / 2, y: -box.h / 2, w: box.w, h: box.h };
-      if (bgType === "solid") {
-        fillRoundedRect(
-          ctx,
-          localBox.x,
-          localBox.y,
-          localBox.w,
-          localBox.h,
-          Math.min(3, Math.min(localBox.w, localBox.h) * 0.08),
-          String(bubble.bg_color || "#ffffff")
-        );
-      }
-      drawFittedText(ctx, text, localBox, bgType, textOptions);
+      const renderColors = getBubbleRenderColors(bubble, bgType);
+      drawFittedText(ctx, text, localBox, bgType, {
+        ...textOptions,
+        textColor: renderColors.textColor,
+        strokeColor: renderColors.strokeColor
+      });
       ctx.restore();
     });
+  }
+
+  function getCanvasFillBox(value, canvasWidth, canvasHeight) {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const x = (Number(value.x) / 100) * canvasWidth;
+    const y = (Number(value.y) / 100) * canvasHeight;
+    const w = (Number(value.w) / 100) * canvasWidth;
+    const h = (Number(value.h) / 100) * canvasHeight;
+    return [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0 ? { x, y, w, h } : null;
   }
 
   function getEmbeddedPolygonGeometry(value, canvasWidth, canvasHeight) {
@@ -1999,8 +2307,8 @@
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
     if (bgType === "none") {
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.98)";
-      ctx.lineWidth = Math.max(2, best.size * 0.16);
+      ctx.strokeStyle = String(options.strokeColor || "#ffffff");
+      ctx.lineWidth = getDynamicStrokeWidth(best.size);
     }
 
     const lineHeight = best.size * 1.22;
@@ -2012,7 +2320,7 @@
       if (bgType === "none") {
         ctx.strokeText(line, centerX, lineY);
       }
-      ctx.fillStyle = "#111827";
+      ctx.fillStyle = String(options.textColor || "#111827");
       ctx.fillText(line, centerX, lineY);
     });
 
@@ -2061,25 +2369,6 @@
     }
 
     return raw.split(/(\s+)/).filter((token) => token && !/^\s+$/.test(token));
-  }
-
-  function fillRoundedRect(ctx, x, y, width, height, radius, fillStyle) {
-    const r = Math.max(0, Math.min(radius, width / 2, height / 2));
-    ctx.save();
-    ctx.fillStyle = fillStyle;
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + width - r, y);
-    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
-    ctx.lineTo(x + width, y + height - r);
-    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-    ctx.lineTo(x + r, y + height);
-    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
   }
 
   function loadImageFromDataUrl(dataUrl) {
@@ -2138,6 +2427,7 @@
     state.overlayLayer.appendChild(root);
     state.overlaysById.set(targetId, overlayState);
     syncOverlayPosition(overlayState);
+    ensureOverlayFrameSync();
   }
 
   function updateLoadingOverlayText(target, targetKey, text) {
@@ -2184,6 +2474,7 @@
     const bgType = normalizeBgType(bubble.bg_type);
 
     const node = document.createElement("div");
+    const renderColors = getBubbleRenderColors(bubble, bgType);
     node.className = `mt-bubble mt-bg-${bgType}`;
     node.dataset.mangaTranslatorOverlay = "true";
     node.dataset.index = String(index);
@@ -2200,8 +2491,45 @@
     node.dataset.xPercent = String(x);
     node.dataset.yPercent = String(y);
     node.dataset.backgroundTarget = options.backgroundTarget ? "true" : "";
+    if (bgType === "none") {
+      const sourceBox = normalizeFillBox(bubble.cleaned_source_box) || { x, y, w, h };
+      const patchStyle = getCleanedPatchStyle(sourceBox);
+      node.style.setProperty("--mt-cleaned-size-x", patchStyle.sizeX);
+      node.style.setProperty("--mt-cleaned-size-y", patchStyle.sizeY);
+      node.style.setProperty("--mt-cleaned-position-x", patchStyle.positionX);
+      node.style.setProperty("--mt-cleaned-position-y", patchStyle.positionY);
+    }
     if (bubble.bg_color) {
       node.style.setProperty("--mt-adaptive-bg", String(bubble.bg_color));
+    }
+    node.style.setProperty(
+      "--mt-text-color",
+      renderColors.textColor
+    );
+    node.style.setProperty(
+      "--mt-stroke-color",
+      renderColors.strokeColor
+    );
+    node.dataset.regionType = String(bubble.region_type || "plain_text");
+    const fillBox = bgType === "solid" ? normalizeFillBox(bubble.fill_box) : null;
+    if (fillBox) {
+      node.style.setProperty("--mt-fill-left", ((fillBox.x - x) / w) * 100 + "%");
+      node.style.setProperty("--mt-fill-top", ((fillBox.y - y) / h) * 100 + "%");
+      node.style.setProperty("--mt-fill-width", (fillBox.w / w) * 100 + "%");
+      node.style.setProperty("--mt-fill-height", (fillBox.h / h) * 100 + "%");
+    }
+    if (bgType === "solid" && Array.isArray(bubble.region_polygon)) {
+      const clipTarget = fillBox || { x, y, w, h };
+      const clip = buildRegionClipPath(
+        bubble.region_polygon,
+        clipTarget.x,
+        clipTarget.y,
+        clipTarget.w,
+        clipTarget.h
+      );
+      if (clip) {
+        node.style.setProperty("--mt-region-clip", clip);
+      }
     }
 
     const centerX = clamp(x + w / 2, 0, 100);
@@ -2224,6 +2552,20 @@
     });
 
     return node;
+  }
+
+  function buildRegionClipPath(points, x, y, width, height) {
+    if (!Array.isArray(points) || points.length < 3 || width <= 0 || height <= 0) {
+      return "";
+    }
+    const values = points.map((point) => {
+      const localX = ((Number(point && point.x) - x) / width) * 100;
+      const localY = ((Number(point && point.y) - y) / height) * 100;
+      return Number.isFinite(localX) && Number.isFinite(localY)
+        ? `${localX.toFixed(2)}% ${localY.toFixed(2)}%`
+        : "";
+    });
+    return values.every(Boolean) ? `polygon(${values.join(", ")})` : "";
   }
 
   function formatTranslationForOriginalLines(text, requestedLines) {
@@ -2312,6 +2654,7 @@
       for (const overlayState of state.overlaysById.values()) {
         syncOverlayPosition(overlayState);
       }
+      ensureOverlayFrameSync();
     }
 
     recoverRenderedTargets();
@@ -2385,6 +2728,9 @@
     if (!overlayState.target.isConnected) {
       overlayState.root.remove();
       state.overlaysById.delete(overlayState.targetId);
+      if (state.overlaysById.size === 0) {
+        stopOverlayFrameSync();
+      }
       return;
     }
 
@@ -2396,11 +2742,27 @@
       return;
     }
 
+    const viewportRect = {
+      left: Math.round(rect.left),
+      top: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+    const changes = compareOverlayViewportRects(overlayState.lastViewportRect, viewportRect);
+
     overlayState.root.style.display = "block";
-    overlayState.root.style.left = `${Math.round(rect.left)}px`;
-    overlayState.root.style.top = `${Math.round(rect.top)}px`;
-    overlayState.root.style.width = `${Math.round(rect.width)}px`;
-    overlayState.root.style.height = `${Math.round(rect.height)}px`;
+    if (changes.positionChanged || changes.sizeChanged) {
+      overlayState.root.style.left = `${viewportRect.left}px`;
+      overlayState.root.style.top = `${viewportRect.top}px`;
+      overlayState.root.style.width = `${viewportRect.width}px`;
+      overlayState.root.style.height = `${viewportRect.height}px`;
+      overlayState.lastViewportRect = viewportRect;
+    }
+
+    // 画面平移只更新根节点坐标；尺寸不变时不重新测量文字，避免滚动期间抖动。
+    if (!changes.sizeChanged) {
+      return;
+    }
 
     // 字号按气泡高度比例计算，并使用 clamp 限制上下界。
     overlayState.bubbleNodes.forEach((node) => {
@@ -2419,7 +2781,23 @@
         backgroundTarget: overlayState.isBackgroundTarget
       });
       node.style.fontSize = `${fittedSize.toFixed(1)}px`;
+      node.style.setProperty("--mt-stroke-width", `${getDynamicStrokeWidth(fittedSize).toFixed(1)}px`);
     });
+  }
+
+  function compareOverlayViewportRects(previous, next) {
+    if (!previous) {
+      return { positionChanged: true, sizeChanged: true };
+    }
+    return {
+      positionChanged: previous.left !== next.left || previous.top !== next.top,
+      sizeChanged: previous.width !== next.width || previous.height !== next.height
+    };
+  }
+
+  function getDynamicStrokeWidth(fontSize) {
+    const width = clamp((Number(fontSize) || 0) * 0.085, 1.8, 4.2);
+    return Math.round(width * 10) / 10;
   }
 
   function getOverlayPolygonGeometry(node, rect) {
@@ -2587,6 +2965,9 @@
 
     overlayState.root.remove();
     state.overlaysById.delete(targetId);
+    if (state.overlaysById.size === 0) {
+      stopOverlayFrameSync();
+    }
   }
 
   function restoreEmbeddedForTarget(target) {
@@ -2665,6 +3046,7 @@
   }
 
   function clearAllOverlays() {
+    stopOverlayFrameSync();
     for (const overlayState of state.overlaysById.values()) {
       overlayState.root.remove();
     }
@@ -2946,8 +3328,6 @@
 
     const nextEnabled = typeof enabled === "boolean" ? enabled : !state.autoTranslatePageEnabled;
     state.autoTranslatePageEnabled = nextEnabled && state.enabled;
-    state.pretranslateMode = state.autoTranslatePageEnabled ? "ahead" : "manual";
-    await storageSet({ mt_pretranslate_mode: state.pretranslateMode });
     updateFloatingBallState();
 
     if (!state.autoTranslatePageEnabled) {
@@ -3193,6 +3573,7 @@
 
   function passesTargetFilter(target, manual, options = {}) {
     const relaxed = options.relaxed === true;
+    const allowOffscreen = options.allowOffscreen === true;
     if (!isSupportedTarget(target) || !target.isConnected) {
       return false;
     }
@@ -3218,7 +3599,7 @@
       return false;
     }
 
-    if (IS_KAKAOPAGE_READER && !passesKakaopageTargetGeometry(target, rect, manual, relaxed)) {
+    if (IS_KAKAOPAGE_READER && !passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen)) {
       return false;
     }
 
@@ -3241,23 +3622,25 @@
     return true;
   }
 
-  function passesKakaopageTargetGeometry(target, rect, manual, relaxed) {
-    const visibleArea = getVisibleArea(rect);
-    const visibleRect = getVisibleViewportRect(target);
-    const minVisibleArea = relaxed ? 14000 : manual ? 32000 : 52000;
-    if (!visibleRect || visibleArea < minVisibleArea) {
-      return false;
-    }
+  function passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen = false) {
+    if (!allowOffscreen) {
+      const visibleArea = getVisibleArea(rect);
+      const visibleRect = getVisibleViewportRect(target);
+      const minVisibleArea = relaxed ? 14000 : manual ? 32000 : 52000;
+      if (!visibleRect || visibleArea < minVisibleArea) {
+        return false;
+      }
 
-    const minVisibleHeight = relaxed ? 120 : manual ? 180 : 220;
-    const minVisibleWidth = relaxed ? 180 : 260;
-    if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
-      return false;
-    }
+      const minVisibleHeight = relaxed ? 120 : manual ? 180 : 220;
+      const minVisibleWidth = relaxed ? 180 : 260;
+      if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
+        return false;
+      }
 
-    const visibleRatio = visibleRect.height / Math.max(1, visibleRect.width);
-    if (visibleRatio < 0.2 || visibleRatio > 8.5) {
-      return false;
+      const visibleRatio = visibleRect.height / Math.max(1, visibleRect.width);
+      if (visibleRatio < 0.2 || visibleRatio > 8.5) {
+        return false;
+      }
     }
 
     if (target instanceof HTMLImageElement) {
@@ -3645,9 +4028,16 @@
             y: bubble.stitch_overflow === true ? Number(bubble.y) : clamp(Number(bubble.y), 0, 100),
             w: clamp(Number(bubble.w), 0, 100),
             h: clamp(Number(bubble.h), 0, 100),
+            fill_box: normalizeFillBox(bubble.fill_box),
+            cleaned_source_box: normalizeFillBox(bubble.cleaned_source_box),
             bg_type: normalizeBgType(bubble.bg_type),
             bg_color: String(bubble.bg_color || ""),
             bg_confidence: Number(bubble.bg_confidence || 0),
+            region_id: String(bubble.region_id || ""),
+            region_type: String(bubble.region_type || "plain_text"),
+            region_polygon: normalizeRegionPolygon(bubble.region_polygon, bubble.stitch_overflow === true),
+            text_color: normalizeCssColor(bubble.text_color, ""),
+            stroke_color: normalizeCssColor(bubble.stroke_color, ""),
             polygon: normalizeBubblePolygon(bubble.polygon, bubble.stitch_overflow === true),
             rotation_deg: normalizeBubbleRotation(bubble.rotation_deg),
             source_line_count: Math.max(1, Math.round(Number(bubble.source_line_count) || 1)),
@@ -3662,6 +4052,31 @@
     };
   }
 
+  function normalizeFillBox(value) {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const box = {
+      x: clamp(Number(value.x), 0, 100),
+      y: clamp(Number(value.y), 0, 100),
+      w: clamp(Number(value.w), 0, 100),
+      h: clamp(Number(value.h), 0, 100)
+    };
+    return box.w > 0 && box.h > 0 ? box : null;
+  }
+
+  function getCleanedPatchStyle(sourceBox) {
+    const box = normalizeFillBox(sourceBox) || { x: 0, y: 0, w: 100, h: 100 };
+    const positionX = box.w < 100 ? (box.x / (100 - box.w)) * 100 : 0;
+    const positionY = box.h < 100 ? (box.y / (100 - box.h)) * 100 : 0;
+    return {
+      sizeX: `${10000 / box.w}%`,
+      sizeY: `${10000 / box.h}%`,
+      positionX: `${positionX}%`,
+      positionY: `${positionY}%`
+    };
+  }
+
   function normalizeBubblePolygon(value, allowOverflow) {
     if (!Array.isArray(value) || value.length < 4) {
       return null;
@@ -3673,6 +4088,31 @@
       return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
     });
     return points.every(Boolean) ? points : null;
+  }
+
+  function normalizeRegionPolygon(value, allowOverflow) {
+    if (!Array.isArray(value) || value.length < 3) {
+      return null;
+    }
+    const points = value.map((point) => {
+      const x = clamp(Number(point && point.x), 0, 100);
+      const rawY = Number(point && point.y);
+      const y = allowOverflow ? rawY : clamp(rawY, 0, 100);
+      return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    });
+    return points.every(Boolean) ? points : null;
+  }
+
+  function getBubbleRenderColors(bubble, bgType) {
+    return {
+      textColor: normalizeCssColor(bubble && bubble.text_color, bgType === "none" ? "#000000" : "#111827"),
+      strokeColor: normalizeCssColor(bubble && bubble.stroke_color, "#ffffff")
+    };
+  }
+
+  function normalizeCssColor(value, fallback) {
+    const text = String(value || "").trim();
+    return /^#[0-9a-f]{6}$/i.test(text) ? text : fallback;
   }
 
   function normalizeBubbleRotation(value) {
@@ -3770,7 +4210,8 @@
       state.captureMode = normalizeCaptureMode(result.mt_capture_mode);
       state.renderMode = normalizeRenderMode(result.mt_render_mode);
       state.pretranslateMode = normalizePretranslateMode(result.mt_pretranslate_mode);
-      state.autoTranslatePageEnabled = state.pretranslateMode === "ahead" && state.enabled;
+      // 自动翻译是否开启属于当前页面会话，不能由全局设置激活其他标签页。
+      state.autoTranslatePageEnabled = false;
       if (typeof result.mt_aggressive_preload === "boolean") {
         state.aggressivePreload = result.mt_aggressive_preload;
       } else {
@@ -3793,7 +4234,16 @@
   }
 
   function normalizePretranslateMode(value) {
-    return String(value || "").trim().toLowerCase() === "ahead" ? "ahead" : "manual";
+    const mode = String(value || "").trim().toLowerCase();
+    if (mode === "ahead" || mode === "continuous") {
+      return mode;
+    }
+    return "manual";
+  }
+
+  function isAutomaticPretranslateMode(value) {
+    const mode = normalizePretranslateMode(value);
+    return mode === "ahead" || mode === "continuous";
   }
 
   function normalizeCaptureMode(value) {

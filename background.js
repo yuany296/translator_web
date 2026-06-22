@@ -98,7 +98,8 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v2:";
+const CACHE_PREFIX = "mt_cache_v6:";
+const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
 const TAB_STATUS_TTL_MS = 12 * 60 * 60 * 1000;
@@ -113,9 +114,6 @@ const BAIDU_MERGE_MAX_GAP_RATIO = 1.35;
 const BAIDU_MERGE_MAX_INDENT_RATIO = 2.4;
 const BAIDU_MERGE_MAX_WIDTH_RATIO = 0.68;
 const LOCAL_OCR_CONTAINER_SCAN_MAX_SIDE = 760;
-const LOCAL_OCR_WHITE_MIN_AREA_RATIO = 0.006;
-const LOCAL_OCR_WHITE_MIN_DIMENSION = 26;
-const LOCAL_OCR_CONTAINER_ASSIGN_OVERLAP = 0.48;
 const LOCAL_OCR_EFFECT_JOIN_DISTANCE_RATIO = 2.25;
 const LOCAL_OCR_BUBBLE_JOIN_GAP_RATIO = 1.65;
 const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
@@ -457,7 +455,31 @@ async function handleTranslateDataUrl(message, sender) {
     dataUrl
   });
 
-  const cached = await getCache(cacheKey);
+  let cached = await getCache(cacheKey);
+  if (
+    cached &&
+    settings.provider === PROVIDERS.localPaddleDeepSeek &&
+    translationResultNeedsCleanedImage(cached) &&
+    !isDataUrl(cached.cleanedImage)
+  ) {
+    try {
+      const refreshedOcr = await requestLocalPaddleOcr({
+        dataUrl,
+        baseUrl: settings.localOcrBaseUrl || DEFAULT_LOCAL_OCR_BASE_URL,
+        lang: settings.localOcrLang || DEFAULT_LOCAL_OCR_LANG,
+        mode: settings.localOcrMode || DEFAULT_LOCAL_OCR_MODE,
+        params: getLocalOcrParams(settings),
+        debug: false,
+        debugId: buildLocalOcrDebugId(targetKey)
+      });
+      cached = isDataUrl(refreshedOcr && refreshedOcr.cleanedImage)
+        ? { ...cached, cleanedImage: refreshedOcr.cleanedImage }
+        : null;
+    } catch (error) {
+      console.warn("[MangaTranslator] Cached translation could not refresh its cleaned image.", error);
+      cached = null;
+    }
+  }
   if (cached) {
     return {
       ok: true,
@@ -842,23 +864,35 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
     model: visionOcrOptions && visionOcrOptions.enabled ? visionOcrOptions.model : ""
   }, ocrTuning, ocrDebug, imageMeta);
 
-  const candidates = coalesceOverlappingOcrCandidates(ocrItems
-    .map((item, index) => normalizeBaiduOcrItem(item, index, imageSize))
-    .filter((item) => item && item.original_text)
-    .filter((item) => keepOrTraceFinalCandidate(item, imageSize, ocrTuning, ocrDebug, "local_paddle"))
-    .filter((item) => !shouldDropSymbolOnlyBubble(item))
-    .filter((item) => !shouldDropMeaninglessAlphabeticBubble(item))
-    .filter((item) => {
-      if (!ignoreSimplifiedChinese) {
-        return true;
-      }
-      return !isConfidentSimplifiedChinese(item.original_text);
-    })
-    .slice(0, MAX_BUBBLES));
+  console.debug("[MangaTranslator][localPaddle] ocrItems count:", ocrItems.length, "ocrPayload items:", (ocrPayload && ocrPayload.items ? ocrPayload.items.length : 0), "boxes:", (ocrPayload && Array.isArray(ocrPayload.boxes) ? ocrPayload.boxes.length : 0));
+
+  if (ocrItems.length === 0) {
+    console.warn("[MangaTranslator][localPaddle] ocrItems is EMPTY! clustered returned nothing from buildLocalPaddleBubbleItems");
+  }
+
+  let stepA = ocrItems.map((item, index) => normalizeBaiduOcrItem(item, index, imageSize));
+  let nonNullA = stepA.filter(Boolean).length;
+  let stepB = stepA.filter((item) => item && item.original_text);
+  let stepC = stepB.filter((item) => keepOrTraceFinalCandidate(item, imageSize, ocrTuning, ocrDebug, "local_paddle"));
+  let stepD = stepC.filter((item) => !shouldDropSymbolOnlyBubble(item));
+  let stepE = stepD.filter((item) => !shouldDropMeaninglessAlphabeticBubble(item));
+  let stepF = stepE.filter((item) => {
+    if (!ignoreSimplifiedChinese) {
+      return true;
+    }
+    return !isConfidentSimplifiedChinese(item.original_text);
+  });
+  let stepG = stepF.slice(0, MAX_BUBBLES);
+  console.debug("[MangaTranslator][localPaddle] filter chain: raw:", ocrItems.length, "mapped:", stepA.length, "nonNull:", nonNullA, "hasText:", stepB.length, "keepFinal:", stepC.length, "!symbol:", stepD.length, "!meaningless:", stepE.length, "!ignoredZh:", stepF.length, "sliced:", stepG.length);
+
+  const candidates = coalesceOverlappingOcrCandidates(stepG);
 
   if (candidates.length === 0) {
+    console.warn("[MangaTranslator][localPaddle] No candidates after filtering, returning empty bubbles", {stepA: stepA.length, stepB: stepB.length, stepC: stepC.length, stepD: stepD.length, stepE: stepE.length, stepF: stepF.length, stepG: stepG.length});
     return { bubbles: [] };
   }
+
+  console.debug("[MangaTranslator][localPaddle] Sending", candidates.length, "items for translation:", candidates.map((c) => ({ id: c.id, text: c.original_text?.slice(0, 30) })));
 
   const translated = await requestOpenAICompatibleTextTranslations({
     items: candidates,
@@ -867,6 +901,8 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
     model: translatorModel
   });
 
+  console.debug("[MangaTranslator][localPaddle] Translation result map size:", translated.size, "keys:", [...translated.keys()]);
+
   const bubbles = candidates.map((item) => {
     const translatedText = translated.get(item.id) || item.original_text;
     return {
@@ -874,9 +910,15 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
       y: item.y,
       w: item.w,
       h: item.h,
+      fill_box: item.fill_box || null,
       bg_type: item.bg_type,
       bg_color: item.bg_color || "",
       bg_confidence: Number(item.bg_confidence || 0),
+      region_id: String(item.region_id || ""),
+      region_type: String(item.region_type || "plain_text"),
+      region_polygon: item.region_polygon || null,
+      text_color: String(item.text_color || ""),
+      stroke_color: String(item.stroke_color || ""),
       polygon: item.polygon || null,
       rotation_deg: normalizeRotationDegrees(item.rotation_deg),
       source_line_count: Math.max(1, Number(item.source_line_count) || 1),
@@ -935,6 +977,7 @@ async function requestLocalPaddleOcr({ dataUrl, baseUrl, lang, mode, params, deb
       const message = payload && payload.error ? payload.error : `${response.status} ${response.statusText}`;
       throw new Error(`Local OCR request failed: ${message}`);
     }
+    console.debug("[MangaTranslator][OCR] Server response items:", payload && Array.isArray(payload.items) ? payload.items.length : 0, "boxes:", payload && Array.isArray(payload.boxes) ? payload.boxes.length : 0, "imageWidth:", payload && payload.imageWidth, "imageHeight:", payload && payload.imageHeight);
     return payload;
   } catch (error) {
     if (error && error.name === "AbortError") {
@@ -965,6 +1008,10 @@ async function buildLocalPaddleBubbleItems(
     height: Number(payload && payload.imageHeight) || Number(imageSize && imageSize.height) || 1
   };
   const sourceItems = getLocalOcrPayloadItems(payload);
+  console.debug("[MangaTranslator][buildBubbles] sourceItems count:", sourceItems.length, "imageSize:", ocrImageSize);
+  if (sourceItems.length === 0) {
+    console.warn("[MangaTranslator][buildBubbles] OCR returned zero items, ocrPayload keys:", Object.keys(payload || {}));
+  }
   if (ocrDebug) {
     ocrDebug.rawItems = sourceItems.map((item, index) => toDebugOcrItem(item, index, ocrImageSize, "raw"));
   }
@@ -972,12 +1019,14 @@ async function buildLocalPaddleBubbleItems(
   let words = sourceItems
     .map((item) => normalizeLocalPaddleOcrItem(item, ocrImageSize))
     .filter(Boolean)
-    .filter((item) => isOcrItemOwnedByStitch(item, imageMeta && imageMeta.stitch))
     .filter((item, index) => keepOrTraceOcrWord(item, ocrImageSize, ocrTuning, ocrDebug, index, "local_paddle"));
 
   words = await repairLowConfidenceLocalPaddleWordsWithVision(words, dataUrl, ocrImageSize, visionOcrOptions, debug);
   const imageAnalysis = await analyzeLocalOcrImage(dataUrl, ocrImageSize);
-  const clustered = clusterLocalPaddleWords(words, ocrImageSize, imageAnalysis, debug);
+  // 跨图窗口必须先使用全部 OCR 行聚类，再用整句中心点决定所属切片。
+  // 若在聚类前按单行中心过滤，位于相邻切片但同属一个框的句子会被拆开翻译。
+  const clustered = clusterLocalPaddleWords(words, ocrImageSize, imageAnalysis, debug)
+    .filter((item) => isOcrItemOwnedByStitch(item, imageMeta && imageMeta.stitch));
   if (ocrDebug) {
     ocrDebug.filteredItems = words.map((item, index) => toDebugOcrItem(item, index, ocrImageSize, "filtered"));
     ocrDebug.mergedItems = clustered.map((item, index) => toDebugOcrItem(item, index, ocrImageSize, "merged"));
@@ -1017,10 +1066,7 @@ async function analyzeLocalOcrImage(dataUrl, imageSize) {
       ctx.drawImage(bitmap, 0, 0, width, height);
       const imageData = ctx.getImageData(0, 0, width, height);
       const sample = { data: imageData.data, width, height, scale, sourceWidth, sourceHeight };
-      return {
-        sample,
-        whiteContainers: detectLocalOcrWhiteContainers(sample)
-      };
+      return { sample };
     } finally {
       if (typeof bitmap.close === "function") {
         bitmap.close();
@@ -1030,107 +1076,6 @@ async function analyzeLocalOcrImage(dataUrl, imageSize) {
     console.warn("[MangaTranslator] Local OCR image analysis failed:", error);
     return null;
   }
-}
-
-function detectLocalOcrWhiteContainers(sample) {
-  if (!sample || !sample.data || sample.width <= 0 || sample.height <= 0) {
-    return [];
-  }
-
-  const { data, width, height, scale, sourceWidth, sourceHeight } = sample;
-  const total = width * height;
-  const mask = new Uint8Array(total);
-  for (let index = 0; index < total; index += 1) {
-    const offset = index * 4;
-    if (isLocalOcrWhitePixel(data[offset], data[offset + 1], data[offset + 2], data[offset + 3])) {
-      mask[index] = 1;
-    }
-  }
-
-  const stack = new Int32Array(total);
-  const containers = [];
-  const minPixels = Math.max(80, Math.round(total * LOCAL_OCR_WHITE_MIN_AREA_RATIO));
-
-  for (let start = 0; start < total; start += 1) {
-    if (!mask[start]) {
-      continue;
-    }
-
-    let stackSize = 0;
-    let count = 0;
-    let minX = width;
-    let minY = height;
-    let maxX = 0;
-    let maxY = 0;
-    mask[start] = 0;
-    stack[stackSize] = start;
-    stackSize += 1;
-
-    while (stackSize > 0) {
-      stackSize -= 1;
-      const current = stack[stackSize];
-      const x = current % width;
-      const y = Math.floor(current / width);
-      count += 1;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-
-      const neighbors = [current - 1, current + 1, current - width, current + width];
-      for (const next of neighbors) {
-        if (next < 0 || next >= total || !mask[next]) {
-          continue;
-        }
-        const nx = next % width;
-        if ((next === current - 1 && nx !== x - 1) || (next === current + 1 && nx !== x + 1)) {
-          continue;
-        }
-        mask[next] = 0;
-        stack[stackSize] = next;
-        stackSize += 1;
-      }
-    }
-
-    if (count < minPixels) {
-      continue;
-    }
-
-    const boxWidth = Math.max(1, maxX - minX + 1);
-    const boxHeight = Math.max(1, maxY - minY + 1);
-    const originalBox = buildBaiduBox(
-      minX / scale,
-      minY / scale,
-      Math.min(sourceWidth, (maxX + 1) / scale),
-      Math.min(sourceHeight, (maxY + 1) / scale)
-    );
-    const areaRatio = count / total;
-    const coversPage = originalBox.width >= sourceWidth * 0.86 && originalBox.height >= sourceHeight * 0.86;
-    const dimensionOk =
-      originalBox.width >= LOCAL_OCR_WHITE_MIN_DIMENSION && originalBox.height >= LOCAL_OCR_WHITE_MIN_DIMENSION;
-    if (!dimensionOk || coversPage || areaRatio > 0.38 || boxWidth < 8 || boxHeight < 8) {
-      continue;
-    }
-
-    containers.push({
-      id: `white-${containers.length + 1}`,
-      box: originalBox,
-      areaRatio,
-      pixelCount: count
-    });
-  }
-
-  return containers.sort((left, right) => left.box.top - right.box.top || left.box.left - right.box.left);
-}
-
-function isLocalOcrWhitePixel(red, green, blue, alpha) {
-  if (alpha !== undefined && alpha < 24) {
-    return false;
-  }
-  const max = Math.max(red, green, blue);
-  const min = Math.min(red, green, blue);
-  const brightness = (red + green + blue) / 3;
-  return (red >= 238 && green >= 238 && blue >= 238 && max - min <= 34) || (brightness >= 246 && max - min <= 24);
 }
 
 async function repairLowConfidenceLocalPaddleWordsWithVision(words, dataUrl, imageSize, options, debug) {
@@ -1351,11 +1296,7 @@ function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debug) {
 
   if (debug) {
     console.debug("[MangaTranslator] Local OCR clustering:", {
-      containers: (imageAnalysis && imageAnalysis.whiteContainers ? imageAnalysis.whiteContainers : []).map((container) => ({
-        id: container.id,
-        box: container.box,
-        areaRatio: container.areaRatio
-      })),
+      containers: [...new Map(entries.filter((entry) => entry.container).map((entry) => [entry.container.id, entry.container])).values()],
       entries: entries.map((entry) => ({
         text: entry.text,
         kind: entry.kind,
@@ -1390,7 +1331,17 @@ function buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, deb
     return { item, index, box, text, kind: "noise" };
   }
 
-  const container = assignLocalOcrWhiteContainer(box, imageAnalysis && imageAnalysis.whiteContainers);
+  const serviceRegionId = String(item && item.region_id ? item.region_id : "");
+  const container = serviceRegionId
+    ? {
+        id: serviceRegionId,
+        box: normalizeLocalOcrRegionBox(item.region_box),
+        polygon: item.region_polygon || null,
+        type: String(item.region_type || "speech_bubble"),
+        color: String(item.bg_color || ""),
+        confidence: Number(item.region_confidence || 0)
+      }
+    : null;
   const color = sampleLocalOcrTextColor(imageAnalysis && imageAnalysis.sample, box);
   let kind = "normalOutsideText";
   if (container) {
@@ -1407,38 +1358,23 @@ function buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, deb
     kind,
     container,
     color,
+    textColor: String(item && item.text_color ? item.text_color : ""),
+    strokeColor: String(item && item.stroke_color ? item.stroke_color : ""),
     rotation: normalizeRotationDegrees(item && item.rotation_deg)
   };
 }
 
-function assignLocalOcrWhiteContainer(box, containers) {
-  if (!box || !Array.isArray(containers) || containers.length === 0) {
+function normalizeLocalOcrRegionBox(value) {
+  if (!value || typeof value !== "object") {
     return null;
   }
-
-  let best = null;
-  let bestScore = 0;
-  for (const container of containers) {
-    const containerBox = container && container.box;
-    if (!containerBox) {
-      continue;
-    }
-    const centerInside =
-      box.centerX >= containerBox.left &&
-      box.centerX <= containerBox.right &&
-      box.centerY >= containerBox.top &&
-      box.centerY <= containerBox.bottom;
-    const overlap = getBoxOverlapArea(box, containerBox);
-    const overlapRatio = overlap / Math.max(1, box.width * box.height);
-    const score = overlapRatio + (centerInside ? 0.5 : 0);
-    if ((centerInside && overlapRatio >= 0.18) || overlapRatio >= LOCAL_OCR_CONTAINER_ASSIGN_OVERLAP) {
-      if (score > bestScore) {
-        best = container;
-        bestScore = score;
-      }
-    }
-  }
-  return best;
+  const left = Number(value.left);
+  const top = Number(value.top);
+  const width = Number(value.width);
+  const height = Number(value.height);
+  return Number.isFinite(left) && Number.isFinite(top) && width > 0 && height > 0
+    ? buildBaiduBox(left, top, left + width, top + height)
+    : null;
 }
 
 function sampleLocalOcrTextColor(sample, box) {
@@ -1687,11 +1623,18 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis) {
   }
   merged.localOcrClusterKind = cluster[0].kind;
   merged.localOcrContainerId = cluster[0].container ? cluster[0].container.id : "";
-  merged.adaptiveBackground = analyzeLocalOcrAdaptiveBackground(
-    imageAnalysis && imageAnalysis.sample,
-    getBaiduItemBox(merged),
-    cluster[0].kind
-  );
+  merged.localOcrRegionType = cluster[0].container ? cluster[0].container.type : "effect_text";
+  merged.regionPolygon = cluster[0].container ? cluster[0].container.polygon : null;
+  merged.regionBox = cluster[0].container ? cluster[0].container.box : null;
+  merged.textColor = cluster[0].textColor || "";
+  merged.strokeColor = cluster[0].strokeColor || "";
+  merged.adaptiveBackground = cluster[0].container && cluster[0].container.color
+    ? {
+        type: "solid",
+        color: cluster[0].container.color,
+        confidence: cluster[0].container.confidence
+      }
+    : { type: "outline", color: "", confidence: 0 };
   return merged;
 }
 
@@ -1766,51 +1709,6 @@ function composeRotatedClusterWords(cluster, rotation) {
     .map((row) => row.entries.sort((left, right) => left.point.x - right.point.x).map((item) => item.entry.text).join(" "))
     .filter(Boolean)
     .join("\n");
-}
-
-function analyzeLocalOcrAdaptiveBackground(sample, box, clusterKind) {
-  if (!sample || !sample.data || !box) {
-    return { type: "outline", color: "#ffffff", confidence: 0 };
-  }
-  const { data, width, height, scale } = sample;
-  const padX = box.width * 0.08;
-  const padY = box.height * 0.12;
-  const left = clamp(Math.floor((box.left - padX) * scale), 0, width - 1);
-  const top = clamp(Math.floor((box.top - padY) * scale), 0, height - 1);
-  const right = clamp(Math.ceil((box.right + padX) * scale), left + 1, width);
-  const bottom = clamp(Math.ceil((box.bottom + padY) * scale), top + 1, height);
-  const border = Math.max(1, Math.round(Math.min(right - left, bottom - top) * 0.16));
-  const pixels = [];
-  const step = Math.max(1, Math.floor(Math.max(right - left, bottom - top) / 80));
-  for (let y = top; y < bottom; y += step) {
-    for (let x = left; x < right; x += step) {
-      if (x >= left + border && x < right - border && y >= top + border && y < bottom - border) {
-        continue;
-      }
-      const offset = (y * width + x) * 4;
-      if (data[offset + 3] < 32) {
-        continue;
-      }
-      pixels.push([data[offset], data[offset + 1], data[offset + 2]]);
-    }
-  }
-  if (pixels.length < 16) {
-    return { type: "outline", color: "#ffffff", confidence: 0 };
-  }
-  const medianChannel = (channel) => pixels.map((pixel) => pixel[channel]).sort((a, b) => a - b)[Math.floor(pixels.length / 2)];
-  const red = medianChannel(0);
-  const green = medianChannel(1);
-  const blue = medianChannel(2);
-  const matching = pixels.filter((pixel) =>
-    Math.max(Math.abs(pixel[0] - red), Math.abs(pixel[1] - green), Math.abs(pixel[2] - blue)) <= 30
-  ).length;
-  const confidence = matching / pixels.length;
-  const color = `#${[red, green, blue].map((value) => Math.round(value).toString(16).padStart(2, "0")).join("")}`;
-  return {
-    type: confidence >= 0.84 ? "solid" : "outline",
-    color,
-    confidence
-  };
 }
 
 function getHorizontalGap(leftBox, rightBox) {
@@ -2011,6 +1909,14 @@ function normalizeLocalPaddleOcrItem(item, imageSize) {
     rotation_deg: normalizeRotationDegrees(item && item.rotation_deg),
     orientation_applied: Number(item && item.orientation_applied) || 0,
     det_score: Number(item && item.det_score) || 0,
+    region_id: String(item && item.region_id ? item.region_id : ""),
+    region_type: String(item && item.region_type ? item.region_type : "effect_text"),
+    region_polygon: normalizeLocalPaddleRegionPolygon(item && item.region_polygon, imageSize),
+    region_box: item && item.region_box && typeof item.region_box === "object" ? { ...item.region_box } : null,
+    bg_color: String(item && item.bg_color ? item.bg_color : ""),
+    text_color: String(item && item.text_color ? item.text_color : ""),
+    stroke_color: String(item && item.stroke_color ? item.stroke_color : ""),
+    region_confidence: Number(item && item.region_confidence) || 0,
     rawBox: box,
     location: {
       left: box.left,
@@ -2019,6 +1925,20 @@ function normalizeLocalPaddleOcrItem(item, imageSize) {
       height: box.height
     }
   };
+}
+
+function normalizeLocalPaddleRegionPolygon(value, imageSize) {
+  if (!Array.isArray(value) || value.length < 3) {
+    return null;
+  }
+  const width = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const height = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  const points = value.map((point) => {
+    const x = Array.isArray(point) ? Number(point[0]) : Number(point && point.x);
+    const y = Array.isArray(point) ? Number(point[1]) : Number(point && point.y);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x: clamp(x, 0, width), y: clamp(y, 0, height) } : null;
+  });
+  return points.every(Boolean) ? points : null;
 }
 
 function normalizeLocalPaddlePolygon(value, imageSize) {
@@ -2864,29 +2784,38 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
   const location = item && item.location && typeof item.location === "object" ? item.location : null;
   const text = cleanDecorativeSymbols(item && item.words ? item.words : "");
   if (!location || !text || imageSize.width <= 0 || imageSize.height <= 0) {
+    console.warn("[MangaTranslator][norm] drop item", index, {hasLocation: !!location, text, imgSize: imageSize, itemKeys: item ? Object.keys(item) : null});
     return null;
   }
 
-  const left = toNumber(location.left);
-  const top = toNumber(location.top);
-  const width = toNumber(location.width);
-  const height = toNumber(location.height);
-  if (width <= 0 || height <= 0) {
+  const sourceLeft = toNumber(location.left);
+  const sourceTop = toNumber(location.top);
+  const sourceWidth = toNumber(location.width);
+  const sourceHeight = toNumber(location.height);
+  if (sourceWidth <= 0 || sourceHeight <= 0) {
+    console.debug("[MangaTranslator][norm] drop item zero box", index, {sourceLeft, sourceTop, sourceWidth, sourceHeight});
     return null;
   }
 
-  const expandX = Math.min(1, width * 0.01);
-  const expandY = Math.min(1, height * 0.02);
+  const clusterKind = String(item && item.localOcrClusterKind ? item.localOcrClusterKind : "");
+  const adaptiveBackground = item && item.adaptiveBackground ? item.adaptiveBackground : null;
+  let bgType = adaptiveBackground
+    ? adaptiveBackground.type === "solid" ? "solid" : "none"
+    : clusterKind && clusterKind !== "bubbleText" ? "none" : "solid";
+  const regionBox = normalizeLocalOcrRegionBox(item && item.regionBox);
+  const rawDisplayBox = buildBaiduBox(sourceLeft, sourceTop, sourceLeft + sourceWidth, sourceTop + sourceHeight);
+  const solidPaintBox = bgType === "solid" ? buildLocalSolidPaintBox(rawDisplayBox, regionBox, imageSize) : null;
+  if (bgType === "solid" && !solidPaintBox) {
+    bgType = "none";
+  }
+  const displayBox = rawDisplayBox;
+  const { left, top, width, height } = displayBox;
+  const expandX = bgType === "solid" ? 0 : Math.min(1, width * 0.01);
+  const expandY = bgType === "solid" ? 0 : Math.min(1, height * 0.02);
   const x = ((left - expandX) / imageSize.width) * 100;
   const y = ((top - expandY) / imageSize.height) * 100;
   const w = ((width + expandX * 2) / imageSize.width) * 100;
   const h = ((height + expandY * 2) / imageSize.height) * 100;
-
-  const clusterKind = String(item && item.localOcrClusterKind ? item.localOcrClusterKind : "");
-  const adaptiveBackground = item && item.adaptiveBackground ? item.adaptiveBackground : null;
-  const bgType = adaptiveBackground
-    ? adaptiveBackground.type === "solid" ? "solid" : "none"
-    : clusterKind && clusterKind !== "bubbleText" ? "none" : "solid";
   const polygon = normalizePercentPolygon(item && item.polygon, imageSize);
   const rotation = normalizeRotationDegrees(item && item.rotation_deg);
 
@@ -2896,9 +2825,20 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
     y: clamp(y, 0, 100),
     w: clamp(w, 0.1, 100),
     h: clamp(h, 0.1, 100),
+    fill_box: solidPaintBox ? {
+      x: clamp((solidPaintBox.left / imageSize.width) * 100, 0, 100),
+      y: clamp((solidPaintBox.top / imageSize.height) * 100, 0, 100),
+      w: clamp((solidPaintBox.width / imageSize.width) * 100, 0, 100),
+      h: clamp((solidPaintBox.height / imageSize.height) * 100, 0, 100)
+    } : null,
     bg_type: bgType,
     bg_color: adaptiveBackground && adaptiveBackground.type === "solid" ? adaptiveBackground.color : "",
     bg_confidence: adaptiveBackground ? Number(adaptiveBackground.confidence || 0) : 0,
+    region_id: String(item && item.localOcrContainerId ? item.localOcrContainerId : ""),
+    region_type: String(item && item.localOcrRegionType ? item.localOcrRegionType : "effect_text"),
+    region_polygon: normalizePercentRegionPolygon(item && item.regionPolygon, imageSize),
+    text_color: String(item && item.textColor ? item.textColor : ""),
+    stroke_color: String(item && item.strokeColor ? item.strokeColor : ""),
     polygon,
     rotation_deg: rotation,
     source_line_count: Math.max(1, Math.round(Number(item && item.sourceLineCount) || String(text).split(/\n/).length)),
@@ -2906,12 +2846,62 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
     translated_text: "",
     confidence: Number(item.confidence || 0),
     rawBox: {
-      left,
-      top,
-      width,
-      height
+      left: sourceLeft,
+      top: sourceTop,
+      width: sourceWidth,
+      height: sourceHeight
     }
   };
+}
+
+function buildLocalSolidPaintBox(rawBox, regionBox, imageSize) {
+  if (!rawBox || !(rawBox.width > 0) || !(rawBox.height > 0)) {
+    return null;
+  }
+  const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  const expandX = rawBox.width * 0.1;
+  const expandY = rawBox.height * 0.15;
+  let left = Math.max(0, rawBox.left - expandX);
+  let top = Math.max(0, rawBox.top - expandY);
+  let right = Math.min(imageWidth, rawBox.right + expandX);
+  let bottom = Math.min(imageHeight, rawBox.bottom + expandY);
+
+  if (regionBox) {
+    left = Math.max(left, Number(regionBox.left) || 0);
+    top = Math.max(top, Number(regionBox.top) || 0);
+    right = Math.min(right, (Number(regionBox.left) || 0) + Math.max(0, Number(regionBox.width) || 0));
+    bottom = Math.min(bottom, (Number(regionBox.top) || 0) + Math.max(0, Number(regionBox.height) || 0));
+  }
+
+  if (right <= left || bottom <= top) {
+    return null;
+  }
+
+  const width = right - left;
+  const height = bottom - top;
+  const rawArea = Math.max(1, rawBox.width * rawBox.height);
+  if (width * height > rawArea * 2) {
+    return null;
+  }
+
+  return buildBaiduBox(left, top, right, bottom);
+}
+
+function normalizePercentRegionPolygon(value, imageSize) {
+  if (!Array.isArray(value) || value.length < 3) {
+    return null;
+  }
+  const width = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const height = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  return value.map((point) => {
+    const x = Array.isArray(point) ? Number(point[0]) : Number(point && point.x);
+    const y = Array.isArray(point) ? Number(point[1]) : Number(point && point.y);
+    return {
+      x: clamp((x / width) * 100, 0, 100),
+      y: clamp((y / height) * 100, 0, 100)
+    };
+  });
 }
 
 function normalizePercentPolygon(value, imageSize) {
@@ -2920,10 +2910,14 @@ function normalizePercentPolygon(value, imageSize) {
   }
   const width = Math.max(1, Number(imageSize && imageSize.width) || 1);
   const height = Math.max(1, Number(imageSize && imageSize.height) || 1);
-  return value.slice(0, 4).map((point) => ({
-    x: clamp((Number(point && point.x) / width) * 100, 0, 100),
-    y: clamp((Number(point && point.y) / height) * 100, 0, 100)
-  }));
+  return value.slice(0, 4).map((point) => {
+    const x = Array.isArray(point) ? Number(point[0]) : Number(point && point.x);
+    const y = Array.isArray(point) ? Number(point[1]) : Number(point && point.y);
+    return {
+      x: clamp((x / width) * 100, 0, 100),
+      y: clamp((y / height) * 100, 0, 100)
+    };
+  });
 }
 
 async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl, model }) {
@@ -3480,6 +3474,11 @@ function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
   }
   const leftBgType = normalizeBgType(leftGroup[0] && leftGroup[0].bg_type);
   const rightBgType = normalizeBgType(rightGroup[0] && rightGroup[0].bg_type);
+  const leftRegionId = String(leftGroup[0] && leftGroup[0].region_id || "");
+  const rightRegionId = String(rightGroup[0] && rightGroup[0].region_id || "");
+  if (leftRegionId || rightRegionId) {
+    return Boolean(leftRegionId && leftRegionId === rightRegionId);
+  }
   if (leftBgType !== rightBgType) {
     return false;
   }
@@ -3508,6 +3507,13 @@ function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
 function mergeOcrCandidateGroup(group, index) {
   const sorted = [...group].sort((left, right) => left.y - right.y || left.x - right.x);
   const box = getPercentBubbleGroupBox(sorted);
+  const requestedBgType = normalizeBgType(sorted[0] && sorted[0].bg_type);
+  const mergedFillBox = requestedBgType === "solid" ? mergePercentFillBoxes(sorted) : null;
+  const mergedTextArea = Math.max(0.01, box.width * box.height);
+  const hasSafeSolidFill = requestedBgType !== "solid" || (
+    mergedFillBox && mergedFillBox.w * mergedFillBox.h <= mergedTextArea * 2
+  );
+  const bgType = hasSafeSolidFill ? requestedBgType : "none";
   const rawBoxes = sorted.map((item) => item.rawBox).filter(Boolean);
   const rawLeft = rawBoxes.length > 0 ? Math.min(...rawBoxes.map((box) => Number(box.left) || 0)) : 0;
   const rawTop = rawBoxes.length > 0 ? Math.min(...rawBoxes.map((box) => Number(box.top) || 0)) : 0;
@@ -3527,7 +3533,15 @@ function mergeOcrCandidateGroup(group, index) {
     h: clamp(box.height, 0.1, 100),
     original_text: sorted.map((item) => String(item.original_text || "").trim()).filter(Boolean).join("\n"),
     translated_text: "",
-    bg_type: normalizeBgType(sorted[0] && sorted[0].bg_type),
+    fill_box: bgType === "solid" ? mergedFillBox : null,
+    bg_type: bgType,
+    bg_color: bgType === "solid" ? String(sorted[0] && sorted[0].bg_color || "") : "",
+    bg_confidence: Number(sorted[0] && sorted[0].bg_confidence || 0),
+    region_id: String(sorted[0] && sorted[0].region_id || ""),
+    region_type: String(sorted[0] && sorted[0].region_type || "plain_text"),
+    region_polygon: sorted[0] && sorted[0].region_polygon || null,
+    text_color: bgType === "none" ? "#000000" : String(sorted[0] && sorted[0].text_color || ""),
+    stroke_color: bgType === "none" ? "#ffffff" : String(sorted[0] && sorted[0].stroke_color || ""),
     polygon: mergePercentPolygons(sorted),
     rotation_deg: medianRotation(sorted.map((item) => item.rotation_deg)),
     source_line_count: Math.max(1, ...sorted.map((item) => Number(item.source_line_count) || 1)),
@@ -3535,6 +3549,26 @@ function mergeOcrCandidateGroup(group, index) {
     ...(rawBoxes.length > 0
       ? { rawBox: { left: rawLeft, top: rawTop, width: rawRight - rawLeft, height: rawBottom - rawTop } }
       : {})
+  };
+}
+
+function mergePercentFillBoxes(items) {
+  const boxes = items.map((item) => item && item.fill_box).filter((box) => (
+    box && [box.x, box.y, box.w, box.h].every((value) => Number.isFinite(Number(value))) &&
+    Number(box.w) > 0 && Number(box.h) > 0
+  ));
+  if (boxes.length !== items.length || boxes.length === 0) {
+    return null;
+  }
+  const left = Math.min(...boxes.map((box) => Number(box.x)));
+  const top = Math.min(...boxes.map((box) => Number(box.y)));
+  const right = Math.max(...boxes.map((box) => Number(box.x) + Number(box.w)));
+  const bottom = Math.max(...boxes.map((box) => Number(box.y) + Number(box.h)));
+  return {
+    x: clamp(left, 0, 100),
+    y: clamp(top, 0, 100),
+    w: clamp(right - left, 0.1, 100),
+    h: clamp(bottom - top, 0.1, 100)
   };
 }
 
@@ -3831,7 +3865,7 @@ function getErrorMessage(error) {
 async function handleGetCacheStats() {
   try {
     const store = await storageGet(null);
-    const cacheKeys = Object.keys(store).filter((key) => key.startsWith(CACHE_PREFIX));
+    const cacheKeys = Object.keys(store).filter(isTranslationCacheKey);
 
     let aliveCount = 0;
     let staleCount = 0;
@@ -3874,7 +3908,7 @@ async function handleGetCacheStats() {
 async function handleClearCache() {
   try {
     const store = await storageGet(null);
-    const cacheKeys = Object.keys(store).filter((key) => key.startsWith(CACHE_PREFIX));
+    const cacheKeys = Object.keys(store).filter(isTranslationCacheKey);
     if (cacheKeys.length > 0) {
       await storageRemove(cacheKeys);
     }
@@ -4053,12 +4087,66 @@ async function getCache(cacheKey) {
 }
 
 async function setCache(cacheKey, value) {
-  await storageSet({
+  const entry = {
     [cacheKey]: {
       timestamp: Date.now(),
-      value
+      value: buildCacheSafeTranslationResult(value)
     }
-  });
+  };
+
+  try {
+    await storageSet(entry);
+    return true;
+  } catch (error) {
+    if (!isStorageQuotaError(error)) {
+      console.warn("[MangaTranslator] Cache write failed; translation will continue without cache.", error);
+      return false;
+    }
+  }
+
+  try {
+    const store = await storageGet(null);
+    const cacheKeys = Object.keys(store).filter(isTranslationCacheKey);
+    if (cacheKeys.length > 0) {
+      await storageRemove(cacheKeys);
+    }
+    await storageSet(entry);
+    console.info(`[MangaTranslator] Storage quota recovered by clearing ${cacheKeys.length} translation cache entries.`);
+    return true;
+  } catch (error) {
+    // 缓存是可选加速层，即使单条结果仍然过大，也不能让已完成的翻译失败。
+    console.warn("[MangaTranslator] Cache quota recovery failed; translation will continue without cache.", error);
+    return false;
+  }
+}
+
+function isTranslationCacheKey(key) {
+  return TRANSLATION_CACHE_KEY_RE.test(String(key || ""));
+}
+
+function isStorageQuotaError(error) {
+  return /quota|kQuotaBytes/i.test(getErrorMessage(error));
+}
+
+function buildCacheSafeTranslationResult(value) {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  // 清理图和逐阶段调试数据可能达到数 MB；缓存只保留重新渲染所需的翻译气泡。
+  const { cleanedImage: _cleanedImage, debug: _debug, ...cacheSafeValue } = value;
+  return {
+    ...cacheSafeValue,
+    ...(translationResultNeedsCleanedImage(value) ? { requiresCleanedImage: true } : {})
+  };
+}
+
+function translationResultNeedsCleanedImage(value) {
+  return Boolean(
+    value &&
+    (value.requiresCleanedImage === true ||
+      (Array.isArray(value.bubbles) && value.bubbles.some((bubble) => normalizeBgType(bubble && bubble.bg_type) === "none")))
+  );
 }
 
 async function ensureDefaultSettings() {
@@ -4266,7 +4354,11 @@ async function loadSettings() {
     showBall: raw[STORAGE_KEYS.showBall] !== false,
     captureMode: normalizeCaptureMode(raw[STORAGE_KEYS.captureMode]),
     renderMode: normalizeRenderMode(raw[STORAGE_KEYS.renderMode]),
-    pretranslateMode: String(raw[STORAGE_KEYS.pretranslateMode] || "").toLowerCase() === "ahead" ? "ahead" : "manual",
+    pretranslateMode: ["ahead", "continuous"].includes(
+      String(raw[STORAGE_KEYS.pretranslateMode] || "").trim().toLowerCase()
+    )
+      ? String(raw[STORAGE_KEYS.pretranslateMode]).trim().toLowerCase()
+      : "manual",
     ignoreSimplifiedChinese: raw[STORAGE_KEYS.ignoreSimplifiedChinese] === true
   };
 }

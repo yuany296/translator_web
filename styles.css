@@ -61,6 +61,9 @@
   cursor: pointer;
   user-select: none;
   pointer-events: auto;
+  isolation: isolate;
+  color: var(--mt-text-color, #111827);
+  --mt-stroke-width: 2px;
   --mt-base-transform: none;
   transform: var(--mt-base-transform);
   transition: transform 0.15s ease, opacity 0.15s ease;
@@ -98,14 +101,26 @@
 }
 
 .mt-bg-solid {
-  color: #111827;
-  background: var(--mt-adaptive-bg, rgba(255, 255, 255, 0.96));
+  background: transparent;
   border: 0;
   box-shadow: none;
+  overflow: visible;
+}
+
+.mt-bg-solid::before {
+  content: "";
+  position: absolute;
+  left: var(--mt-fill-left, 0);
+  top: var(--mt-fill-top, 0);
+  width: var(--mt-fill-width, 100%);
+  height: var(--mt-fill-height, 100%);
+  z-index: -1;
+  background: var(--mt-adaptive-bg, rgba(255, 255, 255, 0.96));
+  clip-path: var(--mt-region-clip, inset(0));
+  pointer-events: none;
 }
 
 .mt-bg-transparent {
-  color: #111827;
   background: rgba(255, 255, 255, 0.45);
   border: 1px solid rgba(15, 23, 42, 0.3);
   backdrop-filter: blur(1.8px);
@@ -114,28 +129,34 @@
 }
 
 .mt-bg-none {
-  color: #111827;
   background: transparent;
+  background-image: var(--mt-cleaned-image, none);
+  background-repeat: no-repeat;
+  background-size:
+    var(--mt-cleaned-size-x, auto)
+    var(--mt-cleaned-size-y, auto);
+  background-position:
+    var(--mt-cleaned-position-x, 0)
+    var(--mt-cleaned-position-y, 0);
   border: 1px solid transparent;
-  text-shadow:
-    -2px -2px 0 rgba(255, 255, 255, 0.96),
-    0 -2px 0 rgba(255, 255, 255, 0.96),
-    2px -2px 0 rgba(255, 255, 255, 0.96),
-    -2px 0 0 rgba(255, 255, 255, 0.96),
-    2px 0 0 rgba(255, 255, 255, 0.96),
-    -2px 2px 0 rgba(255, 255, 255, 0.96),
-    0 2px 0 rgba(255, 255, 255, 0.96),
-    2px 2px 0 rgba(255, 255, 255, 0.96),
-    0 0 3px rgba(255, 255, 255, 0.98);
+  -webkit-text-stroke: var(--mt-stroke-width, 2px) var(--mt-stroke-color, #ffffff);
+  paint-order: stroke fill;
+  text-shadow: 0 0 1px var(--mt-stroke-color, #ffffff);
 }
 
 .mt-overlay-root.mt-show-source .mt-bubble {
   color: transparent !important;
-  background: rgba(255, 255, 255, 0.01) !important;
-  border: 1px dashed rgba(37, 99, 235, 0.28) !important;
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
   box-shadow: none !important;
+  -webkit-text-stroke: 0 transparent !important;
   text-shadow: none !important;
-  opacity: 0.32;
+  opacity: 0;
+}
+
+.mt-overlay-root.mt-show-source .mt-bubble::before {
+  content: none;
 }
 
 .mt-floating-ball-wrap {

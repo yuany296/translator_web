@@ -1,5 +1,20 @@
 # Manga OCR Compare Workbench
 
+## 背景判定可视化调参工作台
+
+更新日期：2026-06-21
+执行者：Codex
+
+独立页面 `debug_background_workbench.html` 用于比较纯色矩形覆盖与复杂背景 TELEA 修复判定，不会修改生产 OCR 参数或原有 `index.html`。
+
+1. 在项目根目录运行 `start_local_ocr_gpu.bat`，服务地址默认为 `http://127.0.0.1:8765`。
+2. 双击 `tools\ocr-debug-tool\run_background_workbench.bat`。脚本会启动本地静态服务并打开 `http://127.0.0.1:8088/debug_background_workbench.html`；不要再用 `file://` 直接打开。
+3. 加载漫画图片即可直接运行。若当前图片没有 OCR JSON，页面会先调用本地 `/ocr` 自动识别文字框，再运行背景判定；顶部可选择自动 OCR 的语言与 Fast/Enhanced 模式。
+4. OCR JSON 是可选的固定输入，适合重复复现实验；格式为 `[{"id":"box_001","bbox":[x,y,w,h],"text":"..."}]`。`labels.json` 同样可选，格式为 `{"box_001":"solid","box_002":"complex"}`。
+5. 修改任意参数组后点击 `Run pending`；点击画布上的框查看 near/far 采样、mask、强制 solid 与强制 TELEA 对比。
+
+若目标是让更多区域走 solid，优先查看失败列表中的 `dominant_ratio_*`、`delta_e_p90_*`、`lab_var_*`：通常先小幅降低主色占比下限，再提高 Delta E 和 Lab 方差上限；若 near 很干净、far 仅受边框或相邻画面干扰，可单独试验 `near priority`，不要直接改生产阈值。
+
 独立 OCR/覆写调试工具，不注入生产扩展 UI。
 
 更新日期：2026-06-18  

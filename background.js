@@ -168,6 +168,8 @@ async function handleMessage(message, sender) {
       return handleCaptureVisibleTargetDataUrl(message, sender);
     case "TRANSLATE_DATA_URL":
       return handleTranslateDataUrl(message, sender);
+    case "TRANSLATE_TEXT_BLOCKS":
+      return handleTranslateTextBlocks(message);
     case "GET_CACHE_STATS":
       return handleGetCacheStats();
     case "CLEAR_CACHE":
@@ -181,6 +183,40 @@ async function handleMessage(message, sender) {
     default:
       return { ok: false, error: `Unknown message type: ${message.type}` };
   }
+}
+
+async function handleTranslateTextBlocks(message) {
+  const items = (Array.isArray(message.items) ? message.items : [])
+    .map((item, index) => ({
+      ...item,
+      id: String(item && item.id || `boundary-${index}`),
+      original_text: String(item && item.original_text || "").trim()
+    }))
+    .filter((item) => item.original_text);
+  if (items.length === 0) {
+    return { ok: true, translations: [] };
+  }
+  const settings = await loadSettings();
+  if (![PROVIDERS.baiduDeepSeek, PROVIDERS.localPaddleDeepSeek, PROVIDERS.openaiCompatible].includes(settings.provider)) {
+    return { ok: false, error: "Current provider does not support text-only boundary translation" };
+  }
+  if (!settings.apiKey) {
+    return { ok: false, error: "Translation API Key is missing. Please configure it in popup." };
+  }
+  const translated = await requestOpenAICompatibleTextTranslations({
+    items,
+    apiKey: settings.apiKey,
+    baseUrl: settings.baseUrl || DEFAULT_TRANSLATION_BASE_URL,
+    model: settings.model || DEFAULT_MODELS[settings.provider],
+    sourceImageId: String(message.sourceImageId || "boundary-trim")
+  });
+  return {
+    ok: true,
+    translations: items.map((item) => ({
+      id: item.id,
+      translated_text: cleanDecorativeSymbols(translated.get(item.id) || item.original_text)
+    }))
+  };
 }
 
 async function handleFetchImageDataUrl(message) {

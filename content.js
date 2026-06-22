@@ -899,7 +899,7 @@
 
         const localCachedResult = state.localResultCache.get(targetKey);
         if (!options.force && localCachedResult) {
-          const dedupedCachedResult = dedupeKakaoResultByPageCoordinates(localCachedResult, target, targetKey);
+          const dedupedCachedResult = await dedupeKakaoResultByPageCoordinates(localCachedResult, target, targetKey);
           state.localResultCache.set(targetKey, dedupedCachedResult);
           if (dedupedCachedResult.bubbles.length > 0) {
             if (shouldUseEmbeddedRender(target)) {
@@ -963,7 +963,7 @@
           }
           result = normalizeResult(response.result);
         }
-        result = dedupeKakaoResultByPageCoordinates(result, target, targetKey);
+        result = await dedupeKakaoResultByPageCoordinates(result, target, targetKey);
         const expectedSourceImageId = String(renderPayload && renderPayload.sourceImageId || payload && payload.sourceImageId || "");
         if (!target.isConnected || (expectedSourceImageId && getSourceImageIdForTarget(target) !== expectedSourceImageId)) {
           clearRenderedTarget(target);
@@ -1436,7 +1436,7 @@
     };
   }
 
-  function dedupeKakaoResultByPageCoordinates(result, target, targetKey) {
+  async function dedupeKakaoResultByPageCoordinates(result, target, targetKey) {
     if (!IS_KAKAOPAGE_READER || !result || !Array.isArray(result.bubbles) || !targetKey) {
       return result;
     }
@@ -1453,12 +1453,123 @@
         height: (Number(bubble.h) / 100) * targetRect.height
       }
     }));
-    const deduped = dedupeKakaoGlobalBubbles(bubbles, target, targetRect, targetKey);
+    state.kakaoGlobalOcrEntries.delete(targetKey);
+    const trimmed = await trimKakaoBoundaryOverlapBubbles(bubbles, targetKey);
+    const deduped = dedupeKakaoGlobalBubbles(trimmed, target, targetRect, targetKey);
     return {
       ...result,
       bubbles: deduped,
-      debug: filterOcrDebugFinalBubbles(result.debug, deduped)
+      debug: syncOcrDebugFinalBubbles(result.debug, deduped)
     };
+  }
+
+  async function trimKakaoBoundaryOverlapBubbles(bubbles, targetKey) {
+    const existing = Array.from(state.kakaoGlobalOcrEntries.values()).flat();
+    const output = [];
+    for (const bubble of bubbles) {
+      let nextBubble = bubble;
+      const text = normalizeOcrSimilarityText(bubble.original_text);
+      const entry = existing.find((candidate) => {
+        const overlap = getSubstantialOcrBoundaryOverlap(text, candidate.text);
+        return overlap && areKakaoGlobalBoxesRelated(bubble.global_box, candidate.box);
+      });
+      if (entry) {
+        const overlap = getSubstantialOcrBoundaryOverlap(text, entry.text);
+        const trimmed = trimKakaoBubbleBoundary(nextBubble, overlap);
+        if (trimmed) {
+          nextBubble = await translateTrimmedKakaoBubble(trimmed, targetKey);
+        }
+      }
+      output.push(nextBubble);
+    }
+    return output;
+  }
+
+  function trimKakaoBubbleBoundary(bubble, overlap) {
+    if (!bubble || !overlap || !(overlap.length > 0)) {
+      return null;
+    }
+    const originalText = String(bubble.original_text || "");
+    const normalizedLength = Math.max(1, normalizeOcrSimilarityText(originalText).length);
+    const uniqueLength = normalizedLength - overlap.length;
+    if (uniqueLength < 2) {
+      return null;
+    }
+    const keepRatio = Math.max(0.12, Math.min(1, uniqueLength / normalizedLength));
+    const keepSuffix = overlap.trim === "prefix";
+    const uniqueText = sliceTextByNormalizedBoundary(originalText, overlap.length, keepSuffix);
+    if (normalizeOcrSimilarityText(uniqueText).length < 2) {
+      return null;
+    }
+    const originalY = Number(bubble.y);
+    const originalH = Number(bubble.h);
+    const nextY = keepSuffix ? originalY + originalH * (1 - keepRatio) : originalY;
+    const nextH = originalH * keepRatio;
+    const globalBox = bubble.global_box ? {
+      ...bubble.global_box,
+      top: keepSuffix
+        ? Number(bubble.global_box.top) + Number(bubble.global_box.height) * (1 - keepRatio)
+        : Number(bubble.global_box.top),
+      height: Number(bubble.global_box.height) * keepRatio
+    } : null;
+    return {
+      ...bubble,
+      original_text: uniqueText,
+      translated_text: "",
+      y: nextY,
+      h: nextH,
+      fill_box: null,
+      polygon: null,
+      region_polygon: null,
+      global_box: globalBox,
+      source_line_count: Math.max(1, Math.round(Number(bubble.source_line_count || 1) * keepRatio)),
+      boundary_trimmed: true
+    };
+  }
+
+  function sliceTextByNormalizedBoundary(text, overlapLength, keepSuffix) {
+    const chars = Array.from(String(text || ""));
+    let count = 0;
+    if (keepSuffix) {
+      let index = 0;
+      while (index < chars.length && count < overlapLength) {
+        count += normalizeOcrSimilarityText(chars[index]).length;
+        index += 1;
+      }
+      return chars.slice(index).join("").trim();
+    }
+    let index = chars.length - 1;
+    while (index >= 0 && count < overlapLength) {
+      count += normalizeOcrSimilarityText(chars[index]).length;
+      index -= 1;
+    }
+    return chars.slice(0, index + 1).join("").trim();
+  }
+
+  async function translateTrimmedKakaoBubble(bubble, targetKey) {
+    try {
+      const response = await sendRuntimeMessage({
+        type: "TRANSLATE_TEXT_BLOCKS",
+        sourceImageId: `${targetKey}|boundary-trim`,
+        items: [{
+          id: String(bubble.block_id || bubble.id || "boundary-trimmed"),
+          original_text: bubble.original_text,
+          x: bubble.x,
+          y: bubble.y,
+          w: bubble.w,
+          h: bubble.h
+        }]
+      });
+      const translated = response && response.ok && Array.isArray(response.translations)
+        ? response.translations[0]
+        : null;
+      return {
+        ...bubble,
+        translated_text: cleanRenderableText(translated && translated.translated_text || "") || bubble.original_text
+      };
+    } catch {
+      return { ...bubble, translated_text: bubble.original_text };
+    }
   }
 
   function filterOcrDebugFinalBubbles(debug, bubbles) {
@@ -1475,6 +1586,27 @@
       finalBubbles,
       items: finalBubbles
     };
+  }
+
+  function syncOcrDebugFinalBubbles(debug, bubbles) {
+    const filtered = filterOcrDebugFinalBubbles(debug, bubbles);
+    if (!filtered) {
+      return filtered;
+    }
+    const byId = new Map((Array.isArray(bubbles) ? bubbles : []).map((bubble) => [
+      String(bubble && (bubble.block_id || bubble.id) || ""),
+      bubble
+    ]));
+    const finalBubbles = filtered.finalBubbles.map((item) => {
+      const bubble = byId.get(String(item && (item.blockId || item.block_id || item.id) || ""));
+      return bubble ? {
+        ...item,
+        text: bubble.original_text,
+        translatedText: bubble.translated_text,
+        percent: { x: bubble.x, y: bubble.y, w: bubble.w, h: bubble.h }
+      } : item;
+    });
+    return { ...filtered, finalBubbles, items: finalBubbles };
   }
 
   function mapKakaoStitchedPercentBox(box, ownerTop, ownerHeight, compositeHeight) {
@@ -1553,23 +1685,30 @@
     if (!sourceRelated && !translationRelated) {
       return false;
     }
-    const overlap = pageBoxIntersectionRatio(candidate.box, entry.box);
-    const leftCenterX = candidate.box.left + candidate.box.width / 2;
-    const rightCenterX = entry.box.left + entry.box.width / 2;
+    return areKakaoGlobalBoxesRelated(candidate.box, entry.box);
+  }
+
+  function areKakaoGlobalBoxesRelated(leftBox, rightBox) {
+    if (!leftBox || !rightBox) {
+      return false;
+    }
+    const overlap = pageBoxIntersectionRatio(leftBox, rightBox);
+    const leftCenterX = leftBox.left + leftBox.width / 2;
+    const rightCenterX = rightBox.left + rightBox.width / 2;
     const horizontalOverlap = Math.max(
       0,
-      Math.min(candidate.box.left + candidate.box.width, entry.box.left + entry.box.width) -
-        Math.max(candidate.box.left, entry.box.left)
+      Math.min(leftBox.left + leftBox.width, rightBox.left + rightBox.width) -
+        Math.max(leftBox.left, rightBox.left)
     );
-    const horizontalOverlapRatio = horizontalOverlap / Math.max(1, Math.min(candidate.box.width, entry.box.width));
+    const horizontalOverlapRatio = horizontalOverlap / Math.max(1, Math.min(leftBox.width, rightBox.width));
     const verticalGap = Math.max(
       0,
-      Math.max(candidate.box.top, entry.box.top) -
-        Math.min(candidate.box.top + candidate.box.height, entry.box.top + entry.box.height)
+      Math.max(leftBox.top, rightBox.top) -
+        Math.min(leftBox.top + leftBox.height, rightBox.top + rightBox.height)
     );
-    const closeAcrossBoundary = verticalGap <= Math.max(candidate.box.height, entry.box.height) * 0.28 &&
+    const closeAcrossBoundary = verticalGap <= Math.max(leftBox.height, rightBox.height) * 0.28 &&
       (horizontalOverlapRatio >= 0.35 ||
-        Math.abs(leftCenterX - rightCenterX) <= Math.max(candidate.box.width, entry.box.width) * 0.35);
+        Math.abs(leftCenterX - rightCenterX) <= Math.max(leftBox.width, rightBox.width) * 0.35);
     return overlap >= 0.08 || closeAcrossBoundary;
   }
 
@@ -1580,19 +1719,21 @@
     const shorter = first.length <= second.length ? first : second;
     const longer = first.length > second.length ? first : second;
     return textSimilarity(first, second) >= 0.82 ||
-      (shorter.length >= 3 && longer.includes(shorter)) ||
-      hasSubstantialOcrBoundaryOverlap(first, second);
+      (shorter.length >= 3 && longer.includes(shorter));
   }
 
-  function hasSubstantialOcrBoundaryOverlap(first, second) {
+  function getSubstantialOcrBoundaryOverlap(first, second) {
     const minimumLength = Math.max(6, Math.ceil(Math.min(first.length, second.length) * 0.55));
     const maximumLength = Math.min(first.length, second.length);
     for (let length = maximumLength; length >= minimumLength; length -= 1) {
-      if (first.endsWith(second.slice(0, length)) || second.endsWith(first.slice(0, length))) {
-        return true;
+      if (first.endsWith(second.slice(0, length))) {
+        return { length, trim: "suffix" };
+      }
+      if (second.endsWith(first.slice(0, length))) {
+        return { length, trim: "prefix" };
       }
     }
-    return false;
+    return null;
   }
 
   function removeSupersededKakaoGlobalEntry(entry) {

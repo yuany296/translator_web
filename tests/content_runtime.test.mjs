@@ -163,8 +163,8 @@ test("global Kakao dedupe replaces an earlier partial sentence with the later co
   assert.equal(second.bubbles[0].translated_text, "啊当然一切不会就这样结束");
 });
 
-test("Kakao page-level dedupe also removes a single-image fragment covered by a stitched sentence", () => {
-  const complete = runtime.__test.dedupeKakaoResultByPageCoordinates(
+test("Kakao page-level dedupe also removes a single-image fragment covered by a stitched sentence", async () => {
+  const complete = await runtime.__test.dedupeKakaoResultByPageCoordinates(
     {
       bubbles: [{
         x: 18, y: -10, w: 56, h: 20,
@@ -180,7 +180,7 @@ test("Kakao page-level dedupe also removes a single-image fragment covered by a 
     { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 1000, width: 600, height: 1000 }) },
     "complete-page-level"
   );
-  const fragment = runtime.__test.dedupeKakaoResultByPageCoordinates(
+  const fragment = await runtime.__test.dedupeKakaoResultByPageCoordinates(
     {
       bubbles: [{
         x: 32, y: 90, w: 25, h: 7,
@@ -203,8 +203,8 @@ test("Kakao page-level dedupe also removes a single-image fragment covered by a 
   assert.deepEqual(fragment.debug.items, []);
 });
 
-test("Kakao page-level dedupe removes long suffix-prefix overlap across neighboring images", () => {
-  const leading = runtime.__test.dedupeKakaoResultByPageCoordinates(
+test("Kakao page-level dedupe trims only the repeated boundary and keeps the unique final line", async () => {
+  const leading = await runtime.__test.dedupeKakaoResultByPageCoordinates(
     {
       bubbles: [{
         x: 15, y: 82, w: 70, h: 24,
@@ -216,7 +216,7 @@ test("Kakao page-level dedupe removes long suffix-prefix overlap across neighbor
     { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 2000, width: 600, height: 1000 }) },
     "boundary-leading-page"
   );
-  const trailing = runtime.__test.dedupeKakaoResultByPageCoordinates(
+  const trailing = await runtime.__test.dedupeKakaoResultByPageCoordinates(
     {
       bubbles: [{
         x: 16, y: -18, w: 68, h: 25,
@@ -230,7 +230,10 @@ test("Kakao page-level dedupe removes long suffix-prefix overlap across neighbor
   );
 
   assert.equal(leading.bubbles.length, 1);
-  assert.equal(trailing.bubbles.length, 0);
+  assert.equal(trailing.bubbles.length, 1);
+  assert.equal(trailing.bubbles[0].original_text, "미루머져 있다.");
+  assert.ok(trailing.bubbles[0].y > -18);
+  assert.ok(trailing.bubbles[0].h < 25);
 });
 
 test("pretranslation mode defaults to manual", () => {

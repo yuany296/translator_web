@@ -142,6 +142,73 @@ test("stitched OCR clusters all panel lines before owner filtering", async () =>
   assert.equal(result[0].sourceLineCount, 3);
 });
 
+test("fragmented caption regions and unassigned words merge into complete paragraphs", async () => {
+  const region = (id, box) => ({
+    region_id: id,
+    region_type: "caption_panel",
+    region_box: box,
+    region_polygon: [
+      [box.left, box.top],
+      [box.left + box.width, box.top],
+      [box.left + box.width, box.top + box.height],
+      [box.left, box.top + box.height]
+    ],
+    bg_color: "#000000",
+    text_color: "#fcfcfc",
+    stroke_color: "#000000",
+    region_confidence: 0.94
+  });
+  const upperLeft = region("upper-left", { left: 27, top: 278, width: 260, height: 180 });
+  const upperRight = region("upper-right", { left: 298, top: 281, width: 463, height: 266 });
+  const lower = region("lower", { left: 568, top: 601, width: 189, height: 116 });
+  const item = (text, left, top, width, height, extra = {}) => ({
+    text,
+    box: { left, top, width, height },
+    score: 0.98,
+    det_score: 0.95,
+    rotation_deg: 0,
+    ...extra
+  });
+  const payload = {
+    imageWidth: 760,
+    imageHeight: 1380,
+    items: [
+      item("middle", 249, 336, 115, 62),
+      item("upper left", 76, 338, 163, 59, upperLeft),
+      item("upper right", 383, 339, 260, 56, upperRight),
+      item("second middle", 298, 433, 137, 59),
+      item("second left", 79, 434, 209, 56),
+      item("second right", 456, 434, 221, 56, upperRight),
+      item("third left", 77, 530, 306, 56),
+      item("third right", 368, 530, 105, 58),
+      item("lower heading", 603, 640, 118, 38, lower),
+      item("lower line one", 298, 696, 420, 37),
+      item("lower line two", 435, 753, 283, 33),
+      item("lower line three", 263, 806, 455, 38),
+      item("lower last right", 524, 861, 193, 37),
+      item("lower last left", 337, 864, 184, 33)
+    ]
+  };
+
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    payload,
+    { width: 760, height: 1380 },
+    "",
+    false
+  );
+
+  assert.equal(result.length, 2);
+  assert.equal(result[0].sourceLineCount, 3);
+  assert.equal(result[1].sourceLineCount, 5);
+  assert.match(result[0].words, /upper left/);
+  assert.match(result[0].words, /third right/);
+  assert.match(result[1].words, /lower heading/);
+  assert.match(result[1].words, /lower last right/);
+  assert.equal(result[0].adaptiveBackground.type, "solid");
+  assert.equal(result[1].adaptiveBackground.type, "solid");
+  assert.equal(result[0].localOcrContainerId, "");
+});
+
 test("stitched OCR drops a completed cluster owned by the adjacent slice", async () => {
   const payload = {
     imageWidth: 760,

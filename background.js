@@ -98,7 +98,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v7:";
+const CACHE_PREFIX = "mt_cache_v8:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -1473,11 +1473,17 @@ function buildLocalPaddleConnectedClusters(entries, imageSize) {
 }
 
 function shouldJoinLocalPaddleCluster(left, right, imageSize) {
-  if (!left || !right || left.kind !== right.kind) {
+  if (!left || !right) {
     return false;
   }
   // 不把不同方向、但空间上恰好相交的拟声词拼成一句。
   if (rotationDistance(left.rotation, right.rotation) > 18) {
+    return false;
+  }
+  if (shouldJoinLocalPaddleCaptionText(left, right)) {
+    return true;
+  }
+  if (left.kind !== right.kind) {
     return false;
   }
   if (left.kind === "bubbleText") {
@@ -1490,6 +1496,40 @@ function shouldJoinLocalPaddleCluster(left, right, imageSize) {
     return shouldJoinLocalPaddleEffectText(left, right, imageSize);
   }
   return shouldJoinLocalPaddleNormalOutsideText(left, right, imageSize);
+}
+
+function shouldJoinLocalPaddleCaptionText(left, right) {
+  const leftCaption = isLocalPaddleCaptionEntry(left);
+  const rightCaption = isLocalPaddleCaptionEntry(right);
+  if (!leftCaption && !rightCaption) {
+    return false;
+  }
+  // 语音气泡仍按各自区域隔离；这里仅修正被纯色背景检测切碎的说明面板。
+  if ((left.container && !leftCaption) || (right.container && !rightCaption)) {
+    return false;
+  }
+
+  const leftBox = left.box;
+  const rightBox = right.box;
+  const avgHeight = Math.max(1, (leftBox.height + rightBox.height) / 2);
+  const verticalOverlap = Math.min(leftBox.bottom, rightBox.bottom) - Math.max(leftBox.top, rightBox.top);
+  const sameLine = verticalOverlap >= Math.min(leftBox.height, rightBox.height) * 0.45;
+  if (sameLine) {
+    return getHorizontalGap(leftBox, rightBox) <= avgHeight * 1.25;
+  }
+
+  const verticalGap = getVerticalGap(leftBox, rightBox);
+  const overlapX = Math.min(leftBox.right, rightBox.right) - Math.max(leftBox.left, rightBox.left);
+  const overlapRatio = overlapX > 0 ? overlapX / Math.max(1, Math.min(leftBox.width, rightBox.width)) : 0;
+  const rightEdgeDistance = Math.abs(leftBox.right - rightBox.right);
+  return (
+    verticalGap <= avgHeight * 0.95 &&
+    (overlapRatio >= 0.12 || rightEdgeDistance <= avgHeight * 1.6)
+  );
+}
+
+function isLocalPaddleCaptionEntry(entry) {
+  return Boolean(entry && entry.container && entry.container.type === "caption_panel");
 }
 
 function shouldJoinLocalPaddleBubbleText(leftBox, rightBox) {
@@ -1619,20 +1659,28 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis) {
     merged.sourceLineCount = geometry.lineCount;
     merged.words = composeRotatedClusterWords(cluster, geometry.rotation);
   } else {
-    merged.sourceLineCount = Math.max(1, cluster.length);
+    const rotation = medianRotation(cluster.map((entry) => entry.rotation));
+    merged.rotation_deg = rotation;
+    merged.sourceLineCount = estimateRotatedClusterLineCount(cluster, rotation);
+    merged.words = composeRotatedClusterWords(cluster, rotation);
   }
-  merged.localOcrClusterKind = cluster[0].kind;
-  merged.localOcrContainerId = cluster[0].container ? cluster[0].container.id : "";
-  merged.localOcrRegionType = cluster[0].container ? cluster[0].container.type : "effect_text";
-  merged.regionPolygon = cluster[0].container ? cluster[0].container.polygon : null;
-  merged.regionBox = cluster[0].container ? cluster[0].container.box : null;
-  merged.textColor = cluster[0].textColor || "";
-  merged.strokeColor = cluster[0].strokeColor || "";
-  merged.adaptiveBackground = cluster[0].container && cluster[0].container.color
+  const captionEntries = cluster.filter(isLocalPaddleCaptionEntry);
+  const representative = captionEntries[0] || cluster[0];
+  const representativeContainer = representative.container || null;
+  const containerIds = new Set(cluster.map((entry) => entry.container && entry.container.id).filter(Boolean));
+  const hasSingleCompleteContainer = containerIds.size === 1 && cluster.every((entry) => entry.container);
+  merged.localOcrClusterKind = representativeContainer ? "bubbleText" : representative.kind;
+  merged.localOcrContainerId = hasSingleCompleteContainer ? representativeContainer.id : "";
+  merged.localOcrRegionType = representativeContainer ? representativeContainer.type : "effect_text";
+  merged.regionPolygon = hasSingleCompleteContainer ? representativeContainer.polygon : null;
+  merged.regionBox = hasSingleCompleteContainer ? representativeContainer.box : null;
+  merged.textColor = representative.textColor || "";
+  merged.strokeColor = representative.strokeColor || "";
+  merged.adaptiveBackground = representativeContainer && representativeContainer.color
     ? {
         type: "solid",
-        color: cluster[0].container.color,
-        confidence: cluster[0].container.confidence
+        color: representativeContainer.color,
+        confidence: representativeContainer.confidence
       }
     : { type: "outline", color: "", confidence: 0 };
   return merged;
@@ -1706,7 +1754,11 @@ function estimateRotatedClusterLineCount(cluster, rotation) {
 
 function composeRotatedClusterWords(cluster, rotation) {
   return buildRotatedClusterRows(cluster, rotation)
-    .map((row) => row.entries.sort((left, right) => left.point.x - right.point.x).map((item) => item.entry.text).join(" "))
+    .map((row) => row.entries
+      .sort((left, right) => left.point.x - right.point.x)
+      .map((item) => String(item.entry.item && item.entry.item.words || item.entry.text || "").trim())
+      .filter(Boolean)
+      .join(" "))
     .filter(Boolean)
     .join("\n");
 }

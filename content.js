@@ -138,6 +138,7 @@
       getBubbleRenderColors,
       getDynamicStrokeWidth,
       getCleanedPatchStyle,
+      buildSolidBackgroundBox,
       buildAheadTranslationOptions,
       compareOverlayViewportRects,
       passesKakaopageTargetGeometry,
@@ -1306,6 +1307,12 @@
     }).map((bubble) => {
       const topPx = (Number(bubble.y) / 100) * compositeHeight;
       const heightPx = (Number(bubble.h) / 100) * compositeHeight;
+      const mappedFillBox = mapKakaoStitchedPercentBox(
+        bubble.fill_box,
+        ownerTop,
+        ownerHeight,
+        compositeHeight
+      );
       return {
         ...bubble,
         cleaned_source_box: {
@@ -1316,6 +1323,7 @@
         },
         y: ((topPx - ownerTop) / ownerHeight) * 100,
         h: (heightPx / ownerHeight) * 100,
+        fill_box: mappedFillBox,
         polygon: Array.isArray(bubble.polygon)
           ? bubble.polygon.map((point) => ({
               x: Number(point && point.x),
@@ -1342,6 +1350,27 @@
     return {
       ...result,
       bubbles: deduped
+    };
+  }
+
+  function mapKakaoStitchedPercentBox(box, ownerTop, ownerHeight, compositeHeight) {
+    if (!box || typeof box !== "object") {
+      return null;
+    }
+    const x = Number(box.x);
+    const y = Number(box.y);
+    const w = Number(box.w);
+    const h = Number(box.h);
+    if (![x, y, w, h].every(Number.isFinite) || !(w > 0 && h > 0)) {
+      return null;
+    }
+    const topPx = (y / 100) * compositeHeight;
+    const heightPx = (h / 100) * compositeHeight;
+    return {
+      x,
+      y: ((topPx - ownerTop) / ownerHeight) * 100,
+      w,
+      h: (heightPx / ownerHeight) * 100
     };
   }
 
@@ -2210,7 +2239,8 @@
         w: Math.min(canvasWidth - boxX, w + paddingX * 2),
         h: Math.min(canvasHeight - boxY, h + paddingY * 2)
       };
-      const fillBox = getCanvasFillBox(bubble.fill_box, canvasWidth, canvasHeight) || box;
+      const sourceFillBox = getCanvasFillBox(bubble.fill_box, canvasWidth, canvasHeight);
+      const fillBox = unionRenderBoxes(box, sourceFillBox);
 
       if (bgType === "solid" && Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3) {
         ctx.save();
@@ -2258,6 +2288,25 @@
     const w = (Number(value.w) / 100) * canvasWidth;
     const h = (Number(value.h) / 100) * canvasHeight;
     return [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0 ? { x, y, w, h } : null;
+  }
+
+  function unionRenderBoxes(primary, secondary) {
+    if (!secondary) {
+      return primary;
+    }
+    if (!primary) {
+      return secondary;
+    }
+    const left = Math.min(primary.x, secondary.x);
+    const top = Math.min(primary.y, secondary.y);
+    const right = Math.max(primary.x + primary.w, secondary.x + secondary.w);
+    const bottom = Math.max(primary.y + primary.h, secondary.y + secondary.h);
+    return {
+      x: left,
+      y: top,
+      w: right - left,
+      h: bottom - top
+    };
   }
 
   function getEmbeddedPolygonGeometry(value, canvasWidth, canvasHeight) {
@@ -2523,7 +2572,9 @@
       renderColors.strokeColor
     );
     node.dataset.regionType = String(bubble.region_type || "plain_text");
-    const fillBox = bgType === "solid" ? normalizeFillBox(bubble.fill_box) : null;
+    const fillBox = bgType === "solid"
+      ? buildSolidBackgroundBox({ x, y, w, h }, bubble.fill_box)
+      : null;
     if (fillBox) {
       node.style.setProperty("--mt-fill-left", ((fillBox.x - x) / w) * 100 + "%");
       node.style.setProperty("--mt-fill-top", ((fillBox.y - y) / h) * 100 + "%");
@@ -4079,6 +4130,27 @@
       h: clamp(Number(value.h), 0, 100)
     };
     return box.w > 0 && box.h > 0 ? box : null;
+  }
+
+  function buildSolidBackgroundBox(textBox, fillBoxValue) {
+    const text = normalizeFillBox(textBox);
+    const fill = normalizeFillBox(fillBoxValue);
+    if (!text) {
+      return fill;
+    }
+    if (!fill) {
+      return text;
+    }
+    const left = Math.min(text.x, fill.x);
+    const top = Math.min(text.y, fill.y);
+    const right = Math.max(text.x + text.w, fill.x + fill.w);
+    const bottom = Math.max(text.y + text.h, fill.y + fill.h);
+    return {
+      x: left,
+      y: top,
+      w: right - left,
+      h: bottom - top
+    };
   }
 
   function getCleanedPatchStyle(sourceBox) {

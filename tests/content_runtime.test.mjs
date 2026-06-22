@@ -301,6 +301,45 @@ test("stitched OCR remaps polygon points into the owner image", () => {
   );
 });
 
+test("stitched OCR remaps the solid fill box into the owner image", () => {
+  const result = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [{
+        x: 10, y: 30, w: 20, h: 10,
+        fill_box: { x: 8, y: 28, w: 24, h: 14 },
+        original_text: "source",
+        translated_text: "translated",
+        bg_type: "solid"
+      }]
+    },
+    { stitch: { ownerTop: 200, ownerHeight: 400, compositeHeight: 800 } },
+    { getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
+    "fill-box-remap"
+  );
+
+  assert.equal(result.bubbles[0].fill_box.x, 8);
+  assert.ok(Math.abs(result.bubbles[0].fill_box.y - 6) < 1e-9);
+  assert.equal(result.bubbles[0].fill_box.w, 24);
+  assert.ok(Math.abs(result.bubbles[0].fill_box.h - 28) < 1e-9);
+});
+
+test("solid background covers both the original fill and translated text boxes", () => {
+  assert.deepEqual(
+    { ...runtime.__test.buildSolidBackgroundBox(
+      { x: 20, y: 20, w: 30, h: 20 },
+      { x: 10, y: 15, w: 25, h: 12 }
+    ) },
+    { x: 10, y: 15, w: 40, h: 25 }
+  );
+  assert.deepEqual(
+    { ...runtime.__test.buildSolidBackgroundBox(
+      { x: 20, y: 20, w: 30, h: 20 },
+      null
+    ) },
+    { x: 20, y: 20, w: 30, h: 20 }
+  );
+});
+
 test("cleaned image patch aligns the source OCR box inside an overlay bubble", () => {
   assert.deepEqual(
     { ...runtime.__test.getCleanedPatchStyle({ x: 40, y: 25, w: 20, h: 10 }) },

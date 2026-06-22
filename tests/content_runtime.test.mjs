@@ -203,6 +203,36 @@ test("Kakao page-level dedupe also removes a single-image fragment covered by a 
   assert.deepEqual(fragment.debug.items, []);
 });
 
+test("Kakao page-level dedupe removes long suffix-prefix overlap across neighboring images", () => {
+  const leading = runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 15, y: 82, w: 70, h: 24,
+        block_id: "boundary-leading",
+        original_text: "'산제물의 합참가'는 명의 지휘자와 그가 소환한 1개의 은쟁반으로",
+        translated_text: "「祭品的联合参加」是由一位著名的指挥家和他所召唤的一个银盘所构成的。"
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 2000, width: 600, height: 1000 }) },
+    "boundary-leading-page"
+  );
+  const trailing = runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 16, y: -18, w: 68, h: 25,
+        block_id: "boundary-trailing",
+        original_text: "명의 지휘자와 그가 소환한 1개의 은쟁반으로 미루머져 있다.",
+        translated_text: "据一位著名指挥家和他所召唤的一个银盘推断。"
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 3000, width: 600, height: 1000 }) },
+    "boundary-trailing-page"
+  );
+
+  assert.equal(leading.bubbles.length, 1);
+  assert.equal(trailing.bubbles.length, 0);
+});
+
 test("pretranslation mode defaults to manual", () => {
   assert.equal(runtime.__test.normalizePretranslateMode("ahead"), "ahead");
   assert.equal(runtime.__test.normalizePretranslateMode("continuous"), "continuous");

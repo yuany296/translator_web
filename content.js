@@ -1579,7 +1579,20 @@
     }
     const shorter = first.length <= second.length ? first : second;
     const longer = first.length > second.length ? first : second;
-    return textSimilarity(first, second) >= 0.82 || (shorter.length >= 3 && longer.includes(shorter));
+    return textSimilarity(first, second) >= 0.82 ||
+      (shorter.length >= 3 && longer.includes(shorter)) ||
+      hasSubstantialOcrBoundaryOverlap(first, second);
+  }
+
+  function hasSubstantialOcrBoundaryOverlap(first, second) {
+    const minimumLength = Math.max(6, Math.ceil(Math.min(first.length, second.length) * 0.55));
+    const maximumLength = Math.min(first.length, second.length);
+    for (let length = maximumLength; length >= minimumLength; length -= 1) {
+      if (first.endsWith(second.slice(0, length)) || second.endsWith(first.slice(0, length))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function removeSupersededKakaoGlobalEntry(entry) {

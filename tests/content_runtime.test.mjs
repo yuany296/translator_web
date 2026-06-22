@@ -124,6 +124,45 @@ test("global Kakao dedupe drops the same overlapping boundary text from a neighb
   assert.equal(second.bubbles.length, 0);
 });
 
+test("global Kakao dedupe replaces an earlier partial sentence with the later complete sentence", () => {
+  const first = runtime.__test.mapKakaoStitchedResult(
+    { bubbles: [{ x: 20, y: 48, w: 35, h: 10, original_text: "아물론", translated_text: "啊当然" }] },
+    {
+      stitch: {
+        ownerTop: 300,
+        ownerHeight: 600,
+        compositeHeight: 1200,
+        ownerPageRect: { left: 0, top: 0, width: 600, height: 600 }
+      }
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
+    "partial-owner"
+  );
+  const second = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [{
+        x: 18, y: 23, w: 55, h: 18,
+        original_text: "아물론이대로모든게끝나는건아닙니다",
+        translated_text: "啊当然一切不会就这样结束"
+      }]
+    },
+    {
+      stitch: {
+        ownerTop: 300,
+        ownerHeight: 600,
+        compositeHeight: 1200,
+        ownerPageRect: { left: 0, top: 300, width: 600, height: 600 }
+      }
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 300, width: 600, height: 600 }) },
+    "complete-owner"
+  );
+
+  assert.equal(first.bubbles.length, 0);
+  assert.equal(second.bubbles.length, 1);
+  assert.equal(second.bubbles[0].translated_text, "啊当然一切不会就这样结束");
+});
+
 test("pretranslation mode defaults to manual", () => {
   assert.equal(runtime.__test.normalizePretranslateMode("ahead"), "ahead");
   assert.equal(runtime.__test.normalizePretranslateMode("continuous"), "continuous");

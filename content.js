@@ -1346,7 +1346,7 @@
       ...bubble,
       global_box: buildKakaoGlobalBox(bubble, ownerPageRect)
     }));
-    const deduped = dedupeKakaoGlobalBubbles(withGlobalBoxes, targetRect, targetKey);
+    const deduped = dedupeKakaoGlobalBubbles(withGlobalBoxes, target, targetRect, targetKey);
     return {
       ...result,
       bubbles: deduped
@@ -1374,7 +1374,7 @@
     };
   }
 
-  function dedupeKakaoGlobalBubbles(bubbles, targetRect, targetKey) {
+  function dedupeKakaoGlobalBubbles(bubbles, target, targetRect, targetKey) {
     if (!targetRect || !targetKey) {
       return bubbles;
     }
@@ -1390,17 +1390,118 @@
         height: (Number(bubble.h) / 100) * targetRect.height
       };
       const text = normalizeOcrSimilarityText(bubble.original_text);
-      const duplicate = existing.concat(entries).some((entry) => {
-        const overlap = pageBoxIntersectionRatio(box, entry.box);
-        return overlap >= 0.58 && textSimilarity(text, entry.text) >= 0.82;
-      });
-      if (!duplicate) {
-        accepted.push(bubble);
-        entries.push({ box, text });
+      const translatedText = normalizeOcrSimilarityText(bubble.translated_text);
+      const duplicates = existing.concat(entries).filter((entry) =>
+        isKakaoGlobalDuplicateCandidate({ box, text, translatedText }, entry)
+      );
+      const completeness = Math.max(text.length, translatedText.length);
+      const strongestExisting = duplicates.reduce(
+        (best, entry) => !best || entry.completeness > best.completeness ? entry : best,
+        null
+      );
+      if (strongestExisting && strongestExisting.completeness >= completeness) {
+        continue;
       }
+      duplicates.forEach((entry) => removeSupersededKakaoGlobalEntry(entry));
+      accepted.push(bubble);
+      entries.push({
+        box,
+        text,
+        translatedText,
+        completeness,
+        target,
+        targetKey,
+        bubble,
+        bubbleContainer: accepted,
+        entryContainer: entries
+      });
     }
     state.kakaoGlobalOcrEntries.set(targetKey, entries);
     return accepted;
+  }
+
+  function isKakaoGlobalDuplicateCandidate(candidate, entry) {
+    if (!candidate || !entry || !candidate.box || !entry.box) {
+      return false;
+    }
+    const sourceRelated = areOcrTextsDuplicateOrContained(candidate.text, entry.text);
+    const translationRelated = areOcrTextsDuplicateOrContained(candidate.translatedText, entry.translatedText);
+    if (!sourceRelated && !translationRelated) {
+      return false;
+    }
+    const overlap = pageBoxIntersectionRatio(candidate.box, entry.box);
+    const leftCenterX = candidate.box.left + candidate.box.width / 2;
+    const rightCenterX = entry.box.left + entry.box.width / 2;
+    const horizontalOverlap = Math.max(
+      0,
+      Math.min(candidate.box.left + candidate.box.width, entry.box.left + entry.box.width) -
+        Math.max(candidate.box.left, entry.box.left)
+    );
+    const horizontalOverlapRatio = horizontalOverlap / Math.max(1, Math.min(candidate.box.width, entry.box.width));
+    const verticalGap = Math.max(
+      0,
+      Math.max(candidate.box.top, entry.box.top) -
+        Math.min(candidate.box.top + candidate.box.height, entry.box.top + entry.box.height)
+    );
+    const closeAcrossBoundary = verticalGap <= Math.max(candidate.box.height, entry.box.height) * 0.28 &&
+      (horizontalOverlapRatio >= 0.35 ||
+        Math.abs(leftCenterX - rightCenterX) <= Math.max(candidate.box.width, entry.box.width) * 0.35);
+    return overlap >= 0.08 || closeAcrossBoundary;
+  }
+
+  function areOcrTextsDuplicateOrContained(first, second) {
+    if (!first || !second) {
+      return false;
+    }
+    const shorter = first.length <= second.length ? first : second;
+    const longer = first.length > second.length ? first : second;
+    return textSimilarity(first, second) >= 0.82 || (shorter.length >= 3 && longer.includes(shorter));
+  }
+
+  function removeSupersededKakaoGlobalEntry(entry) {
+    if (!entry) {
+      return;
+    }
+    const ownerEntries = state.kakaoGlobalOcrEntries.get(entry.targetKey) || [];
+    state.kakaoGlobalOcrEntries.set(
+      entry.targetKey,
+      ownerEntries.filter((candidate) => candidate !== entry)
+    );
+    if (Array.isArray(entry.bubbleContainer)) {
+      const index = entry.bubbleContainer.indexOf(entry.bubble);
+      if (index >= 0) {
+        entry.bubbleContainer.splice(index, 1);
+      }
+    }
+    if (Array.isArray(entry.entryContainer)) {
+      const index = entry.entryContainer.indexOf(entry);
+      if (index >= 0) {
+        entry.entryContainer.splice(index, 1);
+      }
+    }
+
+    const cached = state.localResultCache.get(entry.targetKey);
+    if (!cached || !Array.isArray(cached.bubbles)) {
+      return;
+    }
+    const remaining = cached.bubbles.filter(
+      (bubble) => normalizeOcrSimilarityText(bubble.original_text) !== entry.text
+    );
+    if (remaining.length === cached.bubbles.length) {
+      return;
+    }
+    const nextResult = { ...cached, bubbles: remaining };
+    state.localResultCache.set(entry.targetKey, nextResult);
+    if (!entry.target || entry.target.isConnected === false) {
+      return;
+    }
+    if (shouldUseEmbeddedRender(entry.target)) {
+      restoreEmbeddedForTarget(entry.target);
+      entry.target.dataset.mtLastTranslatedKey = "";
+      queueTranslate(entry.target, { manual: true, force: true, reason: "kakao-cross-page-dedupe" });
+      return;
+    }
+    renderOverlay(entry.target, entry.targetKey, nextResult);
   }
 
   function buildKakaoGlobalBox(bubble, ownerPageRect) {

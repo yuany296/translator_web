@@ -277,6 +277,22 @@ test("a new content runtime takes ownership and removes stale extension UI", () 
   assert.match(contentSource, /delete target\.dataset\.mtNoTextKey/);
 });
 
+test("OCR capture and rendering are isolated from extension-owned overlays", () => {
+  assert.match(contentSource, /withOverlayLayerHidden[\s\S]*overlayLayer\.style\.visibility = "hidden"/);
+  assert.match(contentSource, /node\.closest\("\[data-manga-translator-overlay\]"\)/);
+  assert.match(contentSource, /mutationInsideOverlay[\s\S]*continue/);
+  assert.match(contentSource, /oldOverlay\.root\.remove\(\)/);
+  assert.match(contentSource, /source image changed during OCR/);
+});
+
+test("debug overlay exposes raw, deduped, duplicate, and block boxes", () => {
+  assert.match(contentSource, /name: "raw", items: debug\.rawItems/);
+  assert.match(contentSource, /name: "duplicate", items: debug\.duplicateItems/);
+  assert.match(contentSource, /name: "deduped", items: debug\.dedupedItems/);
+  assert.match(contentSource, /name: "block", items: debug\.finalBubbles/);
+  assert.match(contentSource, /node\.dataset\.blockId/);
+});
+
 test("ahead window contains the current image and the next six images", () => {
   const candidates = Array.from({ length: 12 }, (_, index) => ({
     index,

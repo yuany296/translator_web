@@ -523,14 +523,25 @@
     }
 
     let shouldRepairUi = false;
+    let sawExternalMutation = false;
     for (const mutation of mutations) {
+      const mutationInsideOverlay = mutation.target instanceof Element && mutation.target.closest("[data-manga-translator-overlay]");
+      if (mutationInsideOverlay) {
+        continue;
+      }
       if (mutation.type === "childList") {
         mutation.removedNodes.forEach((node) => {
           if (node === state.overlayLayer || node === state.floatingBallWrap) {
             shouldRepairUi = true;
           }
         });
-        mutation.addedNodes.forEach((node) => scanNode(node));
+        mutation.addedNodes.forEach((node) => {
+          if (node instanceof Element && node.closest("[data-manga-translator-overlay]")) {
+            return;
+          }
+          sawExternalMutation = true;
+          scanNode(node);
+        });
       }
 
       if (
@@ -539,6 +550,7 @@
           mutation.target instanceof HTMLCanvasElement ||
           isBackgroundImageTarget(mutation.target))
       ) {
+        sawExternalMutation = true;
         registerTarget(mutation.target);
       }
     }
@@ -546,7 +558,9 @@
     if (shouldRepairUi || !isExtensionUiMounted()) {
       ensureExtensionUiMounted();
     }
-    scheduleAheadPretranslation("mutation");
+    if (sawExternalMutation || shouldRepairUi) {
+      scheduleAheadPretranslation("mutation");
+    }
   }
 
   function scheduleAheadPretranslation(reason) {
@@ -946,6 +960,11 @@
           }
           result = normalizeResult(response.result);
         }
+        const expectedSourceImageId = String(renderPayload && renderPayload.sourceImageId || payload && payload.sourceImageId || "");
+        if (!target.isConnected || (expectedSourceImageId && getSourceImageIdForTarget(target) !== expectedSourceImageId)) {
+          clearRenderedTarget(target);
+          return { ok: false, skipped: true, reason: "source image changed during OCR" };
+        }
         rememberLocalResult(targetKey, result);
 
         console.debug("[MangaTranslator] Received", result.bubbles.length, "bubbles, translated:", result.bubbles.filter((b) => b.translated_text && b.translated_text !== b.original_text).length, "of", result.bubbles.length);
@@ -1058,6 +1077,7 @@
     let payload = null;
     if (isScreenshotCaptureMode()) {
       payload = await captureVisibleTargetPayload(target, null, buildScreenshotImageUrl(target));
+      payload = enrichPayloadForTarget(payload, target);
       rememberPayloadCache(cacheKey, payload);
       return payload;
     }
@@ -1073,11 +1093,69 @@
     }
 
     payload = await normalizeKakaopagePayload(target, payload);
+    payload = enrichPayloadForTarget(payload, target);
     if (shouldUseKakaoStitchedOcr(target, payload)) {
       payload = await buildKakaoStitchedPayload(target, payload);
     }
     rememberPayloadCache(cacheKey, payload);
     return payload;
+  }
+
+  function enrichPayloadForTarget(payload, target) {
+    if (!payload || !target) {
+      return payload;
+    }
+    const rect = target.getBoundingClientRect();
+    const sourceWidth = target instanceof HTMLImageElement
+      ? Number(target.naturalWidth || target.width || rect.width)
+      : target instanceof HTMLCanvasElement
+        ? Number(target.width || rect.width)
+        : Number(payload.width || rect.width);
+    const sourceHeight = target instanceof HTMLImageElement
+      ? Number(target.naturalHeight || target.height || rect.height)
+      : target instanceof HTMLCanvasElement
+        ? Number(target.height || rect.height)
+        : Number(payload.height || rect.height);
+    return {
+      ...payload,
+      sourceImageId: getSourceImageIdForTarget(target),
+      sourceWidth,
+      sourceHeight,
+      targetCssWidth: Number(rect.width || 0),
+      targetCssHeight: Number(rect.height || 0),
+      coordinateSpace: payload.source === "visible-tab-crop" ? "source-image-v1" : String(payload.coordinateSpace || "ocr-image-v1")
+    };
+  }
+
+  function getSourceImageIdForTarget(target) {
+    if (!target || typeof target.getBoundingClientRect !== "function") {
+      return "";
+    }
+    const rect = target.getBoundingClientRect();
+    const width = target instanceof HTMLImageElement
+      ? Number(target.naturalWidth || target.width || rect.width)
+      : target instanceof HTMLCanvasElement
+        ? Number(target.width || rect.width)
+        : Number(rect.width || 0);
+    const height = target instanceof HTMLImageElement
+      ? Number(target.naturalHeight || target.height || rect.height)
+      : target instanceof HTMLCanvasElement
+        ? Number(target.height || rect.height)
+        : Number(rect.height || 0);
+    const sourceToken = target instanceof HTMLCanvasElement
+      ? `canvas:${computeCanvasSignature(target)}`
+      : getQuickSourceToken(target);
+    return `image-${hashSourceIdentity(sourceToken)}|${Math.round(width)}x${Math.round(height)}`;
+  }
+
+  function hashSourceIdentity(value) {
+    const text = String(value || "");
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
   }
 
   function shouldUseKakaoStitchedOcr(target, payload) {
@@ -1910,7 +1988,7 @@
     renderOverlay(target, targetKey, result, {
       ...options,
       imageMeta: getPayloadImageMeta(payload),
-      displayRect: getPayloadDisplayRect(payload)
+      displayRect: payload && payload.coordinateSpace === "source-image-v1" ? null : getPayloadDisplayRect(payload)
     });
   }
 
@@ -2000,6 +2078,7 @@
     if (result && isDataUrl(result.cleanedImage)) {
       root.style.setProperty("--mt-cleaned-image", `url("${result.cleanedImage}")`);
     }
+    appendOcrDebugNodes(root, result);
 
     const bubbleNodes = [];
     const backgroundTarget = IS_PIXIV_COMIC_VIEWER && isBackgroundImageTarget(target);
@@ -2057,6 +2136,58 @@
         }, clearDelay);
       });
     }
+  }
+
+  function appendOcrDebugNodes(root, result) {
+    const debug = result && result.debug;
+    if (!debug || !root) {
+      return;
+    }
+    const stages = [
+      { name: "raw", items: debug.rawItems, className: "mt-debug-raw" },
+      { name: "duplicate", items: debug.duplicateItems, className: "mt-debug-duplicate" },
+      { name: "deduped", items: debug.dedupedItems, className: "mt-debug-deduped" },
+      { name: "block", items: debug.finalBubbles, className: "mt-debug-block" }
+    ];
+    stages.forEach((stage) => {
+      (Array.isArray(stage.items) ? stage.items : []).forEach((item, index) => {
+        const percent = getDebugItemPercent(item, debug);
+        if (!percent) {
+          return;
+        }
+        const node = document.createElement("div");
+        node.className = `mt-debug-box ${stage.className}`;
+        node.style.left = `${percent.x}%`;
+        node.style.top = `${percent.y}%`;
+        node.style.width = `${percent.w}%`;
+        node.style.height = `${percent.h}%`;
+        const blockId = String(item.blockId || item.block_id || item.id || `${stage.name}-${index}`);
+        const original = String(item.text || item.originalText || "").replace(/\s+/g, " ").slice(0, 28);
+        const translated = String(item.translatedText || item.translated_text || "").replace(/\s+/g, " ").slice(0, 28);
+        const duplicate = item.isDuplicate ? " duplicate" : "";
+        node.dataset.label = `${blockId}${duplicate}${original ? ` | ${original}` : ""}${translated ? ` → ${translated}` : ""}`;
+        node.dataset.mangaTranslatorOverlay = "true";
+        root.appendChild(node);
+      });
+    });
+  }
+
+  function getDebugItemPercent(item, debug) {
+    if (item && item.percent && [item.percent.x, item.percent.y, item.percent.w, item.percent.h].every((value) => Number.isFinite(Number(value)))) {
+      return item.percent;
+    }
+    const box = item && (item.rawBox || item.box);
+    const imageWidth = Math.max(1, Number(debug && debug.imageWidth) || 1);
+    const imageHeight = Math.max(1, Number(debug && debug.imageHeight) || 1);
+    if (!box || ![box.left, box.top, box.width, box.height].every((value) => Number.isFinite(Number(value)))) {
+      return null;
+    }
+    return {
+      x: (Number(box.left) / imageWidth) * 100,
+      y: (Number(box.top) / imageHeight) * 100,
+      w: (Number(box.width) / imageWidth) * 100,
+      h: (Number(box.height) / imageHeight) * 100
+    };
   }
 
   async function renderEmbeddedTranslation(target, targetKey, result, payload) {
@@ -2655,6 +2786,7 @@
     node.dataset.yPercent = String(y);
     node.dataset.backgroundTarget = options.backgroundTarget ? "true" : "";
     node.dataset.stitchOverflow = bubble.stitch_overflow === true ? "true" : "";
+    node.dataset.blockId = String(bubble.block_id || bubble.id || `block-${index}`);
     if (bgType === "none") {
       const sourceBox = normalizeFillBox(bubble.cleaned_source_box) || { x, y, w, h };
       const patchStyle = getCleanedPatchStyle(sourceBox);
@@ -4160,6 +4292,12 @@
       cropCssHeight: Number(displayRect && displayRect.height ? displayRect.height : payload.cssHeight || 0),
       devicePixelRatio: Number(payload.devicePixelRatio || window.devicePixelRatio || 1),
       source: String(payload.source || ""),
+      sourceImageId: String(payload.sourceImageId || ""),
+      sourceWidth: Number(payload.sourceWidth || 0),
+      sourceHeight: Number(payload.sourceHeight || 0),
+      targetCssWidth: Number(payload.targetCssWidth || 0),
+      targetCssHeight: Number(payload.targetCssHeight || 0),
+      coordinateSpace: String(payload.coordinateSpace || ""),
       stitch: payload.stitch || null
     };
   }
@@ -4236,6 +4374,7 @@
             polygon: normalizeBubblePolygon(bubble.polygon, bubble.stitch_overflow === true),
             rotation_deg: normalizeBubbleRotation(bubble.rotation_deg),
             source_line_count: Math.max(1, Math.round(Number(bubble.source_line_count) || 1)),
+            block_id: String(bubble.block_id || bubble.id || ""),
             stitch_overflow: bubble.stitch_overflow === true,
             original_text: cleanRenderableText(bubble.original_text || ""),
             translated_text: cleanRenderableText(bubble.translated_text || "")

@@ -15,6 +15,35 @@
   overflow: visible;
 }
 
+.mt-debug-box {
+  position: absolute;
+  z-index: 40;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 1px solid currentColor;
+  color: #00d5ff;
+  background: transparent;
+}
+
+.mt-debug-box::before {
+  content: attr(data-label);
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  max-width: 420px;
+  padding: 1px 3px;
+  overflow: hidden;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.78);
+  font: 10px/1.25 monospace;
+  white-space: nowrap;
+}
+
+.mt-debug-raw { color: #ff4d4f; }
+.mt-debug-duplicate { color: #f59e0b; border-style: dashed; }
+.mt-debug-deduped { color: #22c55e; }
+.mt-debug-block { color: #38bdf8; border-width: 2px; }
+
 .mt-overlay-root.mt-overlay-loading {
   display: flex;
   align-items: center;

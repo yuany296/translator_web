@@ -22,7 +22,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage };`,
+  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage };`,
   context,
   { filename: "background.js" }
 );
@@ -207,6 +207,116 @@ test("fragmented caption regions and unassigned words merge into complete paragr
   assert.equal(result[0].adaptiveBackground.type, "solid");
   assert.equal(result[1].adaptiveBackground.type, "solid");
   assert.equal(result[0].localOcrContainerId, "");
+});
+
+test("global OCR line dedupe keeps the strongest overlapping recognition", () => {
+  const debug = {};
+  const result = context.__backgroundTest.clusterLocalPaddleWords([
+    {
+      words: "같은 문장입니다",
+      confidence: 0.96,
+      location: { left: 100, top: 80, width: 220, height: 40 }
+    },
+    {
+      words: "같은문장입니다",
+      confidence: 0.72,
+      location: { left: 103, top: 81, width: 216, height: 39 }
+    }
+  ], { width: 760, height: 900 }, null, debug);
+
+  assert.equal(result.length, 1);
+  assert.equal(debug.dedupedItems.length, 1);
+  assert.equal(debug.duplicateItems.length, 1);
+  assert.equal(result[0].confidence, 0.96);
+});
+
+test("same-line merge accepts emphasis colors but rejects a title-sized fragment", () => {
+  const box = (left, top, width, height) => ({
+    left, top, width, height,
+    right: left + width,
+    bottom: top + height,
+    centerX: left + width / 2,
+    centerY: top + height / 2
+  });
+  const base = {
+    text: "강조",
+    rotation: 0,
+    container: null,
+    box: box(100, 100, 120, 40)
+  };
+  assert.equal(context.__backgroundTest.shouldMergeLocalPaddleSameLine(
+    { ...base, kind: "effectText", color: { redScore: 0.8 } },
+    { ...base, text: "문장", kind: "normalOutsideText", color: { redScore: 0 }, box: box(230, 102, 100, 38) }
+  ), true);
+  assert.equal(context.__backgroundTest.shouldMergeLocalPaddleSameLine(
+    base,
+    { ...base, text: "작은 본문", box: box(230, 112, 100, 20) }
+  ), false);
+});
+
+test("paragraph merge rejects large whitespace, title/body scale, remote columns, and Chinese overlays", () => {
+  const box = (left, top, width, height) => ({
+    left, top, width, height,
+    right: left + width,
+    bottom: top + height,
+    centerX: left + width / 2,
+    centerY: top + height / 2
+  });
+  const entry = (text) => ({ text, container: null });
+  const line = (text, left, top, width, height) => ({
+    text,
+    rotation: 0,
+    box: box(left, top, width, height),
+    entries: [entry(text)]
+  });
+  const first = line("첫 번째 줄", 100, 100, 300, 40);
+  assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(
+    first,
+    line("두 번째 줄", 110, 148, 285, 42)
+  ), true);
+  assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("먼 줄", 110, 210, 285, 42)), false);
+  assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("작은 본문", 110, 148, 285, 20)), false);
+  assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("오른쪽 글", 500, 148, 220, 40)), false);
+  assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("中文覆盖层", 110, 148, 285, 40)), false);
+});
+
+test("screenshot crop OCR coordinates accumulate in the original image space", () => {
+  const payload = context.__backgroundTest.collectSourceImageOcrPayload(
+    {
+      imageWidth: 400,
+      imageHeight: 300,
+      items: [{ text: "원문", score: 0.9, box: { left: 40, top: 30, width: 80, height: 60 } }]
+    },
+    { width: 400, height: 300 },
+    {
+      coordinateSpace: "source-image-v1",
+      sourceImageId: "image-a",
+      sourceWidth: 800,
+      sourceHeight: 1200,
+      targetCssWidth: 400,
+      targetCssHeight: 600,
+      cropCssX: 0,
+      cropCssY: 150,
+      cropCssWidth: 400,
+      cropCssHeight: 300,
+      stitch: null
+    }
+  );
+
+  assert.equal(payload.imageWidth, 800);
+  assert.equal(payload.imageHeight, 1200);
+  assert.deepEqual({ ...payload.items[0].box }, { left: 80, top: 360, width: 160, height: 120 });
+});
+
+test("block translation cache key depends on source image, normalized text, and bbox", () => {
+  const item = { original_text: " 같은 문장 ", rawBox: { left: 10, top: 20, width: 30, height: 40 } };
+  const first = context.__backgroundTest.buildBlockTranslationCacheKey("source-a", item, "model", "base");
+  const normalized = context.__backgroundTest.buildBlockTranslationCacheKey("source-a", { ...item, original_text: "같은문장" }, "model", "base");
+  const moved = context.__backgroundTest.buildBlockTranslationCacheKey("source-a", { ...item, rawBox: { left: 20, top: 20, width: 30, height: 40 } }, "model", "base");
+  const otherImage = context.__backgroundTest.buildBlockTranslationCacheKey("source-b", item, "model", "base");
+  assert.equal(first, normalized);
+  assert.notEqual(first, moved);
+  assert.notEqual(first, otherImage);
 });
 
 test("stitched OCR drops a completed cluster owned by the adjacent slice", async () => {

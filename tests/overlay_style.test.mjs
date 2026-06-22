@@ -31,3 +31,11 @@ test("译文框流式出现和悬停时保持固定位置", () => {
   assert.doesNotMatch(enterFrames, /transform\s*:/);
   assert.doesNotMatch(css, /\.mt-bubble:hover\s*\{/);
 });
+
+test("OCR 调试框不会参与页面命中测试", () => {
+  const css = readFileSync(path.resolve(projectRoot, "styles.css"), "utf8");
+  assert.match(css, /\.mt-debug-box\s*\{[\s\S]*?pointer-events:\s*none/);
+  assert.match(css, /\.mt-debug-raw/);
+  assert.match(css, /\.mt-debug-deduped/);
+  assert.match(css, /\.mt-debug-block/);
+});

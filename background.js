@@ -98,7 +98,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v8:";
+const CACHE_PREFIX = "mt_cache_v9:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -119,6 +119,7 @@ const LOCAL_OCR_BUBBLE_JOIN_GAP_RATIO = 1.65;
 const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
 const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
 const inflightTranslateByCacheKey = new Map();
+const ocrLinesBySourceImageId = new Map();
 const visibleTabCaptureCacheByWindow = new Map();
 let baiduAccessTokenCache = null;
 let baiduOcrQueue = Promise.resolve();
@@ -456,6 +457,9 @@ async function handleTranslateDataUrl(message, sender) {
   });
 
   let cached = await getCache(cacheKey);
+  if (settings.localOcrDebug) {
+    cached = null;
+  }
   if (
     cached &&
     settings.provider === PROVIDERS.localPaddleDeepSeek &&
@@ -855,10 +859,15 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
     debug: localOcrDebug,
     debugId
   });
-  const ocrDebug = createOcrDebugSession("local_paddle", imageSize, ocrTuning, {
+  ocrPayload = collectSourceImageOcrPayload(ocrPayload, imageSize, imageMeta);
+  const coordinateImageSize = {
+    width: Number(ocrPayload && ocrPayload.imageWidth) || imageSize.width,
+    height: Number(ocrPayload && ocrPayload.imageHeight) || imageSize.height
+  };
+  const ocrDebug = createOcrDebugSession("local_paddle", coordinateImageSize, ocrTuning, {
     rawItems: getLocalOcrPayloadItems(ocrPayload, true)
   });
-  let ocrItems = await buildLocalPaddleBubbleItems(ocrPayload, imageSize, dataUrl, localOcrDebug, {
+  let ocrItems = await buildLocalPaddleBubbleItems(ocrPayload, coordinateImageSize, imageMeta && imageMeta.coordinateSpace === "source-image-v1" ? "" : dataUrl, localOcrDebug, {
     apiKey: visionOcrOptions && visionOcrOptions.enabled ? visionOcrOptions.apiKey : "",
     baseUrl: visionOcrOptions && visionOcrOptions.enabled ? visionOcrOptions.baseUrl : "",
     model: visionOcrOptions && visionOcrOptions.enabled ? visionOcrOptions.model : ""
@@ -870,10 +879,10 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
     console.warn("[MangaTranslator][localPaddle] ocrItems is EMPTY! clustered returned nothing from buildLocalPaddleBubbleItems");
   }
 
-  let stepA = ocrItems.map((item, index) => normalizeBaiduOcrItem(item, index, imageSize));
+  let stepA = ocrItems.map((item, index) => normalizeBaiduOcrItem(item, index, coordinateImageSize));
   let nonNullA = stepA.filter(Boolean).length;
   let stepB = stepA.filter((item) => item && item.original_text);
-  let stepC = stepB.filter((item) => keepOrTraceFinalCandidate(item, imageSize, ocrTuning, ocrDebug, "local_paddle"));
+  let stepC = stepB.filter((item) => keepOrTraceFinalCandidate(item, coordinateImageSize, ocrTuning, ocrDebug, "local_paddle"));
   let stepD = stepC.filter((item) => !shouldDropSymbolOnlyBubble(item));
   let stepE = stepD.filter((item) => !shouldDropMeaninglessAlphabeticBubble(item));
   let stepF = stepE.filter((item) => {
@@ -885,7 +894,11 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
   let stepG = stepF.slice(0, MAX_BUBBLES);
   console.debug("[MangaTranslator][localPaddle] filter chain: raw:", ocrItems.length, "mapped:", stepA.length, "nonNull:", nonNullA, "hasText:", stepB.length, "keepFinal:", stepC.length, "!symbol:", stepD.length, "!meaningless:", stepE.length, "!ignoredZh:", stepF.length, "sliced:", stepG.length);
 
-  const candidates = coalesceOverlappingOcrCandidates(stepG);
+  const sourceImageId = String(imageMeta && imageMeta.sourceImageId || targetKey || "image");
+  const candidates = coalesceOverlappingOcrCandidates(stepG).map((item) => ({
+    ...item,
+    block_id: buildOcrBlockId(sourceImageId, item)
+  }));
 
   if (candidates.length === 0) {
     console.warn("[MangaTranslator][localPaddle] No candidates after filtering, returning empty bubbles", {stepA: stepA.length, stepB: stepB.length, stepC: stepC.length, stepD: stepD.length, stepE: stepE.length, stepF: stepF.length, stepG: stepG.length});
@@ -898,10 +911,15 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
     items: candidates,
     apiKey: translatorApiKey,
     baseUrl: translatorBaseUrl,
-    model: translatorModel
+    model: translatorModel,
+    sourceImageId
   });
 
   console.debug("[MangaTranslator][localPaddle] Translation result map size:", translated.size, "keys:", [...translated.keys()]);
+
+  candidates.forEach((item) => {
+    item.translated_text = cleanDecorativeSymbols(translated.get(item.id) || item.original_text);
+  });
 
   const bubbles = candidates.map((item) => {
     const translatedText = translated.get(item.id) || item.original_text;
@@ -922,6 +940,7 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
       polygon: item.polygon || null,
       rotation_deg: normalizeRotationDegrees(item.rotation_deg),
       source_line_count: Math.max(1, Number(item.source_line_count) || 1),
+      block_id: item.block_id,
       original_text: item.original_text,
       translated_text: cleanDecorativeSymbols(translatedText)
     };
@@ -940,6 +959,95 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
         }
       : {})
   };
+}
+
+function collectSourceImageOcrPayload(payload, cropImageSize, imageMeta) {
+  if (
+    !payload || !imageMeta || imageMeta.stitch || imageMeta.coordinateSpace !== "source-image-v1" ||
+    !imageMeta.sourceImageId || imageMeta.sourceWidth <= 0 || imageMeta.sourceHeight <= 0 ||
+    imageMeta.targetCssWidth <= 0 || imageMeta.targetCssHeight <= 0
+  ) {
+    return payload;
+  }
+  const mappedItems = getLocalOcrPayloadItems(payload).map((item) =>
+    mapOcrItemToSourceImageCoordinates(item, cropImageSize, imageMeta)
+  ).filter(Boolean);
+  const now = Date.now();
+  for (const [key, session] of ocrLinesBySourceImageId.entries()) {
+    if (!session || now - session.updatedAt > 10 * 60 * 1000) {
+      ocrLinesBySourceImageId.delete(key);
+    }
+  }
+  const existing = ocrLinesBySourceImageId.get(imageMeta.sourceImageId);
+  const items = [...(existing && existing.items || []), ...mappedItems].slice(-800);
+  ocrLinesBySourceImageId.set(imageMeta.sourceImageId, { items, updatedAt: now });
+  return {
+    ...payload,
+    items,
+    rawItems: items,
+    imageWidth: imageMeta.sourceWidth,
+    imageHeight: imageMeta.sourceHeight,
+    counts: {
+      ...(payload.counts || {}),
+      source_image_lines: items.length,
+      current_crop_lines: mappedItems.length
+    }
+  };
+}
+
+function mapOcrItemToSourceImageCoordinates(item, cropImageSize, imageMeta) {
+  const cropWidth = Math.max(1, Number(cropImageSize && cropImageSize.width) || 1);
+  const cropHeight = Math.max(1, Number(cropImageSize && cropImageSize.height) || 1);
+  const scaleX = imageMeta.cropCssWidth / cropWidth;
+  const scaleY = imageMeta.cropCssHeight / cropHeight;
+  const toSourcePoint = (x, y) => ({
+    x: ((imageMeta.cropCssX + Number(x) * scaleX) / imageMeta.targetCssWidth) * imageMeta.sourceWidth,
+    y: ((imageMeta.cropCssY + Number(y) * scaleY) / imageMeta.targetCssHeight) * imageMeta.sourceHeight
+  });
+  const box = normalizeDebugBox(item && (item.box || item.location));
+  if (!box) {
+    return null;
+  }
+  const topLeft = toSourcePoint(box.left, box.top);
+  const bottomRight = toSourcePoint(box.left + box.width, box.top + box.height);
+  const mapPolygon = (value) => Array.isArray(value) ? value.map((point) => {
+    const x = Array.isArray(point) ? point[0] : point && point.x;
+    const y = Array.isArray(point) ? point[1] : point && point.y;
+    const mapped = toSourcePoint(x, y);
+    return [mapped.x, mapped.y];
+  }) : null;
+  const regionBox = normalizeDebugBox(item && item.region_box);
+  let mappedRegionBox = null;
+  if (regionBox) {
+    const regionTopLeft = toSourcePoint(regionBox.left, regionBox.top);
+    const regionBottomRight = toSourcePoint(regionBox.left + regionBox.width, regionBox.top + regionBox.height);
+    mappedRegionBox = {
+      left: regionTopLeft.x,
+      top: regionTopLeft.y,
+      width: regionBottomRight.x - regionTopLeft.x,
+      height: regionBottomRight.y - regionTopLeft.y
+    };
+  }
+  return {
+    ...item,
+    region_id: item && item.region_id
+      ? `slice-${Math.round(imageMeta.cropCssX)}-${Math.round(imageMeta.cropCssY)}:${item.region_id}`
+      : "",
+    box: {
+      left: topLeft.x,
+      top: topLeft.y,
+      width: bottomRight.x - topLeft.x,
+      height: bottomRight.y - topLeft.y
+    },
+    polygon: mapPolygon(item && item.polygon),
+    region_polygon: mapPolygon(item && item.region_polygon),
+    region_box: mappedRegionBox
+  };
+}
+
+function buildOcrBlockId(sourceImageId, item) {
+  const bbox = [item.x, item.y, item.w, item.h].map((value) => Math.round(Number(value || 0) * 10) / 10).join(",");
+  return `block-${hashString(`${sourceImageId}|${normalizeTextForLocalPaddle(item.original_text)}|${bbox}`)}`;
 }
 
 async function requestLocalPaddleOcr({ dataUrl, baseUrl, lang, mode, params, debug, debugId }) {
@@ -1285,16 +1393,31 @@ function isUsableVisionCropOcrText(text) {
 }
 
 function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debug) {
-  const entries = words
+  const rawEntries = words
     .map((item, index) => buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, debug))
     .filter((entry) => entry && entry.kind !== "noise");
-  const clusters = buildLocalPaddleConnectedClusters(entries, imageSize);
+  const dedupeResult = dedupeLocalPaddleEntries(rawEntries);
+  const entries = dedupeResult.entries;
+  const lineGroups = buildLocalPaddleLineGroups(entries);
+  const paragraphGroups = buildLocalPaddleParagraphGroups(lineGroups);
+  const clusters = paragraphGroups.map((group) => group.flatMap((line) => line.entries));
   const merged = clusters
     .map((cluster) => mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis))
     .filter((item) => item && item.words && item.location)
     .sort(compareBaiduWordItems);
 
   if (debug) {
+    debug.dedupedItems = entries.map((entry, index) => toDebugOcrItem(entry.item, index, imageSize, "deduped"));
+    debug.lineItems = lineGroups.map((line, index) => toDebugOcrItem({
+      words: line.text,
+      confidence: line.confidence,
+      location: line.box
+    }, index, imageSize, "line"));
+    debug.duplicateItems = dedupeResult.duplicates.map((duplicate, index) => ({
+      ...toDebugOcrItem(duplicate.entry.item, index, imageSize, "duplicate"),
+      duplicateOf: duplicate.kept.text,
+      isDuplicate: true
+    }));
     console.debug("[MangaTranslator] Local OCR clustering:", {
       containers: [...new Map(entries.filter((entry) => entry.container).map((entry) => [entry.container.id, entry.container])).values()],
       entries: entries.map((entry) => ({
@@ -1309,6 +1432,216 @@ function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debug) {
   }
 
   return merged;
+}
+
+function dedupeLocalPaddleEntries(entries) {
+  const kept = [];
+  const duplicates = [];
+  [...entries]
+    .sort((left, right) => getLocalPaddleEntryQuality(right) - getLocalPaddleEntryQuality(left))
+    .forEach((entry) => {
+      const duplicate = kept.find((candidate) => areDuplicateLocalPaddleEntries(entry, candidate));
+      if (duplicate) {
+        duplicates.push({ entry, kept: duplicate });
+      } else {
+        kept.push(entry);
+      }
+    });
+  return {
+    entries: kept.sort((left, right) => left.box.top - right.box.top || left.box.left - right.box.left),
+    duplicates
+  };
+}
+
+function areDuplicateLocalPaddleEntries(left, right) {
+  if (!left || !right || !left.box || !right.box) {
+    return false;
+  }
+  const similarity = normalizedTextSimilarity(left.text, right.text);
+  if (similarity < 0.82) {
+    return false;
+  }
+  const iou = localPaddleBoxIou(left.box, right.box);
+  if (iou > 0.5) {
+    return true;
+  }
+  const avgHeight = Math.max(1, (left.box.height + right.box.height) / 2);
+  const heightRatio = Math.min(left.box.height, right.box.height) / Math.max(left.box.height, right.box.height);
+  const centerDistance = Math.hypot(left.box.centerX - right.box.centerX, left.box.centerY - right.box.centerY);
+  return similarity >= 0.88 && heightRatio >= 0.72 && centerDistance <= avgHeight * 0.55;
+}
+
+function getLocalPaddleEntryQuality(entry) {
+  const confidence = Number(entry && entry.item && entry.item.confidence) || 0;
+  const completeness = normalizeTextForLocalPaddle(entry && entry.text).length;
+  const area = entry && entry.box ? entry.box.width * entry.box.height : 0;
+  return confidence * 1000000 + completeness * 1000 + Math.min(area, 999);
+}
+
+function normalizedTextSimilarity(left, right) {
+  const first = normalizeTextForLocalPaddle(left);
+  const second = normalizeTextForLocalPaddle(right);
+  if (first === second) {
+    return first ? 1 : 0;
+  }
+  if (!first || !second) {
+    return 0;
+  }
+  let previous = Array.from({ length: second.length + 1 }, (_, index) => index);
+  for (let firstIndex = 1; firstIndex <= first.length; firstIndex += 1) {
+    const current = [firstIndex];
+    for (let secondIndex = 1; secondIndex <= second.length; secondIndex += 1) {
+      current.push(Math.min(
+        current[secondIndex - 1] + 1,
+        previous[secondIndex] + 1,
+        previous[secondIndex - 1] + (first[firstIndex - 1] === second[secondIndex - 1] ? 0 : 1)
+      ));
+    }
+    previous = current;
+  }
+  return 1 - previous[previous.length - 1] / Math.max(first.length, second.length);
+}
+
+function normalizeTextForLocalPaddle(value) {
+  return String(value || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function localPaddleBoxIou(left, right) {
+  const overlapWidth = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
+  const overlapHeight = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
+  const intersection = overlapWidth * overlapHeight;
+  const union = left.width * left.height + right.width * right.height - intersection;
+  return intersection / Math.max(1, union);
+}
+
+function buildLocalPaddleLineGroups(entries) {
+  return buildConnectedLocalPaddleGroups(entries, shouldMergeLocalPaddleSameLine)
+    .map(buildLocalPaddleLineGroup)
+    .sort((left, right) => left.box.top - right.box.top || left.box.left - right.box.left);
+}
+
+function buildConnectedLocalPaddleGroups(items, predicate) {
+  const groups = [];
+  const visited = new Set();
+  items.forEach((item, index) => {
+    if (visited.has(index)) {
+      return;
+    }
+    const group = [];
+    const queue = [index];
+    visited.add(index);
+    while (queue.length > 0) {
+      const currentIndex = queue.shift();
+      const current = items[currentIndex];
+      group.push(current);
+      items.forEach((candidate, candidateIndex) => {
+        if (!visited.has(candidateIndex) && predicate(current, candidate)) {
+          visited.add(candidateIndex);
+          queue.push(candidateIndex);
+        }
+      });
+    }
+    groups.push(group);
+  });
+  return groups;
+}
+
+function shouldMergeLocalPaddleSameLine(left, right) {
+  if (!left || !right || rotationDistance(left.rotation, right.rotation) > 18) {
+    return false;
+  }
+  if (!areLocalPaddleRegionsCompatible(left, right) || !areLocalPaddleScriptsCompatible(left.text, right.text)) {
+    return false;
+  }
+  const heightRatio = Math.min(left.box.height, right.box.height) / Math.max(left.box.height, right.box.height);
+  if (heightRatio < 0.65) {
+    return false;
+  }
+  const avgHeight = Math.max(1, (left.box.height + right.box.height) / 2);
+  const verticalOverlap = Math.min(left.box.bottom, right.box.bottom) - Math.max(left.box.top, right.box.top);
+  const baselineDistance = Math.abs(left.box.bottom - right.box.bottom);
+  return (
+    verticalOverlap >= Math.min(left.box.height, right.box.height) * 0.5 &&
+    baselineDistance <= avgHeight * 0.35 &&
+    getHorizontalGap(left.box, right.box) < avgHeight * 1.2
+  );
+}
+
+function buildLocalPaddleLineGroup(entries) {
+  const sorted = [...entries].sort((left, right) => left.box.left - right.box.left);
+  const box = sorted.map((entry) => entry.box).reduce(unionLocalPaddleBoxes);
+  return {
+    entries: sorted,
+    box,
+    text: sorted.map((entry) => String(entry.item && entry.item.words || entry.text || "").trim()).filter(Boolean).join(" "),
+    rotation: medianRotation(sorted.map((entry) => entry.rotation)),
+    confidence: Math.max(...sorted.map((entry) => Number(entry.item && entry.item.confidence) || 0))
+  };
+}
+
+function buildLocalPaddleParagraphGroups(lines) {
+  return buildConnectedLocalPaddleGroups(lines, shouldMergeLocalPaddleParagraphLines);
+}
+
+function shouldMergeLocalPaddleParagraphLines(left, right) {
+  if (!left || !right || rotationDistance(left.rotation, right.rotation) > 18) {
+    return false;
+  }
+  if (!areLocalPaddleLineRegionsCompatible(left, right) || !areLocalPaddleScriptsCompatible(left.text, right.text)) {
+    return false;
+  }
+  const heightRatio = Math.min(left.box.height, right.box.height) / Math.max(left.box.height, right.box.height);
+  if (heightRatio < 0.65) {
+    return false;
+  }
+  const avgHeight = Math.max(1, (left.box.height + right.box.height) / 2);
+  const verticalGap = getVerticalGap(left.box, right.box);
+  if (verticalGap >= avgHeight * 1.2) {
+    return false;
+  }
+  const overlapX = Math.max(0, Math.min(left.box.right, right.box.right) - Math.max(left.box.left, right.box.left));
+  const overlapRatio = overlapX / Math.max(1, Math.min(left.box.width, right.box.width));
+  const centerClose = Math.abs(left.box.centerX - right.box.centerX) <= Math.max(left.box.width, right.box.width) * 0.35;
+  if (!centerClose && overlapRatio <= 0.35) {
+    return false;
+  }
+  const widthRatio = Math.min(left.box.width, right.box.width) / Math.max(left.box.width, right.box.width);
+  const leftAligned = Math.abs(left.box.left - right.box.left) <= avgHeight * 2.2;
+  const rightAligned = Math.abs(left.box.right - right.box.right) <= avgHeight * 2.2;
+  return widthRatio >= 0.35 || leftAligned || rightAligned || centerClose;
+}
+
+function areLocalPaddleRegionsCompatible(left, right) {
+  const leftContainer = left && left.container;
+  const rightContainer = right && right.container;
+  if (!leftContainer || !rightContainer) {
+    return true;
+  }
+  if (leftContainer.type === "caption_panel" && rightContainer.type === "caption_panel") {
+    return true;
+  }
+  return leftContainer.id === rightContainer.id;
+}
+
+function areLocalPaddleLineRegionsCompatible(left, right) {
+  return left.entries.some((leftEntry) => right.entries.some((rightEntry) => areLocalPaddleRegionsCompatible(leftEntry, rightEntry)));
+}
+
+function areLocalPaddleScriptsCompatible(leftText, rightText) {
+  const leftHangul = /[\uac00-\ud7af]/.test(leftText);
+  const rightHangul = /[\uac00-\ud7af]/.test(rightText);
+  const leftHan = /[\u3400-\u9fff]/.test(leftText);
+  const rightHan = /[\u3400-\u9fff]/.test(rightText);
+  return !((leftHangul && rightHan && !rightHangul) || (rightHangul && leftHan && !leftHangul));
+}
+
+function unionLocalPaddleBoxes(left, right) {
+  return buildBaiduBox(
+    Math.min(left.left, right.left),
+    Math.min(left.top, right.top),
+    Math.max(left.right, right.right),
+    Math.max(left.bottom, right.bottom)
+  );
 }
 
 function buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, debug) {
@@ -2053,6 +2386,12 @@ function normalizeImageMeta(value) {
     cropCssHeight: toNumber(value.cropCssHeight, 0),
     devicePixelRatio: toNumber(value.devicePixelRatio, 1),
     source: String(value.source || ""),
+    sourceImageId: String(value.sourceImageId || ""),
+    sourceWidth: toNumber(value.sourceWidth, 0),
+    sourceHeight: toNumber(value.sourceHeight, 0),
+    targetCssWidth: toNumber(value.targetCssWidth, 0),
+    targetCssHeight: toNumber(value.targetCssHeight, 0),
+    coordinateSpace: String(value.coordinateSpace || ""),
     stitch: normalizeStitchMeta(value.stitch)
   };
   return meta.width > 0 || meta.height > 0 || meta.cropCssWidth > 0 ? meta : null;
@@ -2150,7 +2489,10 @@ function createOcrDebugSession(engine, imageSize, tuning, extras = {}) {
     params: { ...getDefaultOcrTuning(), ...(tuning || {}) },
     rawItems: Array.isArray(extras.rawItems) ? extras.rawItems : [],
     filteredItems: [],
+    dedupedItems: [],
+    lineItems: [],
     mergedItems: [],
+    duplicateItems: [],
     finalBubbles: [],
     filterReasons: []
   };
@@ -2340,12 +2682,14 @@ function boxToPercent(box, imageSize) {
 function buildUnifiedOcrDebugPayload(debug, candidates, extras = {}) {
   const finalBubbles = (candidates || []).map((item) => ({
     id: item.id,
+    blockId: item.block_id || item.id,
     text: item.original_text,
     confidence: item.confidence || 0,
     rawBox: item.rawBox || null,
     box: item.rawBox || null,
     percent: { x: item.x, y: item.y, w: item.w, h: item.h },
-    translatedText: item.translated_text || ""
+    translatedText: item.translated_text || "",
+    isDuplicate: false
   }));
   if (debug) {
     debug.finalBubbles = finalBubbles;
@@ -2972,7 +3316,23 @@ function normalizePercentPolygon(value, imageSize) {
   });
 }
 
-async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl, model }) {
+async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl, model, sourceImageId = "" }) {
+  const result = new Map();
+  const cacheKeys = new Map();
+  const uncachedItems = [];
+  for (const item of items) {
+    const cacheKey = buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl);
+    cacheKeys.set(item.id, cacheKey);
+    const cached = await getCache(cacheKey);
+    if (cached && typeof cached.translatedText === "string" && cached.translatedText.trim()) {
+      result.set(item.id, cached.translatedText.trim());
+    } else {
+      uncachedItems.push(item);
+    }
+  }
+  if (uncachedItems.length === 0) {
+    return result;
+  }
   const endpoint = buildOpenAICompatibleEndpoint(baseUrl || DEFAULT_TRANSLATION_BASE_URL);
   const body = {
     model: model || DEFAULT_MODELS[PROVIDERS.baiduDeepSeek],
@@ -2985,7 +3345,7 @@ async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl,
       },
       {
         role: "user",
-        content: buildOpenAICompatibleTranslationPrompt(items)
+        content: buildOpenAICompatibleTranslationPrompt(uncachedItems)
       }
     ],
     response_format: { type: "json_object" }
@@ -3001,17 +3361,34 @@ async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl,
   const text = extractOpenAIMessageText(payload).trim();
   const parsed = parseModelJson(text);
   const rows = parsed && Array.isArray(parsed.translations) ? parsed.translations : [];
-  const result = new Map();
-
-  rows.forEach((row) => {
+  for (const row of rows) {
     const id = String(row && row.id ? row.id : "").trim();
     const translatedText = String(row && row.translated_text ? row.translated_text : "").trim();
     if (id && translatedText) {
       result.set(id, translatedText);
+      const cacheKey = cacheKeys.get(id);
+      if (cacheKey) {
+        await setCache(cacheKey, { translatedText });
+      }
     }
-  });
+  }
 
   return result;
+}
+
+function buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl) {
+  const text = normalizeTextForLocalPaddle(item && item.original_text);
+  const box = item && item.rawBox ? item.rawBox : item || {};
+  const bbox = [box.left ?? box.x, box.top ?? box.y, box.width ?? box.w, box.height ?? box.h]
+    .map((value) => Math.round(Number(value || 0) * 10) / 10)
+    .join(",");
+  return `${CACHE_PREFIX}block:${hashString([
+    sourceImageId || "unknown-image",
+    text,
+    bbox,
+    model || "",
+    baseUrl || ""
+  ].join("|"))}`;
 }
 
 async function sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body) {

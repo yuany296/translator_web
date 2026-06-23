@@ -131,6 +131,7 @@
       buildKakaoStitchWindowPlan,
       isVerifiedKakaoStitchNeighbor,
       shouldFallbackFromKakaoStitch,
+      normalizeDebugCoordinateItems,
       normalizePretranslateMode,
       textSimilarity,
       formatTranslationForOriginalLines,
@@ -143,6 +144,7 @@
       buildAheadTranslationOptions,
       compareOverlayViewportRects,
       getOverlayVisibilityRect,
+      syncOverlayPosition,
       passesKakaopageTargetGeometry,
       hasUsableKakaoStripCaptureRect,
       selectPendingAheadCandidates,
@@ -1174,7 +1176,7 @@
   }
 
   async function buildKakaoStitchedPayload(target, ownerPayload) {
-    const ordered = collectKakaopageManualTargetCandidates(true).filter(
+    const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
       (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
     );
     const ownerIndex = ordered.indexOf(target);
@@ -1229,9 +1231,55 @@
     if (previousSlice <= 0 && nextSlice <= 0) {
       return ownerPayload;
     }
+    const compositeWidth = canonicalWidth;
+    const compositeHeight = previousSlice + ownerHeight + nextSlice;
+
+    const ownerEntry = {
+      source: "owner",
+      targetKey: computeTargetKey(target),
+      src: getQuickSourceToken(target),
+      drawRect: { x: 0, y: previousSlice, w: canonicalWidth, h: ownerHeight },
+      sourceCrop: { x: 0, y: 0, w: ownerImage.naturalWidth || ownerImage.width, h: ownerImage.naturalHeight || ownerImage.height },
+      naturalWidth: ownerImage.naturalWidth || ownerImage.width,
+      naturalHeight: ownerImage.naturalHeight || ownerImage.height
+    };
+
+    let previousEntry = null;
+    if (previousTarget && previousImage && previousSlice > 0) {
+      const prevNatW = previousImage.naturalWidth || previousImage.width;
+      const prevNatH = previousImage.naturalHeight || previousImage.height;
+      const sourceCropHeight = prevNatH * (previousSlice / Math.max(1, previousHeight));
+      previousEntry = {
+        source: "previous",
+        targetKey: computeTargetKey(previousTarget),
+        src: getQuickSourceToken(previousTarget),
+        drawRect: { x: 0, y: 0, w: canonicalWidth, h: previousSlice },
+        sourceCrop: { x: 0, y: prevNatH - sourceCropHeight, w: prevNatW, h: sourceCropHeight },
+        naturalWidth: prevNatW,
+        naturalHeight: prevNatH
+      };
+    }
+
+    let nextEntry = null;
+    if (nextTarget && nextImage && nextSlice > 0) {
+      const nextNatW = nextImage.naturalWidth || nextImage.width;
+      const nextNatH = nextImage.naturalHeight || nextImage.height;
+      const sourceCropHeight = nextNatH * (nextSlice / Math.max(1, nextHeight));
+      nextEntry = {
+        source: "next",
+        targetKey: computeTargetKey(nextTarget),
+        src: getQuickSourceToken(nextTarget),
+        drawRect: { x: 0, y: previousSlice + ownerHeight, w: canonicalWidth, h: nextSlice },
+        sourceCrop: { x: 0, y: 0, w: nextNatW, h: sourceCropHeight },
+        naturalWidth: nextNatW,
+        naturalHeight: nextNatH
+      };
+    }
+    const segments = [previousEntry, ownerEntry, nextEntry].filter(Boolean);
+
     const canvas = document.createElement("canvas");
     canvas.width = canonicalWidth;
-    canvas.height = previousSlice + ownerHeight + nextSlice;
+    canvas.height = compositeHeight;
     const context = canvas.getContext("2d");
     if (!context) {
       return ownerPayload;
@@ -1257,20 +1305,24 @@
       dataUrl: canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY),
       imageUrl: `kakao-stitch:${sourceKeys.join("|")}`,
       width: canonicalWidth,
-      height: canvas.height,
+      height: compositeHeight,
       stitchKey: `${computeTargetKey(target)}|stitch:${previousSlice}:${nextSlice}|${sourceKeys.join("|")}`,
       singleImagePayload: ownerPayload,
       stitch: {
         ownerTop: previousSlice,
         ownerHeight,
-        compositeWidth: canonicalWidth,
-        compositeHeight: canvas.height,
+        compositeWidth,
+        compositeHeight,
         previousSlice,
         nextSlice,
         sourceKeys,
         verified: true,
         coordinateSpace: "page-css-v1",
-        ownerPageRect: plan.ownerPageRect
+        ownerPageRect: plan.ownerPageRect,
+        owner: ownerEntry,
+        previous: previousEntry,
+        next: nextEntry,
+        segments
       }
     };
   }
@@ -1300,18 +1352,41 @@
     if (!owner || !candidate || !candidate.sourceKey || candidate.sourceKey === owner.sourceKey) {
       return false;
     }
+    if (!(candidate.height >= 40)) {
+      return false;
+    }
     const widthRatio = Math.min(owner.width, candidate.width) / Math.max(owner.width, candidate.width);
+    if (widthRatio < KAKAO_STITCH_MIN_WIDTH_RATIO) {
+      return false;
+    }
     const ownerCenter = owner.left + owner.width / 2;
     const candidateCenter = candidate.left + candidate.width / 2;
     const centerDelta = Math.abs(ownerCenter - candidateCenter);
-    const seamGap = direction === "previous" ? owner.top - candidate.bottom : candidate.top - owner.bottom;
-    const ordered = direction === "previous" ? candidate.top < owner.top : candidate.top > owner.top;
-    return (
-      ordered &&
-      widthRatio >= KAKAO_STITCH_MIN_WIDTH_RATIO &&
-      centerDelta <= Math.max(owner.width, candidate.width) * 0.12 &&
-      Math.abs(seamGap) <= KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX
-    );
+    if (centerDelta > Math.max(owner.width, candidate.width) * 0.12) {
+      return false;
+    }
+
+    const scrollY = window.scrollY || 0;
+    const ownerVisualTop = owner.top + scrollY;
+    const ownerVisualBottom = owner.bottom + scrollY;
+    const candidateVisualTop = candidate.top + scrollY;
+    const candidateVisualBottom = candidate.bottom + scrollY;
+
+    if (direction === "previous") {
+      if (!(candidateVisualTop < ownerVisualTop)) return false;
+      if (candidateVisualBottom > ownerVisualTop + 24) return false;
+    } else {
+      if (!(candidateVisualTop > ownerVisualTop)) return false;
+      if (candidateVisualTop < ownerVisualBottom - 24) return false;
+    }
+
+    const seamGap = direction === "previous"
+      ? ownerVisualTop - candidateVisualBottom
+      : candidateVisualTop - ownerVisualBottom;
+    if (seamGap < -16) {
+      return false;
+    }
+    return Math.abs(seamGap) <= KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX;
   }
 
   function buildKakaoStitchWindowPlan({ owner, previous, next, canonicalWidth, ownerHeight, previousHeight, nextHeight }) {
@@ -1382,46 +1457,71 @@
     }
     const ownerTop = Number(payload.stitch.ownerTop) || 0;
     const ownerHeight = Math.max(1, Number(payload.stitch.ownerHeight) || 1);
+    const compositeWidth = Math.max(1, Number(payload.stitch.compositeWidth) || Number(payload.width) || 1);
     const compositeHeight = Math.max(1, Number(payload.stitch.compositeHeight) || Number(payload.height) || 1);
+    const ownerDraw = payload.stitch.owner && payload.stitch.owner.drawRect
+      ? payload.stitch.owner.drawRect
+      : { x: 0, y: ownerTop, w: compositeWidth, h: ownerHeight };
+    const segments = normalizeKakaoStitchSegments(payload.stitch, compositeWidth, compositeHeight, ownerDraw);
     const targetRect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
-    const mapped = result.bubbles.filter((bubble) => {
-      const centerPx = ((Number(bubble.y) + Number(bubble.h) / 2) / 100) * compositeHeight;
-      return centerPx >= ownerTop && centerPx < ownerTop + ownerHeight;
-    }).map((bubble) => {
-      const topPx = (Number(bubble.y) / 100) * compositeHeight;
-      const heightPx = (Number(bubble.h) / 100) * compositeHeight;
+    const mapped = result.bubbles.map((bubble) => {
+      const bx = Number(bubble.x);
+      const by = Number(bubble.y);
+      const bw = Number(bubble.w);
+      const bh = Number(bubble.h);
+      if (![bx, by, bw, bh].every(Number.isFinite) || bw <= 0 || bh <= 0) {
+        return null;
+      }
+      const bubbleRect = {
+        x: (bx / 100) * compositeWidth,
+        y: (by / 100) * compositeHeight,
+        w: (bw / 100) * compositeWidth,
+        h: (bh / 100) * compositeHeight
+      };
+      const ownerMatch = getKakaoStitchOwnerOverlap(bubbleRect, segments);
+      if (!ownerMatch) {
+        return null;
+      }
       const mappedFillBox = mapKakaoStitchedPercentBox(
         bubble.fill_box,
-        ownerTop,
-        ownerHeight,
+        ownerDraw.y,
+        ownerDraw.h,
         compositeHeight
       );
+      const clippedLeft = Math.max(bubbleRect.x, ownerDraw.x);
+      const clippedTop = Math.max(bubbleRect.y, ownerDraw.y);
+      const clippedRight = Math.min(bubbleRect.x + bubbleRect.w, ownerDraw.x + ownerDraw.w);
+      const clippedBottom = Math.min(bubbleRect.y + bubbleRect.h, ownerDraw.y + ownerDraw.h);
+      const clippedW = Math.max(0, clippedRight - clippedLeft);
+      const clippedH = Math.max(0, clippedBottom - clippedTop);
       return {
         ...bubble,
         cleaned_source_box: {
-          x: Number(bubble.x),
-          y: Number(bubble.y),
-          w: Number(bubble.w),
-          h: Number(bubble.h)
+          x: bx,
+          y: by,
+          w: bw,
+          h: bh
         },
-        y: ((topPx - ownerTop) / ownerHeight) * 100,
-        h: (heightPx / ownerHeight) * 100,
+        x: ((clippedLeft - ownerDraw.x) / ownerDraw.w) * 100,
+        y: ((clippedTop - ownerDraw.y) / ownerDraw.h) * 100,
+        w: (clippedW / ownerDraw.w) * 100,
+        h: (clippedH / ownerDraw.h) * 100,
         fill_box: mappedFillBox,
         polygon: Array.isArray(bubble.polygon)
           ? bubble.polygon.map((point) => ({
               x: Number(point && point.x),
-              y: (((Number(point && point.y) / 100) * compositeHeight - ownerTop) / ownerHeight) * 100
+              y: (((Number(point && point.y) / 100) * compositeHeight - ownerDraw.y) / ownerDraw.h) * 100
             }))
           : null,
         region_polygon: Array.isArray(bubble.region_polygon)
           ? bubble.region_polygon.map((point) => ({
               x: Number(point && point.x),
-              y: (((Number(point && point.y) / 100) * compositeHeight - ownerTop) / ownerHeight) * 100
+              y: (((Number(point && point.y) / 100) * compositeHeight - ownerDraw.y) / ownerDraw.h) * 100
             }))
           : null,
         stitch_overflow: true
       };
-    });
+    }).filter(Boolean);
     const ownerPageRect = payload.stitch.ownerPageRect && typeof payload.stitch.ownerPageRect === "object"
       ? payload.stitch.ownerPageRect
       : null;
@@ -1432,7 +1532,151 @@
     const deduped = dedupeKakaoGlobalBubbles(withGlobalBoxes, target, targetRect, targetKey);
     return {
       ...result,
-      bubbles: deduped
+      bubbles: deduped,
+      debug: normalizeKakaoStitchDebugCoordinates(result.debug, payload.stitch)
+    };
+  }
+
+  function normalizeKakaoStitchSegments(stitch, compositeWidth, compositeHeight, ownerDraw) {
+    const rawSegments = Array.isArray(stitch && stitch.segments) ? stitch.segments : [];
+    const segments = rawSegments
+      .filter((segment) => segment && segment.drawRect)
+      .map((segment) => ({
+        ...segment,
+        drawRect: normalizeRectLike(segment.drawRect)
+      }))
+      .filter((segment) => segment.drawRect && segment.drawRect.w > 0 && segment.drawRect.h > 0);
+    if (segments.length > 0) {
+      return segments;
+    }
+    const previousSlice = Math.max(0, Number(stitch && stitch.previousSlice) || 0);
+    const nextSlice = Math.max(0, Number(stitch && stitch.nextSlice) || 0);
+    const owner = normalizeRectLike(ownerDraw) || {
+      x: 0,
+      y: previousSlice,
+      w: compositeWidth,
+      h: Math.max(1, compositeHeight - previousSlice - nextSlice)
+    };
+    const fallback = [];
+    if (previousSlice > 0) {
+      fallback.push({ source: "previous", drawRect: { x: 0, y: 0, w: compositeWidth, h: previousSlice } });
+    }
+    fallback.push({ source: "owner", drawRect: owner });
+    if (nextSlice > 0) {
+      fallback.push({ source: "next", drawRect: { x: 0, y: owner.y + owner.h, w: compositeWidth, h: nextSlice } });
+    }
+    return fallback;
+  }
+
+  function normalizeRectLike(rect) {
+    if (!rect || typeof rect !== "object") return null;
+    const x = Number(rect.x);
+    const y = Number(rect.y);
+    const w = Number(rect.w || rect.width);
+    const h = Number(rect.h || rect.height);
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
+      return null;
+    }
+    return { x, y, w, h };
+  }
+
+  function getKakaoStitchOwnerOverlap(bubbleRect, segments) {
+    if (!bubbleRect || !Array.isArray(segments) || segments.length === 0) {
+      return null;
+    }
+    const area = Math.max(1, bubbleRect.w * bubbleRect.h);
+    const ranked = segments
+      .map((segment) => {
+        const rect = segment && segment.drawRect;
+        if (!rect) return { segment, ratio: 0 };
+        const left = Math.max(bubbleRect.x, rect.x);
+        const top = Math.max(bubbleRect.y, rect.y);
+        const right = Math.min(bubbleRect.x + bubbleRect.w, rect.x + rect.w);
+        const bottom = Math.min(bubbleRect.y + bubbleRect.h, rect.y + rect.h);
+        const overlap = Math.max(0, right - left) * Math.max(0, bottom - top);
+        return { segment, ratio: overlap / area };
+      })
+      .sort((a, b) => b.ratio - a.ratio);
+    const best = ranked[0];
+    return best && best.segment && best.segment.source === "owner" && best.ratio >= 0.6 ? best : null;
+  }
+
+  function normalizeKakaoStitchDebugCoordinates(debug, stitch) {
+    if (!debug || !stitch) {
+      return debug;
+    }
+    const compositeWidth = Math.max(1, Number(stitch.compositeWidth) || Number(debug.imageWidth) || 1);
+    const compositeHeight = Math.max(1, Number(stitch.compositeHeight) || Number(debug.imageHeight) || 1);
+    const ownerDraw = stitch.owner && stitch.owner.drawRect
+      ? stitch.owner.drawRect
+      : { x: 0, y: Number(stitch.ownerTop) || 0, w: compositeWidth, h: Math.max(1, Number(stitch.ownerHeight) || compositeHeight) };
+    const ownerRect = normalizeRectLike(ownerDraw) || { x: 0, y: 0, w: compositeWidth, h: compositeHeight };
+    const context = {
+      stitch,
+      compositeWidth,
+      compositeHeight,
+      ownerDraw: ownerRect,
+      segments: normalizeKakaoStitchSegments(stitch, compositeWidth, compositeHeight, ownerRect)
+    };
+    return {
+      ...debug,
+      imageWidth: ownerRect.w,
+      imageHeight: ownerRect.h,
+      rawItems: normalizeDebugCoordinateItems(debug.rawItems, debug, context),
+      duplicateItems: normalizeDebugCoordinateItems(debug.duplicateItems, debug, context),
+      dedupedItems: normalizeDebugCoordinateItems(debug.dedupedItems, debug, context)
+    };
+  }
+
+  function normalizeDebugCoordinateItems(items, debug, context = {}) {
+    if (!Array.isArray(items) || !context || !context.stitch) {
+      return Array.isArray(items) ? items : [];
+    }
+    const imageWidth = Math.max(1, Number(debug && debug.imageWidth) || Number(context.compositeWidth) || 1);
+    const imageHeight = Math.max(1, Number(debug && debug.imageHeight) || Number(context.compositeHeight) || 1);
+    const compositeWidth = Math.max(1, Number(context.compositeWidth) || imageWidth);
+    const compositeHeight = Math.max(1, Number(context.compositeHeight) || imageHeight);
+    const ownerDraw = context.ownerDraw || { x: 0, y: 0, w: compositeWidth, h: compositeHeight };
+    const segments = Array.isArray(context.segments) ? context.segments : [];
+    return items.map((item) => {
+      const percent = getDebugItemPercentWithImageSize(item, imageWidth, imageHeight);
+      if (!percent) return null;
+      const rect = {
+        x: (Number(percent.x) / 100) * compositeWidth,
+        y: (Number(percent.y) / 100) * compositeHeight,
+        w: (Number(percent.w) / 100) * compositeWidth,
+        h: (Number(percent.h) / 100) * compositeHeight
+      };
+      if (!getKakaoStitchOwnerOverlap(rect, segments)) {
+        return null;
+      }
+      const left = Math.max(rect.x, ownerDraw.x);
+      const top = Math.max(rect.y, ownerDraw.y);
+      const right = Math.min(rect.x + rect.w, ownerDraw.x + ownerDraw.w);
+      const bottom = Math.min(rect.y + rect.h, ownerDraw.y + ownerDraw.h);
+      const mapped = {
+        x: ((left - ownerDraw.x) / ownerDraw.w) * 100,
+        y: ((top - ownerDraw.y) / ownerDraw.h) * 100,
+        w: (Math.max(0, right - left) / ownerDraw.w) * 100,
+        h: (Math.max(0, bottom - top) / ownerDraw.h) * 100
+      };
+      return mapped.w > 0 && mapped.h > 0 ? { ...item, percent: mapped } : null;
+    }).filter(Boolean);
+  }
+
+  function getDebugItemPercentWithImageSize(item, imageWidth, imageHeight) {
+    if (item && item.percent && [item.percent.x, item.percent.y, item.percent.w, item.percent.h].every((value) => Number.isFinite(Number(value)))) {
+      return item.percent;
+    }
+    const box = item && (item.rawBox || item.box);
+    if (!box || ![box.left, box.top, box.width, box.height].every((value) => Number.isFinite(Number(value)))) {
+      return null;
+    }
+    return {
+      x: (Number(box.left) / imageWidth) * 100,
+      y: (Number(box.top) / imageHeight) * 100,
+      w: (Number(box.width) / imageWidth) * 100,
+      h: (Number(box.height) / imageHeight) * 100
     };
   }
 
@@ -2306,6 +2550,7 @@
       target,
       targetId,
       targetKey,
+      sourceToken: getQuickSourceToken(target),
       root,
       bubbleNodes,
       bubbleCount: bubbleNodes.length,
@@ -3226,6 +3471,15 @@
       return;
     }
 
+    if (overlayState.sourceToken && getQuickSourceToken(overlayState.target) !== overlayState.sourceToken) {
+      overlayState.root.remove();
+      state.overlaysById.delete(overlayState.targetId);
+      if (state.overlaysById.size === 0) {
+        stopOverlayFrameSync();
+      }
+      return;
+    }
+
     if (!overlayState.target.isConnected) {
       overlayState.root.remove();
       state.overlaysById.delete(overlayState.targetId);
@@ -4038,7 +4292,7 @@
     });
   }
 
-  function collectKakaopageManualTargetCandidates(relaxed) {
+  function collectKakaopageManualTargetCandidates(relaxed, ownerTarget = null) {
     const selectors = [
       TARGET_SELECTOR,
       "main img",
@@ -4052,13 +4306,13 @@
       "[class*='page'] [style*='background-image']"
     ];
     const seen = new Set();
-    const result = [];
+    const raw = [];
 
     for (const selector of selectors) {
       document.querySelectorAll(selector).forEach((target) => {
         if (!seen.has(target)) {
           seen.add(target);
-          result.push(target);
+          raw.push(target);
         }
       });
     }
@@ -4068,13 +4322,52 @@
     candidates.forEach((target) => {
       if (!seen.has(target) && target instanceof HTMLElement && isBackgroundImageTarget(target)) {
         seen.add(target);
-        result.push(target);
+        raw.push(target);
       }
+    });
+
+    const ownerRect = ownerTarget && typeof ownerTarget.getBoundingClientRect === "function"
+      ? ownerTarget.getBoundingClientRect()
+      : null;
+    const ownerCenter = ownerRect && ownerRect.width > 0 ? ownerRect.left + ownerRect.width / 2 : null;
+    const result = raw.filter((target) => {
+      if (!target || !target.isConnected || typeof target.getBoundingClientRect !== "function") {
+        return false;
+      }
+      if (!ownerRect) {
+        return true;
+      }
+      const rect = target.getBoundingClientRect();
+      if (!(rect.width >= 200 && rect.height >= 40)) {
+        return false;
+      }
+      if (target instanceof HTMLImageElement) {
+        const src = target.currentSrc || target.src || "";
+        if (!src || !target.complete) return false;
+        const naturalWidth = Number(target.naturalWidth || 0);
+        const naturalHeight = Number(target.naturalHeight || 0);
+        if (!(naturalWidth >= 120 && naturalHeight >= 40)) {
+          return false;
+        }
+      }
+      const center = rect.left + rect.width / 2;
+      const maxCenterDelta = Math.max(rect.width, ownerRect.width) * 0.15;
+      return ownerCenter === null || Math.abs(center - ownerCenter) <= maxCenterDelta;
     });
 
     return result.sort((left, right) => {
       if (left === right) {
         return 0;
+      }
+      if (ownerRect) {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        const leftTop = leftRect.top + (window.scrollY || 0);
+        const rightTop = rightRect.top + (window.scrollY || 0);
+        if (Math.abs(leftTop - rightTop) > 2) {
+          return leftTop - rightTop;
+        }
+        return leftRect.left - rightRect.left;
       }
       return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_PRECEDING ? 1 : -1;
     });

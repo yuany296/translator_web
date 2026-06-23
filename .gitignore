@@ -42,4 +42,6 @@ local-ocr-service/*.png
 local-ocr-service/debug
 
 # === Documentation generated files ===
-verification.md
+*.md
+
+debug_before/

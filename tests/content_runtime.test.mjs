@@ -13,6 +13,34 @@ await import("../content.js");
 
 const runtime = globalThis.__MANGA_TRANSLATOR_V3__;
 
+function makeStitchPayload(ownerTop, ownerHeight, compositeHeight, opts = {}) {
+  const compositeWidth = opts.compositeWidth || 760;
+  const ownerEntry = {
+    source: "owner",
+    targetKey: opts.targetKey || "test-owner",
+    src: opts.src || "owner.jpg",
+    drawRect: { x: 0, y: ownerTop, w: compositeWidth, h: ownerHeight },
+    sourceCrop: { x: 0, y: 0, w: compositeWidth, h: ownerHeight },
+    naturalWidth: compositeWidth,
+    naturalHeight: ownerHeight
+  };
+  return {
+    stitch: {
+      ownerTop,
+      ownerHeight,
+      compositeWidth,
+      compositeHeight,
+      previousSlice: ownerTop,
+      nextSlice: Math.max(0, compositeHeight - ownerTop - ownerHeight),
+      owner: ownerEntry,
+      previous: opts.previous || null,
+      next: opts.next || null,
+      segments: [opts.previous, ownerEntry, opts.next].filter(Boolean),
+      ownerPageRect: opts.ownerPageRect || null
+    }
+  };
+}
+
 test("跨图窗口只接受同宽、对齐且紧邻的图片", () => {
   const owner = { left: 0, top: 1000, bottom: 2000, width: 760, height: 1000, sourceKey: "owner" };
   const previous = { left: 0, top: 0, bottom: 1000, width: 760, height: 1000, sourceKey: "previous" };
@@ -75,14 +103,38 @@ test("stitched OCR keeps only boxes whose center belongs to the owner image", ()
         { x: 10, y: 88, w: 30, h: 8, original_text: "next" }
       ]
     },
-    { stitch: { ownerTop: 300, ownerHeight: 600, compositeHeight: 1200 } },
+    makeStitchPayload(300, 600, 1200, {
+      previous: { source: "previous", drawRect: { x: 0, y: 0, w: 760, h: 300 } },
+      next: { source: "next", drawRect: { x: 0, y: 900, w: 760, h: 300 } }
+    }),
     { getBoundingClientRect: () => ({ left: 0, top: 100, width: 600, height: 600 }) },
     "owner-a"
   );
 
   assert.deepEqual(result.bubbles.map((bubble) => bubble.original_text), ["boundary"]);
   assert.equal(result.bubbles[0].stitch_overflow, true);
-  assert.ok(result.bubbles[0].y < 0);
+  assert.equal(result.bubbles[0].y, 0);
+  assert.equal(result.bubbles[0].h, 30);
+});
+
+test("stitched OCR keeps only boxes whose overlap belongs to the owner segment", () => {
+  const result = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [
+        { x: 10, y: 8, w: 20, h: 8, original_text: "previous-only" },
+        { x: 10, y: 44, w: 20, h: 8, original_text: "owner-only" },
+        { x: 10, y: 84, w: 20, h: 8, original_text: "next-only" }
+      ]
+    },
+    makeStitchPayload(300, 600, 1200, {
+      previous: { source: "previous", drawRect: { x: 0, y: 0, w: 760, h: 300 } },
+      next: { source: "next", drawRect: { x: 0, y: 900, w: 760, h: 300 } }
+    }),
+    { getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
+    "owner-segment"
+  );
+
+  assert.deepEqual(result.bubbles.map((bubble) => bubble.original_text), ["owner-only"]);
 });
 
 test("跨图结果使用捕获时的页面全局坐标而不是滚动后的临时坐标", () => {
@@ -100,10 +152,10 @@ test("跨图结果使用捕获时的页面全局坐标而不是滚动后的临�
     "owner-global"
   );
 
-  assert.deepEqual(
-    { ...result.bubbles[0].global_box },
-    { left: 110, top: 2060, width: 120, height: 120 }
-  );
+  assert.equal(result.bubbles[0].global_box.left, 110);
+  assert.equal(result.bubbles[0].global_box.top, 2060);
+  assert.ok(Math.abs(result.bubbles[0].global_box.width - 120) < 1e-9);
+  assert.equal(result.bubbles[0].global_box.height, 120);
 });
 
 test("global Kakao dedupe drops the same overlapping boundary text from a neighbor window", () => {
@@ -453,6 +505,36 @@ test("stitched OCR remaps the solid fill box into the owner image", () => {
   assert.ok(Math.abs(result.bubbles[0].fill_box.h - 28) < 1e-9);
 });
 
+test("stitched OCR remaps raw debug items into the owner image", () => {
+  const result = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [{ x: 10, y: 30, w: 20, h: 10, original_text: "owner" }],
+      debug: {
+        imageWidth: 760,
+        imageHeight: 1200,
+        rawItems: [
+          { id: "prev", rawBox: { left: 76, top: 60, width: 152, height: 48 }, text: "previous" },
+          { id: "owner", rawBox: { left: 76, top: 360, width: 152, height: 60 }, text: "owner" },
+          { id: "next", rawBox: { left: 76, top: 1020, width: 152, height: 48 }, text: "next" }
+        ],
+        dedupedItems: [],
+        duplicateItems: [],
+        finalBubbles: []
+      }
+    },
+    makeStitchPayload(300, 600, 1200, {
+      previous: { source: "previous", drawRect: { x: 0, y: 0, w: 760, h: 300 } },
+      next: { source: "next", drawRect: { x: 0, y: 900, w: 760, h: 300 } }
+    }),
+    { getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
+    "debug-owner"
+  );
+
+  assert.deepEqual(result.debug.rawItems.map((item) => item.id), ["owner"]);
+  assert.ok(Math.abs(result.debug.rawItems[0].percent.y - 10) < 1e-9);
+  assert.ok(Math.abs(result.debug.rawItems[0].percent.h - 10) < 1e-9);
+});
+
 test("solid background covers both the original fill and translated text boxes", () => {
   assert.deepEqual(
     { ...runtime.__test.buildSolidBackgroundBox(
@@ -499,6 +581,36 @@ test("overlay visibility includes stitched content crossing into the previous pa
     width: 600,
     height: 780
   });
+});
+
+test("overlay sync removes stale Kakao overlays when an image node is reused", () => {
+  const target = new globalThis.HTMLImageElement();
+  target.isConnected = true;
+  target.dataset = {};
+  target.currentSrc = "https://page-edge.kakao.com/old-image.jpg";
+  target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+  target.getBoundingClientRect = () => ({ left: 0, top: 0, right: 600, bottom: 800, width: 600, height: 800 });
+  let removed = false;
+  const root = {
+    isConnected: true,
+    style: {},
+    remove() {
+      removed = true;
+      this.isConnected = false;
+    }
+  };
+
+  target.currentSrc = "https://page-edge.kakao.com/new-image.jpg";
+  runtime.__test.syncOverlayPosition({
+    target,
+    targetId: "stale-node",
+    targetKey: "old-key",
+    sourceToken: "https://page-edge.kakao.com/old-image.jpg",
+    root,
+    bubbleNodes: []
+  });
+
+  assert.equal(removed, true);
 });
 
 test("cleaned image patch aligns the source OCR box inside an overlay bubble", () => {

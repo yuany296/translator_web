@@ -69,6 +69,23 @@ test("跨图上下文根据显示比例动态计算并记录页面全局坐标",
   globalThis.window.scrollY = 0;
 });
 
+test("Kakao short adjacent pages are attached as full neighboring slices", () => {
+  const plan = runtime.__test.buildKakaoStitchWindowPlan({
+    owner: { left: 0, top: 520, width: 760, height: 1000 },
+    previous: { left: 0, top: 240, width: 760, height: 280 },
+    next: { left: 0, top: 1520, width: 760, height: 360 },
+    canonicalWidth: 760,
+    ownerHeight: 1000,
+    previousHeight: 280,
+    nextHeight: 360
+  });
+
+  assert.equal(plan.previousSlice, 280);
+  assert.equal(plan.nextSlice, 360);
+  assert.equal(plan.previousShortPageAttachment, true);
+  assert.equal(plan.nextShortPageAttachment, true);
+});
+
 test("拼接结果为空或坐标异常时要求回退单图", () => {
   const payload = { stitch: { verified: true }, singleImagePayload: { dataUrl: "data:image/png;base64,A" } };
   assert.match(runtime.__test.shouldFallbackFromKakaoStitch(payload, { bubbles: [] }, { bubbles: [] }), /no owner text/);
@@ -705,4 +722,30 @@ test("complex-background outline uses the strengthened dynamic width", () => {
   assert.equal(runtime.__test.getDynamicStrokeWidth(20), 1.8);
   assert.equal(runtime.__test.getDynamicStrokeWidth(40), 3.4);
   assert.equal(runtime.__test.getDynamicStrokeWidth(80), 4.2);
+});
+
+test("stitched OCR maps explicitly attached short neighbor pages onto the owner edge", () => {
+  const result = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [
+        { x: 10, y: 8, w: 20, h: 8, original_text: "previous-short" },
+        { x: 10, y: 44, w: 20, h: 8, original_text: "short-owner-center" },
+        { x: 10, y: 84, w: 20, h: 8, original_text: "next-short" }
+      ]
+    },
+    makeStitchPayload(300, 600, 1200, {
+      previous: { source: "previous", shortPageAttachment: true, drawRect: { x: 0, y: 0, w: 760, h: 300 } },
+      next: { source: "next", shortPageAttachment: true, drawRect: { x: 0, y: 900, w: 760, h: 300 } }
+    }),
+    { getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
+    "owner-short-neighbors"
+  );
+
+  assert.deepEqual(result.bubbles.map((bubble) => bubble.original_text), ["previous-short", "short-owner-center", "next-short"]);
+  assert.equal(result.bubbles[0].stitch_attached_short_page, true);
+  assert.equal(result.bubbles[0].stitch_overflow, true);
+  assert.ok(result.bubbles[0].y < 0);
+  assert.equal(result.bubbles[2].stitch_attached_short_page, true);
+  assert.equal(result.bubbles[2].stitch_overflow, true);
+  assert.ok(result.bubbles[2].y > 100);
 });

@@ -48,6 +48,10 @@
   const KAKAO_STITCH_CONTEXT_CSS_PX = 180;
   const KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX = 32;
   const KAKAO_STITCH_MIN_WIDTH_RATIO = 0.82;
+  const KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT = 420;
+  const KAKAO_SHORT_PAGE_ATTACH_HEIGHT_RATIO = 0.45;
+  const KAKAO_THIN_STRIP_MAX_NATURAL_HEIGHT = 100;
+  const KAKAO_THIN_STRIP_MIN_HEIGHT = 8;
   const PRETRANSLATE_AHEAD_COUNT = 6;
   const RUNTIME_OWNER_ATTRIBUTE = "data-manga-translator-runtime-owner";
   const MAX_EMBEDDED_IMAGE_CACHE = 40;
@@ -1306,8 +1310,10 @@
       const prevNatW = previousImage.naturalWidth || previousImage.width;
       const prevNatH = previousImage.naturalHeight || previousImage.height;
       const sourceCropHeight = prevNatH * (previousSlice / Math.max(1, previousHeight));
+      const shortPageAttachment = plan.previousShortPageAttachment === true && previousSlice >= previousHeight - 1;
       previousEntry = {
         source: "previous",
+        shortPageAttachment,
         targetKey: computeTargetKey(previousTarget),
         src: getQuickSourceToken(previousTarget),
         drawRect: { x: 0, y: 0, w: canonicalWidth, h: previousSlice },
@@ -1322,8 +1328,10 @@
       const nextNatW = nextImage.naturalWidth || nextImage.width;
       const nextNatH = nextImage.naturalHeight || nextImage.height;
       const sourceCropHeight = nextNatH * (nextSlice / Math.max(1, nextHeight));
+      const shortPageAttachment = plan.nextShortPageAttachment === true && nextSlice >= nextHeight - 1;
       nextEntry = {
         source: "next",
+        shortPageAttachment,
         targetKey: computeTargetKey(nextTarget),
         src: getQuickSourceToken(nextTarget),
         drawRect: { x: 0, y: previousSlice + ownerHeight, w: canonicalWidth, h: nextSlice },
@@ -1444,6 +1452,39 @@
     return /(^|\/\/)page-edge\.kakao\.com\//i.test(String(source || ""));
   }
 
+  // Kakao page-edge CDN URLs must include authentication parameters
+  // (signature, credential, expires) to be fetchable. If the URL lacks
+  // these, wait briefly for the page's JS to inject them.
+  const KAKAO_EDGE_AUTH_PARAM_RE = /[?&](?:signature|credential|expires)=/i;
+  const KAKAO_EDGE_URL_WAIT_MS = 600;
+  const KAKAO_EDGE_URL_POLL_MS = 50;
+
+  function isKakaoEdgeUrlMissingAuth(url) {
+    if (!url) return false;
+    return isKakaoPageEdgeSource(url) && !KAKAO_EDGE_AUTH_PARAM_RE.test(url);
+  }
+
+  async function resolveImageUrlWithAuth(target) {
+    let url = resolveImageUrl(target);
+    if (!isKakaoEdgeUrlMissingAuth(url)) {
+      return url;
+    }
+    // Poll currentSrc for auth params to appear (page JS adds them asynchronously)
+    const deadline = Date.now() + KAKAO_EDGE_URL_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, KAKAO_EDGE_URL_POLL_MS));
+      if (!target.isConnected) break;
+      url = resolveImageUrl(target);
+      if (!isKakaoEdgeUrlMissingAuth(url)) {
+        return url;
+      }
+    }
+    // Return whatever we have, even if auth params are still missing.
+    // The background fetch will retry with different credential modes.
+    console.warn("[MangaTranslator][KakaoPage] page-edge URL still missing auth params after wait, proceeding with:", url.slice(0, 120));
+    return url;
+  }
+
   function describeKakaoStitchTarget(target) {
     if (!target || typeof target.getBoundingClientRect !== "function") {
       return null;
@@ -1477,7 +1518,7 @@
     if (ownerSrc && candidateSrc && ownerSrc === candidateSrc) {
       return false;
     }
-    if (!(candidate.height >= 40)) {
+    if (!(candidate.height >= KAKAO_THIN_STRIP_MIN_HEIGHT)) {
       return false;
     }
     const widthRatio = Math.min(owner.width, candidate.width) / Math.max(owner.width, candidate.width);
@@ -1516,7 +1557,7 @@
 
   function buildKakaoStitchWindowPlan({ owner, previous, next, canonicalWidth, ownerHeight, previousHeight, nextHeight }) {
     if (!owner || !(owner.width > 0) || !(ownerHeight > 0) || !(canonicalWidth > 0)) {
-      return { previousSlice: 0, nextSlice: 0 };
+      return { previousSlice: 0, nextSlice: 0, previousShortPageAttachment: false, nextShortPageAttachment: false };
     }
     const bitmapPerCssPixel = canonicalWidth / owner.width;
     const desiredContext = clamp(
@@ -1524,10 +1565,28 @@
       KAKAO_STITCH_MIN_CONTEXT_PX,
       KAKAO_STITCH_MAX_CONTEXT_PX
     );
+    const previousShortPageAttachment = isAttachableKakaoShortPage(previous, owner, previousHeight, ownerHeight);
+    const nextShortPageAttachment = isAttachableKakaoShortPage(next, owner, nextHeight, ownerHeight);
     return {
-      previousSlice: previous && previousHeight > 0 ? Math.min(desiredContext, previousHeight) : 0,
-      nextSlice: next && nextHeight > 0 ? Math.min(desiredContext, nextHeight) : 0
+      previousSlice: previous && previousHeight > 0
+        ? Math.min(previousShortPageAttachment ? previousHeight : desiredContext, previousHeight)
+        : 0,
+      nextSlice: next && nextHeight > 0
+        ? Math.min(nextShortPageAttachment ? nextHeight : desiredContext, nextHeight)
+        : 0,
+      previousShortPageAttachment,
+      nextShortPageAttachment
     };
+  }
+
+  function isAttachableKakaoShortPage(candidate, owner, candidateHeight, ownerHeight) {
+    if (!candidate || !owner || !(candidateHeight > 0) || !(ownerHeight > 0)) {
+      return false;
+    }
+    const cssHeight = Number(candidate.height || 0);
+    const scaledRatio = candidateHeight / Math.max(1, ownerHeight);
+    return (cssHeight > 0 && cssHeight <= KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT) ||
+      scaledRatio <= KAKAO_SHORT_PAGE_ATTACH_HEIGHT_RATIO;
   }
 
   async function requestTranslationForPayload(payload, requestKey) {
@@ -1683,7 +1742,12 @@
         bestRatio: best ? Number(best.ratio.toFixed(4)) : 0
       });
 
-      if (!best || !best.segment || best.segment.source !== "owner" || best.ratio < 0.6) {
+      const isShortPageAttachment = best && best.segment &&
+        best.segment.shortPageAttachment === true &&
+        (best.segment.source === "previous" || best.segment.source === "next") &&
+        best.ratio >= 0.6;
+
+      if (!isShortPageAttachment && (!best || !best.segment || best.segment.source !== "owner" || best.ratio < 0.6)) {
         console.debug("[MangaTranslator][KakaoStitch] Discarding bubble: not in owner region", {
           bestSource: best && best.segment && best.segment.source,
           bestRatio: best ? Number(best.ratio.toFixed(4)) : 0
@@ -1692,6 +1756,34 @@
       }
 
       const ownerRect = ownerDraw;
+      if (isShortPageAttachment) {
+        const mappedY = ((bubblePx.y - ownerRect.y) / ownerRect.h) * 100;
+        const mappedH = (bubblePx.h / ownerRect.h) * 100;
+
+        if (mappedY + mappedH < -80 || mappedY > 180 || mappedH > 70) {
+          console.warn("[MangaTranslator][KakaoStitch] Discarding short page attachment out of bounds", {
+            text: String(bubble.original_text || "").slice(0, 40),
+            mappedY: Number(mappedY.toFixed(2)),
+            mappedBottom: Number((mappedY + mappedH).toFixed(2)),
+            mappedH: Number(mappedH.toFixed(2))
+          });
+          return null;
+        }
+
+        return {
+          ...bubble,
+          x: ((bubblePx.x - ownerRect.x) / ownerRect.w) * 100,
+          y: mappedY,
+          w: (bubblePx.w / ownerRect.w) * 100,
+          h: mappedH,
+          stitch_overflow: true,
+          stitch_attached_short_page: true,
+          fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
+          polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
+          region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
+        };
+      }
+
       const crossesBoundary = bubblePx.y < ownerRect.y ||
         (bubblePx.y + bubblePx.h) > (ownerRect.y + ownerRect.h);
       const overflow = crossesBoundary && ownerRatio >= 0.25;
@@ -2381,7 +2473,7 @@
       throw new Error("Image is not loaded yet");
     }
 
-    const imageUrl = resolveImageUrl(img);
+    const imageUrl = await resolveImageUrlWithAuth(img);
 
     if (isDataUrl(imageUrl)) {
       return {
@@ -2396,9 +2488,12 @@
     }
 
     if (isHttpUrl(imageUrl)) {
+      // Pass page URL as referrer so background fetch can set the Referer header.
+      // Kakao CDNs check Referer for hotlink protection.
       const fetched = await sendRuntimeMessage({
         type: "FETCH_IMAGE_DATA_URL",
-        url: imageUrl
+        url: imageUrl,
+        referrer: location.href
       });
 
       if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
@@ -2628,7 +2723,8 @@
     } else if (isHttpUrl(imageUrl)) {
       const fetched = await sendRuntimeMessage({
         type: "FETCH_IMAGE_DATA_URL",
-        url: imageUrl
+        url: imageUrl,
+        referrer: location.href
       });
       if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
         dataUrl = fetched.dataUrl;
@@ -2716,7 +2812,7 @@
     }
 
     const rect = target.getBoundingClientRect();
-    if (rect.width < 80 || rect.height < 60) {
+    if (rect.width < 60 || rect.height < 40) {
       return { ok: false, reason: `target too small: ${rect.width.toFixed(0)}x${rect.height.toFixed(0)}` };
     }
 
@@ -2725,7 +2821,7 @@
       return { ok: false, reason: "no visible viewport rect" };
     }
 
-    if (visibleRect.width < 60 || visibleRect.height < 50) {
+    if (visibleRect.width < 40 || visibleRect.height < 30) {
       return {
         ok: false,
         reason: `visible rect too small: ${visibleRect.width.toFixed(0)}x${visibleRect.height.toFixed(0)}`,
@@ -2733,7 +2829,7 @@
     }
 
     const visibleArea = getVisibleArea(rect);
-    if (visibleArea < 5000) {
+    if (visibleArea < 3000) {
       return { ok: false, reason: `visible area too small: ${visibleArea.toFixed(0)}` };
     }
 
@@ -3070,7 +3166,8 @@
             type: "FETCH_IMAGE_DATA_URL",
             url: imageUrl,
             preserveSize: true,
-            maxOriginalBytes: EMBEDDED_MAX_ORIGINAL_BYTES
+            maxOriginalBytes: EMBEDDED_MAX_ORIGINAL_BYTES,
+            referrer: location.href
           });
           if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
             return fetched.dataUrl;
@@ -4683,15 +4780,18 @@
         }
       }
 
-      // Neighbor-finding mode: apply size + center proximity filters
+      // Neighbor-finding mode: apply size + center proximity filters.
+      // Accept thin strips (down to 8px) so they can be stitched into
+      // adjacent pages instead of being dropped entirely.
       if (ownerRect) {
-        if (!(rect.width >= 200 && rect.height >= 40)) {
+        const thinStripMinHeight = KAKAO_THIN_STRIP_MIN_HEIGHT;
+        if (!(rect.width >= 200 && rect.height >= thinStripMinHeight)) {
           return false;
         }
         if (target instanceof HTMLImageElement) {
           const naturalWidth = Number(target.naturalWidth || 0);
           const naturalHeight = Number(target.naturalHeight || 0);
-          if (!(naturalWidth >= 60 && naturalHeight >= 30)) {
+          if (!(naturalWidth >= 60 && naturalHeight >= thinStripMinHeight)) {
             return false;
           }
         }
@@ -4767,7 +4867,11 @@
     const widthLimit = manual ? MANUAL_MIN_WIDTH : AUTO_MIN_WIDTH;
     const heightLimit = manual ? MANUAL_MIN_HEIGHT : AUTO_MIN_HEIGHT;
     const effectiveWidthLimit = relaxed ? Math.max(90, Math.min(widthLimit, 100)) : widthLimit;
-    const effectiveHeightLimit = relaxed ? Math.max(90, Math.min(heightLimit, 100)) : heightLimit;
+    // KakaoPage: accept thin strips so they can be stitched into neighbors
+    const stripMinHeight = IS_KAKAOPAGE_READER ? KAKAO_THIN_STRIP_MIN_HEIGHT : 0;
+    const effectiveHeightLimit = relaxed
+      ? Math.max(90, Math.min(heightLimit, 100))
+      : Math.max(stripMinHeight, heightLimit);
 
     if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
       return false;
@@ -4778,9 +4882,11 @@
     }
 
     const ratio = rect.height / rect.width;
-    const minRatio = relaxed ? 0.10 : AUTO_MIN_RATIO;
+    // KakaoPage: accept thin strips (down to ~0.01 ratio) so they aren't dropped.
+    // The KakaoPage geometry check already handles per-mode visibility thresholds.
+    const effectiveMinRatio = IS_KAKAOPAGE_READER ? 0.01 : (relaxed ? 0.10 : AUTO_MIN_RATIO);
     const maxRatio = relaxed ? 20 : 14;
-    if (ratio < minRatio || ratio > maxRatio) {
+    if (ratio < effectiveMinRatio || ratio > maxRatio) {
       return false;
     }
 
@@ -4800,19 +4906,21 @@
     if (!allowOffscreen) {
       const visibleArea = getVisibleArea(rect);
       const visibleRect = getVisibleViewportRect(target);
-      const minVisibleArea = relaxed ? 5000 : manual ? 10000 : 15000;
+      // KakaoPage uses virtual scrolling with tall images (up to 1100px+).
+      // Lower thresholds so partially-scrolled images aren't filtered out.
+      const minVisibleArea = relaxed ? 3000 : manual ? 6000 : 8000;
       if (!visibleRect || visibleArea < minVisibleArea) {
         return false;
       }
 
-      const minVisibleHeight = relaxed ? 50 : manual ? 60 : 80;
-      const minVisibleWidth = relaxed ? 60 : manual ? 80 : 100;
+      const minVisibleHeight = relaxed ? 40 : manual ? 50 : 60;
+      const minVisibleWidth = relaxed ? 50 : manual ? 60 : 80;
       if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
         return false;
       }
 
       const visibleRatio = visibleRect.height / Math.max(1, visibleRect.width);
-      if (visibleRatio < 0.10 || visibleRatio > 20) {
+      if (visibleRatio < 0.01 || visibleRatio > 22) {
         return false;
       }
     }
@@ -4822,7 +4930,9 @@
       const naturalHeight = Number(target.naturalHeight || 0);
       if (naturalWidth > 0 && naturalHeight > 0) {
         const naturalRatio = naturalHeight / Math.max(1, naturalWidth);
-        if (naturalHeight < 80 || naturalRatio < 0.10) {
+        // Accept thin strips (down to 8px, ratio ≥ 0.01) so they
+        // get their own translation with stitching context.
+        if (naturalHeight < KAKAO_THIN_STRIP_MIN_HEIGHT || naturalRatio < 0.01) {
           return false;
         }
       }

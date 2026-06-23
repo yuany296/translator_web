@@ -143,6 +143,11 @@ test("OCR request key includes source token, mode, and fallback reason", () => {
   assert.match(second, /mode:stitch/);
 });
 
+test("content does not skip single-fallback before sending it to background", () => {
+  assert.equal(contentSource.includes("duplicate single-fallback request"), false);
+  assert.equal(contentSource.includes("shouldSkipRepeatedFallbackRequest"), false);
+});
+
 test("stitched OCR keeps only boxes whose center belongs to the owner image", () => {
   const result = runtime.__test.mapKakaoStitchedResult(
     {

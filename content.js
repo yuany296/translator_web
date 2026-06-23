@@ -102,7 +102,6 @@
     overlayPreviousVisibility: "",
     payloadCacheByTargetKey: new Map(),
     localResultCache: new Map(),
-    recentFallbackRequestKeys: new Map(),
     kakaoGlobalOcrEntries: new Map(),
     lastRecoveryAt: 0,
     syncRaf: 0,
@@ -618,7 +617,11 @@
     const viewportAnchor = window.innerHeight * 0.35;
     const isPending = (target) => {
       const targetKey = computeTargetKey(target);
-      return target.dataset.mtLastTranslatedKey !== targetKey && target.dataset.mtNoTextKey !== targetKey;
+      const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+      return target.dataset.mtLastTranslatedKey !== targetKey &&
+        target.dataset.mtLastTranslatedKey !== scopedTargetKey &&
+        target.dataset.mtNoTextKey !== targetKey &&
+        target.dataset.mtNoTextKey !== scopedTargetKey;
     };
     const pendingTargets = state.pretranslateMode === "continuous"
       ? selectPendingContinuousCandidates(candidates, viewportAnchor, isPending)
@@ -950,9 +953,6 @@
             error: getErrorMessage(error)
           });
           renderPayload = buildSingleFallbackPayload(payload.singleImagePayload, payload, "stitched request threw");
-          if (shouldSkipRepeatedFallbackRequest(targetKey, renderPayload)) {
-            return { ok: false, skipped: true, reason: "duplicate single-fallback request" };
-          }
           response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
         }
 
@@ -966,9 +966,6 @@
             payload,
             response && response.error ? response.error : "stitched request failed"
           );
-          if (shouldSkipRepeatedFallbackRequest(targetKey, renderPayload)) {
-            return { ok: false, skipped: true, reason: "duplicate single-fallback request" };
-          }
           response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
         }
 
@@ -986,9 +983,6 @@
             reason: fallbackReason
           });
           renderPayload = buildSingleFallbackPayload(payload.singleImagePayload, payload, fallbackReason);
-          if (shouldSkipRepeatedFallbackRequest(targetKey, renderPayload)) {
-            return { ok: false, skipped: true, reason: "duplicate single-fallback request" };
-          }
           response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
           if (!response || !response.ok) {
             throw new Error(response && response.error ? response.error : "Single-image OCR fallback failed");
@@ -1096,11 +1090,17 @@
 
     const task = (async () => {
       const targetKey = computeTargetKey(target);
-      if (state.localResultCache.has(targetKey) || getPayloadCache(targetKey)) {
+      const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+      if (
+        state.localResultCache.has(targetKey) ||
+        state.localResultCache.has(scopedTargetKey) ||
+        getPayloadCache(targetKey) ||
+        getPayloadCache(scopedTargetKey)
+      ) {
         return;
       }
 
-      await extractTargetPayload(target, targetKey);
+      await extractTargetPayload(target, scopedTargetKey);
     })().finally(() => {
       state.preloadInFlightByTarget.delete(target);
     });
@@ -1415,26 +1415,6 @@
       reason ? `reason:${hashSourceIdentity(reason)}` : "",
       stitchKey ? `stitch:${hashSourceIdentity(stitchKey)}` : ""
     ].filter(Boolean).join("|");
-  }
-
-  function shouldSkipRepeatedFallbackRequest(targetKey, payload) {
-    if (!payload || payload.ocrMode !== "single-fallback") {
-      return false;
-    }
-    const key = buildOcrRequestKey(targetKey, payload);
-    const now = Date.now();
-    const lastAt = Number(state.recentFallbackRequestKeys.get(key) || 0);
-    state.recentFallbackRequestKeys.set(key, now);
-    pruneRecentFallbackRequestKeys(now);
-    return lastAt > 0 && now - lastAt < 2500;
-  }
-
-  function pruneRecentFallbackRequestKeys(now = Date.now()) {
-    for (const [key, timestamp] of state.recentFallbackRequestKeys.entries()) {
-      if (now - Number(timestamp || 0) > 10000) {
-        state.recentFallbackRequestKeys.delete(key);
-      }
-    }
   }
 
   function shouldRejectKakaoPageEdgeStitch({ owner, ownerHeight, canonicalWidth, previous, next, previousHeight, nextHeight } = {}) {
@@ -3736,14 +3716,16 @@
       }
 
       const targetKey = computeTargetKey(target);
-      if ((target.dataset.mtLastTranslatedKey || "") !== targetKey) {
+      const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+      const renderedKey = target.dataset.mtLastTranslatedKey || "";
+      if (renderedKey !== targetKey && renderedKey !== scopedTargetKey) {
         continue;
       }
 
-      const localCachedResult = state.localResultCache.get(targetKey);
+      const localCachedResult = state.localResultCache.get(scopedTargetKey) || state.localResultCache.get(targetKey);
       if (localCachedResult && Array.isArray(localCachedResult.bubbles) && localCachedResult.bubbles.length > 0) {
         if (shouldUseEmbeddedRender(target)) {
-          extractTargetPayload(target, targetKey)
+          extractTargetPayload(target, scopedTargetKey)
             .then((payload) => renderTranslationResult(target, targetKey, localCachedResult, payload))
             .catch(() => {
               // 当前图片不可读时跳过恢复，避免自动触发新的翻译请求。
@@ -4503,7 +4485,13 @@
     }
 
     const targetKey = computeTargetKey(target);
-    if (target.dataset.mtLastTranslatedKey === targetKey || target.dataset.mtNoTextKey === targetKey) {
+    const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+    if (
+      target.dataset.mtLastTranslatedKey === targetKey ||
+      target.dataset.mtLastTranslatedKey === scopedTargetKey ||
+      target.dataset.mtNoTextKey === targetKey ||
+      target.dataset.mtNoTextKey === scopedTargetKey
+    ) {
       return;
     }
 

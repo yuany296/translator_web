@@ -102,6 +102,7 @@
     overlayPreviousVisibility: "",
     payloadCacheByTargetKey: new Map(),
     localResultCache: new Map(),
+    recentFallbackRequestKeys: new Map(),
     kakaoGlobalOcrEntries: new Map(),
     lastRecoveryAt: 0,
     syncRaf: 0,
@@ -131,6 +132,8 @@
       buildKakaoStitchWindowPlan,
       isVerifiedKakaoStitchNeighbor,
       shouldFallbackFromKakaoStitch,
+      shouldRejectKakaoPageEdgeStitch,
+      buildOcrRequestKey,
       normalizeDebugCoordinateItems,
       normalizePretranslateMode,
       textSimilarity,
@@ -444,6 +447,7 @@
       const oldTranslatedKey = target.dataset.mtLastTranslatedKey || "";
       if (oldTranslatedKey) {
         state.payloadCacheByTargetKey.delete(oldTranslatedKey);
+        state.localResultCache.delete(oldTranslatedKey);
       }
       clearRenderedTarget(target);
       target.dataset.mtLastTranslatedKey = "";
@@ -469,7 +473,7 @@
       return;
     }
     target.dataset.mtBoundaryReadyToken = sourceToken;
-    const ordered = collectKakaopageManualTargetCandidates(true).filter(
+    const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
       (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected
     );
     const index = ordered.indexOf(target);
@@ -477,12 +481,21 @@
       return;
     }
     const previous = ordered[index - 1];
+    if (!isVerifiedKakaoStitchNeighbor(
+      describeKakaoStitchTarget(target),
+      describeKakaoStitchTarget(previous),
+      "previous"
+    )) {
+      return;
+    }
     if (
       previous.dataset.mtLastTranslatedKey &&
       state.autoTranslatePageEnabled &&
       isAutomaticPretranslateMode(state.pretranslateMode)
     ) {
-      state.payloadCacheByTargetKey.delete(computeTargetKey(previous));
+      const previousKey = computeTargetKey(previous);
+      state.payloadCacheByTargetKey.delete(previousKey);
+      state.payloadCacheByTargetKey.delete(buildTargetSourceCacheKey(previousKey, getQuickSourceToken(previous)));
       queueTranslate(previous, { manual: true, force: true, reason: "kakao-boundary-refresh" });
     }
   }
@@ -864,6 +877,8 @@
       try {
         const targetKey = computeTargetKey(target);
         const targetId = getTargetId(target);
+        const sourceToken = getQuickSourceToken(target);
+        const scopedTargetKey = buildTargetSourceCacheKey(targetKey, sourceToken);
 
         if (isScreenshotCaptureMode() && !getVisibleViewportRect(target)) {
           return {
@@ -899,16 +914,16 @@
           }
         }
 
-        const localCachedResult = state.localResultCache.get(targetKey);
+        const localCachedResult = state.localResultCache.get(scopedTargetKey);
         if (!options.force && localCachedResult) {
           const dedupedCachedResult = await dedupeKakaoResultByPageCoordinates(localCachedResult, target, targetKey);
-          state.localResultCache.set(targetKey, dedupedCachedResult);
+          state.localResultCache.set(scopedTargetKey, dedupedCachedResult);
           if (dedupedCachedResult.bubbles.length > 0) {
             if (shouldUseEmbeddedRender(target)) {
               renderLoadingOverlay(target, targetKey, "生成嵌入图片中...");
             }
             const cachedPayload = shouldUseEmbeddedRender(target)
-              ? await extractTargetPayload(target, targetKey)
+              ? await extractTargetPayload(target, scopedTargetKey)
               : null;
             await renderTranslationResult(target, targetKey, dedupedCachedResult, cachedPayload);
           } else {
@@ -917,13 +932,15 @@
           return { ok: true, reused: true, bubbles: dedupedCachedResult.bubbles.length };
         }
 
+        // Stale result defense: capture snapshot before translation
+        const preTranslateSnapshot = captureTargetSnapshot(target);
         renderLoadingOverlay(target, targetKey, "OCR + 翻译中...");
-        const payload = await extractTargetPayload(target, targetKey);
+        const payload = await extractTargetPayload(target, scopedTargetKey);
         updateLoadingOverlayText(target, targetKey, "模型翻译中...");
         let renderPayload = payload;
         let response = null;
         try {
-          response = await requestTranslationForPayload(payload, payload.stitchKey || targetKey);
+          response = await requestTranslationForPayload(payload, buildOcrRequestKey(targetKey, payload));
         } catch (error) {
           if (!payload.stitch || !payload.singleImagePayload) {
             throw error;
@@ -932,8 +949,11 @@
             targetKey: targetKey.slice(0, 80),
             error: getErrorMessage(error)
           });
-          renderPayload = payload.singleImagePayload;
-          response = await requestTranslationForPayload(renderPayload, `${targetKey}|single-fallback`);
+          renderPayload = buildSingleFallbackPayload(payload.singleImagePayload, payload, "stitched request threw");
+          if (shouldSkipRepeatedFallbackRequest(targetKey, renderPayload)) {
+            return { ok: false, skipped: true, reason: "duplicate single-fallback request" };
+          }
+          response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
         }
 
         if ((!response || !response.ok) && renderPayload === payload && payload.stitch && payload.singleImagePayload) {
@@ -941,8 +961,15 @@
             targetKey: targetKey.slice(0, 80),
             error: response && response.error ? response.error : "unknown stitched request failure"
           });
-          renderPayload = payload.singleImagePayload;
-          response = await requestTranslationForPayload(renderPayload, `${targetKey}|single-fallback`);
+          renderPayload = buildSingleFallbackPayload(
+            payload.singleImagePayload,
+            payload,
+            response && response.error ? response.error : "stitched request failed"
+          );
+          if (shouldSkipRepeatedFallbackRequest(targetKey, renderPayload)) {
+            return { ok: false, skipped: true, reason: "duplicate single-fallback request" };
+          }
+          response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
         }
 
         if (!response || !response.ok) {
@@ -958,20 +985,29 @@
             targetKey: targetKey.slice(0, 80),
             reason: fallbackReason
           });
-          renderPayload = payload.singleImagePayload;
-          response = await requestTranslationForPayload(renderPayload, `${targetKey}|single-fallback`);
+          renderPayload = buildSingleFallbackPayload(payload.singleImagePayload, payload, fallbackReason);
+          if (shouldSkipRepeatedFallbackRequest(targetKey, renderPayload)) {
+            return { ok: false, skipped: true, reason: "duplicate single-fallback request" };
+          }
+          response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
           if (!response || !response.ok) {
             throw new Error(response && response.error ? response.error : "Single-image OCR fallback failed");
           }
           result = normalizeResult(response.result);
         }
         result = await dedupeKakaoResultByPageCoordinates(result, target, targetKey);
+
+        // Stale result defense: check if target changed during OCR
+        if (preTranslateSnapshot && !isTargetSnapshotStillValid(target, preTranslateSnapshot)) {
+          console.warn("[MangaTranslator] Stale result dropped: target changed during OCR, skipping clearRenderedTarget");
+          return { ok: false, skipped: true, reason: "target changed during OCR (stale result)" };
+        }
         const expectedSourceImageId = String(renderPayload && renderPayload.sourceImageId || payload && payload.sourceImageId || "");
         if (!target.isConnected || (expectedSourceImageId && getSourceImageIdForTarget(target) !== expectedSourceImageId)) {
           clearRenderedTarget(target);
           return { ok: false, skipped: true, reason: "source image changed during OCR" };
         }
-        rememberLocalResult(targetKey, result);
+        rememberLocalResult(scopedTargetKey, result);
 
         console.debug("[MangaTranslator] Received", result.bubbles.length, "bubbles, translated:", result.bubbles.filter((b) => b.translated_text && b.translated_text !== b.original_text).length, "of", result.bubbles.length);
 
@@ -1124,6 +1160,8 @@
         : Number(payload.height || rect.height);
     return {
       ...payload,
+      ocrMode: String(payload.ocrMode || "single"),
+      sourceToken: getQuickSourceToken(target),
       sourceImageId: getSourceImageIdForTarget(target),
       sourceWidth,
       sourceHeight,
@@ -1164,6 +1202,12 @@
     return (hash >>> 0).toString(16).padStart(8, "0");
   }
 
+  function buildTargetSourceCacheKey(targetKey, sourceToken) {
+    const base = String(targetKey || "");
+    const token = String(sourceToken || "");
+    return token ? `${base}|src:${hashSourceIdentity(token)}` : base;
+  }
+
   function shouldUseKakaoStitchedOcr(target, payload) {
     return (
       IS_KAKAOPAGE_READER &&
@@ -1176,12 +1220,13 @@
   }
 
   async function buildKakaoStitchedPayload(target, ownerPayload) {
+    const singlePayload = markSingleKakaoPayload(ownerPayload, target, "");
     const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
       (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
     );
     const ownerIndex = ordered.indexOf(target);
     if (ownerIndex < 0) {
-      return ownerPayload;
+      return markSingleKakaoPayload(ownerPayload, target, "owner not found");
     }
 
     const ownerDescriptor = describeKakaoStitchTarget(target);
@@ -1198,7 +1243,7 @@
       "next"
     ) ? nextCandidate : null;
     if (!previousTarget && !nextTarget) {
-      return ownerPayload;
+      return markSingleKakaoPayload(ownerPayload, target, "no verified neighbor");
     }
     const previousPayload = previousTarget ? await extractAdjacentKakaoPayload(previousTarget) : null;
     const nextPayload = nextTarget ? await extractAdjacentKakaoPayload(nextTarget) : null;
@@ -1217,6 +1262,18 @@
     const ownerHeight = scaledHeight(ownerImage);
     const previousHeight = previousImage ? scaledHeight(previousImage) : 0;
     const nextHeight = nextImage ? scaledHeight(nextImage) : 0;
+    const rejection = shouldRejectKakaoPageEdgeStitch({
+      owner: ownerDescriptor,
+      ownerHeight,
+      canonicalWidth,
+      previous: previousTarget ? describeKakaoStitchTarget(previousTarget) : null,
+      next: nextTarget ? describeKakaoStitchTarget(nextTarget) : null,
+      previousHeight,
+      nextHeight
+    });
+    if (rejection) {
+      return markSingleKakaoPayload(singlePayload, target, rejection);
+    }
     const plan = buildKakaoStitchWindowPlan({
       owner: ownerDescriptor,
       previous: previousTarget ? describeKakaoStitchTarget(previousTarget) : null,
@@ -1229,7 +1286,7 @@
     const previousSlice = previousImage ? plan.previousSlice : 0;
     const nextSlice = nextImage ? plan.nextSlice : 0;
     if (previousSlice <= 0 && nextSlice <= 0) {
-      return ownerPayload;
+      return markSingleKakaoPayload(ownerPayload, target, "empty stitch slices");
     }
     const compositeWidth = canonicalWidth;
     const compositeHeight = previousSlice + ownerHeight + nextSlice;
@@ -1302,6 +1359,9 @@
     const sourceKeys = [previousTarget, target, nextTarget].map((item) => (item ? getQuickSourceToken(item) : "edge"));
     return {
       ...ownerPayload,
+      ocrMode: "stitch",
+      stitchAdmission: "accepted",
+      sourceToken: getQuickSourceToken(target),
       dataUrl: canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY),
       imageUrl: `kakao-stitch:${sourceKeys.join("|")}`,
       width: canonicalWidth,
@@ -1309,22 +1369,99 @@
       stitchKey: `${computeTargetKey(target)}|stitch:${previousSlice}:${nextSlice}|${sourceKeys.join("|")}`,
       singleImagePayload: ownerPayload,
       stitch: {
-        ownerTop: previousSlice,
-        ownerHeight,
-        compositeWidth,
-        compositeHeight,
-        previousSlice,
-        nextSlice,
+        canvasWidth: canonicalWidth,
+        canvasHeight: compositeHeight,
         sourceKeys,
         verified: true,
-        coordinateSpace: "page-css-v1",
-        ownerPageRect: plan.ownerPageRect,
+        ocrMode: "stitch",
         owner: ownerEntry,
         previous: previousEntry,
         next: nextEntry,
         segments
       }
     };
+  }
+
+  function markSingleKakaoPayload(payload, target, rejectionReason) {
+    const reason = String(rejectionReason || "").trim();
+    return {
+      ...payload,
+      ocrMode: "single",
+      sourceToken: getQuickSourceToken(target),
+      ...(reason ? { stitchAdmission: "rejected", stitchRejectionReason: reason } : {})
+    };
+  }
+
+  function buildSingleFallbackPayload(singlePayload, stitchedPayload, fallbackReason) {
+    const reason = String(fallbackReason || "stitched result rejected").trim();
+    return {
+      ...singlePayload,
+      ocrMode: "single-fallback",
+      sourceToken: String(stitchedPayload && stitchedPayload.sourceToken || singlePayload && singlePayload.sourceToken || ""),
+      fallbackReason: reason,
+      stitchAdmission: "fallback"
+    };
+  }
+
+  function buildOcrRequestKey(targetKey, payload) {
+    const mode = String(payload && payload.ocrMode || "single");
+    const sourceToken = String(payload && payload.sourceToken || "");
+    const reason = String(payload && (payload.fallbackReason || payload.stitchRejectionReason) || "");
+    const stitchKey = String(payload && payload.stitchKey || "");
+    return [
+      String(targetKey || ""),
+      `src:${hashSourceIdentity(sourceToken)}`,
+      `mode:${mode}`,
+      reason ? `reason:${hashSourceIdentity(reason)}` : "",
+      stitchKey ? `stitch:${hashSourceIdentity(stitchKey)}` : ""
+    ].filter(Boolean).join("|");
+  }
+
+  function shouldSkipRepeatedFallbackRequest(targetKey, payload) {
+    if (!payload || payload.ocrMode !== "single-fallback") {
+      return false;
+    }
+    const key = buildOcrRequestKey(targetKey, payload);
+    const now = Date.now();
+    const lastAt = Number(state.recentFallbackRequestKeys.get(key) || 0);
+    state.recentFallbackRequestKeys.set(key, now);
+    pruneRecentFallbackRequestKeys(now);
+    return lastAt > 0 && now - lastAt < 2500;
+  }
+
+  function pruneRecentFallbackRequestKeys(now = Date.now()) {
+    for (const [key, timestamp] of state.recentFallbackRequestKeys.entries()) {
+      if (now - Number(timestamp || 0) > 10000) {
+        state.recentFallbackRequestKeys.delete(key);
+      }
+    }
+  }
+
+  function shouldRejectKakaoPageEdgeStitch({ owner, ownerHeight, canonicalWidth, previous, next, previousHeight, nextHeight } = {}) {
+    if (!owner || !isKakaoPageEdgeSource(owner.sourceKey)) {
+      return "";
+    }
+    const width = Math.max(1, Number(canonicalWidth) || Number(owner.width) || 1);
+    const height = Math.max(1, Number(ownerHeight) || 0);
+    const isFragment = height < Math.max(760, width * 1.05);
+    if (!isFragment) {
+      return "";
+    }
+    const neighborHeights = [
+      previous ? Number(previousHeight || 0) : 0,
+      next ? Number(nextHeight || 0) : 0
+    ].filter((value) => value > 0);
+    const hasStableNeighborHeight = neighborHeights.some((neighborHeight) => {
+      const ratio = Math.min(height, neighborHeight) / Math.max(height, neighborHeight);
+      return ratio >= 0.78;
+    });
+    return hasStableNeighborHeight
+      ? ""
+      : "page-edge fragmented image stitch admission rejected";
+  }
+
+  function isKakaoPageEdgeSource(source) {
+    return /(^|\/\/)page-edge\.kakao\.com\//i.test(String(source || ""));
   }
 
   function describeKakaoStitchTarget(target) {
@@ -1344,12 +1481,20 @@
       bottom: Number(rect.bottom || (Number(rect.top || 0) + height)),
       width,
       height,
-      sourceKey: getQuickSourceToken(target)
+      sourceKey: getQuickSourceToken(target),
+      currentSrc: target.currentSrc || "",
+      src: (target.getAttribute && target.getAttribute("src")) || ""
     };
   }
 
   function isVerifiedKakaoStitchNeighbor(owner, candidate, direction) {
     if (!owner || !candidate || !candidate.sourceKey || candidate.sourceKey === owner.sourceKey) {
+      return false;
+    }
+    // Verify different image sources to catch virtual list element reuse
+    const ownerSrc = owner.currentSrc || owner.src || "";
+    const candidateSrc = candidate.currentSrc || candidate.src || "";
+    if (ownerSrc && candidateSrc && ownerSrc === candidateSrc) {
       return false;
     }
     if (!(candidate.height >= 40)) {
@@ -1391,7 +1536,7 @@
 
   function buildKakaoStitchWindowPlan({ owner, previous, next, canonicalWidth, ownerHeight, previousHeight, nextHeight }) {
     if (!owner || !(owner.width > 0) || !(ownerHeight > 0) || !(canonicalWidth > 0)) {
-      return { previousSlice: 0, nextSlice: 0, ownerPageRect: null };
+      return { previousSlice: 0, nextSlice: 0 };
     }
     const bitmapPerCssPixel = canonicalWidth / owner.width;
     const desiredContext = clamp(
@@ -1401,13 +1546,7 @@
     );
     return {
       previousSlice: previous && previousHeight > 0 ? Math.min(desiredContext, previousHeight) : 0,
-      nextSlice: next && nextHeight > 0 ? Math.min(desiredContext, nextHeight) : 0,
-      ownerPageRect: {
-        left: owner.left + Number(window.scrollX || 0),
-        top: owner.top + Number(window.scrollY || 0),
-        width: owner.width,
-        height: owner.height
-      }
+      nextSlice: next && nextHeight > 0 ? Math.min(desiredContext, nextHeight) : 0
     };
   }
 
@@ -1417,8 +1556,24 @@
       dataUrl: payload.dataUrl,
       imageUrl: payload.imageUrl,
       targetKey: requestKey,
+      ocrMode: String(payload.ocrMode || "single"),
+      sourceToken: String(payload.sourceToken || ""),
+      fallbackReason: String(payload.fallbackReason || ""),
+      stitchAdmission: String(payload.stitchAdmission || ""),
       imageMeta: buildPayloadImageMeta(payload)
     });
+  }
+
+  function getBubbleLineCount(bubble) {
+    if (bubble && Number.isFinite(Number(bubble.source_line_count)) && Number(bubble.source_line_count) >= 1) {
+      return Math.round(Number(bubble.source_line_count));
+    }
+    if (bubble && Array.isArray(bubble.items) && bubble.items.length > 0) {
+      return bubble.items.length;
+    }
+    const text = String((bubble && (bubble.original_text || bubble.text || "")) || "");
+    const lines = String(text).split(/\n+/).filter(Boolean).length;
+    return Math.max(1, lines);
   }
 
   function shouldFallbackFromKakaoStitch(payload, rawResult, mappedResult) {
@@ -1430,15 +1585,36 @@
     if (rawBubbles.length === 0) {
       return "stitched OCR produced no owner text";
     }
-    const invalid = mappedBubbles.some((bubble) => (
-      ![bubble.x, bubble.y, bubble.w, bubble.h].every((value) => Number.isFinite(Number(value))) ||
-      Number(bubble.w) <= 0 ||
-      Number(bubble.h) <= 0 ||
-      Number(bubble.x) < -5 ||
-      Number(bubble.x) + Number(bubble.w) > 105 ||
-      Number(bubble.y) < -45 ||
-      Number(bubble.y) + Number(bubble.h) > 145
-    ));
+    // Check drop ratio
+    if (mappedBubbles.length === 0 && rawBubbles.length > 0) {
+      return "stitched OCR dropped all bubbles";
+    }
+    const dropRatio = rawBubbles.length > 0 ? (rawBubbles.length - mappedBubbles.length) / rawBubbles.length : 0;
+    if (dropRatio > 0.7) {
+      return "stitched OCR drop ratio exceeded 70%";
+    }
+    const invalid = mappedBubbles.some((bubble) => {
+      const values = [bubble.x, bubble.y, bubble.w, bubble.h].map((v) => Number(v));
+      if (values.some((v) => !Number.isFinite(v))) return true;
+      const bw = values[2];
+      const bh = values[3];
+      if (bw <= 0 || bh <= 0) return true;
+      const bx = values[0];
+      const by = values[1];
+      if (bubble.stitch_overflow) {
+        // Overflow bubble: y can be negative, y+h can > 100
+        if (by + bh < -35 || by > 135) return true;
+        if (bh > 60) return true;
+      } else {
+        // Normal bubble
+        if (bx < -5 || bx + bw > 105) return true;
+        if (by < -5 || by + bh > 105) return true;
+        const lineCount = getBubbleLineCount(bubble);
+        const maxH = lineCount > 1 ? 60 : 35;
+        if (bh > maxH) return true;
+      }
+      return false;
+    });
     return invalid ? "stitched OCR produced implausible owner coordinates" : "";
   }
 
@@ -1455,85 +1631,229 @@
     if (!payload || !payload.stitch || !result || !Array.isArray(result.bubbles)) {
       return result;
     }
-    const ownerTop = Number(payload.stitch.ownerTop) || 0;
-    const ownerHeight = Math.max(1, Number(payload.stitch.ownerHeight) || 1);
-    const compositeWidth = Math.max(1, Number(payload.stitch.compositeWidth) || Number(payload.width) || 1);
-    const compositeHeight = Math.max(1, Number(payload.stitch.compositeHeight) || Number(payload.height) || 1);
-    const ownerDraw = payload.stitch.owner && payload.stitch.owner.drawRect
-      ? payload.stitch.owner.drawRect
-      : { x: 0, y: ownerTop, w: compositeWidth, h: ownerHeight };
-    const segments = normalizeKakaoStitchSegments(payload.stitch, compositeWidth, compositeHeight, ownerDraw);
+    const stitch = payload.stitch;
+    const canvasWidth = Math.max(1, Number(stitch.canvasWidth || Number(payload.width) || 1));
+    const canvasHeight = Math.max(1, Number(stitch.canvasHeight || Number(payload.height) || 1));
+    const ownerDraw = stitch.owner && stitch.owner.drawRect
+      ? stitch.owner.drawRect
+      : { x: 0, y: 0, w: canvasWidth, h: canvasHeight };
+    const segments = normalizeKakaoStitchSegments(stitch, canvasWidth, canvasHeight, ownerDraw);
     const targetRect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
+
+    console.debug("[MangaTranslator][KakaoStitch] Mapping result", {
+      targetKey: targetKey && targetKey.slice(0, 80),
+      canvasWidth,
+      canvasHeight,
+      bubbleCount: result.bubbles.length,
+      segments: segments.map((s) => ({
+        source: s.source,
+        targetKey: s.targetKey,
+        src: String(s.src || "").slice(0, 80),
+        drawRect: s.drawRect,
+        sourceCrop: s.sourceCrop
+      }))
+    });
+
     const mapped = result.bubbles.map((bubble) => {
       const bx = Number(bubble.x);
       const by = Number(bubble.y);
       const bw = Number(bubble.w);
       const bh = Number(bubble.h);
+
       if (![bx, by, bw, bh].every(Number.isFinite) || bw <= 0 || bh <= 0) {
+        console.warn("[MangaTranslator][KakaoStitch] Discarding bubble with invalid coords", {
+          raw: { x: bubble.x, y: bubble.y, w: bubble.w, h: bubble.h },
+          text: String(bubble.original_text || "").slice(0, 40)
+        });
         return null;
       }
-      const bubbleRect = {
-        x: (bx / 100) * compositeWidth,
-        y: (by / 100) * compositeHeight,
-        w: (bw / 100) * compositeWidth,
-        h: (bh / 100) * compositeHeight
+
+      const bubblePx = {
+        x: (bx / 100) * canvasWidth,
+        y: (by / 100) * canvasHeight,
+        w: (bw / 100) * canvasWidth,
+        h: (bh / 100) * canvasHeight
       };
-      const ownerMatch = getKakaoStitchOwnerOverlap(bubbleRect, segments);
-      if (!ownerMatch) {
+
+      const bubbleArea = Math.max(1, bubblePx.w * bubblePx.h);
+      const ranked = segments.map((segment) => {
+        const rect = segment && segment.drawRect;
+        if (!rect) return { segment, ratio: 0 };
+        const left = Math.max(bubblePx.x, rect.x);
+        const top = Math.max(bubblePx.y, rect.y);
+        const right = Math.min(bubblePx.x + bubblePx.w, rect.x + rect.w);
+        const bottom = Math.min(bubblePx.y + bubblePx.h, rect.y + rect.h);
+        const overlap = Math.max(0, right - left) * Math.max(0, bottom - top);
+        return { segment, ratio: overlap / bubbleArea };
+      }).sort((a, b) => b.ratio - a.ratio);
+
+      const best = ranked[0];
+      const ownerRank = ranked.find((r) => r.segment && r.segment.source === "owner");
+      const ownerRatio = ownerRank ? ownerRank.ratio : 0;
+
+      console.debug("[MangaTranslator][KakaoStitch] Bubble overlap ratios", {
+        text: String(bubble.original_text || "").slice(0, 50),
+        rawPercent: { x: bx, y: by, w: bw, h: bh },
+        px: bubblePx,
+        overlaps: ranked.map((r) => ({
+          source: r.segment && r.segment.source,
+          ratio: Number(r.ratio.toFixed(4))
+        })),
+        bestSource: best && best.segment && best.segment.source,
+        bestRatio: best ? Number(best.ratio.toFixed(4)) : 0
+      });
+
+      if (!best || !best.segment || best.segment.source !== "owner" || best.ratio < 0.6) {
+        console.debug("[MangaTranslator][KakaoStitch] Discarding bubble: not in owner region", {
+          bestSource: best && best.segment && best.segment.source,
+          bestRatio: best ? Number(best.ratio.toFixed(4)) : 0
+        });
         return null;
       }
-      const mappedFillBox = mapKakaoStitchedPercentBox(
-        bubble.fill_box,
-        ownerDraw.y,
-        ownerDraw.h,
-        compositeHeight
-      );
-      const clippedLeft = Math.max(bubbleRect.x, ownerDraw.x);
-      const clippedTop = Math.max(bubbleRect.y, ownerDraw.y);
-      const clippedRight = Math.min(bubbleRect.x + bubbleRect.w, ownerDraw.x + ownerDraw.w);
-      const clippedBottom = Math.min(bubbleRect.y + bubbleRect.h, ownerDraw.y + ownerDraw.h);
+
+      const ownerRect = ownerDraw;
+      const crossesBoundary = bubblePx.y < ownerRect.y ||
+        (bubblePx.y + bubblePx.h) > (ownerRect.y + ownerRect.h);
+      const overflow = crossesBoundary && ownerRatio >= 0.25;
+
+      if (overflow) {
+        const mappedY = ((bubblePx.y - ownerRect.y) / ownerRect.h) * 100;
+        const mappedH = (bubblePx.h / ownerRect.h) * 100;
+
+        if (mappedY + mappedH < -35 || mappedY > 135 || mappedH > 60) {
+          console.warn("[MangaTranslator][KakaoStitch] Discarding overflow bubble out of bounds", {
+            text: String(bubble.original_text || "").slice(0, 40),
+            mappedY: Number(mappedY.toFixed(2)),
+            mappedBottom: Number((mappedY + mappedH).toFixed(2)),
+            mappedH: Number(mappedH.toFixed(2))
+          });
+          return null;
+        }
+
+        return {
+          ...bubble,
+          x: ((bubblePx.x - ownerRect.x) / ownerRect.w) * 100,
+          y: mappedY,
+          w: (bubblePx.w / ownerRect.w) * 100,
+          h: mappedH,
+          stitch_overflow: true,
+          fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
+          polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
+          region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
+        };
+      }
+
+      // Normal bubble: clip to owner drawRect
+      const clippedLeft = Math.max(bubblePx.x, ownerRect.x);
+      const clippedTop = Math.max(bubblePx.y, ownerRect.y);
+      const clippedRight = Math.min(bubblePx.x + bubblePx.w, ownerRect.x + ownerRect.w);
+      const clippedBottom = Math.min(bubblePx.y + bubblePx.h, ownerRect.y + ownerRect.h);
       const clippedW = Math.max(0, clippedRight - clippedLeft);
       const clippedH = Math.max(0, clippedBottom - clippedTop);
+      if (clippedW <= 0 || clippedH <= 0) {
+        console.warn("[MangaTranslator][KakaoStitch] Discarding normal bubble: zero area after clipping");
+        return null;
+      }
+
+      const mappedX = ((clippedLeft - ownerRect.x) / ownerRect.w) * 100;
+      const mappedY = ((clippedTop - ownerRect.y) / ownerRect.h) * 100;
+      const mappedW = (clippedW / ownerRect.w) * 100;
+      const mappedH = (clippedH / ownerRect.h) * 100;
+
+      const lineCount = getBubbleLineCount(bubble);
+      const maxH = lineCount > 1 ? 60 : 35;
+      if (mappedX < -5 || mappedX + mappedW > 105 ||
+          mappedY < -5 || mappedY + mappedH > 105 ||
+          mappedH > maxH) {
+        console.warn("[MangaTranslator][KakaoStitch] Discarding normal bubble out of bounds", {
+          text: String(bubble.original_text || "").slice(0, 40),
+          mapped: { x: Number(mappedX.toFixed(2)), y: Number(mappedY.toFixed(2)),
+                     w: Number(mappedW.toFixed(2)), h: Number(mappedH.toFixed(2)) },
+          maxH,
+          lineCount
+        });
+        return null;
+      }
+
       return {
         ...bubble,
-        cleaned_source_box: {
-          x: bx,
-          y: by,
-          w: bw,
-          h: bh
-        },
-        x: ((clippedLeft - ownerDraw.x) / ownerDraw.w) * 100,
-        y: ((clippedTop - ownerDraw.y) / ownerDraw.h) * 100,
-        w: (clippedW / ownerDraw.w) * 100,
-        h: (clippedH / ownerDraw.h) * 100,
-        fill_box: mappedFillBox,
-        polygon: Array.isArray(bubble.polygon)
-          ? bubble.polygon.map((point) => ({
-              x: Number(point && point.x),
-              y: (((Number(point && point.y) / 100) * compositeHeight - ownerDraw.y) / ownerDraw.h) * 100
-            }))
-          : null,
-        region_polygon: Array.isArray(bubble.region_polygon)
-          ? bubble.region_polygon.map((point) => ({
-              x: Number(point && point.x),
-              y: (((Number(point && point.y) / 100) * compositeHeight - ownerDraw.y) / ownerDraw.h) * 100
-            }))
-          : null,
-        stitch_overflow: true
+        x: mappedX,
+        y: mappedY,
+        w: mappedW,
+        h: mappedH,
+        stitch_overflow: false,
+        fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
+        polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
+        region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
       };
     }).filter(Boolean);
-    const ownerPageRect = payload.stitch.ownerPageRect && typeof payload.stitch.ownerPageRect === "object"
-      ? payload.stitch.ownerPageRect
-      : null;
+
     const withGlobalBoxes = mapped.map((bubble) => ({
       ...bubble,
-      global_box: buildKakaoGlobalBox(bubble, ownerPageRect)
+      global_box: computeKakaoGlobalBoxFromTarget(bubble, target)
     }));
     const deduped = dedupeKakaoGlobalBubbles(withGlobalBoxes, target, targetRect, targetKey);
+
+    console.debug("[MangaTranslator][KakaoStitch] Mapping complete", {
+      rawCount: result.bubbles.length,
+      mappedCount: mapped.length,
+      dedupedCount: deduped.length,
+      dropRatio: result.bubbles.length > 0
+        ? Number(((result.bubbles.length - deduped.length) / result.bubbles.length).toFixed(3))
+        : 0
+    });
+
     return {
       ...result,
       bubbles: deduped,
       debug: normalizeKakaoStitchDebugCoordinates(result.debug, payload.stitch)
+    };
+  }
+
+  function mapKakaoStitchedFillBox(box, ownerY, ownerH, compositeH) {
+    if (!box || typeof box !== "object") return null;
+    const x = Number(box.x);
+    const y = Number(box.y);
+    const w = Number(box.w);
+    const h = Number(box.h);
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+    const topPx = (y / 100) * compositeH;
+    const heightPx = (h / 100) * compositeH;
+    return {
+      x,
+      y: ((topPx - ownerY) / ownerH) * 100,
+      w,
+      h: (heightPx / ownerH) * 100
+    };
+  }
+
+  function mapKakaoStitchedPolygon(points, ownerY, ownerH, compositeH) {
+    if (!Array.isArray(points) || points.length === 0) return null;
+    const mapped = points.map((point) => {
+      const x = Number(point && point.x);
+      const rawY = Number(point && point.y);
+      if (!Number.isFinite(x) || !Number.isFinite(rawY)) return null;
+      const pixY = (rawY / 100) * compositeH;
+      return { x, y: ((pixY - ownerY) / ownerH) * 100 };
+    });
+    return mapped.every(Boolean) ? mapped : null;
+  }
+
+  function computeKakaoGlobalBoxFromTarget(bubble, target) {
+    if (!target || typeof target.getBoundingClientRect !== "function") return null;
+    const rect = target.getBoundingClientRect();
+    const scrollX = window.scrollX || 0;
+    const scrollY = window.scrollY || 0;
+    const bx = Number(bubble.x);
+    const by = Number(bubble.y);
+    const bw = Number(bubble.w);
+    const bh = Number(bubble.h);
+    if (![bx, by, bw, bh].every(Number.isFinite)) return null;
+    return {
+      left: rect.left + scrollX + (bx / 100) * rect.width,
+      top: rect.top + scrollY + (by / 100) * rect.height,
+      width: (bw / 100) * rect.width,
+      height: (bh / 100) * rect.height
     };
   }
 
@@ -1549,21 +1869,25 @@
     if (segments.length > 0) {
       return segments;
     }
-    const previousSlice = Math.max(0, Number(stitch && stitch.previousSlice) || 0);
-    const nextSlice = Math.max(0, Number(stitch && stitch.nextSlice) || 0);
+    // Fallback: derive from canvas dimensions and ownerDraw
+    const cw = Number(stitch && stitch.canvasWidth) || compositeWidth;
+    const ch = Number(stitch && stitch.canvasHeight) || compositeHeight;
+    // Backward compat: also check old field names
+    const prevSlice = Math.max(0, Number(stitch && (stitch.previousSlice || (stitch.previous && stitch.previous.drawRect && stitch.previous.drawRect.h))) || 0);
+    const nextSlice = Math.max(0, Number(stitch && (stitch.nextSlice || (stitch.next && stitch.next.drawRect && stitch.next.drawRect.h))) || 0);
     const owner = normalizeRectLike(ownerDraw) || {
       x: 0,
-      y: previousSlice,
-      w: compositeWidth,
-      h: Math.max(1, compositeHeight - previousSlice - nextSlice)
+      y: prevSlice,
+      w: cw,
+      h: Math.max(1, ch - prevSlice - nextSlice)
     };
     const fallback = [];
-    if (previousSlice > 0) {
-      fallback.push({ source: "previous", drawRect: { x: 0, y: 0, w: compositeWidth, h: previousSlice } });
+    if (prevSlice > 0) {
+      fallback.push({ source: "previous", drawRect: { x: 0, y: 0, w: cw, h: prevSlice } });
     }
     fallback.push({ source: "owner", drawRect: owner });
     if (nextSlice > 0) {
-      fallback.push({ source: "next", drawRect: { x: 0, y: owner.y + owner.h, w: compositeWidth, h: nextSlice } });
+      fallback.push({ source: "next", drawRect: { x: 0, y: owner.y + owner.h, w: cw, h: nextSlice } });
     }
     return fallback;
   }
@@ -1605,18 +1929,18 @@
     if (!debug || !stitch) {
       return debug;
     }
-    const compositeWidth = Math.max(1, Number(stitch.compositeWidth) || Number(debug.imageWidth) || 1);
-    const compositeHeight = Math.max(1, Number(stitch.compositeHeight) || Number(debug.imageHeight) || 1);
+    const cw = Math.max(1, Number(stitch.canvasWidth || stitch.compositeWidth) || Number(debug.imageWidth) || 1);
+    const ch = Math.max(1, Number(stitch.canvasHeight || stitch.compositeHeight) || Number(debug.imageHeight) || 1);
     const ownerDraw = stitch.owner && stitch.owner.drawRect
       ? stitch.owner.drawRect
-      : { x: 0, y: Number(stitch.ownerTop) || 0, w: compositeWidth, h: Math.max(1, Number(stitch.ownerHeight) || compositeHeight) };
-    const ownerRect = normalizeRectLike(ownerDraw) || { x: 0, y: 0, w: compositeWidth, h: compositeHeight };
+      : { x: 0, y: 0, w: cw, h: ch };
+    const ownerRect = normalizeRectLike(ownerDraw) || { x: 0, y: 0, w: cw, h: ch };
     const context = {
       stitch,
-      compositeWidth,
-      compositeHeight,
+      compositeWidth: cw,
+      compositeHeight: ch,
       ownerDraw: ownerRect,
-      segments: normalizeKakaoStitchSegments(stitch, compositeWidth, compositeHeight, ownerRect)
+      segments: normalizeKakaoStitchSegments(stitch, cw, ch, ownerRect)
     };
     return {
       ...debug,
@@ -1853,27 +2177,6 @@
     return { ...filtered, finalBubbles, items: finalBubbles };
   }
 
-  function mapKakaoStitchedPercentBox(box, ownerTop, ownerHeight, compositeHeight) {
-    if (!box || typeof box !== "object") {
-      return null;
-    }
-    const x = Number(box.x);
-    const y = Number(box.y);
-    const w = Number(box.w);
-    const h = Number(box.h);
-    if (![x, y, w, h].every(Number.isFinite) || !(w > 0 && h > 0)) {
-      return null;
-    }
-    const topPx = (y / 100) * compositeHeight;
-    const heightPx = (h / 100) * compositeHeight;
-    return {
-      x,
-      y: ((topPx - ownerTop) / ownerHeight) * 100,
-      w,
-      h: (heightPx / ownerHeight) * 100
-    };
-  }
-
   function dedupeKakaoGlobalBubbles(bubbles, target, targetRect, targetKey) {
     if (!targetRect || !targetKey) {
       return bubbles;
@@ -2028,18 +2331,6 @@
       return;
     }
     renderOverlay(entry.target, entry.targetKey, nextResult);
-  }
-
-  function buildKakaoGlobalBox(bubble, ownerPageRect) {
-    if (!ownerPageRect || !(Number(ownerPageRect.width) > 0) || !(Number(ownerPageRect.height) > 0)) {
-      return null;
-    }
-    return {
-      left: Number(ownerPageRect.left) + (Number(bubble.x) / 100) * Number(ownerPageRect.width),
-      top: Number(ownerPageRect.top) + (Number(bubble.y) / 100) * Number(ownerPageRect.height),
-      width: (Number(bubble.w) / 100) * Number(ownerPageRect.width),
-      height: (Number(bubble.h) / 100) * Number(ownerPageRect.height)
-    };
   }
 
   function pageBoxIntersectionRatio(left, right) {
@@ -3820,6 +4111,50 @@
       });
   }
 
+  function captureTargetSnapshot(target) {
+    if (!target || typeof target.getBoundingClientRect !== "function") {
+      return null;
+    }
+    const rect = target.getBoundingClientRect();
+    return {
+      currentSrc: target.currentSrc || target.src || "",
+      naturalWidth: target.naturalWidth || 0,
+      naturalHeight: target.naturalHeight || 0,
+      rectWidth: rect.width,
+      rectHeight: rect.height,
+      isConnected: target.isConnected
+    };
+  }
+
+  function isTargetSnapshotStillValid(target, snapshot) {
+    if (!target || !target.isConnected || !snapshot) {
+      return false;
+    }
+    if (!snapshot.isConnected) {
+      return false;
+    }
+    const currentSrc = target.currentSrc || target.src || "";
+    if (snapshot.currentSrc && currentSrc && snapshot.currentSrc !== currentSrc) {
+      return false;
+    }
+    const natW = target.naturalWidth || 0;
+    const natH = target.naturalHeight || 0;
+    if (snapshot.naturalWidth && natW && snapshot.naturalWidth !== natW) {
+      return false;
+    }
+    if (snapshot.naturalHeight && natH && snapshot.naturalHeight !== natH) {
+      return false;
+    }
+    const rect = target.getBoundingClientRect();
+    const wDiff = Math.abs(rect.width - snapshot.rectWidth);
+    const hDiff = Math.abs(rect.height - snapshot.rectHeight);
+    const wRel = snapshot.rectWidth > 0 ? wDiff / snapshot.rectWidth : 0;
+    const hRel = snapshot.rectHeight > 0 ? hDiff / snapshot.rectHeight : 0;
+    if (wDiff > 3 && wRel > 0.03) return false;
+    if (hDiff > 3 && hRel > 0.03) return false;
+    return true;
+  }
+
   function clearRenderedTarget(target) {
     removeOverlayForTarget(target);
     restoreEmbeddedForTarget(target);
@@ -4334,43 +4669,71 @@
       if (!target || !target.isConnected || typeof target.getBoundingClientRect !== "function") {
         return false;
       }
-      if (!ownerRect) {
-        return true;
-      }
+
       const rect = target.getBoundingClientRect();
-      if (!(rect.width >= 200 && rect.height >= 40)) {
+      if (!(rect.width >= 1 && rect.height >= 1)) {
         return false;
       }
+
+      // Visibility check: skip hidden elements
+      try {
+        const style = window.getComputedStyle(target);
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+          return false;
+        }
+      } catch (_) {
+        // ignore getComputedStyle errors
+      }
+
       if (target instanceof HTMLImageElement) {
         const src = target.currentSrc || target.src || "";
         if (!src || !target.complete) return false;
         const naturalWidth = Number(target.naturalWidth || 0);
         const naturalHeight = Number(target.naturalHeight || 0);
-        if (!(naturalWidth >= 60 && naturalHeight >= 30)) {
+        if (!(naturalWidth >= 1 && naturalHeight >= 1)) {
           return false;
         }
       }
-      const center = rect.left + rect.width / 2;
-      const maxCenterDelta = Math.max(rect.width, ownerRect.width) * 0.15;
-      return ownerCenter === null || Math.abs(center - ownerCenter) <= maxCenterDelta;
+
+      // Neighbor-finding mode: apply size + center proximity filters
+      if (ownerRect) {
+        if (!(rect.width >= 200 && rect.height >= 40)) {
+          return false;
+        }
+        if (target instanceof HTMLImageElement) {
+          const naturalWidth = Number(target.naturalWidth || 0);
+          const naturalHeight = Number(target.naturalHeight || 0);
+          if (!(naturalWidth >= 60 && naturalHeight >= 30)) {
+            return false;
+          }
+        }
+        if (ownerCenter !== null) {
+          const center = rect.left + rect.width / 2;
+          const maxCenterDelta = Math.max(rect.width, ownerRect.width) * 0.15;
+          if (Math.abs(center - ownerCenter) > maxCenterDelta) {
+            return false;
+          }
+        }
+      }
+
+      return true;
     });
 
+    // Always sort by visual position (scroll-adjusted), secondary by left
     return result.sort((left, right) => {
       if (left === right) {
         return 0;
       }
-      if (ownerRect) {
-        const leftRect = left.getBoundingClientRect();
-        const rightRect = right.getBoundingClientRect();
-        const leftTop = leftRect.top + (window.scrollY || 0);
-        const rightTop = rightRect.top + (window.scrollY || 0);
-        if (Math.abs(leftTop - rightTop) > 2) {
-          return leftTop - rightTop;
-        }
-        return leftRect.left - rightRect.left;
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      const leftTop = leftRect.top + (window.scrollY || 0);
+      const rightTop = rightRect.top + (window.scrollY || 0);
+      if (Math.abs(leftTop - rightTop) > 2) {
+        return leftTop - rightTop;
       }
-      return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_PRECEDING ? 1 : -1;
+      return leftRect.left - rightRect.left;
     });
+
   }
 
   async function runWithConcurrency(taskFactories, parallel) {
@@ -4794,6 +5157,11 @@
       targetCssWidth: Number(payload.targetCssWidth || 0),
       targetCssHeight: Number(payload.targetCssHeight || 0),
       coordinateSpace: String(payload.coordinateSpace || ""),
+      ocrMode: String(payload.ocrMode || "single"),
+      sourceToken: String(payload.sourceToken || ""),
+      fallbackReason: String(payload.fallbackReason || ""),
+      stitchAdmission: String(payload.stitchAdmission || ""),
+      stitchRejectionReason: String(payload.stitchRejectionReason || ""),
       stitch: payload.stitch || null
     };
   }

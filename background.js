@@ -429,7 +429,17 @@ async function handleTranslateDataUrl(message, sender) {
   const dataUrl = String(message.dataUrl || "").trim();
   const imageUrl = String(message.imageUrl || "").trim();
   const targetKey = String(message.targetKey || "").trim();
-  const imageMeta = normalizeImageMeta(message.imageMeta);
+  const ocrMode = normalizeOcrRequestMode(message.ocrMode || (message.imageMeta && message.imageMeta.ocrMode));
+  const sourceToken = String(message.sourceToken || (message.imageMeta && message.imageMeta.sourceToken) || "").trim();
+  const fallbackReason = String(message.fallbackReason || (message.imageMeta && message.imageMeta.fallbackReason) || "").trim();
+  const stitchAdmission = String(message.stitchAdmission || (message.imageMeta && message.imageMeta.stitchAdmission) || "").trim();
+  const imageMeta = normalizeImageMeta({
+    ...(message.imageMeta || {}),
+    ocrMode,
+    sourceToken,
+    fallbackReason,
+    stitchAdmission
+  });
 
   if (!isDataUrl(dataUrl)) {
     return { ok: false, error: "Invalid or empty image data URL" };
@@ -489,6 +499,10 @@ async function handleTranslateDataUrl(message, sender) {
     visionOcrModel: settings.visionOcrModel,
     imageUrl,
     targetKey,
+    ocrMode,
+    sourceToken,
+    fallbackReason,
+    stitchAdmission,
     dataUrl
   });
 
@@ -510,7 +524,7 @@ async function handleTranslateDataUrl(message, sender) {
         mode: settings.localOcrMode || DEFAULT_LOCAL_OCR_MODE,
         params: getLocalOcrParams(settings),
         debug: false,
-        debugId: buildLocalOcrDebugId(targetKey)
+        debugId: buildLocalOcrDebugId(targetKey, imageMeta)
       });
       cached = isDataUrl(refreshedOcr && refreshedOcr.cleanedImage)
         ? { ...cached, cleanedImage: refreshedOcr.cleanedImage }
@@ -885,7 +899,7 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
     );
     effectiveOcrMode = "fast";
   }
-  const debugId = buildLocalOcrDebugId(targetKey);
+  const debugId = buildLocalOcrDebugId(targetKey, imageMeta);
   let ocrPayload = await requestLocalPaddleOcr({
     dataUrl,
     baseUrl: localOcrBaseUrl,
@@ -1167,10 +1181,18 @@ async function buildLocalPaddleBubbleItems(
 
   words = await repairLowConfidenceLocalPaddleWordsWithVision(words, dataUrl, ocrImageSize, visionOcrOptions, debug);
   const imageAnalysis = await analyzeLocalOcrImage(dataUrl, ocrImageSize);
-  // 跨图窗口必须先使用全部 OCR 行聚类，再用整句中心点决定所属切片。
-  // 若在聚类前按单行中心过滤，位于相邻切片但同属一个框的句子会被拆开翻译。
-  const clustered = clusterLocalPaddleWords(words, ocrImageSize, imageAnalysis, debug)
-    .filter((item) => isOcrItemOwnedByStitch(item, imageMeta && imageMeta.stitch));
+  // 跨图窗口聚类全部 OCR 行；归属判断统一由 content.js 在 mapKakaoStitchedResult() 中处理。
+  // 不在此处用 isOcrItemOwnedByStitch 过滤，避免按单行中心误拆跨页框。
+  const clustered = clusterLocalPaddleWords(words, ocrImageSize, imageAnalysis, debug);
+  // Stitch ownership filtering is now handled exclusively by content.js mapKakaoStitchedResult()
+  if (imageMeta && imageMeta.stitch) {
+    if (debug) {
+      console.debug("[MangaTranslator][KakaoStitch] Background: passing all clustered items to content.js for ownership filtering", {
+        clusteredCount: clustered.length,
+        stitchKeys: (imageMeta.stitch.sourceKeys || []).join(",")
+      });
+    }
+  }
   if (ocrDebug) {
     ocrDebug.filteredItems = words.map((item, index) => toDebugOcrItem(item, index, ocrImageSize, "filtered"));
     ocrDebug.mergedItems = clustered.map((item, index) => toDebugOcrItem(item, index, ocrImageSize, "merged"));
@@ -2428,27 +2450,40 @@ function normalizeImageMeta(value) {
     targetCssWidth: toNumber(value.targetCssWidth, 0),
     targetCssHeight: toNumber(value.targetCssHeight, 0),
     coordinateSpace: String(value.coordinateSpace || ""),
+    ocrMode: normalizeOcrRequestMode(value.ocrMode),
+    sourceToken: String(value.sourceToken || ""),
+    fallbackReason: String(value.fallbackReason || ""),
+    stitchAdmission: String(value.stitchAdmission || ""),
+    stitchRejectionReason: String(value.stitchRejectionReason || ""),
     stitch: normalizeStitchMeta(value.stitch)
   };
   return meta.width > 0 || meta.height > 0 || meta.cropCssWidth > 0 ? meta : null;
+}
+
+function normalizeOcrRequestMode(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return text === "stitch" || text === "single-fallback" ? text : "single";
 }
 
 function normalizeStitchMeta(value) {
   if (!value || typeof value !== "object") {
     return null;
   }
-  const ownerTop = toNumber(value.ownerTop, -1);
-  const ownerHeight = toNumber(value.ownerHeight, 0);
-  const compositeWidth = toNumber(value.compositeWidth, 0);
-  const compositeHeight = toNumber(value.compositeHeight, 0);
-  if (ownerTop < 0 || ownerHeight <= 0 || compositeWidth <= 0 || compositeHeight <= 0) {
+  // New structure: canvasWidth/canvasHeight, owner segment with drawRect
+  const canvasWidth = toNumber(value.canvasWidth || value.compositeWidth, 0);
+  const canvasHeight = toNumber(value.canvasHeight || value.compositeHeight, 0);
+  // Derive ownerTop/ownerHeight from owner.drawRect (new) or legacy flat fields
+  const ownerDraw = value.owner && value.owner.drawRect;
+  const ownerTop = toNumber(ownerDraw ? ownerDraw.y : value.ownerTop, -1);
+  const ownerHeight = toNumber(ownerDraw ? ownerDraw.h : value.ownerHeight, 0);
+  if (canvasWidth <= 0 || canvasHeight <= 0) {
     return null;
   }
   return {
     ownerTop,
     ownerHeight,
-    compositeWidth,
-    compositeHeight,
+    canvasWidth,
+    canvasHeight,
     overlap: toNumber(value.overlap, 0),
     sourceKeys: Array.isArray(value.sourceKeys) ? value.sourceKeys.map((entry) => String(entry || "")) : []
   };
@@ -2738,8 +2773,13 @@ function buildUnifiedOcrDebugPayload(debug, candidates, extras = {}) {
   };
 }
 
-function buildLocalOcrDebugId(targetKey) {
-  return String(targetKey || `target-${Date.now()}`)
+function buildLocalOcrDebugId(targetKey, imageMeta = null) {
+  const mode = normalizeOcrRequestMode(imageMeta && imageMeta.ocrMode);
+  const admission = String(imageMeta && imageMeta.stitchAdmission || "").trim();
+  const reason = String(imageMeta && imageMeta.fallbackReason || imageMeta && imageMeta.stitchRejectionReason || "").trim();
+  return [String(targetKey || `target-${Date.now()}`), `mode-${mode}`, admission, reason ? `reason-${hashString(reason).slice(0, 8)}` : ""]
+    .filter(Boolean)
+    .join("-")
     .replace(/[^a-z0-9_-]+/gi, "-")
     .slice(0, 80);
 }
@@ -4527,6 +4567,10 @@ function buildCacheKey({
   visionOcrModel,
   imageUrl,
   targetKey,
+  ocrMode,
+  sourceToken,
+  fallbackReason,
+  stitchAdmission,
   dataUrl
 }) {
   const source = [
@@ -4557,6 +4601,10 @@ function buildCacheKey({
     visionOcrModel || "",
     imageUrl || "",
     targetKey || "",
+    normalizeOcrRequestMode(ocrMode),
+    sourceToken || "",
+    fallbackReason || "",
+    stitchAdmission || "",
     dataUrl.slice(0, 220),
     String(dataUrl.length)
   ].join("|");

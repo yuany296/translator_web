@@ -22,7 +22,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage };`,
+  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta };`,
   context,
   { filename: "background.js" }
 );
@@ -58,6 +58,54 @@ test("complex-background cache entries retain the cleaned-image requirement", ()
   assert.equal(result.cleanedImage, undefined);
   assert.equal(result.requiresCleanedImage, true);
   assert.equal(context.__backgroundTest.translationResultNeedsCleanedImage(result), true);
+});
+
+test("translation cache key separates OCR mode, source token, and fallback reason", () => {
+  const base = {
+    provider: "local_paddle_deepseek",
+    model: "model",
+    baseUrl: "https://api.example.test",
+    captureMode: "direct",
+    localOcrBaseUrl: "http://127.0.0.1:8765",
+    localOcrLang: "korean",
+    localOcrMode: "enhanced",
+    imageUrl: "https://page-edge.kakao.com/sdownload/resource?kid=a",
+    targetKey: "owner-key",
+    dataUrl: "data:image/png;base64,AAAA"
+  };
+
+  const stitch = context.__backgroundTest.buildCacheKey({
+    ...base,
+    ocrMode: "stitch",
+    sourceToken: "https://page-edge.kakao.com/sdownload/resource?kid=a"
+  });
+  const fallback = context.__backgroundTest.buildCacheKey({
+    ...base,
+    ocrMode: "single-fallback",
+    sourceToken: "https://page-edge.kakao.com/sdownload/resource?kid=a",
+    fallbackReason: "stitched OCR dropped all bubbles"
+  });
+  const reusedNode = context.__backgroundTest.buildCacheKey({
+    ...base,
+    ocrMode: "stitch",
+    sourceToken: "https://page-edge.kakao.com/sdownload/resource?kid=b"
+  });
+
+  assert.notEqual(stitch, fallback);
+  assert.notEqual(stitch, reusedNode);
+});
+
+test("local OCR debug id includes OCR request mode", () => {
+  const meta = context.__backgroundTest.normalizeImageMeta({
+    width: 760,
+    height: 1000,
+    ocrMode: "single-fallback",
+    fallbackReason: "stitched OCR dropped all bubbles"
+  });
+  const debugId = context.__backgroundTest.buildLocalOcrDebugId("owner-key", meta);
+
+  assert.match(debugId, /mode-single-fallback/);
+  assert.match(debugId, /reason-/);
 });
 
 test("translation cache automatically clears old entries and retries after quota failure", async () => {
@@ -346,7 +394,9 @@ test("stitched OCR drops a completed cluster owned by the adjacent slice", async
     { stitch: { ownerTop: 300, ownerHeight: 300 } }
   );
 
-  assert.equal(result.length, 0);
+  // Stitch ownership filtering moved to content.js mapKakaoStitchedResult();
+  // background.js no longer pre-filters — all clustered items pass through.
+  assert.equal(result.length, 1);
 });
 
 test("adjacent text in different physical panels stays in separate translation groups", async () => {

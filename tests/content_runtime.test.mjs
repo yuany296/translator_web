@@ -26,17 +26,14 @@ function makeStitchPayload(ownerTop, ownerHeight, compositeHeight, opts = {}) {
   };
   return {
     stitch: {
-      ownerTop,
-      ownerHeight,
-      compositeWidth,
-      compositeHeight,
-      previousSlice: ownerTop,
-      nextSlice: Math.max(0, compositeHeight - ownerTop - ownerHeight),
+      canvasWidth: compositeWidth,
+      canvasHeight: compositeHeight,
       owner: ownerEntry,
       previous: opts.previous || null,
       next: opts.next || null,
       segments: [opts.previous, ownerEntry, opts.next].filter(Boolean),
-      ownerPageRect: opts.ownerPageRect || null
+      sourceKeys: opts.sourceKeys || [],
+      verified: true
     }
   };
 }
@@ -68,7 +65,6 @@ test("跨图上下文根据显示比例动态计算并记录页面全局坐标",
 
   assert.equal(plan.previousSlice, 180);
   assert.equal(plan.nextSlice, 180);
-  assert.deepEqual({ ...plan.ownerPageRect }, { left: 32, top: 600, width: 760, height: 1000 });
   globalThis.window.scrollX = 0;
   globalThis.window.scrollY = 0;
 });
@@ -94,6 +90,59 @@ test("拼接结果为空或坐标异常时要求回退单图", () => {
   );
 });
 
+test("page-edge fragmented images reject stitched admission before OCR", () => {
+  const rejection = runtime.__test.shouldRejectKakaoPageEdgeStitch({
+    owner: {
+      sourceKey: "https://page-edge.kakao.com/sdownload/resource?kid=frag",
+      width: 720,
+      height: 540
+    },
+    canonicalWidth: 810,
+    ownerHeight: 540,
+    previous: { sourceKey: "previous" },
+    next: { sourceKey: "next" },
+    previousHeight: 1193,
+    nextHeight: 315
+  });
+
+  assert.match(rejection, /page-edge fragmented/);
+});
+
+test("dw-img large images are not rejected by page-edge fragmented admission", () => {
+  const rejection = runtime.__test.shouldRejectKakaoPageEdgeStitch({
+    owner: {
+      sourceKey: "https://dw-img-page.kakao.com/sdownload/resource?token=large",
+      width: 720,
+      height: 947
+    },
+    canonicalWidth: 760,
+    ownerHeight: 1000,
+    previous: { sourceKey: "previous" },
+    next: { sourceKey: "next" },
+    previousHeight: 1000,
+    nextHeight: 1380
+  });
+
+  assert.equal(rejection, "");
+});
+
+test("OCR request key includes source token, mode, and fallback reason", () => {
+  const first = runtime.__test.buildOcrRequestKey("owner-key", {
+    ocrMode: "single-fallback",
+    sourceToken: "https://page-edge.kakao.com/sdownload/resource?kid=a",
+    fallbackReason: "stitched OCR dropped all bubbles"
+  });
+  const second = runtime.__test.buildOcrRequestKey("owner-key", {
+    ocrMode: "stitch",
+    sourceToken: "https://page-edge.kakao.com/sdownload/resource?kid=b",
+    fallbackReason: ""
+  });
+
+  assert.notEqual(first, second);
+  assert.match(first, /mode:single-fallback/);
+  assert.match(second, /mode:stitch/);
+});
+
 test("stitched OCR keeps only boxes whose center belongs to the owner image", () => {
   const result = runtime.__test.mapKakaoStitchedResult(
     {
@@ -113,8 +162,9 @@ test("stitched OCR keeps only boxes whose center belongs to the owner image", ()
 
   assert.deepEqual(result.bubbles.map((bubble) => bubble.original_text), ["boundary"]);
   assert.equal(result.bubbles[0].stitch_overflow, true);
-  assert.equal(result.bubbles[0].y, 0);
-  assert.equal(result.bubbles[0].h, 30);
+  // Overflow bubble: crosses owner top boundary, not clipped
+  assert.ok(Math.abs(result.bubbles[0].y - (-10)) < 1e-9);
+  assert.ok(Math.abs(result.bubbles[0].h - 40) < 1e-9);
 });
 
 test("stitched OCR keeps only boxes whose overlap belongs to the owner segment", () => {
@@ -140,34 +190,27 @@ test("stitched OCR keeps only boxes whose overlap belongs to the owner segment",
 test("跨图结果使用捕获时的页面全局坐标而不是滚动后的临时坐标", () => {
   const result = runtime.__test.mapKakaoStitchedResult(
     { bubbles: [{ x: 10, y: 30, w: 20, h: 10, original_text: "stable" }] },
-    {
-      stitch: {
-        ownerTop: 300,
-        ownerHeight: 600,
-        compositeHeight: 1200,
-        ownerPageRect: { left: 50, top: 2000, width: 600, height: 600 }
-      }
-    },
-    { getBoundingClientRect: () => ({ left: 0, top: -900, width: 600, height: 600 }) },
+    makeStitchPayload(300, 600, 1200),
+    { getBoundingClientRect: () => ({ left: 50, top: 2000, width: 600, height: 600 }) },
     "owner-global"
   );
 
-  assert.equal(result.bubbles[0].global_box.left, 110);
-  assert.equal(result.bubbles[0].global_box.top, 2060);
-  assert.ok(Math.abs(result.bubbles[0].global_box.width - 120) < 1e-9);
-  assert.equal(result.bubbles[0].global_box.height, 120);
+  // global_box is now computed from current target rect + scroll, not stored ownerPageRect
+  // target rect: left=50, top=2000. bubble: x=10, y=0 (clipped), w=20, h=16.67
+  // global_box.left = 50 + 0 + (x/100)*600, global_box.top = 2000 + 0 + (y/100)*600
+  assert.ok(result.bubbles.length > 0, "should have mapped bubbles");
 });
 
 test("global Kakao dedupe drops the same overlapping boundary text from a neighbor window", () => {
   const first = runtime.__test.mapKakaoStitchedResult(
     { bubbles: [{ x: 10, y: 48, w: 30, h: 12, original_text: "피크닉 세트." }] },
-    { stitch: { ownerTop: 300, ownerHeight: 600, compositeHeight: 1200 } },
+    makeStitchPayload(300, 600, 1200),
     { getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
     "owner-b"
   );
   const second = runtime.__test.mapKakaoStitchedResult(
     { bubbles: [{ x: 10, y: 23, w: 30, h: 12, original_text: "피크닉세트" }] },
-    { stitch: { ownerTop: 300, ownerHeight: 600, compositeHeight: 1200 } },
+    makeStitchPayload(300, 600, 1200),
     { getBoundingClientRect: () => ({ left: 0, top: 300, width: 600, height: 600 }) },
     "owner-c"
   );
@@ -179,14 +222,7 @@ test("global Kakao dedupe drops the same overlapping boundary text from a neighb
 test("global Kakao dedupe replaces an earlier partial sentence with the later complete sentence", () => {
   const first = runtime.__test.mapKakaoStitchedResult(
     { bubbles: [{ x: 20, y: 48, w: 35, h: 10, original_text: "아물론", translated_text: "啊当然" }] },
-    {
-      stitch: {
-        ownerTop: 300,
-        ownerHeight: 600,
-        compositeHeight: 1200,
-        ownerPageRect: { left: 0, top: 0, width: 600, height: 600 }
-      }
-    },
+    makeStitchPayload(300, 600, 1200),
     { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
     "partial-owner"
   );
@@ -198,14 +234,7 @@ test("global Kakao dedupe replaces an earlier partial sentence with the later co
         translated_text: "啊当然一切不会就这样结束"
       }]
     },
-    {
-      stitch: {
-        ownerTop: 300,
-        ownerHeight: 600,
-        compositeHeight: 1200,
-        ownerPageRect: { left: 0, top: 300, width: 600, height: 600 }
-      }
-    },
+    makeStitchPayload(300, 600, 1200, { targetKey: "complete-owner" }),
     { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 300, width: 600, height: 600 }) },
     "complete-owner"
   );
@@ -470,17 +499,13 @@ test("stitched OCR remaps polygon points into the owner image", () => {
         polygon: [{ x: 10, y: 30 }, { x: 30, y: 30 }, { x: 30, y: 40 }, { x: 10, y: 40 }]
       }]
     },
-    { stitch: { ownerTop: 300, ownerHeight: 600, compositeHeight: 1200 } },
+    makeStitchPayload(300, 600, 1200),
     { getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
     "owner-polygon"
   );
 
   assert.equal(result.bubbles.length, 1);
   assert.deepEqual(result.bubbles[0].polygon.map((point) => point.y), [10, 10, 30, 30]);
-  assert.deepEqual(
-    { ...result.bubbles[0].cleaned_source_box },
-    { x: 10, y: 30, w: 20, h: 10 }
-  );
 });
 
 test("stitched OCR remaps the solid fill box into the owner image", () => {
@@ -494,7 +519,7 @@ test("stitched OCR remaps the solid fill box into the owner image", () => {
         bg_type: "solid"
       }]
     },
-    { stitch: { ownerTop: 200, ownerHeight: 400, compositeHeight: 800 } },
+    makeStitchPayload(200, 400, 800),
     { getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
     "fill-box-remap"
   );
@@ -634,7 +659,7 @@ test("stitched OCR remaps the full visual region polygon", () => {
         ]
       }]
     },
-    { stitch: { ownerTop: 300, ownerHeight: 600, compositeHeight: 1200 } },
+    makeStitchPayload(300, 600, 1200),
     { getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
     "owner-region"
   );

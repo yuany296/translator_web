@@ -17,11 +17,11 @@
     IS_PIXIV_COMIC_VIEWER || IS_KAKAOPAGE_READER ? "img, canvas, [id^='page-'], [style*='background-image']" : "img, canvas";
   const PIXIV_PAGE_ID_RE = /^page-\d+$/;
   const PIXIV_PLACEHOLDER_BACKGROUND_RE = /\/images\/blank\.png|border_logo\.png/i;
-  const AUTO_MIN_WIDTH = 260;
-  const AUTO_MIN_HEIGHT = 260;
-  const AUTO_MIN_RATIO = 0.22;
-  const MANUAL_MIN_WIDTH = 120;
-  const MANUAL_MIN_HEIGHT = 120;
+  const AUTO_MIN_WIDTH = 80;
+  const AUTO_MIN_HEIGHT = 80;
+  const AUTO_MIN_RATIO = 0.10;
+  const MANUAL_MIN_WIDTH = 60;
+  const MANUAL_MIN_HEIGHT = 60;
   const MAX_MANUAL_TARGETS = 4;
   const MAX_PARALLEL_TRANSLATIONS = 3;
   const MANUAL_PARALLEL_TRANSLATIONS = 3;
@@ -651,13 +651,13 @@
       return false;
     }
     const rect = target.getBoundingClientRect();
-    if (rect.width < 90 || rect.height < 90) {
+        if (rect.width < 80 || rect.height < 80) {
       return false;
     }
     if (target instanceof HTMLImageElement) {
       const naturalWidth = Number(target.naturalWidth || 0);
       const naturalHeight = Number(target.naturalHeight || 0);
-      if (naturalWidth > 0 && naturalHeight > 0 && (naturalHeight < 220 || naturalHeight / naturalWidth < 0.18)) {
+      if (naturalWidth > 0 && naturalHeight > 0 && (naturalHeight < 80 || naturalHeight / naturalWidth < 0.10)) {
         return false;
       }
     }
@@ -2445,7 +2445,7 @@
     }
 
     const rect = target.getBoundingClientRect();
-    if (rect.width < 180 || rect.height < 120) {
+    if (rect.width < 80 || rect.height < 60) {
       return { ok: false, reason: `target too small: ${rect.width.toFixed(0)}x${rect.height.toFixed(0)}` };
     }
 
@@ -2454,7 +2454,7 @@
       return { ok: false, reason: "no visible viewport rect" };
     }
 
-    if (visibleRect.width < 160 || visibleRect.height < 100) {
+    if (visibleRect.width < 60 || visibleRect.height < 50) {
       return {
         ok: false,
         reason: `visible rect too small: ${visibleRect.width.toFixed(0)}x${visibleRect.height.toFixed(0)}`,
@@ -2462,7 +2462,7 @@
     }
 
     const visibleArea = getVisibleArea(rect);
-    if (visibleArea < 12000) {
+    if (visibleArea < 5000) {
       return { ok: false, reason: `visible area too small: ${visibleArea.toFixed(0)}` };
     }
 
@@ -4346,7 +4346,7 @@
         if (!src || !target.complete) return false;
         const naturalWidth = Number(target.naturalWidth || 0);
         const naturalHeight = Number(target.naturalHeight || 0);
-        if (!(naturalWidth >= 120 && naturalHeight >= 40)) {
+        if (!(naturalWidth >= 60 && naturalHeight >= 30)) {
           return false;
         }
       }
@@ -4427,8 +4427,8 @@
     }
 
     const ratio = rect.height / rect.width;
-    const minRatio = relaxed ? 0.12 : AUTO_MIN_RATIO;
-    const maxRatio = relaxed ? 14 : 9;
+    const minRatio = relaxed ? 0.10 : AUTO_MIN_RATIO;
+    const maxRatio = relaxed ? 20 : 14;
     if (ratio < minRatio || ratio > maxRatio) {
       return false;
     }
@@ -4449,19 +4449,19 @@
     if (!allowOffscreen) {
       const visibleArea = getVisibleArea(rect);
       const visibleRect = getVisibleViewportRect(target);
-      const minVisibleArea = relaxed ? 14000 : manual ? 32000 : 52000;
+      const minVisibleArea = relaxed ? 5000 : manual ? 10000 : 15000;
       if (!visibleRect || visibleArea < minVisibleArea) {
         return false;
       }
 
-      const minVisibleHeight = relaxed ? 120 : manual ? 180 : 220;
-      const minVisibleWidth = relaxed ? 180 : 260;
+      const minVisibleHeight = relaxed ? 50 : manual ? 60 : 80;
+      const minVisibleWidth = relaxed ? 60 : manual ? 80 : 100;
       if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
         return false;
       }
 
       const visibleRatio = visibleRect.height / Math.max(1, visibleRect.width);
-      if (visibleRatio < 0.2 || visibleRatio > 8.5) {
+      if (visibleRatio < 0.10 || visibleRatio > 20) {
         return false;
       }
     }
@@ -4471,7 +4471,7 @@
       const naturalHeight = Number(target.naturalHeight || 0);
       if (naturalWidth > 0 && naturalHeight > 0) {
         const naturalRatio = naturalHeight / Math.max(1, naturalWidth);
-        if (naturalHeight < 220 || naturalRatio < 0.18) {
+        if (naturalHeight < 80 || naturalRatio < 0.10) {
           return false;
         }
       }

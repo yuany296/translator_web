@@ -155,6 +155,7 @@
       hasUsableKakaoStripCaptureRect,
       selectPendingAheadCandidates,
       selectPendingContinuousCandidates,
+      isAttachableKakaoShortPage,
       isAutomaticPretranslateMode,
       shouldSchedulePagePretranslation
     },
@@ -690,6 +691,10 @@
     }
 
     if (!options.manual) {
+      return;
+    }
+
+    if (maybeQueueKakaoShortPageAttachmentOwner(target, options)) {
       return;
     }
 
@@ -4581,6 +4586,10 @@
       return;
     }
 
+    if (maybeQueueKakaoShortPageAttachmentOwner(target, { manual: true, force: true, reason: "page-auto-short-attachment" })) {
+      return;
+    }
+
     const targetKey = computeTargetKey(target);
     const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
     if (
@@ -4610,6 +4619,81 @@
       manual: true,
       reason: "page-auto"
     });
+  }
+
+  function maybeQueueKakaoShortPageAttachmentOwner(target, options = {}) {
+    if (
+      !IS_KAKAOPAGE_READER ||
+      state.captureMode !== CAPTURE_MODE_DIRECT ||
+      state.renderMode !== RENDER_MODE_OVERLAY ||
+      !(target instanceof HTMLImageElement) ||
+      !target.complete
+    ) {
+      return false;
+    }
+
+    const attachment = findKakaoShortPageAttachmentOwner(target);
+    if (!attachment || !attachment.owner || attachment.owner === target) {
+      return false;
+    }
+
+    const owner = attachment.owner;
+    const ownerKey = computeTargetKey(owner);
+    const ownerScopedKey = buildTargetSourceCacheKey(ownerKey, getQuickSourceToken(owner));
+    target.dataset.mtKakaoAttachedToKey = ownerScopedKey;
+    target.dataset.mtNoTextKey = "";
+
+    state.payloadCacheByTargetKey.delete(ownerKey);
+    state.payloadCacheByTargetKey.delete(ownerScopedKey);
+    state.localResultCache.delete(ownerKey);
+    state.localResultCache.delete(ownerScopedKey);
+    owner.dataset.mtLastTranslatedKey = "";
+    owner.dataset.mtNoTextKey = "";
+
+    queueTranslate(owner, {
+      ...options,
+      manual: true,
+      force: true,
+      reason: `${String(options.reason || "kakao-short-page")}:${attachment.direction}`
+    });
+    return true;
+  }
+
+  function findKakaoShortPageAttachmentOwner(target) {
+    const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
+      (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
+    );
+    const index = ordered.indexOf(target);
+    if (index < 0) {
+      return null;
+    }
+
+    const targetDescriptor = describeKakaoStitchTarget(target);
+    if (!targetDescriptor) {
+      return null;
+    }
+
+    const previous = index > 0 ? ordered[index - 1] : null;
+    const previousDescriptor = describeKakaoStitchTarget(previous);
+    if (
+      previous &&
+      isVerifiedKakaoStitchNeighbor(previousDescriptor, targetDescriptor, "next") &&
+      isAttachableKakaoShortPage(targetDescriptor, previousDescriptor, targetDescriptor.height, previousDescriptor.height)
+    ) {
+      return { owner: previous, direction: "next" };
+    }
+
+    const next = index + 1 < ordered.length ? ordered[index + 1] : null;
+    const nextDescriptor = describeKakaoStitchTarget(next);
+    if (
+      next &&
+      isVerifiedKakaoStitchNeighbor(nextDescriptor, targetDescriptor, "previous") &&
+      isAttachableKakaoShortPage(targetDescriptor, nextDescriptor, targetDescriptor.height, nextDescriptor.height)
+    ) {
+      return { owner: next, direction: "previous" };
+    }
+
+    return null;
   }
 
   const autoTranslateRetryTimers = new Map();

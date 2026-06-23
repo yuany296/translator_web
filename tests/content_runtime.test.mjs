@@ -86,6 +86,36 @@ test("Kakao short adjacent pages are attached as full neighboring slices", () =>
   assert.equal(plan.nextShortPageAttachment, true);
 });
 
+test("Kakao short attachment requires a short neighbor relative to a larger owner", () => {
+  assert.equal(
+    runtime.__test.isAttachableKakaoShortPage(
+      { width: 760, height: 280 },
+      { width: 760, height: 1000 },
+      280,
+      1000
+    ),
+    true
+  );
+  assert.equal(
+    runtime.__test.isAttachableKakaoShortPage(
+      { width: 760, height: 0 },
+      { width: 760, height: 1000 },
+      430,
+      1000
+    ),
+    true
+  );
+  assert.equal(
+    runtime.__test.isAttachableKakaoShortPage(
+      { width: 760, height: 0 },
+      { width: 760, height: 1000 },
+      900,
+      1000
+    ),
+    false
+  );
+});
+
 test("拼接结果为空或坐标异常时要求回退单图", () => {
   const payload = { stitch: { verified: true }, singleImagePayload: { dataUrl: "data:image/png;base64,A" } };
   assert.match(runtime.__test.shouldFallbackFromKakaoStitch(payload, { bubbles: [] }, { bubbles: [] }), /no owner text/);
@@ -507,6 +537,23 @@ test("continuous window contains every pending image from the current position",
     pending.map((candidate) => candidate.index),
     [3, 4, 6, 7, 8, 9, 10, 11]
   );
+});
+
+test("Kakao short page queueing is redirected before standalone OCR gates", () => {
+  const queueTranslateIndex = contentSource.indexOf("function queueTranslate(target, options)");
+  const queueTranslateRedirectIndex = contentSource.indexOf("maybeQueueKakaoShortPageAttachmentOwner(target, options)", queueTranslateIndex);
+  const queuedGuardIndex = contentSource.indexOf("state.queuedTargets.has(target)", queueTranslateIndex);
+  assert.ok(queueTranslateIndex >= 0);
+  assert.ok(queueTranslateRedirectIndex > queueTranslateIndex);
+  assert.ok(queueTranslateRedirectIndex < queuedGuardIndex);
+
+  const pageAutoIndex = contentSource.indexOf("function queuePageAutoTranslate(target)");
+  const pageAutoRedirectIndex = contentSource.indexOf("page-auto-short-attachment", pageAutoIndex);
+  const noTextGateIndex = contentSource.indexOf("target.dataset.mtNoTextKey === targetKey", pageAutoIndex);
+  assert.ok(pageAutoIndex >= 0);
+  assert.ok(pageAutoRedirectIndex > pageAutoIndex);
+  assert.ok(pageAutoRedirectIndex < noTextGateIndex);
+  assert.match(contentSource, /target\.dataset\.mtKakaoAttachedToKey = ownerScopedKey/);
 });
 
 test("stitched OCR remaps polygon points into the owner image", () => {

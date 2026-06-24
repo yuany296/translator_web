@@ -50,8 +50,15 @@
   const KAKAO_STITCH_MIN_WIDTH_RATIO = 0.82;
   const KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT = 420;
   const KAKAO_SHORT_PAGE_ATTACH_HEIGHT_RATIO = 0.45;
+  const KAKAO_OVERLAP_SAMPLE_WIDTH = 96;
+  const KAKAO_OVERLAP_MIN_RATIO = 0.28;
+  const KAKAO_OVERLAP_MAX_RATIO = 0.88;
+  const KAKAO_OVERLAP_MAX_MAE = 12;
+  const KAKAO_OVERLAP_MIN_UNIQUE_PX = 96;
   const KAKAO_THIN_STRIP_MAX_NATURAL_HEIGHT = 100;
   const KAKAO_THIN_STRIP_MIN_HEIGHT = 8;
+  const KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS = 8000;
+  const LOADING_OVERLAY_TIMEOUT_MS = 30000;
   const PRETRANSLATE_AHEAD_COUNT = 6;
   const RUNTIME_OWNER_ATTRIBUTE = "data-manga-translator-runtime-owner";
   const MAX_EMBEDDED_IMAGE_CACHE = 40;
@@ -75,6 +82,27 @@
   const MAX_FONT_FIT_CACHE = 600;
   const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
   const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
+
+  // Pipeline trace — 默认关闭，零性能开销
+  let ENABLE_PIPELINE_TRACE = false;
+
+  function tracePipeline(stage, target, detail = {}) {
+    if (!ENABLE_PIPELINE_TRACE) return;
+    const arr = globalThis.__MT_PIPELINE_TRACE__
+      || (globalThis.__MT_PIPELINE_TRACE__ = []);
+    if (arr.length >= 5000) arr.shift();
+    const sourceToken = getQuickSourceToken(target);
+    const targetKey = computeTargetKey(target);
+    arr.push({
+      ts: performance.now(),
+      idx: arr.length,
+      sourceToken,
+      targetKey,
+      scopedKey: buildTargetSourceCacheKey(targetKey, sourceToken),
+      stage,
+      detail
+    });
+  }
 
   const state = {
     enabled: true,
@@ -156,8 +184,25 @@
       selectPendingAheadCandidates,
       selectPendingContinuousCandidates,
       isAttachableKakaoShortPage,
+      findKakaoVerticalOverlap,
       isAutomaticPretranslateMode,
-      shouldSchedulePagePretranslation
+      shouldSchedulePagePretranslation,
+      tracePipeline,
+      getPipelineTrace: () => globalThis.__MT_PIPELINE_TRACE__ || [],
+      clearPipelineTrace: () => { globalThis.__MT_PIPELINE_TRACE__ = []; },
+      findKakaoShortPageAttachmentOwner,
+      normalizeKakaoStitchDebugCoordinates,
+      maybeQueueKakaoShortPageAttachmentOwner,
+      maybeCropKakaoOverlappedPayload,
+      sampleKakaoImageForOverlap,
+      normalizeKakaoStitchSegments,
+      getKakaoStitchOwnerOverlap,
+      getDebugItemPercentWithImageSize,
+      mapKakaoStitchedFillBox,
+      mapKakaoStitchedPolygon,
+      buildKakaoStitchedPayload,
+      findTargetByScopedKey,
+      setPipelineTraceEnabled: (v) => { ENABLE_PIPELINE_TRACE = v; }
     },
     destroy
   };
@@ -440,6 +485,11 @@
         "load",
         () => {
           registerTarget(target);
+          // Image just finished loading — queue for translation if the
+          // IntersectionObserver already fired and won't fire again.
+          if (state.autoTranslatePageEnabled && state.enabled && target.isConnected) {
+            queuePageAutoTranslate(target);
+          }
         },
         { once: true }
       );
@@ -457,19 +507,55 @@
       target.dataset.mtLastTranslatedKey = "";
       target.dataset.mtNoTextKey = "";
       target.dataset.mtRecoveryReqAt = "";
+      // 清理短页附着标记
+      delete target.dataset.mtKakaoAttachedToKey;
+      delete target.dataset.mtKakaoAttachedToAt;
+      delete target.dataset.mtBoundaryReadyToken;
+      // 清理全局去重条目
+      if (oldTranslatedKey) {
+        state.kakaoGlobalOcrEntries.delete(oldTranslatedKey);
+      }
+      // 允许该 DOM 元素重新入队
+      state.queuedTargets.delete(target);
     }
     target.dataset.mtSourceToken = sourceToken;
 
-    if (!state.observedTargets.has(target)) {
+    const isNewObservation = !state.observedTargets.has(target);
+    if (isNewObservation) {
       state.io.observe(target);
       if (state.preloadIo) {
         state.preloadIo.observe(target);
       }
       state.observedTargets.add(target);
     }
+
+    // 自动翻译开启时，在两种情况下立即入队：
+    const shouldAutoQueue =
+      state.autoTranslatePageEnabled &&
+      state.enabled &&
+      target.isConnected &&
+      (!(target instanceof HTMLImageElement) || target.complete);
+    if (shouldAutoQueue) {
+      // 1) DOM 复用（sourceToken 变化）→ 旧元素被回收给新图片
+      if (!isNewObservation && oldSourceToken && oldSourceToken !== sourceToken) {
+        queuePageAutoTranslate(target);
+      }
+      // 2) 新元素且已在视口中 → IntersectionObserver 不会同步触发
+      if (isNewObservation && isTargetVisible(target)) {
+        queuePageAutoTranslate(target);
+      }
+    }
+
     if (IS_KAKAOPAGE_READER && target instanceof HTMLImageElement && target.complete && sourceToken) {
       refreshPreviousKakaoBoundary(target, sourceToken);
     }
+    tracePipeline("collected", target, {
+      rect: {
+        top: target.getBoundingClientRect().top,
+        height: target.getBoundingClientRect().height,
+        width: target.getBoundingClientRect().width
+      }
+    });
   }
 
   function refreshPreviousKakaoBoundary(target, sourceToken) {
@@ -698,12 +784,27 @@
       return;
     }
 
+    // 短页附着超时检查：owner 失败后允许独立翻译
+    const p1AttachedAt = Number(target.dataset.mtKakaoAttachedToAt || 0);
+    if (target.dataset.mtKakaoAttachedToKey && Date.now() - p1AttachedAt > KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS) {
+      delete target.dataset.mtKakaoAttachedToKey;
+      delete target.dataset.mtKakaoAttachedToAt;
+      tracePipeline("skipped", target, { skipReason: "shortPageAttachmentTimeout" });
+    } else if (target.dataset.mtKakaoAttachedToKey) {
+      tracePipeline("skipped", target, { skipReason: "shortPageAttached" });
+      return;
+    }
+
     if (state.queuedTargets.has(target) || state.inflightByTarget.has(target)) {
       return;
     }
 
     state.queue.push({ target, options });
     state.queuedTargets.add(target);
+    tracePipeline("queued", target, {
+      reason: options.reason,
+      targetKey: computeTargetKey(target).slice(0, 80)
+    });
     pumpQueue();
   }
 
@@ -882,7 +983,16 @@
     }
 
     if (state.inflightByTarget.has(target)) {
-      return state.inflightByTarget.get(target);
+      const inflightToken = target.dataset.inflightSourceToken;
+      const currentToken = getQuickSourceToken(target);
+      if (inflightToken === currentToken) {
+        tracePipeline("inflight-bypass", target, { skipReason: "sameSourceToken" });
+        return state.inflightByTarget.get(target);
+      }
+      // sourceToken 不匹配：DOM 被复用了，清除旧 inflight 状态
+      state.inflightByTarget.delete(target);
+      delete target.dataset.inflightSourceToken;
+      tracePipeline("inflight-bypass", target, { skipReason: "sourceTokenChanged" });
     }
 
     const task = (async () => {
@@ -1045,6 +1155,25 @@
         return { ok: true, bubbles: result.bubbles.length, cached: !!response.cached };
       } catch (error) {
         const reason = getErrorMessage(error);
+
+        // Owner 翻译失败 → 释放附属短页，允许它们独立翻译
+        let attachedShortPageKeys = null;
+        if (payload && Array.isArray(payload.attachedShortPageKeys) && payload.attachedShortPageKeys.length > 0) {
+          attachedShortPageKeys = payload.attachedShortPageKeys;
+        } else if (renderPayload && Array.isArray(renderPayload.attachedShortPageKeys) && renderPayload.attachedShortPageKeys.length > 0) {
+          attachedShortPageKeys = renderPayload.attachedShortPageKeys;
+        }
+        if (attachedShortPageKeys) {
+          for (const shortKey of attachedShortPageKeys) {
+            const el = findTargetByScopedKey(shortKey);
+            if (el) {
+              delete el.dataset.mtKakaoAttachedToKey;
+              delete el.dataset.mtKakaoAttachedToAt;
+              tracePipeline("skipped", el, { skipReason: "ownerFailedReleasingShortPage" });
+            }
+          }
+        }
+
         clearRenderedTarget(target);
         if (isScreenshotTargetNotVisibleError(reason)) {
           if (IS_KAKAOPAGE_READER && state.autoTranslatePageEnabled) {
@@ -1069,9 +1198,11 @@
         return { ok: false, error: reason };
       } finally {
         state.inflightByTarget.delete(target);
+        delete target.dataset.inflightSourceToken;
       }
     })();
 
+    target.dataset.inflightSourceToken = getQuickSourceToken(target);
     state.inflightByTarget.set(target, task);
     return task;
   }
@@ -1120,6 +1251,11 @@
 
   async function extractTargetPayload(target, targetKey) {
     const cacheKey = String(targetKey || computeTargetKey(target));
+    // 优先检查 stitch 专用缓存 key，避免单图缓存误吞拼接版本
+    const cachedStitch = getPayloadCache(cacheKey + "|stitch");
+    if (cachedStitch) {
+      return cachedStitch;
+    }
     const cached = getPayloadCache(cacheKey);
     if (cached) {
       return cached;
@@ -1145,9 +1281,30 @@
 
     payload = await normalizeKakaopagePayload(target, payload);
     payload = enrichPayloadForTarget(payload, target);
-    if (shouldUseKakaoStitchedOcr(target, payload)) {
-      payload = await buildKakaoStitchedPayload(target, payload);
+
+    // 单图版本始终缓存到普通 key
+    const singlePayload = payload;
+
+    if (shouldUseKakaoStitchedOcr(target, singlePayload)) {
+      const stitched = await buildKakaoStitchedPayload(target, singlePayload);
+      if (stitched.stitchAdmission === "accepted") {
+        // 拼接版本用独立缓存键 (single | stitch 隔离)
+        rememberPayloadCache(cacheKey + "|stitch", stitched);
+        tracePipeline("requested", target, {
+          ocrMode: "stitch",
+          stitchKey: stitched.stitchKey,
+          neighbors: (stitched.stitch && stitched.stitch.sourceKeys) || []
+        });
+        return stitched;
+      }
+      // 拼接被拒绝，回退到单图
+      rememberPayloadCache(cacheKey, singlePayload);
+      tracePipeline("stitch-rejected", target, {
+        stitchRejection: stitched.stitchRejectionReason
+      });
+      return singlePayload;
     }
+
     rememberPayloadCache(cacheKey, payload);
     return payload;
   }
@@ -1224,6 +1381,7 @@
       state.renderMode === RENDER_MODE_OVERLAY &&
       target instanceof HTMLImageElement &&
       payload &&
+      payload.kakaoOverlapCrop !== true &&
       isDataUrl(payload.dataUrl)
     );
   }
@@ -1381,6 +1539,9 @@
       height: compositeHeight,
       stitchKey: `${computeTargetKey(target)}|stitch:${previousSlice}:${nextSlice}|${sourceKeys.join("|")}`,
       singleImagePayload: ownerPayload,
+      attachedShortPageKeys: [previousEntry, nextEntry]
+        .filter(e => e && e.shortPageAttachment)
+        .map(e => e.targetKey),
       stitch: {
         canvasWidth: canonicalWidth,
         canvasHeight: compositeHeight,
@@ -1590,7 +1751,8 @@
     }
     const cssHeight = Number(candidate.height || 0);
     const scaledRatio = candidateHeight / Math.max(1, ownerHeight);
-    return (cssHeight > 0 && cssHeight <= KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT) ||
+    const ownerIsClearlyLarger = ownerHeight / Math.max(1, candidateHeight) >= 1.35;
+    return ((cssHeight > 0 && cssHeight <= KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT) && ownerIsClearlyLarger) ||
       scaledRatio <= KAKAO_SHORT_PAGE_ATTACH_HEIGHT_RATIO;
   }
 
@@ -1840,8 +2002,7 @@
       const lineCount = getBubbleLineCount(bubble);
       const maxH = lineCount > 1 ? 60 : 35;
       if (mappedX < -5 || mappedX + mappedW > 105 ||
-          mappedY < -5 || mappedY + mappedH > 105 ||
-          mappedH > maxH) {
+          mappedY < -5 || mappedY + mappedH > 105) {
         console.warn("[MangaTranslator][KakaoStitch] Discarding normal bubble out of bounds", {
           text: String(bubble.original_text || "").slice(0, 40),
           mapped: { x: Number(mappedX.toFixed(2)), y: Number(mappedY.toFixed(2)),
@@ -1852,16 +2013,28 @@
         return null;
       }
 
+      // 高度超阈值时 clamp 而非丢弃，同时清除不可靠的几何辅助信息
+      const clampedH = mappedH > maxH ? maxH : mappedH;
+      const clampAdjusted = mappedH !== clampedH;
+      if (clampAdjusted) {
+        console.warn("[MangaTranslator][KakaoStitch] Clamping normal bubble height", {
+          text: String(bubble.original_text || "").slice(0, 40),
+          fromH: Number(mappedH.toFixed(2)),
+          toH: Number(clampedH.toFixed(2)),
+          maxH
+        });
+      }
+
       return {
         ...bubble,
         x: mappedX,
         y: mappedY,
         w: mappedW,
-        h: mappedH,
+        h: clampedH,
         stitch_overflow: false,
-        fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
-        polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
-        region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
+        fill_box: clampAdjusted ? null : mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
+        polygon: clampAdjusted ? null : mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
+        region_polygon: clampAdjusted ? null : mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
       };
     }).filter(Boolean);
 
@@ -1880,6 +2053,13 @@
         : 0
     });
 
+    tracePipeline("mapped", target, {
+      rawBubbleCount: result.bubbles.length,
+      mappedBubbleCount: mapped.length,
+      dedupeRemoved: result.bubbles.length - deduped.length,
+      targetKey: String(targetKey).slice(0, 80)
+    });
+
     return {
       ...result,
       bubbles: deduped,
@@ -1896,11 +2076,14 @@
     if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
     const topPx = (y / 100) * compositeH;
     const heightPx = (h / 100) * compositeH;
+    const mappedH = (heightPx / ownerH) * 100;
+    // 高度合理性检查：不应超过 300%
+    if (mappedH > 300) return null;
     return {
       x,
       y: ((topPx - ownerY) / ownerH) * 100,
       w,
-      h: (heightPx / ownerH) * 100
+      h: mappedH
     };
   }
 
@@ -2445,6 +2628,11 @@
       return payload;
     }
 
+    const overlapCropped = await maybeCropKakaoOverlappedPayload(target, payload);
+    if (overlapCropped) {
+      return overlapCropped;
+    }
+
     const rect = target.getBoundingClientRect();
     const payloadHeight = Number(payload.height || 0);
     const payloadWidth = Number(payload.width || 0);
@@ -2469,6 +2657,188 @@
     return captureVisibleTargetPayload(target, new Error("Kakao source image is a strip"), payload.imageUrl || "kakao-strip");
   }
 
+  async function maybeCropKakaoOverlappedPayload(target, payload) {
+    if (
+      !(target instanceof HTMLImageElement) ||
+      !target.complete ||
+      !payload ||
+      payload.kakaoOverlapCrop === true ||
+      !isDataUrl(payload.dataUrl) ||
+      state.captureMode !== CAPTURE_MODE_DIRECT
+    ) {
+      return null;
+    }
+
+    const currentDescriptor = describeKakaoStitchTarget(target);
+    const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
+      (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
+    );
+    const index = ordered.indexOf(target);
+    const previous = index > 0 ? ordered[index - 1] : null;
+    const previousDescriptor = describeKakaoStitchTarget(previous);
+    if (
+      !previous ||
+      !isVerifiedKakaoStitchNeighbor(previousDescriptor, currentDescriptor, "next") ||
+      isAttachableKakaoShortPage(currentDescriptor, previousDescriptor, currentDescriptor && currentDescriptor.height, previousDescriptor && previousDescriptor.height)
+    ) {
+      return null;
+    }
+
+    const previousPayload = await getKakaoNeighborPayloadForOverlap(previous);
+    if (!previousPayload || !isDataUrl(previousPayload.dataUrl)) {
+      return null;
+    }
+
+    const [previousImage, currentImage] = await Promise.all([
+      loadImageFromDataUrl(previousPayload.dataUrl),
+      loadImageFromDataUrl(payload.dataUrl)
+    ]);
+    const currentWidth = currentImage.naturalWidth || currentImage.width || Number(payload.width || 0);
+    const currentHeight = currentImage.naturalHeight || currentImage.height || Number(payload.height || 0);
+    const previousWidth = previousImage.naturalWidth || previousImage.width || Number(previousPayload.width || 0);
+    const previousHeight = previousImage.naturalHeight || previousImage.height || Number(previousPayload.height || 0);
+    if (
+      !(currentWidth > 0 && currentHeight > 0 && previousWidth > 0 && previousHeight > 0) ||
+      Math.min(currentWidth, previousWidth) / Math.max(currentWidth, previousWidth) < KAKAO_STITCH_MIN_WIDTH_RATIO
+    ) {
+      return null;
+    }
+
+    const overlap = findKakaoVerticalOverlap(
+      sampleKakaoImageForOverlap(previousImage),
+      sampleKakaoImageForOverlap(currentImage)
+    );
+    if (!overlap || !overlap.accepted) {
+      return null;
+    }
+
+    const cropTop = Math.round((overlap.rows / Math.max(1, overlap.currentRows)) * currentHeight);
+    const cropHeight = currentHeight - cropTop;
+    if (cropTop <= 0 || cropHeight < KAKAO_OVERLAP_MIN_UNIQUE_PX) {
+      return null;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = currentWidth;
+    canvas.height = cropHeight;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return null;
+    }
+    context.drawImage(currentImage, 0, cropTop, currentWidth, cropHeight, 0, 0, currentWidth, cropHeight);
+
+    const rect = target.getBoundingClientRect();
+    const cssWidth = Number(payload.cssWidth || rect.width || 0);
+    const cssHeight = Number(payload.cssHeight || rect.height || 0);
+    const cropCssY = cssHeight * (cropTop / Math.max(1, currentHeight));
+    const cropCssHeight = cssHeight * (cropHeight / Math.max(1, currentHeight));
+
+    return {
+      ...payload,
+      dataUrl: canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY),
+      width: currentWidth,
+      height: cropHeight,
+      source: "kakao-overlap-crop",
+      coordinateSpace: "source-image-v1",
+      kakaoOverlapCrop: true,
+      overlapCropTop: cropTop,
+      imageUrl: `${payload.imageUrl || getQuickSourceToken(target)}#overlap-crop-${cropTop}`,
+      displayRect: {
+        offsetX: 0,
+        offsetY: cropCssY,
+        width: cssWidth,
+        height: cropCssHeight
+      }
+    };
+  }
+
+  async function getKakaoNeighborPayloadForOverlap(target) {
+    const targetKey = computeTargetKey(target);
+    const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+    const cached = getPayloadCache(scopedTargetKey) || getPayloadCache(targetKey);
+    if (cached && !cached.stitch && cached.kakaoOverlapCrop !== true && isDataUrl(cached.dataUrl)) {
+      return cached;
+    }
+    return extractAdjacentKakaoPayload(target);
+  }
+
+  function sampleKakaoImageForOverlap(image) {
+    const sourceWidth = image.naturalWidth || image.width || 0;
+    const sourceHeight = image.naturalHeight || image.height || 0;
+    if (!(sourceWidth > 0 && sourceHeight > 0)) {
+      return null;
+    }
+    const width = KAKAO_OVERLAP_SAMPLE_WIDTH;
+    const height = Math.max(1, Math.round(sourceHeight * (width / sourceWidth)));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false, desynchronized: true });
+    if (!context) {
+      return null;
+    }
+    context.drawImage(image, 0, 0, width, height);
+    const pixels = context.getImageData(0, 0, width, height).data;
+    const gray = new Uint8Array(width * height);
+    for (let index = 0, pixel = 0; index < gray.length; index += 1, pixel += 4) {
+      gray[index] = Math.round(pixels[pixel] * 0.299 + pixels[pixel + 1] * 0.587 + pixels[pixel + 2] * 0.114);
+    }
+    return { width, height, gray };
+  }
+
+  function findKakaoVerticalOverlap(previousSample, currentSample) {
+    if (
+      !previousSample ||
+      !currentSample ||
+      previousSample.width !== currentSample.width ||
+      !(previousSample.height > 0 && currentSample.height > 0) ||
+      !previousSample.gray ||
+      !currentSample.gray
+    ) {
+      return null;
+    }
+    const width = previousSample.width;
+    const maxRows = Math.floor(Math.min(
+      previousSample.height,
+      currentSample.height * KAKAO_OVERLAP_MAX_RATIO
+    ));
+    const minRows = Math.ceil(currentSample.height * KAKAO_OVERLAP_MIN_RATIO);
+    if (maxRows < minRows) {
+      return null;
+    }
+
+    let bestRows = 0;
+    let bestMae = Infinity;
+    const step = Math.max(1, Math.round(currentSample.height / 180));
+    for (let rows = minRows; rows <= maxRows; rows += step) {
+      const previousOffset = (previousSample.height - rows) * width;
+      let total = 0;
+      const count = rows * width;
+      for (let offset = 0; offset < count; offset += 1) {
+        total += Math.abs(previousSample.gray[previousOffset + offset] - currentSample.gray[offset]);
+      }
+      const mae = total / Math.max(1, count);
+      if (mae < bestMae) {
+        bestMae = mae;
+        bestRows = rows;
+      }
+    }
+
+    const uniqueRows = currentSample.height - bestRows;
+    const accepted = bestMae <= KAKAO_OVERLAP_MAX_MAE &&
+      bestRows >= minRows &&
+      bestRows <= maxRows &&
+      uniqueRows / Math.max(1, currentSample.height) >= 1 - KAKAO_OVERLAP_MAX_RATIO;
+    return {
+      accepted,
+      rows: bestRows,
+      previousRows: previousSample.height,
+      currentRows: currentSample.height,
+      mae: bestMae,
+      overlapRatio: bestRows / Math.max(1, currentSample.height)
+    };
+  }
+
   function hasUsableKakaoStripCaptureRect(captureRect) {
     return !!captureRect && captureRect.height >= 180 && captureRect.width >= 180;
   }
@@ -2479,6 +2849,21 @@
     }
 
     const imageUrl = await resolveImageUrlWithAuth(img);
+
+    // 图片 complete 但 naturalWidth=0 → CDN 限流或加载失败（常见于 429）
+    if (
+      img.complete &&
+      !img.naturalWidth &&
+      !img.naturalHeight &&
+      imageUrl &&
+      !isDataUrl(imageUrl)
+    ) {
+      if (IS_KAKAOPAGE_READER) {
+        // 对于 Kakao page-edge 图片，触发自动重试
+        throw new Error(SCREENSHOT_TARGET_NOT_VISIBLE);
+      }
+      throw new Error(`Image failed to load: ${imageUrl.slice(0, 80)}`);
+    }
 
     if (isDataUrl(imageUrl)) {
       return {
@@ -2526,6 +2911,19 @@
         source: "img-canvas"
       };
     } catch (error) {
+      // Canvas 被跨域污染（SecurityError）→ 尝试截图回退。
+      // 对于视口外的 Kakao 图片，临时滚动到视口内截图。
+      if (IS_KAKAOPAGE_READER && img.isConnected && (img.naturalWidth || 0) > 0 && !getVisibleViewportRect(img)) {
+        try {
+          img.scrollIntoView({ block: "center" });
+          await waitForPaint();
+          const result = await captureVisibleTargetPayload(img, error, imageUrl || "kakao-offscreen-crop");
+          return result;
+        } catch {
+          // 截图也失败时，交给外层处理（重试或超时）
+          throw error;
+        }
+      }
       return captureVisibleTargetPayload(img, error, imageUrl || "visible-tab-image-crop");
     }
   }
@@ -2956,6 +3354,10 @@
         }, clearDelay);
       });
     }
+    tracePipeline("rendered", target, {
+      bubbleCount: bubbleNodes.length,
+      targetKey: String(targetKey).slice(0, 80)
+    });
   }
 
   function appendOcrDebugNodes(root, result) {
@@ -3536,7 +3938,31 @@
       root,
       bubbleNodes: [],
       bubbleCount: 0,
-      mode: "loading"
+      mode: "loading",
+      loadingTimeout: window.setTimeout(() => {
+        // Loading 超时保护：清除 loading overlay 并触发重试
+        if (!overlayState.root.isConnected) return;
+        const current = state.overlaysById.get(targetId);
+        if (current !== overlayState || current.mode !== "loading") return;
+        console.warn("[MangaTranslator] Loading overlay timed out, clearing", {
+          targetKey: String(targetKey).slice(0, 80)
+        });
+        overlayState.root.remove();
+        state.overlaysById.delete(targetId);
+        if (state.overlaysById.size === 0) {
+          stopOverlayFrameSync();
+        }
+        // 清除已翻译标记以允许重试
+        if (target.dataset.mtLastTranslatedKey === targetKey) {
+          target.dataset.mtLastTranslatedKey = "";
+        }
+        if (target.isConnected && state.autoTranslatePageEnabled) {
+          scheduleAutoTranslateRetry(target);
+        }
+        reportStatus("warn", "loading-overlay-timeout", {
+          targetKey: String(targetKey).slice(0, 80)
+        }).catch(() => {});
+      }, LOADING_OVERLAY_TIMEOUT_MS)
     };
 
     state.overlayLayer.appendChild(root);
@@ -4118,6 +4544,11 @@
       return;
     }
 
+    // 清除 loading 超时定时器
+    if (overlayState.loadingTimeout) {
+      window.clearTimeout(overlayState.loadingTimeout);
+      overlayState.loadingTimeout = 0;
+    }
     overlayState.root.remove();
     state.overlaysById.delete(targetId);
     if (state.overlaysById.size === 0) {
@@ -4590,6 +5021,17 @@
       return;
     }
 
+    // 短页附着超时回退：owner 失败后允许独立翻译
+    const attachedAt = Number(target.dataset.mtKakaoAttachedToAt || 0);
+    if (target.dataset.mtKakaoAttachedToKey && Date.now() - attachedAt > KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS) {
+      delete target.dataset.mtKakaoAttachedToKey;
+      delete target.dataset.mtKakaoAttachedToAt;
+      tracePipeline("skipped", target, { skipReason: "shortPageAttachmentTimeout" });
+    } else if (target.dataset.mtKakaoAttachedToKey) {
+      tracePipeline("skipped", target, { skipReason: "shortPageAttached" });
+      return;
+    }
+
     const targetKey = computeTargetKey(target);
     const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
     if (
@@ -4602,6 +5044,7 @@
     }
 
     if (!passesTargetFilter(target, true)) {
+      tracePipeline("skipped", target, { skipReason: "filterFail" });
       // KakaoPage: IntersectionObserver fires early (8% visible) but geometry check
       // needs more (180px+ visible). Schedule retry so scroll-into-view images
       // don't get stuck untranslated.
@@ -4641,7 +5084,10 @@
     const ownerKey = computeTargetKey(owner);
     const ownerScopedKey = buildTargetSourceCacheKey(ownerKey, getQuickSourceToken(owner));
     target.dataset.mtKakaoAttachedToKey = ownerScopedKey;
+    target.dataset.mtKakaoAttachedToAt = String(Date.now());
     target.dataset.mtNoTextKey = "";
+    tracePipeline("short-attached", target, { attachedToKey: ownerScopedKey });
+
 
     state.payloadCacheByTargetKey.delete(ownerKey);
     state.payloadCacheByTargetKey.delete(ownerScopedKey);
@@ -4698,8 +5144,18 @@
 
   const autoTranslateRetryTimers = new Map();
   const AUTO_TRANSLATE_RETRY_DELAY_MS = 1200;
+  const AUTO_TRANSLATE_RETRY_MAX_DELAY_MS = 20000;
 
   function scheduleAutoTranslateRetry(target) {
+    // Already has a pending retry — let it fire.
+    if (autoTranslateRetryTimers.has(target)) {
+      return;
+    }
+
+    scheduleNextAutoTranslateRetry(target, AUTO_TRANSLATE_RETRY_DELAY_MS);
+  }
+
+  function scheduleNextAutoTranslateRetry(target, delayMs) {
     if (autoTranslateRetryTimers.has(target)) {
       return;
     }
@@ -4709,8 +5165,19 @@
       if (!target.isConnected || state.invalidated) {
         return;
       }
-      queuePageAutoTranslate(target);
-    }, AUTO_TRANSLATE_RETRY_DELAY_MS);
+
+      // If the image is now ready (complete + passes filter), queue it.
+      if (target instanceof HTMLImageElement && target.complete && passesTargetFilter(target, true)) {
+        queuePageAutoTranslate(target);
+        return;
+      }
+
+      // Still not ready — schedule another retry with exponential backoff.
+      const retries = Number(target.dataset.mtRetryCount || "0") + 1;
+      target.dataset.mtRetryCount = String(retries);
+      const nextDelay = Math.min(AUTO_TRANSLATE_RETRY_DELAY_MS * Math.pow(2, retries - 1), AUTO_TRANSLATE_RETRY_MAX_DELAY_MS);
+      scheduleNextAutoTranslateRetry(target, nextDelay);
+    }, delayMs);
 
     autoTranslateRetryTimers.set(target, timer);
   }
@@ -4929,6 +5396,14 @@
     return results;
   }
 
+  function isTargetVisible(target) {
+    if (!target || typeof target.getBoundingClientRect !== "function") return false;
+    const rect = target.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    return rect.left < vw && rect.right > 0 && rect.top < vh && rect.bottom > 0 && rect.width > 0 && rect.height > 0;
+  }
+
   function passesTargetFilter(target, manual, options = {}) {
     const relaxed = options.relaxed === true;
     const allowOffscreen = options.allowOffscreen === true;
@@ -5078,6 +5553,19 @@
     }
 
     return `${captureSegment}|unknown|${Date.now()}`;
+  }
+
+  function findTargetByScopedKey(scopedKey) {
+    if (!scopedKey) return null;
+    const targets = document.querySelectorAll(TARGET_SELECTOR);
+    for (const candidate of targets) {
+      if (!isSupportedTarget(candidate) || !candidate.isConnected) continue;
+      const key = computeTargetKey(candidate);
+      if (buildTargetSourceCacheKey(key, getQuickSourceToken(candidate)) === scopedKey) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   function getCaptureModeTargetKeySegment(target) {
@@ -5867,6 +6355,41 @@
     const rect = target.getBoundingClientRect();
     if (overlayState.displayRect) {
       return computeTargetSubRect(rect, overlayState.displayRect);
+    }
+
+    // 对于 <img> 元素，校验 CSS rect 宽高比是否与图片原始宽高比一致。
+    // 偏差超过 1% 时，按原始比例调整 overlay rect，使百分比坐标与图片内容对齐。
+    if (target instanceof HTMLImageElement && target.complete) {
+      const natW = target.naturalWidth || 0;
+      const natH = target.naturalHeight || 0;
+      if (natW > 0 && natH > 0 && rect.width > 0 && rect.height > 0) {
+        const cssRatio = rect.width / rect.height;
+        const natRatio = natW / natH;
+        const ratioDiff = Math.abs(cssRatio - natRatio) / Math.max(cssRatio, natRatio);
+        if (ratioDiff > 0.01) {
+          // 按图片原始比例调整：保持高度不变，调整宽度；或保持宽度不变调整高度
+          const adjustedByWidth = {
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.width / natRatio,
+            right: rect.left + rect.width,
+            bottom: rect.top + rect.width / natRatio
+          };
+          const adjustedByHeight = {
+            left: rect.left,
+            top: rect.top,
+            width: rect.height * natRatio,
+            height: rect.height,
+            right: rect.left + rect.height * natRatio,
+            bottom: rect.top + rect.height
+          };
+          // 选择变更较小（面积变化较小）的调整方案
+          const diffW = Math.abs(adjustedByWidth.height - rect.height) / rect.height;
+          const diffH = Math.abs(adjustedByHeight.width - rect.width) / rect.width;
+          return diffW <= diffH ? adjustedByWidth : adjustedByHeight;
+        }
+      }
     }
 
     if (!isBackgroundImageTarget(target) || !overlayState.imageMeta) {

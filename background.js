@@ -223,28 +223,72 @@ async function handleFetchImageDataUrl(message) {
   const url = String(message.url || "").trim();
   const preserveSize = message.preserveSize === true;
   const maxOriginalBytes = Math.max(1, Number(message.maxOriginalBytes || 0));
+  const referrer = String(message.referrer || "").trim();
   if (!url) {
     return { ok: false, error: "Image URL is required" };
   }
 
-  try {
-    const response = await fetch(url, {
+  // 总体超时：两个 fetch 尝试总时间不超过 5 秒
+  const FETCH_TOTAL_TIMEOUT_MS = 5000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TOTAL_TIMEOUT_MS);
+
+  // Build fetch options: include referrer to satisfy CDN hotlink protection.
+  // Kakao CDNs (page-edge, dw-img-page) may check the Referer header.
+  const buildFetchOptions = (credentials) => {
+    const opts = {
       method: "GET",
-      credentials: "omit",
-      cache: "force-cache"
-    });
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: `Image fetch failed: ${response.status} ${response.statusText}`
-      };
+      credentials,
+      cache: "force-cache",
+      signal: controller.signal
+    };
+    if (referrer) {
+      opts.referrer = referrer;
+      opts.referrerPolicy = "unsafe-url";
     }
+    return opts;
+  };
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const tryFetch = async (credentials) => {
+    const response = await fetch(url, buildFetchOptions(credentials));
+    if (!response.ok) {
+      throw new Error(`Image fetch failed: ${response.status} ${response.statusText}`);
+    }
     const blob = await response.blob();
     if (!blob || blob.size <= 0) {
-      return { ok: false, error: "Image blob is empty" };
+      throw new Error("Image blob is empty");
     }
+    return blob;
+  };
+
+  try {
+    let blob;
+    // 先尝试 include（携带 cookies，Kakao CDN 需要）→ omit（CORS 兼容）
+    // 对 Kakao page-edge CDN，include 更可能成功
+    for (const credentials of ["include", "omit"]) {
+      try {
+        blob = await tryFetch(credentials);
+        break; // 成功
+      } catch (err) {
+        // 网络不稳定时短延迟重试一次
+        if (err.message && err.message.includes("Failed to fetch")) {
+          await sleep(300);
+          try {
+            blob = await tryFetch(credentials);
+            break;
+          } catch { /* 继续下一个 credentials 模式 */ }
+        }
+        // 继续尝试下一种 credentials 模式
+      }
+    }
+    if (!blob) {
+      // 所有尝试都失败
+      clearTimeout(timeoutId);
+      return { ok: false, error: "Image fetch error: all fetch attempts failed" };
+    }
+    clearTimeout(timeoutId);
 
     if (preserveSize && blob.size <= maxOriginalBytes) {
       const originalDataUrl = await blobToDataUrl(blob);
@@ -263,10 +307,11 @@ async function handleFetchImageDataUrl(message) {
       mimeType: getDataUrlMimeType(dataUrl)
     };
   } catch (error) {
-    return {
-      ok: false,
-      error: `Image fetch error: ${error && error.message ? error.message : "Unknown error"}`
-    };
+    clearTimeout(timeoutId);
+    const msg = error && error.name === "AbortError"
+      ? "Image fetch timed out after 10s"
+      : (error && error.message ? error.message : "Unknown error");
+    return { ok: false, error: `Image fetch error: ${msg}` };
   }
 }
 

@@ -23,7 +23,7 @@
   const MANUAL_MIN_WIDTH = 60;
   const MANUAL_MIN_HEIGHT = 60;
   const MAX_MANUAL_TARGETS = 4;
-  const MAX_PARALLEL_TRANSLATIONS = 3;
+  const MAX_PARALLEL_TRANSLATIONS = IS_KAKAOPAGE_READER ? 6 : 3;
   const MANUAL_PARALLEL_TRANSLATIONS = 3;
   const MAX_PRELOAD_JOBS = 2;
   const PRELOAD_ROOT_MARGIN = "1400px 0px";
@@ -409,7 +409,7 @@
 
     state.io = new IntersectionObserver(onIntersection, {
       root: null,
-      rootMargin: "280px 0px",
+      rootMargin: IS_KAKAOPAGE_READER ? "800px 0px" : "280px 0px",
       threshold: 0.08
     });
     state.preloadIo = new IntersectionObserver(onPreloadIntersection, {
@@ -511,6 +511,13 @@
       delete target.dataset.mtKakaoAttachedToKey;
       delete target.dataset.mtKakaoAttachedToAt;
       delete target.dataset.mtBoundaryReadyToken;
+      // 清理重试状态：防止 SVG 占位符的 retry 干扰真实图片
+      delete target.dataset.mtRetryCount;
+      const retryTimer = autoTranslateRetryTimers.get(target);
+      if (retryTimer) {
+        window.clearTimeout(retryTimer);
+        autoTranslateRetryTimers.delete(target);
+      }
       // 清理全局去重条目
       if (oldTranslatedKey) {
         state.kakaoGlobalOcrEntries.delete(oldTranslatedKey);
@@ -2912,17 +2919,10 @@
       };
     } catch (error) {
       // Canvas 被跨域污染（SecurityError）→ 尝试截图回退。
-      // 对于视口外的 Kakao 图片，临时滚动到视口内截图。
+      // 不 scrollIntoView（多图并行会导致页面跳动），改为抛出 SCREENSHOT_TARGET_NOT_VISIBLE
+      // 依赖 retry 机制，当用户自然滚动到该位置时截图会成功。
       if (IS_KAKAOPAGE_READER && img.isConnected && (img.naturalWidth || 0) > 0 && !getVisibleViewportRect(img)) {
-        try {
-          img.scrollIntoView({ block: "center" });
-          await waitForPaint();
-          const result = await captureVisibleTargetPayload(img, error, imageUrl || "kakao-offscreen-crop");
-          return result;
-        } catch {
-          // 截图也失败时，交给外层处理（重试或超时）
-          throw error;
-        }
+        throw new Error(SCREENSHOT_TARGET_NOT_VISIBLE);
       }
       return captureVisibleTargetPayload(img, error, imageUrl || "visible-tab-image-crop");
     }
@@ -5152,6 +5152,11 @@
       return;
     }
 
+    // SVG 占位符（data: URL）不重试 — 等 src 变成真实图片后再触发
+    if (target instanceof HTMLImageElement && isDataUrl(resolveImageUrl(target))) {
+      return;
+    }
+
     scheduleNextAutoTranslateRetry(target, AUTO_TRANSLATE_RETRY_DELAY_MS);
   }
 
@@ -5163,6 +5168,12 @@
     const timer = window.setTimeout(() => {
       autoTranslateRetryTimers.delete(target);
       if (!target.isConnected || state.invalidated) {
+        return;
+      }
+
+      // SVG 占位符（data: URL）不重试 — 清理计数并停止
+      if (target instanceof HTMLImageElement && isDataUrl(resolveImageUrl(target))) {
+        delete target.dataset.mtRetryCount;
         return;
       }
 

@@ -200,6 +200,8 @@
       getDebugItemPercentWithImageSize,
       mapKakaoStitchedFillBox,
       mapKakaoStitchedPolygon,
+      releaseUncoveredKakaoShortPages,
+      hasAttachedShortPageBubble,
       buildKakaoStitchedPayload,
       findTargetByScopedKey,
       setPipelineTraceEnabled: (v) => { ENABLE_PIPELINE_TRACE = v; }
@@ -1137,6 +1139,7 @@
           clearRenderedTarget(target);
           return { ok: false, skipped: true, reason: "source image changed during OCR" };
         }
+        releaseUncoveredKakaoShortPages(payload, result, target, "ownerSucceededWithoutShortPageBubble");
         rememberLocalResult(scopedTargetKey, result);
 
         console.debug("[MangaTranslator] Received", result.bubbles.length, "bubbles, translated:", result.bubbles.filter((b) => b.translated_text && b.translated_text !== b.original_text).length, "of", result.bubbles.length);
@@ -5097,6 +5100,12 @@
     const owner = attachment.owner;
     const ownerKey = computeTargetKey(owner);
     const ownerScopedKey = buildTargetSourceCacheKey(ownerKey, getQuickSourceToken(owner));
+    const detachedOwnerKey = String(target.dataset.mtKakaoDetachedFromOwnerKey || "");
+    const detachedAt = Number(target.dataset.mtKakaoDetachedFromOwnerAt || 0);
+    if (detachedOwnerKey === ownerScopedKey && Date.now() - detachedAt <= KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS) {
+      tracePipeline("short-attachment-suppressed", target, { ownerScopedKey });
+      return false;
+    }
     target.dataset.mtKakaoAttachedToKey = ownerScopedKey;
     target.dataset.mtKakaoAttachedToAt = String(Date.now());
     target.dataset.mtNoTextKey = "";
@@ -5154,6 +5163,53 @@
     }
 
     return null;
+  }
+
+  function releaseUncoveredKakaoShortPages(payload, result, owner, reason) {
+    if (!IS_KAKAOPAGE_READER || !payload || hasAttachedShortPageBubble(result)) {
+      return 0;
+    }
+
+    const attachedShortPageKeys = Array.isArray(payload.attachedShortPageKeys)
+      ? payload.attachedShortPageKeys.filter(Boolean)
+      : [];
+    if (attachedShortPageKeys.length === 0) {
+      return 0;
+    }
+
+    const ownerKey = owner ? computeTargetKey(owner) : "";
+    const ownerScopedKey = owner ? buildTargetSourceCacheKey(ownerKey, getQuickSourceToken(owner)) : "";
+    let released = 0;
+    for (const shortKey of attachedShortPageKeys) {
+      const el = findTargetByScopedKey(shortKey);
+      if (!el) {
+        continue;
+      }
+
+      delete el.dataset.mtKakaoAttachedToKey;
+      delete el.dataset.mtKakaoAttachedToAt;
+      delete el.dataset.mtNoTextKey;
+      delete el.dataset.mtLastTranslatedKey;
+      el.dataset.mtKakaoDetachedFromOwnerKey = ownerScopedKey;
+      el.dataset.mtKakaoDetachedFromOwnerAt = String(Date.now());
+      tracePipeline("short-detached", el, { reason, ownerScopedKey });
+      released += 1;
+
+      queueTranslate(el, {
+        manual: true,
+        force: true,
+        reason: `kakao-short-page-standalone:${reason || "uncovered"}`
+      });
+    }
+    return released;
+  }
+
+  function hasAttachedShortPageBubble(result) {
+    return !!(
+      result &&
+      Array.isArray(result.bubbles) &&
+      result.bubbles.some((bubble) => bubble && bubble.stitch_attached_short_page === true)
+    );
   }
 
   const autoTranslateRetryTimers = new Map();

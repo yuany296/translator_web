@@ -582,6 +582,26 @@ test("Kakao short page queueing is redirected before standalone OCR gates", () =
   assert.match(contentSource, /target\.dataset\.mtKakaoAttachedToKey = ownerScopedKey/);
 });
 
+test("Kakao short page attachment is released when stitched result misses attached bubbles", () => {
+  assert.equal(
+    runtime.__test.hasAttachedShortPageBubble({ bubbles: [{ original_text: "owner" }] }),
+    false
+  );
+  assert.equal(
+    runtime.__test.hasAttachedShortPageBubble({ bubbles: [{ stitch_attached_short_page: true }] }),
+    true
+  );
+
+  const resultReadyIndex = contentSource.indexOf("result = await dedupeKakaoResultByPageCoordinates(result, target, targetKey)");
+  const releaseIndex = contentSource.indexOf("releaseUncoveredKakaoShortPages(payload, result, target", resultReadyIndex);
+  const cacheIndex = contentSource.indexOf("rememberLocalResult(scopedTargetKey, result)", resultReadyIndex);
+  assert.ok(resultReadyIndex >= 0);
+  assert.ok(releaseIndex > resultReadyIndex);
+  assert.ok(releaseIndex < cacheIndex);
+  assert.match(contentSource, /mtKakaoDetachedFromOwnerKey/);
+  assert.match(contentSource, /short-attachment-suppressed/);
+});
+
 test("stitched OCR remaps polygon points into the owner image", () => {
   const result = runtime.__test.mapKakaoStitchedResult(
     {

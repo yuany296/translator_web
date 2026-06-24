@@ -5045,6 +5045,10 @@
     }
 
     if (!passesTargetFilter(target, true)) {
+      console.debug("[MangaTranslator][Filter] queuePageAutoTranslate rejected", {
+        src: (target.currentSrc || target.src || '').slice(0, 60),
+        rect: (() => { try { const r = target.getBoundingClientRect(); return `${Math.round(r.width)}x${Math.round(r.height)}`; } catch { return '?'; } })()
+      });
       tracePipeline("skipped", target, { skipReason: "filterFail" });
       // KakaoPage: IntersectionObserver fires early (8% visible) but geometry check
       // needs more (180px+ visible). Schedule retry so scroll-into-view images
@@ -5453,10 +5457,22 @@
       : Math.max(stripMinHeight, heightLimit);
 
     if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
+      console.debug("[MangaTranslator][Filter] rect too small", {
+        src: (target.currentSrc || target.src || '').slice(0, 60),
+        rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
+        min: `${effectiveWidthLimit}x${effectiveHeightLimit}`,
+        manual
+      });
       return false;
     }
 
     if (IS_KAKAOPAGE_READER && !passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen)) {
+      console.debug("[MangaTranslator][Filter] KakaoPage geometry rejected", {
+        src: (target.currentSrc || target.src || '').slice(0, 60),
+        rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
+        manual,
+        relaxed
+      });
       return false;
     }
 
@@ -5466,6 +5482,12 @@
     const effectiveMinRatio = IS_KAKAOPAGE_READER ? 0.01 : (relaxed ? 0.10 : AUTO_MIN_RATIO);
     const maxRatio = relaxed ? 20 : 14;
     if (ratio < effectiveMinRatio || ratio > maxRatio) {
+      console.debug("[MangaTranslator][Filter] aspect ratio out of bounds", {
+        src: (target.currentSrc || target.src || '').slice(0, 60),
+        ratio: ratio.toFixed(3),
+        min: effectiveMinRatio,
+        max: maxRatio
+      });
       return false;
     }
 
@@ -5489,12 +5511,24 @@
       // Lower thresholds so partially-scrolled images aren't filtered out.
       const minVisibleArea = relaxed ? 3000 : manual ? 6000 : 8000;
       if (!visibleRect || visibleArea < minVisibleArea) {
+        console.debug("[MangaTranslator][Filter] KakaoPage not enough visible area", {
+          src: (target.currentSrc || target.src || '').slice(0, 60),
+          visibleArea: visibleArea,
+          minVisibleArea,
+          manual,
+          relaxed
+        });
         return false;
       }
 
       const minVisibleHeight = relaxed ? 40 : manual ? 50 : 60;
       const minVisibleWidth = relaxed ? 50 : manual ? 60 : 80;
       if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
+        console.debug("[MangaTranslator][Filter] KakaoPage visible rect too small", {
+          src: (target.currentSrc || target.src || '').slice(0, 60),
+          visibleRect: `${Math.round(visibleRect.width)}x${Math.round(visibleRect.height)}`,
+          min: `${minVisibleWidth}x${minVisibleHeight}`
+        });
         return false;
       }
 
@@ -5512,6 +5546,10 @@
         // Accept thin strips (down to 8px, ratio ≥ 0.01) so they
         // get their own translation with stitching context.
         if (naturalHeight < KAKAO_THIN_STRIP_MIN_HEIGHT || naturalRatio < 0.01) {
+          console.debug("[MangaTranslator][Filter] KakaoPage natural size too thin", {
+            src: (target.currentSrc || target.src || '').slice(0, 60),
+            natural: `${naturalWidth}x${naturalHeight}`
+          });
           return false;
         }
       }

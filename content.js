@@ -513,6 +513,7 @@
       delete target.dataset.mtBoundaryReadyToken;
       // 清理重试状态：防止 SVG 占位符的 retry 干扰真实图片
       delete target.dataset.mtRetryCount;
+      delete target.dataset.mtRetryAttempts;
       const retryTimer = autoTranslateRetryTimers.get(target);
       if (retryTimer) {
         window.clearTimeout(retryTimer);
@@ -5145,6 +5146,7 @@
   const autoTranslateRetryTimers = new Map();
   const AUTO_TRANSLATE_RETRY_DELAY_MS = 1200;
   const AUTO_TRANSLATE_RETRY_MAX_DELAY_MS = 20000;
+  const MAX_AUTO_TRANSLATE_RETRY_ATTEMPTS = 5;
 
   function scheduleAutoTranslateRetry(target) {
     // Already has a pending retry — let it fire.
@@ -5156,6 +5158,13 @@
     if (target instanceof HTMLImageElement && isDataUrl(resolveImageUrl(target))) {
       return;
     }
+
+    // 限制重试次数：超过上限后不再重试，避免对已滚出视口的图片无限循环
+    const attempts = Number(target.dataset.mtRetryAttempts || 0);
+    if (attempts >= MAX_AUTO_TRANSLATE_RETRY_ATTEMPTS) {
+      return;
+    }
+    target.dataset.mtRetryAttempts = String(attempts + 1);
 
     scheduleNextAutoTranslateRetry(target, AUTO_TRANSLATE_RETRY_DELAY_MS);
   }

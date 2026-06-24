@@ -545,11 +545,12 @@
       target.isConnected &&
       !imgNotComplete;
     if (!shouldAutoQueue && state.autoTranslatePageEnabled && state.enabled && imgNotComplete) {
-      console.log("[MangaTranslator][Filter] registerTarget deferred: image not complete", {
-        src: (target.currentSrc || target.src || '').slice(0, 60),
-        newObservation: isNewObservation,
-        oldTokenChanged: !!(oldSourceToken && oldSourceToken !== sourceToken)
-      });
+      // 图片还未加载完成（CDN 慢），等 load 事件触发后会再进 registerTarget 入队。
+      // 但如果 load 事件永远不触发（CDN 错误），重试机制需要兜底。
+      // sourceToken 变化时（SVG→CDN）安排一次重试，确保不遗漏。
+      if (!isNewObservation && oldSourceToken && oldSourceToken !== sourceToken) {
+        scheduleAutoTranslateRetry(target);
+      }
     }
     if (shouldAutoQueue) {
       // 1) DOM 复用（sourceToken 变化）→ 旧元素被回收给新图片
@@ -5053,7 +5054,7 @@
     }
 
     if (!passesTargetFilter(target, true)) {
-      console.log("[MangaTranslator][Filter] queuePageAutoTranslate rejected", {
+      console.debug("[MangaTranslator][Filter] queuePageAutoTranslate rejected", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         rect: (() => { try { const r = target.getBoundingClientRect(); return `${Math.round(r.width)}x${Math.round(r.height)}`; } catch { return '?'; } })()
       });
@@ -5447,7 +5448,7 @@
     }
 
     if (target instanceof HTMLImageElement && !target.complete) {
-      console.log("[MangaTranslator][Filter] image not complete", {
+      console.debug("[MangaTranslator][Filter] image not complete", {
         src: (target.currentSrc || target.src || '').slice(0, 60)
       });
       return false;
@@ -5468,7 +5469,7 @@
       : Math.max(stripMinHeight, heightLimit);
 
     if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
-      console.log("[MangaTranslator][Filter] rect too small", {
+      console.debug("[MangaTranslator][Filter] rect too small", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
         min: `${effectiveWidthLimit}x${effectiveHeightLimit}`,
@@ -5478,7 +5479,7 @@
     }
 
     if (IS_KAKAOPAGE_READER && !passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen)) {
-      console.log("[MangaTranslator][Filter] KakaoPage geometry rejected", {
+      console.debug("[MangaTranslator][Filter] KakaoPage geometry rejected", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
         manual,
@@ -5493,7 +5494,7 @@
     const effectiveMinRatio = IS_KAKAOPAGE_READER ? 0.01 : (relaxed ? 0.10 : AUTO_MIN_RATIO);
     const maxRatio = relaxed ? 20 : 14;
     if (ratio < effectiveMinRatio || ratio > maxRatio) {
-      console.log("[MangaTranslator][Filter] aspect ratio out of bounds", {
+      console.debug("[MangaTranslator][Filter] aspect ratio out of bounds", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         ratio: ratio.toFixed(3),
         min: effectiveMinRatio,
@@ -5522,7 +5523,7 @@
       // Lower thresholds so partially-scrolled images aren't filtered out.
       const minVisibleArea = relaxed ? 3000 : manual ? 6000 : 8000;
       if (!visibleRect || visibleArea < minVisibleArea) {
-        console.log("[MangaTranslator][Filter] KakaoPage not enough visible area", {
+        console.debug("[MangaTranslator][Filter] KakaoPage not enough visible area", {
           src: (target.currentSrc || target.src || '').slice(0, 60),
           visibleArea: visibleArea,
           minVisibleArea,
@@ -5535,7 +5536,7 @@
       const minVisibleHeight = relaxed ? 40 : manual ? 50 : 60;
       const minVisibleWidth = relaxed ? 50 : manual ? 60 : 80;
       if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
-        console.log("[MangaTranslator][Filter] KakaoPage visible rect too small", {
+        console.debug("[MangaTranslator][Filter] KakaoPage visible rect too small", {
           src: (target.currentSrc || target.src || '').slice(0, 60),
           visibleRect: `${Math.round(visibleRect.width)}x${Math.round(visibleRect.height)}`,
           min: `${minVisibleWidth}x${minVisibleHeight}`
@@ -5557,7 +5558,7 @@
         // Accept thin strips (down to 8px, ratio ≥ 0.01) so they
         // get their own translation with stitching context.
         if (naturalHeight < KAKAO_THIN_STRIP_MIN_HEIGHT || naturalRatio < 0.01) {
-          console.log("[MangaTranslator][Filter] KakaoPage natural size too thin", {
+          console.debug("[MangaTranslator][Filter] KakaoPage natural size too thin", {
             src: (target.currentSrc || target.src || '').slice(0, 60),
             natural: `${naturalWidth}x${naturalHeight}`
           });

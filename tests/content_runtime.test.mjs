@@ -582,7 +582,7 @@ test("Kakao short page queueing is redirected before standalone OCR gates", () =
   assert.match(contentSource, /target\.dataset\.mtKakaoAttachedToKey = ownerScopedKey/);
 });
 
-test("Kakao short page attachment is released when stitched result misses attached bubbles", () => {
+test("Kakao short page attachment is always released (not gated on stitched result bubbles)", () => {
   assert.equal(
     runtime.__test.hasAttachedShortPageBubble({ bubbles: [{ original_text: "owner" }] }),
     false
@@ -841,6 +841,53 @@ test("stitched OCR maps explicitly attached short neighbor pages onto the owner 
   assert.equal(result.bubbles[2].stitch_attached_short_page, true);
   assert.equal(result.bubbles[2].stitch_overflow, true);
   assert.ok(result.bubbles[2].y > 100);
+});
+
+test("stitched OCR keeps ordinary adjacent context-slice text as owner overflow", () => {
+  const result = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [{
+        x: 12,
+        y: (1195 / 1460) * 100,
+        w: 28,
+        h: (190 / 1460) * 100,
+        original_text: "next boundary caption",
+        translated_text: "next boundary translation"
+      }]
+    },
+    makeStitchPayload(0, 1100, 1460, {
+      next: { source: "next", drawRect: { x: 0, y: 1100, w: 760, h: 360 } }
+    }),
+    { getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 1100 }) },
+    "owner-next-context-boundary"
+  );
+
+  assert.equal(result.bubbles.length, 1);
+  assert.equal(result.bubbles[0].stitch_overflow, true);
+  assert.equal(result.bubbles[0].stitch_boundary_neighbor, true);
+  assert.ok(result.bubbles[0].y > 100);
+  assert.ok(result.bubbles[0].h > 15);
+});
+
+test("stitched OCR still drops ordinary full-neighbor page text", () => {
+  const result = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [{
+        x: 12,
+        y: (1210 / 2200) * 100,
+        w: 28,
+        h: (80 / 2200) * 100,
+        original_text: "full neighbor page"
+      }]
+    },
+    makeStitchPayload(0, 1100, 2200, {
+      next: { source: "next", drawRect: { x: 0, y: 1100, w: 760, h: 1100 } }
+    }),
+    { getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 1100 }) },
+    "owner-full-neighbor"
+  );
+
+  assert.equal(result.bubbles.length, 0);
 });
 
 test("inflightByTarget prevents re-queue for same sourceToken on same DOM node", () => {

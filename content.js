@@ -201,6 +201,7 @@
       mapKakaoStitchedFillBox,
       mapKakaoStitchedPolygon,
       releaseUncoveredKakaoShortPages,
+      releaseShortPagesAttachedDuringInflight,
       hasAttachedShortPageBubble,
       buildKakaoStitchedPayload,
       findTargetByScopedKey,
@@ -998,6 +999,11 @@
       relaxed: options.relaxed === true,
       allowOffscreen: options.allowOffscreen === true
     })) {
+      // KakaoPage 自动翻译模式下安排重试：短页被 release 后可能已部分滚出视口，
+      // 或因图片未完成加载等原因暂时不通过 filter——重试机制确保不会永久丢失。
+      if (IS_KAKAOPAGE_READER && state.autoTranslatePageEnabled && options.manual) {
+        scheduleAutoTranslateRetry(target);
+      }
       return { ok: false, skipped: true, reason: "filtered as non-manga target" };
     }
 
@@ -1219,6 +1225,13 @@
       } finally {
         state.inflightByTarget.delete(target);
         delete target.dataset.inflightSourceToken;
+
+        // Owner 翻译结束，检查是否有短页在 inflight 期间被附着到此 owner。
+        // 如果有，这些短页的附着标记指向一个不会再被重翻译的 owner 结果，
+        // 需要立即释放让它们独立翻译。
+        if (IS_KAKAOPAGE_READER && state.autoTranslatePageEnabled) {
+          releaseShortPagesAttachedDuringInflight(target);
+        }
       }
     })();
 
@@ -1561,7 +1574,7 @@
       singleImagePayload: ownerPayload,
       attachedShortPageKeys: [previousEntry, nextEntry]
         .filter(e => e && e.shortPageAttachment)
-        .map(e => e.targetKey),
+        .map(e => buildTargetSourceCacheKey(e.targetKey, e.src)),
       stitch: {
         canvasWidth: canonicalWidth,
         canvasHeight: compositeHeight,
@@ -1935,6 +1948,16 @@
         best.ratio >= 0.6;
 
       if (!isShortPageAttachment && (!best || !best.segment || best.segment.source !== "owner" || best.ratio < 0.6)) {
+        const boundaryNeighbor = mapKakaoAdjacentBoundaryBubble(
+          bubble,
+          bubblePx,
+          best,
+          ownerDraw,
+          canvasHeight
+        );
+        if (boundaryNeighbor) {
+          return boundaryNeighbor;
+        }
         console.debug("[MangaTranslator][KakaoStitch] Discarding bubble: not in owner region", {
           bestSource: best && best.segment && best.segment.source,
           bestRatio: best ? Number(best.ratio.toFixed(4)) : 0
@@ -2084,6 +2107,63 @@
       ...result,
       bubbles: deduped,
       debug: normalizeKakaoStitchDebugCoordinates(result.debug, payload.stitch)
+    };
+  }
+
+  function mapKakaoAdjacentBoundaryBubble(bubble, bubblePx, rankedEntry, ownerRect, canvasHeight) {
+    const segment = rankedEntry && rankedEntry.segment;
+    const segmentRect = segment && segment.drawRect;
+    if (
+      !segmentRect ||
+      rankedEntry.ratio < 0.6 ||
+      (segment.source !== "previous" && segment.source !== "next") ||
+      segment.shortPageAttachment === true
+    ) {
+      return null;
+    }
+
+    const contextSlice = segmentRect.h <= ownerRect.h * 0.45;
+    if (!contextSlice) {
+      return null;
+    }
+
+    const expectedEdge = segment.source === "previous"
+      ? ownerRect.y
+      : ownerRect.y + ownerRect.h;
+    const actualEdge = segment.source === "previous"
+      ? segmentRect.y + segmentRect.h
+      : segmentRect.y;
+    if (Math.abs(actualEdge - expectedEdge) > Math.max(2, ownerRect.h * 0.02)) {
+      return null;
+    }
+
+    const mappedY = ((bubblePx.y - ownerRect.y) / ownerRect.h) * 100;
+    const mappedH = (bubblePx.h / ownerRect.h) * 100;
+    const segmentStart = ((segmentRect.y - ownerRect.y) / ownerRect.h) * 100;
+    const segmentEnd = ((segmentRect.y + segmentRect.h - ownerRect.y) / ownerRect.h) * 100;
+    const tolerance = 5;
+    const inPreviousSlice = segment.source === "previous" &&
+      mappedY <= tolerance &&
+      mappedY + mappedH >= segmentStart - tolerance;
+    const inNextSlice = segment.source === "next" &&
+      mappedY + mappedH >= 100 - tolerance &&
+      mappedY <= segmentEnd + tolerance;
+
+    if ((!inPreviousSlice && !inNextSlice) || mappedH <= 0 || mappedH > 60) {
+      return null;
+    }
+
+    return {
+      ...bubble,
+      x: ((bubblePx.x - ownerRect.x) / ownerRect.w) * 100,
+      y: mappedY,
+      w: (bubblePx.w / ownerRect.w) * 100,
+      h: mappedH,
+      stitch_overflow: true,
+      stitch_boundary_neighbor: true,
+      fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
+      polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
+      region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
     };
   }
 
@@ -5165,8 +5245,40 @@
     return null;
   }
 
+  function releaseShortPagesAttachedDuringInflight(owner) {
+    if (!owner || typeof owner.getBoundingClientRect !== "function") {
+      return;
+    }
+
+    const ownerKey = computeTargetKey(owner);
+    const ownerScopedKey = buildTargetSourceCacheKey(ownerKey, getQuickSourceToken(owner));
+    if (!ownerScopedKey) return;
+
+    const candidates = collectKakaopageManualTargetCandidates(true, owner);
+    for (const candidate of candidates) {
+      if (candidate === owner) continue;
+      const attachedKey = String(candidate.dataset.mtKakaoAttachedToKey || "");
+      if (attachedKey !== ownerScopedKey) continue;
+
+      // 这个短页在 owner inflight 期间被附着 → owner 的 payload 不包含它
+      // 释放标记，让短页走独立翻译流程
+      delete candidate.dataset.mtKakaoAttachedToKey;
+      delete candidate.dataset.mtKakaoAttachedToAt;
+      delete candidate.dataset.mtNoTextKey;
+      delete candidate.dataset.mtLastTranslatedKey;
+      candidate.dataset.mtKakaoDetachedFromOwnerKey = ownerScopedKey;
+      candidate.dataset.mtKakaoDetachedFromOwnerAt = String(Date.now());
+      tracePipeline("short-detached", candidate, { reason: "ownerInflightCompleted", ownerScopedKey });
+
+      queuePageAutoTranslate(candidate);
+    }
+  }
+
   function releaseUncoveredKakaoShortPages(payload, result, owner, reason) {
-    if (!IS_KAKAOPAGE_READER || !payload || hasAttachedShortPageBubble(result)) {
+    // 总是释放附属短页让其独立翻译，确保短页元素自身有 overlay。
+    // 即使 owner stitch 结果中已有短页气泡（渲染在 owner overlay 上），
+    // 短页也应有自己的覆盖层，避免用户看到光秃秃的短页图片。
+    if (!IS_KAKAOPAGE_READER || !payload) {
       return 0;
     }
 
@@ -5183,6 +5295,7 @@
     for (const shortKey of attachedShortPageKeys) {
       const el = findTargetByScopedKey(shortKey);
       if (!el) {
+        tracePipeline("short-detached", null, { reason: `findTargetByScopedKey returned null for ${String(shortKey).slice(0, 80)}`, ownerScopedKey });
         continue;
       }
 
@@ -5195,11 +5308,8 @@
       tracePipeline("short-detached", el, { reason, ownerScopedKey });
       released += 1;
 
-      queueTranslate(el, {
-        manual: true,
-        force: true,
-        reason: `kakao-short-page-standalone:${reason || "uncovered"}`
-      });
+      // 使用 queuePageAutoTranslate 而非 queueTranslate，确保有 retry 保护和 filter 重试机制
+      queuePageAutoTranslate(el);
     }
     return released;
   }

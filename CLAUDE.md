@@ -94,3 +94,15 @@ All tunable thresholds are defined at the top of `content.js` and `background.js
 ## Issue Tracking
 
 See [`problems.md`](problems.md) for the known-issues registry with root cause analysis, fix points, and resolution status. When a Chrome/Edge real-page test reveals a new regression, add it as a new section to `problems.md` with symptoms, root cause, fix description, and status. Mark as ✅ resolved once the fix is committed and verified.
+
+## Dev Workflow
+
+当修复 Bug 或做优化时，按以下循环：
+
+1. **`npm test`** — 先确保现有测试通过
+2. **`npm run build`** — 构建到 dist/
+3. **Chrome 连接测试** — 打开 `chrome://extensions` 点重新加载，然后在真实页面观察行为
+4. **`node --check content.js && node --check background.js`** — 改完后语法检查
+5. **问题诊断** — 打开 DevTools 控制台看错误日志；检查 DOM 中 `.mt-overlay-root` 的状态（加载中/已渲染/卡住）
+6. **记录到 `problems.md`** — 新问题加上症状、根因、修复方案，解决了标记 ✅
+7. **提交** — 测试通过后 `git add` + `git commit`

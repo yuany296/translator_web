@@ -2134,7 +2134,6 @@
     if (
       !rect ||
       !segmentRect ||
-      rankedEntry.ratio < 0.6 ||
       (segment.source !== "previous" && segment.source !== "next") ||
       segment.shortPageAttachment === true
     ) {
@@ -2153,6 +2152,16 @@
       ? segmentRect.y + segmentRect.h
       : segmentRect.y;
     if (Math.abs(actualEdge - expectedEdge) > Math.max(2, ownerRect.h * 0.02)) {
+      return null;
+    }
+
+    const rectTop = rect.y;
+    const rectBottom = rect.y + rect.h;
+    const crossesOwnerEdge = segment.source === "previous"
+      ? rectTop < ownerRect.y && rectBottom > ownerRect.y
+      : rectTop < ownerRect.y + ownerRect.h && rectBottom > ownerRect.y + ownerRect.h;
+    const requiredRatio = crossesOwnerEdge ? 0.45 : 0.6;
+    if (rankedEntry.ratio < requiredRatio) {
       return null;
     }
 

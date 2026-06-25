@@ -914,6 +914,34 @@ test("stitched OCR keeps multiline speech bubble from deeper adjacent context", 
   assert.ok(result.bubbles[2].y > result.bubbles[0].y);
 });
 
+test("stitched OCR keeps merged boundary caption spanning owner and adjacent context", () => {
+  const result = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [{
+        x: (109.2 / 720) * 100,
+        y: (1373 / 1820) * 100,
+        w: (225.6 / 720) * 100,
+        h: (192 / 1820) * 100,
+        original_text: "봤냐, 이높들아! 꼴좋다,\n꼴좋아!",
+        translated_text: "看到了吧，你们！活该，活该！",
+        sourceLineCount: 2
+      }]
+    },
+    makeStitchPayload(360, 1100, 1820, {
+      compositeWidth: 720,
+      previous: { source: "previous", drawRect: { x: 0, y: 0, w: 720, h: 360 } },
+      next: { source: "next", drawRect: { x: 0, y: 1460, w: 720, h: 360 } }
+    }),
+    { getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 1100 }) },
+    "owner-next-context-merged-caption"
+  );
+
+  assert.equal(result.bubbles.length, 1);
+  assert.equal(result.bubbles[0].stitch_boundary_neighbor, true);
+  assert.ok(result.bubbles[0].y < 100);
+  assert.ok(result.bubbles[0].y + result.bubbles[0].h > 100);
+});
+
 test("stitched OCR still drops ordinary full-neighbor page text", () => {
   const result = runtime.__test.mapKakaoStitchedResult(
     {

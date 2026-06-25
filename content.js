@@ -2411,7 +2411,8 @@
         height: (Number(bubble.h) / 100) * targetRect.height
       }
     }));
-    state.kakaoGlobalOcrEntries.delete(targetKey);
+    // 不在 await 前删除全局条目：让 dedupeKakaoGlobalBubbles (内部同做 delete) 处理清除，
+    // 避免 await 期间其他并列处理的目标看不到本目标的条目而漏去重。
     const trimmed = await trimKakaoBoundaryOverlapBubbles(bubbles, targetKey);
     const deduped = dedupeKakaoGlobalBubbles(trimmed, target, targetRect, targetKey);
     return {
@@ -4388,7 +4389,13 @@
               // 当前图片不可读时跳过恢复，避免自动触发新的翻译请求。
             });
         } else {
-          renderOverlay(target, targetKey, localCachedResult);
+          // 恢复 overlay 时重新去重，确保缓存结果与当前全局去重状态一致。
+          // 避免之前被跨图去重移除的气泡在恢复时因未重新比对而再次出现。
+          dedupeKakaoResultByPageCoordinates(localCachedResult, target, targetKey)
+            .then((dedupedResult) => {
+              state.localResultCache.set(scopedTargetKey, dedupedResult);
+              renderOverlay(target, targetKey, dedupedResult);
+            });
         }
         target.dataset.mtLastTranslatedKey = targetKey;
         continue;

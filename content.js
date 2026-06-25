@@ -5305,10 +5305,10 @@
   }
 
   function releaseUncoveredKakaoShortPages(payload, result, owner, reason) {
-    // 总是释放附属短页让其独立翻译，确保短页元素自身有 overlay。
-    // 即使 owner stitch 结果中已有短页气泡（渲染在 owner overlay 上），
-    // 短页也应有自己的覆盖层，避免用户看到光秃秃的短页图片。
-    if (!IS_KAKAOPAGE_READER || !payload) {
+    // 仅释放未被 owner stitch 结果覆盖的短页。
+    // 若 owner 结果中已有短页气泡（stitch_attached_short_page），说明短页文字已通过
+    // 拼接 OCR 翻译并渲染在 owner overlay 上，无需再独立翻译，避免出现重复译文。
+    if (!IS_KAKAOPAGE_READER || !payload || hasAttachedShortPageBubble(result)) {
       return 0;
     }
 

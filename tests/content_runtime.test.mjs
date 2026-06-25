@@ -582,7 +582,7 @@ test("Kakao short page queueing is redirected before standalone OCR gates", () =
   assert.match(contentSource, /target\.dataset\.mtKakaoAttachedToKey = ownerScopedKey/);
 });
 
-test("Kakao short page attachment is always released (not gated on stitched result bubbles)", () => {
+test("Kakao short page attachment release is gated on stitched result coverage", () => {
   assert.equal(
     runtime.__test.hasAttachedShortPageBubble({ bubbles: [{ original_text: "owner" }] }),
     false

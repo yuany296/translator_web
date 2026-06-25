@@ -288,3 +288,31 @@ Step 5: npm test + Chrome 真实验证 ✅
 - `node.exe --test tests\content_runtime.test.mjs tests\background_runtime.test.mjs tests\overlay_style.test.mjs`：87 passed / 0 failed。
 - `node.exe --check content.js`、`node.exe --check background.js`：通过。
 - `node.exe scripts\build-extension.mjs`：通过。
+
+---
+
+# 2026-06-25 Kakao 跨页气泡只识别第一行（已修复）
+
+## 现象
+
+`block-ef5b...` 只识别并翻译了气泡顶部的 `어우피디님!`，下面两行 `왜 이래요 / 정말!!` 没有 raw 调试框，也没有译文。
+
+## 根因
+
+旧的普通相邻上下文切片太浅。前一页 owner 的拼接输入图只截到了下一页顶部气泡的第一行，图像底部正好停在 `어우 피디님` 附近；下一页独立 OCR 输入又从人物画面开始，顶部气泡文字已经在裁剪范围之外。结果是两条 OCR 路径都没有覆盖气泡下半部分。
+
+## 修复
+
+将 Kakao 普通拼接上下文深度从浅切片提升为更深的边界上下文：
+
+- `KAKAO_STITCH_CONTEXT_CSS_PX` 提升到 360。
+- 新增 `KAKAO_STITCH_CONTEXT_HEIGHT_RATIO = 0.35`，按 owner 高度限制上下文深度。
+- `KAKAO_STITCH_MAX_CONTEXT_PX` 提升到 480。
+- 最终映射仍要求普通相邻切片高度不超过 owner 的 45%，完整邻页仍会被过滤，避免重复翻译。
+
+## 验证
+
+- `node.exe --test tests\content_runtime.test.mjs`：64 passed / 0 failed。
+- `node.exe --test tests\content_runtime.test.mjs tests\background_runtime.test.mjs tests\overlay_style.test.mjs`：88 passed / 0 failed。
+- `node.exe --check content.js`、`node.exe --check background.js`：通过。
+- `node.exe scripts\build-extension.mjs`：通过。

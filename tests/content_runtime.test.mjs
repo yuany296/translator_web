@@ -63,8 +63,8 @@ test("跨图上下文根据显示比例动态计算并记录页面全局坐标",
     nextHeight: 1200
   });
 
-  assert.equal(plan.previousSlice, 180);
-  assert.equal(plan.nextSlice, 180);
+  assert.equal(plan.previousSlice, 350);
+  assert.equal(plan.nextSlice, 350);
   globalThis.window.scrollX = 0;
   globalThis.window.scrollY = 0;
 });
@@ -867,6 +867,51 @@ test("stitched OCR keeps ordinary adjacent context-slice text as owner overflow"
   assert.equal(result.bubbles[0].stitch_boundary_neighbor, true);
   assert.ok(result.bubbles[0].y > 100);
   assert.ok(result.bubbles[0].h > 15);
+});
+
+test("stitched OCR keeps multiline speech bubble from deeper adjacent context", () => {
+  const result = runtime.__test.mapKakaoStitchedResult(
+    {
+      bubbles: [
+        {
+          x: 51,
+          y: (1235 / 1460) * 100,
+          w: 24,
+          h: (34 / 1460) * 100,
+          original_text: "어우피디님!",
+          translated_text: "哦，PD大人！"
+        },
+        {
+          x: 48,
+          y: (1286 / 1460) * 100,
+          w: 31,
+          h: (48 / 1460) * 100,
+          original_text: "왜 이래요",
+          translated_text: "为什么这样"
+        },
+        {
+          x: 50,
+          y: (1350 / 1460) * 100,
+          w: 28,
+          h: (48 / 1460) * 100,
+          original_text: "정말!!",
+          translated_text: "真是的！！"
+        }
+      ]
+    },
+    makeStitchPayload(0, 1100, 1460, {
+      next: { source: "next", drawRect: { x: 0, y: 1100, w: 760, h: 360 } }
+    }),
+    { getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 1100 }) },
+    "owner-next-context-multiline-speech"
+  );
+
+  assert.deepEqual(
+    result.bubbles.map((bubble) => bubble.original_text),
+    ["어우피디님!", "왜 이래요", "정말!!"]
+  );
+  assert.equal(result.bubbles.every((bubble) => bubble.stitch_boundary_neighbor), true);
+  assert.ok(result.bubbles[2].y > result.bubbles[0].y);
 });
 
 test("stitched OCR still drops ordinary full-neighbor page text", () => {

@@ -43,9 +43,10 @@
   const EMBEDDED_MAX_CANVAS_PIXELS = 24 * 1000 * 1000;
   const EMBEDDED_MAX_ORIGINAL_BYTES = 16 * 1024 * 1024;
   const MAX_LOCAL_RESULT_CACHE = 120;
-  const KAKAO_STITCH_MAX_CONTEXT_PX = 300;
+  const KAKAO_STITCH_MAX_CONTEXT_PX = 480;
   const KAKAO_STITCH_MIN_CONTEXT_PX = 96;
-  const KAKAO_STITCH_CONTEXT_CSS_PX = 180;
+  const KAKAO_STITCH_CONTEXT_CSS_PX = 360;
+  const KAKAO_STITCH_CONTEXT_HEIGHT_RATIO = 0.35;
   const KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX = 32;
   const KAKAO_STITCH_MIN_WIDTH_RATIO = 0.82;
   const KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT = 420;
@@ -1760,7 +1761,7 @@
     }
     const bitmapPerCssPixel = canonicalWidth / owner.width;
     const desiredContext = clamp(
-      Math.round(Math.min(KAKAO_STITCH_CONTEXT_CSS_PX, owner.height * 0.2) * bitmapPerCssPixel),
+      Math.round(Math.min(KAKAO_STITCH_CONTEXT_CSS_PX, owner.height * KAKAO_STITCH_CONTEXT_HEIGHT_RATIO) * bitmapPerCssPixel),
       KAKAO_STITCH_MIN_CONTEXT_PX,
       KAKAO_STITCH_MAX_CONTEXT_PX
     );

@@ -1069,6 +1069,30 @@ test("normalizeDebugCoordinateItems filters non-owner items and remaps coordinat
   }
 });
 
+test("normalizeDebugCoordinateItems keeps adjacent boundary context debug items", () => {
+  const result = runtime.__test.normalizeDebugCoordinateItems(
+    [
+      { id: "caption-a", rawBox: { left: 129, top: 1211, width: 187, height: 82 }, text: "봤냐, 이놈들아!" },
+      { id: "caption-b", rawBox: { left: 184, top: 1263, width: 102, height: 64 }, text: "꼴좋다," },
+      { id: "caption-c", rawBox: { left: 193, top: 1306, width: 101, height: 63 }, text: "꼴좋아!" }
+    ],
+    { imageWidth: 760, imageHeight: 1460 },
+    {
+      stitch: { verified: true },
+      compositeWidth: 760,
+      compositeHeight: 1460,
+      ownerDraw: { x: 0, y: 0, w: 760, h: 1100 },
+      segments: [
+        { source: "owner", drawRect: { x: 0, y: 0, w: 760, h: 1100 } },
+        { source: "next", drawRect: { x: 0, y: 1100, w: 760, h: 360 } }
+      ]
+    }
+  );
+
+  assert.deepEqual(result.map((item) => item.id), ["caption-a", "caption-b", "caption-c"]);
+  assert.equal(result.every((item) => item.percent.y > 100), true);
+});
+
 test("dedupedItems coordinate mapping follows same rules as raw items", () => {
   const result = runtime.__test.normalizeDebugCoordinateItems(
     [

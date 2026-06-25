@@ -316,3 +316,30 @@ Step 5: npm test + Chrome 真实验证 ✅
 - `node.exe --test tests\content_runtime.test.mjs tests\background_runtime.test.mjs tests\overlay_style.test.mjs`：88 passed / 0 failed。
 - `node.exe --check content.js`、`node.exe --check background.js`：通过。
 - `node.exe scripts\build-extension.mjs`：通过。
+
+---
+
+# 2026-06-25 Kakao 边界 raw 框只显示第一行（已修复）
+
+## 现象
+
+截图中 `raw-2 | 봤냐, 이놈들아!` 有红框，但下面两行 `꼴좋다, / 꼴좋아!` 没有红色 raw 框，看起来像 OCR 没识别。
+
+## 根因
+
+OCR 实际已经识别出三行。问题出在 debug 可视化层：`normalizeDebugCoordinateItems` 仍然使用旧的 owner-only 过滤规则，只显示主要落在 owner 段里的 raw 框。第一行跨在 owner/next 接缝上，owner overlap 足够，所以显示；后两行大部分或全部在 `next` 上下文切片里，被 debug 层过滤掉。
+
+## 修复
+
+将相邻边界切片的坐标映射抽成 `mapKakaoAdjacentBoundaryRect`，让最终翻译框和 raw/debug 框共用同一套边界保留规则：
+
+- 小型、贴边的 previous/next context slice 会显示 raw/debug 框。
+- 完整邻页仍然过滤，避免旧的重复翻译/重复调试框问题回来。
+- owner 区域 debug 框继续按 owner 坐标裁剪。
+
+## 验证
+
+- `node.exe --test tests\content_runtime.test.mjs`：65 passed / 0 failed。
+- `node.exe --test tests\content_runtime.test.mjs tests\background_runtime.test.mjs tests\overlay_style.test.mjs`：89 passed / 0 failed。
+- `node.exe --check content.js`、`node.exe --check background.js`：通过。
+- `node.exe scripts\build-extension.mjs`：通过。

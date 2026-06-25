@@ -2112,9 +2112,27 @@
   }
 
   function mapKakaoAdjacentBoundaryBubble(bubble, bubblePx, rankedEntry, ownerRect, canvasHeight) {
+    const mapped = mapKakaoAdjacentBoundaryRect(bubblePx, rankedEntry, ownerRect);
+    if (!mapped) {
+      return null;
+    }
+
+    return {
+      ...bubble,
+      ...mapped,
+      stitch_overflow: true,
+      stitch_boundary_neighbor: true,
+      fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
+      polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
+      region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
+    };
+  }
+
+  function mapKakaoAdjacentBoundaryRect(rect, rankedEntry, ownerRect) {
     const segment = rankedEntry && rankedEntry.segment;
     const segmentRect = segment && segment.drawRect;
     if (
+      !rect ||
       !segmentRect ||
       rankedEntry.ratio < 0.6 ||
       (segment.source !== "previous" && segment.source !== "next") ||
@@ -2138,8 +2156,8 @@
       return null;
     }
 
-    const mappedY = ((bubblePx.y - ownerRect.y) / ownerRect.h) * 100;
-    const mappedH = (bubblePx.h / ownerRect.h) * 100;
+    const mappedY = ((rect.y - ownerRect.y) / ownerRect.h) * 100;
+    const mappedH = (rect.h / ownerRect.h) * 100;
     const segmentStart = ((segmentRect.y - ownerRect.y) / ownerRect.h) * 100;
     const segmentEnd = ((segmentRect.y + segmentRect.h - ownerRect.y) / ownerRect.h) * 100;
     const tolerance = 5;
@@ -2155,16 +2173,10 @@
     }
 
     return {
-      ...bubble,
-      x: ((bubblePx.x - ownerRect.x) / ownerRect.w) * 100,
+      x: ((rect.x - ownerRect.x) / ownerRect.w) * 100,
       y: mappedY,
-      w: (bubblePx.w / ownerRect.w) * 100,
-      h: mappedH,
-      stitch_overflow: true,
-      stitch_boundary_neighbor: true,
-      fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
-      polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
-      region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
+      w: (rect.w / ownerRect.w) * 100,
+      h: mappedH
     };
   }
 
@@ -2265,7 +2277,7 @@
     return { x, y, w, h };
   }
 
-  function getKakaoStitchOwnerOverlap(bubbleRect, segments) {
+  function getKakaoStitchBestOverlap(bubbleRect, segments) {
     if (!bubbleRect || !Array.isArray(segments) || segments.length === 0) {
       return null;
     }
@@ -2282,7 +2294,11 @@
         return { segment, ratio: overlap / area };
       })
       .sort((a, b) => b.ratio - a.ratio);
-    const best = ranked[0];
+    return ranked[0] || null;
+  }
+
+  function getKakaoStitchOwnerOverlap(bubbleRect, segments) {
+    const best = getKakaoStitchBestOverlap(bubbleRect, segments);
     return best && best.segment && best.segment.source === "owner" && best.ratio >= 0.6 ? best : null;
   }
 
@@ -2332,21 +2348,25 @@
         w: (Number(percent.w) / 100) * compositeWidth,
         h: (Number(percent.h) / 100) * compositeHeight
       };
-      if (!getKakaoStitchOwnerOverlap(rect, segments)) {
-        return null;
-      }
-      const left = Math.max(rect.x, ownerDraw.x);
-      const top = Math.max(rect.y, ownerDraw.y);
-      const right = Math.min(rect.x + rect.w, ownerDraw.x + ownerDraw.w);
-      const bottom = Math.min(rect.y + rect.h, ownerDraw.y + ownerDraw.h);
-      const mapped = {
-        x: ((left - ownerDraw.x) / ownerDraw.w) * 100,
-        y: ((top - ownerDraw.y) / ownerDraw.h) * 100,
-        w: (Math.max(0, right - left) / ownerDraw.w) * 100,
-        h: (Math.max(0, bottom - top) / ownerDraw.h) * 100
-      };
-      return mapped.w > 0 && mapped.h > 0 ? { ...item, percent: mapped } : null;
+      const ownerOverlap = getKakaoStitchOwnerOverlap(rect, segments);
+      const mapped = ownerOverlap
+        ? mapKakaoOwnerDebugRect(rect, ownerDraw)
+        : mapKakaoAdjacentBoundaryRect(rect, getKakaoStitchBestOverlap(rect, segments), ownerDraw);
+      return mapped && mapped.w > 0 && mapped.h > 0 ? { ...item, percent: mapped } : null;
     }).filter(Boolean);
+  }
+
+  function mapKakaoOwnerDebugRect(rect, ownerDraw) {
+    const left = Math.max(rect.x, ownerDraw.x);
+    const top = Math.max(rect.y, ownerDraw.y);
+    const right = Math.min(rect.x + rect.w, ownerDraw.x + ownerDraw.w);
+    const bottom = Math.min(rect.y + rect.h, ownerDraw.y + ownerDraw.h);
+    return {
+      x: ((left - ownerDraw.x) / ownerDraw.w) * 100,
+      y: ((top - ownerDraw.y) / ownerDraw.h) * 100,
+      w: (Math.max(0, right - left) / ownerDraw.w) * 100,
+      h: (Math.max(0, bottom - top) / ownerDraw.h) * 100
+    };
   }
 
   function getDebugItemPercentWithImageSize(item, imageWidth, imageHeight) {

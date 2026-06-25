@@ -2587,7 +2587,13 @@
       const duplicates = existing.concat(entries).filter((entry) =>
         isKakaoGlobalDuplicateCandidate({ box, text, translatedText }, entry)
       );
-      const completeness = Math.max(text.length, translatedText.length);
+      // 边界邻居气泡（stitch_boundary_neighbor）文字属于相邻页，不应与相邻页自己的
+      // OCR 结果平等竞争。给它的 completeness 打折扣，确保相邻页自己的气泡总能胜出，
+      // 避免用户在下一页看到已被 owner overflow 渲染过的文字被错误移除。
+      const rawCompleteness = Math.max(text.length, translatedText.length);
+      const completeness = bubble.stitch_boundary_neighbor
+        ? Math.max(1, Math.floor(rawCompleteness * 0.5))
+        : rawCompleteness;
       const strongestExisting = duplicates.reduce(
         (best, entry) => !best || entry.completeness > best.completeness ? entry : best,
         null

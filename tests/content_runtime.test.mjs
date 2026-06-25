@@ -362,6 +362,42 @@ test("Kakao page-level dedupe also removes a single-image fragment covered by a 
   assert.deepEqual(fragment.debug.items, []);
 });
 
+test("boundary neighbor bubble defers to adjacent page own bubble in global dedup", async () => {
+  // 模拟：owner 页拼接 OCR 在 next 边界切片中识别到 "경계텍스트"，
+  // 作为 stitch_boundary_neighbor overflow 渲染。然后相邻页独立 OCR 也识别到相同文字。
+  // 相邻页自己的气泡应该胜出，owner 的 boundary neighbor 应被移除。
+  const boundaryNeighbor = await runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 18, y: 94, w: 30, h: 8,
+        block_id: "boundary-neighbor-bubble",
+        original_text: "경계텍스트",
+        translated_text: "边界文本",
+        stitch_boundary_neighbor: true
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 600 }) },
+    "owner-with-boundary-neighbor"
+  );
+  const adjacentOwn = await runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 18, y: 2, w: 30, h: 8,
+        block_id: "adjacent-own-bubble",
+        original_text: "경계텍스트",
+        translated_text: "边界文本"
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 550, width: 600, height: 600 }) },
+    "adjacent-own-page"
+  );
+
+  // boundary neighbor 应被相邻页自己的气泡取代
+  assert.equal(boundaryNeighbor.bubbles.length, 0);
+  assert.equal(adjacentOwn.bubbles.length, 1);
+  assert.equal(adjacentOwn.bubbles[0].block_id, "adjacent-own-bubble");
+});
+
 test("Kakao page-level dedupe trims only the repeated boundary and keeps the unique final line", async () => {
   const leading = await runtime.__test.dedupeKakaoResultByPageCoordinates(
     {

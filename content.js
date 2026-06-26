@@ -2650,7 +2650,7 @@
       const text = normalizeOcrSimilarityText(bubble.original_text);
       const translatedText = normalizeOcrSimilarityText(bubble.translated_text);
       const duplicates = existing.concat(entries).filter((entry) =>
-        isKakaoGlobalDuplicateCandidate({ box, text, translatedText }, entry)
+        isKakaoGlobalDuplicateCandidate({ box, text, translatedText, bubble }, entry)
       );
       // 边界邻居气泡（stitch_boundary_neighbor）文字属于相邻页，不应与相邻页自己的
       // OCR 结果平等竞争。给它的 completeness 打折扣，确保相邻页自己的气泡总能胜出，
@@ -2688,12 +2688,30 @@
     if (!candidate || !entry || !candidate.box || !entry.box) {
       return false;
     }
-    const sourceRelated = areOcrTextsDuplicateOrContained(candidate.text, entry.text);
-    const translationRelated = areOcrTextsDuplicateOrContained(candidate.translatedText, entry.translatedText);
-    if (!sourceRelated && !translationRelated) {
+    if (!areKakaoGlobalBoxesRelated(candidate.box, entry.box)) {
       return false;
     }
-    return areKakaoGlobalBoxesRelated(candidate.box, entry.box);
+    const sourceRelated = areOcrTextsDuplicateOrContained(candidate.text, entry.text);
+    const translationRelated = areOcrTextsDuplicateOrContained(candidate.translatedText, entry.translatedText);
+    if (sourceRelated || translationRelated) {
+      return true;
+    }
+    return isKakaoBoundaryOwnDuplicateCandidate(candidate, entry);
+  }
+
+  function isKakaoBoundaryOwnDuplicateCandidate(candidate, entry) {
+    const candidateBoundary = isKakaoBoundaryNeighborBubble(candidate.bubble);
+    const entryBoundary = isKakaoBoundaryNeighborBubble(entry.bubble);
+    if (candidateBoundary === entryBoundary) {
+      return false;
+    }
+    // 边界邻图气泡可能只命中下一页完整气泡的一段 OCR，需要比普通去重更宽松。
+    return hasSubstantialOcrTokenOverlap(candidate.text, entry.text) ||
+      hasSubstantialOcrTokenOverlap(candidate.translatedText, entry.translatedText);
+  }
+
+  function isKakaoBoundaryNeighborBubble(bubble) {
+    return !!(bubble && bubble.stitch_boundary_neighbor);
   }
 
   function areKakaoGlobalBoxesRelated(leftBox, rightBox) {
@@ -2728,6 +2746,38 @@
     const longer = first.length > second.length ? first : second;
     return textSimilarity(first, second) >= 0.82 ||
       (shorter.length >= 3 && longer.includes(shorter));
+  }
+
+  function hasSubstantialOcrTokenOverlap(first, second) {
+    if (!first || !second) {
+      return false;
+    }
+    const firstChars = Array.from(first);
+    const secondChars = Array.from(second);
+    const shorterLength = Math.min(firstChars.length, secondChars.length);
+    if (shorterLength < 5) {
+      return false;
+    }
+    const minimumLength = Math.max(5, Math.ceil(shorterLength * 0.35));
+    return getLongestCommonSubstringLength(firstChars, secondChars, minimumLength) >= minimumLength;
+  }
+
+  function getLongestCommonSubstringLength(firstChars, secondChars, stopAt) {
+    let previous = Array.from({ length: secondChars.length + 1 }, () => 0);
+    let best = 0;
+    for (const firstChar of firstChars) {
+      const current = [0];
+      for (let secondIndex = 0; secondIndex < secondChars.length; secondIndex += 1) {
+        const next = firstChar === secondChars[secondIndex] ? previous[secondIndex] + 1 : 0;
+        current.push(next);
+        best = Math.max(best, next);
+        if (best >= stopAt) {
+          return best;
+        }
+      }
+      previous = current;
+    }
+    return best;
   }
 
   function getSubstantialOcrBoundaryOverlap(first, second) {

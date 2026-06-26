@@ -426,6 +426,71 @@ test("boundary neighbor bubble defers to adjacent page own bubble in global dedu
   assert.equal(adjacentOwn.bubbles[0].block_id, "adjacent-own-bubble");
 });
 
+test("boundary neighbor partial OCR defers to adjacent page full own bubble", async () => {
+  // 现场回归：owner overflow 只识别到下一页完整气泡的一段，翻译也不完全相同。
+  // 只要空间重叠且文本有足够公共片段，就应删除旧的 boundary neighbor。
+  const boundaryNeighbor = await runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 18, y: 106, w: 60, h: 16,
+        block_id: "boundary-neighbor-partial-live",
+        original_text: "참가자가이미 납지 매저다으",
+        translated_text: "参赛者已经陷入黄昏（D级）了。",
+        stitch_boundary_neighbor: true
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 4200, width: 600, height: 600 }) },
+    "owner-with-boundary-neighbor-partial"
+  );
+  const adjacentOwn = await runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 12, y: 2, w: 78, h: 49,
+        block_id: "adjacent-own-full-live",
+        original_text: "어스름(D)등급 참가자가이미 납지 '정답을 알고있는상황.",
+        translated_text: "黄昏(D级) 参赛者已经知道正确答案的情况。"
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 4750, width: 600, height: 600 }) },
+    "adjacent-own-page-full-live"
+  );
+
+  assert.equal(boundaryNeighbor.bubbles.length, 0);
+  assert.equal(adjacentOwn.bubbles.length, 1);
+  assert.equal(adjacentOwn.bubbles[0].block_id, "adjacent-own-full-live");
+});
+
+test("unrelated boundary neighbor is kept when adjacent own text does not overlap", async () => {
+  const boundaryNeighbor = await runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 18, y: 106, w: 60, h: 16,
+        block_id: "boundary-neighbor-unrelated",
+        original_text: "등급 어스름(D)",
+        translated_text: "等级黄昏D",
+        stitch_boundary_neighbor: true
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 6500, width: 600, height: 600 }) },
+    "owner-with-boundary-neighbor-unrelated"
+  );
+  const adjacentOwn = await runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 12, y: 2, w: 78, h: 49,
+        block_id: "adjacent-own-unrelated",
+        original_text: "완전히다른내용입니다",
+        translated_text: "完全不同的内容"
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 7050, width: 600, height: 600 }) },
+    "adjacent-own-page-unrelated"
+  );
+
+  assert.equal(boundaryNeighbor.bubbles.length, 1);
+  assert.equal(adjacentOwn.bubbles.length, 1);
+});
+
 test("Kakao page-level dedupe trims only the repeated boundary and keeps the unique final line", async () => {
   const leading = await runtime.__test.dedupeKakaoResultByPageCoordinates(
     {

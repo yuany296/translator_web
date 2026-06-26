@@ -491,6 +491,39 @@ test("unrelated boundary neighbor is kept when adjacent own text does not overla
   assert.equal(adjacentOwn.bubbles.length, 1);
 });
 
+test("boundary neighbor complementary seam text is kept despite identical translation", async () => {
+  // 分页缝处一个对白被切成上下两半：上一页 stitched boundary 识别到上半句，
+  // 下一页自有 OCR 识别到下半句。两者可能被翻成同一句，但不能互相去重。
+  const boundaryNeighbor = await runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 18, y: 106, w: 60, h: 16,
+        block_id: "boundary-neighbor-complementary",
+        original_text: "다들수고 마이셔스니디",
+        translated_text: "多謝款待",
+        stitch_boundary_neighbor: true
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 8600, width: 600, height: 600 }) },
+    "owner-with-boundary-neighbor-complementary"
+  );
+  const adjacentOwn = await runtime.__test.dedupeKakaoResultByPageCoordinates(
+    {
+      bubbles: [{
+        x: 12, y: 2, w: 78, h: 49,
+        block_id: "adjacent-own-complementary",
+        original_text: "많으셨습니다",
+        translated_text: "多謝款待"
+      }]
+    },
+    { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 9150, width: 600, height: 600 }) },
+    "adjacent-own-page-complementary"
+  );
+
+  assert.equal(boundaryNeighbor.bubbles.length, 1);
+  assert.equal(adjacentOwn.bubbles.length, 1);
+});
+
 test("Kakao page-level dedupe trims only the repeated boundary and keeps the unique final line", async () => {
   const leading = await runtime.__test.dedupeKakaoResultByPageCoordinates(
     {

@@ -2691,23 +2691,27 @@
     if (!areKakaoGlobalBoxesRelated(candidate.box, entry.box)) {
       return false;
     }
+    if (isKakaoBoundaryOwnPair(candidate, entry)) {
+      return isKakaoBoundaryOwnDuplicateCandidate(candidate, entry);
+    }
     const sourceRelated = areOcrTextsDuplicateOrContained(candidate.text, entry.text);
     const translationRelated = areOcrTextsDuplicateOrContained(candidate.translatedText, entry.translatedText);
     if (sourceRelated || translationRelated) {
       return true;
     }
-    return isKakaoBoundaryOwnDuplicateCandidate(candidate, entry);
+    return false;
+  }
+
+  function isKakaoBoundaryOwnPair(candidate, entry) {
+    return isKakaoBoundaryNeighborBubble(candidate && candidate.bubble) !==
+      isKakaoBoundaryNeighborBubble(entry && entry.bubble);
   }
 
   function isKakaoBoundaryOwnDuplicateCandidate(candidate, entry) {
-    const candidateBoundary = isKakaoBoundaryNeighborBubble(candidate.bubble);
-    const entryBoundary = isKakaoBoundaryNeighborBubble(entry.bubble);
-    if (candidateBoundary === entryBoundary) {
-      return false;
-    }
     // 边界邻图气泡可能只命中下一页完整气泡的一段 OCR，需要比普通去重更宽松。
-    return hasSubstantialOcrTokenOverlap(candidate.text, entry.text) ||
-      hasSubstantialOcrTokenOverlap(candidate.translatedText, entry.translatedText);
+    // 但不能只靠译文相同去删：跨页断开的上下半句常会被翻成同一句，删掉会漏字。
+    return areOcrTextsDuplicateOrContained(candidate.text, entry.text) ||
+      hasSubstantialOcrTokenOverlap(candidate.text, entry.text);
   }
 
   function isKakaoBoundaryNeighborBubble(bubble) {

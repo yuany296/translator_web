@@ -162,6 +162,7 @@
       mapKakaoStitchedResult,
       dedupeKakaoResultByPageCoordinates,
       buildKakaoStitchWindowPlan,
+      findKakaoStitchNeighborTarget,
       isVerifiedKakaoStitchNeighbor,
       shouldFallbackFromKakaoStitch,
       shouldRejectKakaoPageEdgeStitch,
@@ -591,12 +592,12 @@
     if (index <= 0) {
       return;
     }
-    const previous = ordered[index - 1];
-    if (!isVerifiedKakaoStitchNeighbor(
-      describeKakaoStitchTarget(target),
-      describeKakaoStitchTarget(previous),
+    const previous = findKakaoStitchNeighborTarget(
+      buildKakaoStitchCandidateEntries(ordered),
+      index,
       "previous"
-    )) {
+    );
+    if (!previous) {
       return;
     }
     if (
@@ -1430,19 +1431,10 @@
       return markSingleKakaoPayload(ownerPayload, target, "owner not found");
     }
 
-    const ownerDescriptor = describeKakaoStitchTarget(target);
-    const previousCandidate = ownerIndex > 0 ? ordered[ownerIndex - 1] : null;
-    const nextCandidate = ownerIndex + 1 < ordered.length ? ordered[ownerIndex + 1] : null;
-    const previousTarget = isVerifiedKakaoStitchNeighbor(
-      ownerDescriptor,
-      describeKakaoStitchTarget(previousCandidate),
-      "previous"
-    ) ? previousCandidate : null;
-    const nextTarget = isVerifiedKakaoStitchNeighbor(
-      ownerDescriptor,
-      describeKakaoStitchTarget(nextCandidate),
-      "next"
-    ) ? nextCandidate : null;
+    const orderedEntries = buildKakaoStitchCandidateEntries(ordered);
+    const ownerDescriptor = orderedEntries[ownerIndex] && orderedEntries[ownerIndex].descriptor;
+    const previousTarget = findKakaoStitchNeighborTarget(orderedEntries, ownerIndex, "previous");
+    const nextTarget = findKakaoStitchNeighborTarget(orderedEntries, ownerIndex, "next");
     if (!previousTarget && !nextTarget) {
       return markSingleKakaoPayload(ownerPayload, target, "no verified neighbor");
     }
@@ -1706,6 +1698,78 @@
       currentSrc: target.currentSrc || "",
       src: (target.getAttribute && target.getAttribute("src")) || ""
     };
+  }
+
+  function buildKakaoStitchCandidateEntries(targets) {
+    return (Array.isArray(targets) ? targets : []).map((target) => ({
+      target,
+      descriptor: describeKakaoStitchTarget(target)
+    }));
+  }
+
+  function findKakaoStitchNeighborTarget(entries, ownerIndex, direction) {
+    const ownerEntry = Array.isArray(entries) ? entries[ownerIndex] : null;
+    const owner = ownerEntry && ownerEntry.descriptor;
+    if (!owner || (direction !== "previous" && direction !== "next")) {
+      return null;
+    }
+    const step = direction === "previous" ? -1 : 1;
+    for (let index = ownerIndex + step; index >= 0 && index < entries.length; index += step) {
+      const candidateEntry = entries[index];
+      const candidate = candidateEntry && candidateEntry.descriptor;
+      if (!candidate) {
+        continue;
+      }
+      if (isKakaoStitchCandidatePastNeighborWindow(owner, candidate, direction)) {
+        break;
+      }
+      if (isVerifiedKakaoStitchNeighbor(owner, candidate, direction)) {
+        return candidateEntry.target || null;
+      }
+    }
+    return null;
+  }
+
+  function findKakaoShortPageAttachmentOwnerTarget(entries, targetIndex, direction) {
+    const targetEntry = Array.isArray(entries) ? entries[targetIndex] : null;
+    const target = targetEntry && targetEntry.descriptor;
+    if (!target || (direction !== "previous" && direction !== "next")) {
+      return null;
+    }
+    const step = direction === "previous" ? -1 : 1;
+    const ownerDirection = direction === "previous" ? "next" : "previous";
+    for (let index = targetIndex + step; index >= 0 && index < entries.length; index += step) {
+      const ownerEntry = entries[index];
+      const owner = ownerEntry && ownerEntry.descriptor;
+      if (!owner) {
+        continue;
+      }
+      if (isKakaoStitchCandidatePastNeighborWindow(target, owner, direction)) {
+        break;
+      }
+      if (
+        isVerifiedKakaoStitchNeighbor(owner, target, ownerDirection) &&
+        isAttachableKakaoShortPage(target, owner, target.height, owner.height)
+      ) {
+        return ownerEntry.target || null;
+      }
+    }
+    return null;
+  }
+
+  function isKakaoStitchCandidatePastNeighborWindow(owner, candidate, direction) {
+    if (!owner || !candidate) {
+      return false;
+    }
+    const scrollY = window.scrollY || 0;
+    const ownerTop = Number(owner.top || 0) + scrollY;
+    const ownerBottom = Number(owner.bottom || (Number(owner.top || 0) + Number(owner.height || 0))) + scrollY;
+    const candidateTop = Number(candidate.top || 0) + scrollY;
+    const candidateBottom = Number(candidate.bottom || (Number(candidate.top || 0) + Number(candidate.height || 0))) + scrollY;
+    const maxGap = KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX;
+    return direction === "previous"
+      ? candidateBottom < ownerTop - maxGap
+      : candidateTop > ownerBottom + maxGap;
   }
 
   function isVerifiedKakaoStitchNeighbor(owner, candidate, direction) {
@@ -2806,12 +2870,13 @@
       return null;
     }
 
-    const currentDescriptor = describeKakaoStitchTarget(target);
     const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
       (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
     );
     const index = ordered.indexOf(target);
-    const previous = index > 0 ? ordered[index - 1] : null;
+    const orderedEntries = buildKakaoStitchCandidateEntries(ordered);
+    const currentDescriptor = orderedEntries[index] && orderedEntries[index].descriptor;
+    const previous = findKakaoStitchNeighborTarget(orderedEntries, index, "previous");
     const previousDescriptor = describeKakaoStitchTarget(previous);
     if (
       !previous ||
@@ -5260,28 +5325,19 @@
       return null;
     }
 
-    const targetDescriptor = describeKakaoStitchTarget(target);
+    const orderedEntries = buildKakaoStitchCandidateEntries(ordered);
+    const targetDescriptor = orderedEntries[index] && orderedEntries[index].descriptor;
     if (!targetDescriptor) {
       return null;
     }
 
-    const previous = index > 0 ? ordered[index - 1] : null;
-    const previousDescriptor = describeKakaoStitchTarget(previous);
-    if (
-      previous &&
-      isVerifiedKakaoStitchNeighbor(previousDescriptor, targetDescriptor, "next") &&
-      isAttachableKakaoShortPage(targetDescriptor, previousDescriptor, targetDescriptor.height, previousDescriptor.height)
-    ) {
+    const previous = findKakaoShortPageAttachmentOwnerTarget(orderedEntries, index, "previous");
+    if (previous) {
       return { owner: previous, direction: "next" };
     }
 
-    const next = index + 1 < ordered.length ? ordered[index + 1] : null;
-    const nextDescriptor = describeKakaoStitchTarget(next);
-    if (
-      next &&
-      isVerifiedKakaoStitchNeighbor(nextDescriptor, targetDescriptor, "previous") &&
-      isAttachableKakaoShortPage(targetDescriptor, nextDescriptor, targetDescriptor.height, nextDescriptor.height)
-    ) {
+    const next = findKakaoShortPageAttachmentOwnerTarget(orderedEntries, index, "next");
+    if (next) {
       return { owner: next, direction: "previous" };
     }
 

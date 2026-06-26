@@ -13,6 +13,34 @@ await import("../content.js");
 
 const runtime = globalThis.__MANGA_TRANSLATOR_V3__;
 
+test("Kakao stitch neighbor scan skips repeated owner-source nodes", () => {
+  const entries = [
+    {
+      target: "previous-page",
+      descriptor: { left: 0, top: 0, bottom: 1000, width: 760, height: 1000, sourceKey: "previous" }
+    },
+    {
+      target: "previous-duplicate-owner",
+      descriptor: { left: 0, top: 990, bottom: 1990, width: 760, height: 1000, sourceKey: "owner" }
+    },
+    {
+      target: "owner-page",
+      descriptor: { left: 0, top: 1000, bottom: 2000, width: 760, height: 1000, sourceKey: "owner" }
+    },
+    {
+      target: "next-duplicate-owner",
+      descriptor: { left: 0, top: 1010, bottom: 2010, width: 760, height: 1000, sourceKey: "owner" }
+    },
+    {
+      target: "next-page",
+      descriptor: { left: 0, top: 2000, bottom: 3000, width: 760, height: 1000, sourceKey: "next" }
+    }
+  ];
+
+  assert.equal(runtime.__test.findKakaoStitchNeighborTarget(entries, 2, "previous"), "previous-page");
+  assert.equal(runtime.__test.findKakaoStitchNeighborTarget(entries, 2, "next"), "next-page");
+});
+
 function makeStitchPayload(ownerTop, ownerHeight, compositeHeight, opts = {}) {
   const compositeWidth = opts.compositeWidth || 760;
   const ownerEntry = {

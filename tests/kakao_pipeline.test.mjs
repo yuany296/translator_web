@@ -748,6 +748,51 @@ test("isKakaoGlobalDuplicateCandidate detects duplicate from overlapping box + s
   assert.equal(P.isKakaoGlobalDuplicateCandidate(candidate, entry), true);
 });
 
+test("cross-page overflow dedupe uses strong geometry when OCR texts disagree", () => {
+  const ownerEntry = {
+    box: { left: 697.98, top: 320.79, width: 449.71, height: 291.9 },
+    text: "꼬를존풍하지않는행동시퇴깡조시됩니다",
+    translatedText: "不尊重规则者将被驱逐",
+    targetKey: "page-owner",
+    bubble: { region_type: "caption_panel" }
+  };
+  const overflowCandidate = {
+    box: { left: 719.41, top: 432.48, width: 415.15, height: 176.54 },
+    text: "퇴깡않는행동께꼬끼됩니다",
+    translatedText: "因为你不肯罢休事情变得棘手了",
+    targetKey: "page-overflow",
+    bubble: { region_type: "caption_panel", stitch_overflow: true }
+  };
+
+  assert.equal(P.isKakaoGlobalDuplicateCandidate(overflowCandidate, ownerEntry), true);
+});
+
+test("geometry-only overflow dedupe keeps same-page and different-region bubbles", () => {
+  const box = { left: 100, top: 200, width: 300, height: 180 };
+  const candidate = {
+    box,
+    text: "완전히다른문장",
+    translatedText: "完全不同的句子",
+    targetKey: "page-a",
+    bubble: { region_type: "caption_panel", stitch_overflow: true }
+  };
+  const samePage = {
+    box,
+    text: "겹치지만별개문장",
+    translatedText: "重叠但独立的句子",
+    targetKey: "page-a",
+    bubble: { region_type: "caption_panel" }
+  };
+  const differentRegion = {
+    ...samePage,
+    targetKey: "page-b",
+    bubble: { region_type: "effect_text" }
+  };
+
+  assert.equal(P.isKakaoGlobalDuplicateCandidate(candidate, samePage), false);
+  assert.equal(P.isKakaoGlobalDuplicateCandidate(candidate, differentRegion), false);
+});
+
 test("superseded Kakao entry keeps the source-scoped cache identity", async () => {
   const store = P.createStore();
   const target = {

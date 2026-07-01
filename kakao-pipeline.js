@@ -36,6 +36,8 @@
   const KAKAO_THIN_STRIP_MAX_NATURAL_HEIGHT = 100;
   const KAKAO_THIN_STRIP_MIN_HEIGHT = 8;
   const KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS = 8000;
+  const KAKAO_GEOMETRY_DUPLICATE_MIN_INTERSECTION = 0.72;
+  const KAKAO_GEOMETRY_DUPLICATE_MIN_AREA_RATIO = 0.35;
 
   /* =================================================================
    * PagePhase — 有限状态机状态定义
@@ -1332,9 +1334,35 @@
       hasSubstantialOcrTokenOverlap(candidate.text, entry.text);
   }
 
+  function isKakaoCrossPageOverflowGeometryDuplicate(candidate, entry) {
+    const candidateKey = String(candidate && candidate.targetKey || "");
+    const entryKey = String(entry && entry.targetKey || "");
+    if (!candidateKey || !entryKey || candidateKey === entryKey) return false;
+
+    const candidateBubble = candidate && candidate.bubble;
+    const entryBubble = entry && entry.bubble;
+    if (!(candidateBubble && candidateBubble.stitch_overflow === true) &&
+        !(entryBubble && entryBubble.stitch_overflow === true)) {
+      return false;
+    }
+
+    const candidateRegion = String(candidateBubble && candidateBubble.region_type || "").trim();
+    const entryRegion = String(entryBubble && entryBubble.region_type || "").trim();
+    if (!candidateRegion || candidateRegion !== entryRegion) return false;
+
+    const candidateArea = Number(candidate.box.width) * Number(candidate.box.height);
+    const entryArea = Number(entry.box.width) * Number(entry.box.height);
+    if (!(candidateArea > 0) || !(entryArea > 0)) return false;
+
+    const areaRatio = Math.min(candidateArea, entryArea) / Math.max(candidateArea, entryArea);
+    return areaRatio >= KAKAO_GEOMETRY_DUPLICATE_MIN_AREA_RATIO &&
+      pageBoxIntersectionRatio(candidate.box, entry.box) >= KAKAO_GEOMETRY_DUPLICATE_MIN_INTERSECTION;
+  }
+
   function isKakaoGlobalDuplicateCandidate(candidate, entry) {
     if (!candidate || !entry || !candidate.box || !entry.box) return false;
     if (!areKakaoGlobalBoxesRelated(candidate.box, entry.box)) return false;
+    if (isKakaoCrossPageOverflowGeometryDuplicate(candidate, entry)) return true;
     if (isKakaoBoundaryOwnPair(candidate, entry)) {
       return isKakaoBoundaryOwnDuplicateCandidate(candidate, entry);
     }
@@ -2381,7 +2409,7 @@
       const translatedText = normalizeOcrSimilarityText(bubble.translated_text);
 
       const duplicates = existing.concat(entries).filter((entry) =>
-        isKakaoGlobalDuplicateCandidate({ box, text, translatedText, bubble }, entry)
+        isKakaoGlobalDuplicateCandidate({ box, text, translatedText, targetKey, bubble }, entry)
       );
 
       const rawCompleteness = Math.max(text.length, translatedText.length);

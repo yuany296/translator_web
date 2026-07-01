@@ -41,7 +41,13 @@ local-ocr-service/__pycache__/
 local-ocr-service/*.png
 local-ocr-service/debug
 
-# === Documentation generated files ===
-*.md
+# === Local AI instructions / work logs ===
+AGENTS.md
+CLAUDE.md
+operations-log.md
+plans.md
+problems.md
+verification*.md
 
+# === Debug snapshots ===
 debug_before/

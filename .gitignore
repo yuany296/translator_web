@@ -51,3 +51,7 @@ verification*.md
 
 # === Debug snapshots ===
 debug_before/
+
+image/
+mobile-userscript/
+doc/

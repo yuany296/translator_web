@@ -1691,7 +1691,7 @@
   function getDebugItemPercentWithImageSize(item, imageWidth, imageHeight) {
     return KP.getDebugItemPercent(item, imageWidth, imageHeight);
   }
-  async function dedupeKakaoResultByPageCoordinates(result, target, targetKey) {
+  async function dedupeKakaoResultByPageCoordinates(result, target, targetKey, scopedTargetKey = targetKey) {
     if (!IS_KAKAOPAGE_READER || !result || !Array.isArray(result.bubbles) || !targetKey) {
       return result;
     }
@@ -1699,7 +1699,7 @@
       result,
       target,
       targetKey,
-      scopedTargetKey: targetKey,
+      scopedTargetKey,
       store: state.kakaoStore,
       adapters: {
         translateTrimmedBubble: translateTrimmedKakaoBubble,
@@ -1817,7 +1817,8 @@
       }
     }
 
-    const cached = state.localResultCache.get(entry.targetKey);
+    const cacheKey = entry.scopedTargetKey || entry.targetKey;
+    const cached = state.localResultCache.get(cacheKey);
     if (!cached || !Array.isArray(cached.bubbles)) {
       return;
     }
@@ -1832,7 +1833,7 @@
       bubbles: remaining,
       debug: filterOcrDebugFinalBubbles(cached.debug, remaining)
     };
-    state.localResultCache.set(entry.targetKey, nextResult);
+    state.localResultCache.set(cacheKey, nextResult);
     if (!entry.target || entry.target.isConnected === false) {
       return;
     }

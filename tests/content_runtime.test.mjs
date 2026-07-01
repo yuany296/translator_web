@@ -558,6 +558,18 @@ test("Kakao page-level dedupe trims only the repeated boundary and keeps the uni
   assert.ok(trailing.bubbles[0].h < 25);
 });
 
+test("cross-page dedupe removes superseded bubbles from the source-scoped cache", () => {
+  assert.match(
+    contentSource,
+    /function dedupeKakaoResultByPageCoordinates\(result, target, targetKey, scopedTargetKey = targetKey\)/
+  );
+  assert.match(contentSource, /\n\s*scopedTargetKey,\r?\n\s*store:/);
+  assert.match(
+    contentSource,
+    /const cacheKey = entry\.scopedTargetKey \|\| entry\.targetKey;[\s\S]*state\.localResultCache\.get\(cacheKey\)/
+  );
+});
+
 test("pretranslation mode defaults to manual", () => {
   assert.equal(runtime.__test.normalizePretranslateMode("ahead"), "ahead");
   assert.equal(runtime.__test.normalizePretranslateMode("continuous"), "continuous");

@@ -2323,6 +2323,7 @@
       {
         scrollX,
         scrollY,
+        scopedTargetKey,
         onSupersededEntry: adapters.onSupersededEntry
       }
     );
@@ -2413,6 +2414,7 @@
         completeness,
         target,
         targetKey,
+        scopedTargetKey: options.scopedTargetKey || targetKey,
         bubble,
         bubbleContainer: accepted,
         entryContainer: entries

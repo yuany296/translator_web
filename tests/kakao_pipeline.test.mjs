@@ -748,6 +748,50 @@ test("isKakaoGlobalDuplicateCandidate detects duplicate from overlapping box + s
   assert.equal(P.isKakaoGlobalDuplicateCandidate(candidate, entry), true);
 });
 
+test("superseded Kakao entry keeps the source-scoped cache identity", async () => {
+  const store = P.createStore();
+  const target = {
+    isConnected: true,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 947 })
+  };
+  let supersededEntry = null;
+
+  await P.dedupeKakaoResultByPageCoordinates({
+    result: {
+      bubbles: [{
+        x: 25, y: 95, w: 55, h: 30,
+        original_text: "그럼그렇지박문대가금발이고",
+        translated_text: "就是嘛"
+      }]
+    },
+    target,
+    targetKey: "page-previous",
+    scopedTargetKey: "page-previous|source-previous",
+    store
+  });
+
+  await P.dedupeKakaoResultByPageCoordinates({
+    result: {
+      bubbles: [{
+        x: 25, y: 95, w: 55, h: 30,
+        original_text: "그림그렇지박문대가금발이고",
+        translated_text: "我就知道朴文代是金发什么的都无所谓"
+      }]
+    },
+    target,
+    targetKey: "page-current",
+    scopedTargetKey: "page-current|source-current",
+    store,
+    adapters: {
+      onSupersededEntry: (entry) => { supersededEntry = entry; }
+    }
+  });
+
+  assert.ok(supersededEntry, "the more complete overlapping result should supersede the old one");
+  assert.equal(supersededEntry.targetKey, "page-previous");
+  assert.equal(supersededEntry.scopedTargetKey, "page-previous|source-previous");
+});
+
 test("trimKakaoBubbleBoundary creates trimmed version", () => {
   const bubble = {
     original_text: "prefix_suffix",

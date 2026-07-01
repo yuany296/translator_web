@@ -1334,29 +1334,53 @@
       hasSubstantialOcrTokenOverlap(candidate.text, entry.text);
   }
 
+  function selectKakaoVisualDuplicateLoser(left, right) {
+    const leftKey = String(left && left.scopeKey || "");
+    const rightKey = String(right && right.scopeKey || "");
+    if (!leftKey || !rightKey || leftKey === rightKey) return null;
+
+    const leftRegion = String(left && left.regionType || "").trim();
+    const rightRegion = String(right && right.regionType || "").trim();
+    if (!leftRegion || leftRegion !== rightRegion) return null;
+
+    const leftOverflow = left && left.stitchOverflow === true;
+    const rightOverflow = right && right.stitchOverflow === true;
+    if (leftOverflow === rightOverflow) return null;
+
+    const leftBox = left && left.box;
+    const rightBox = right && right.box;
+    if (!leftBox || !rightBox) return null;
+    const leftArea = Number(leftBox.width) * Number(leftBox.height);
+    const rightArea = Number(rightBox.width) * Number(rightBox.height);
+    if (!(leftArea > 0) || !(rightArea > 0)) return null;
+
+    const areaRatio = Math.min(leftArea, rightArea) / Math.max(leftArea, rightArea);
+    if (areaRatio < KAKAO_GEOMETRY_DUPLICATE_MIN_AREA_RATIO ||
+        pageBoxIntersectionRatio(leftBox, rightBox) < KAKAO_GEOMETRY_DUPLICATE_MIN_INTERSECTION) {
+      return null;
+    }
+    return leftOverflow ? "left" : "right";
+  }
+
   function isKakaoCrossPageOverflowGeometryDuplicate(candidate, entry) {
     const candidateKey = String(candidate && candidate.targetKey || "");
     const entryKey = String(entry && entry.targetKey || "");
-    if (!candidateKey || !entryKey || candidateKey === entryKey) return false;
-
     const candidateBubble = candidate && candidate.bubble;
     const entryBubble = entry && entry.bubble;
-    if (!(candidateBubble && candidateBubble.stitch_overflow === true) &&
-        !(entryBubble && entryBubble.stitch_overflow === true)) {
-      return false;
-    }
-
-    const candidateRegion = String(candidateBubble && candidateBubble.region_type || "").trim();
-    const entryRegion = String(entryBubble && entryBubble.region_type || "").trim();
-    if (!candidateRegion || candidateRegion !== entryRegion) return false;
-
-    const candidateArea = Number(candidate.box.width) * Number(candidate.box.height);
-    const entryArea = Number(entry.box.width) * Number(entry.box.height);
-    if (!(candidateArea > 0) || !(entryArea > 0)) return false;
-
-    const areaRatio = Math.min(candidateArea, entryArea) / Math.max(candidateArea, entryArea);
-    return areaRatio >= KAKAO_GEOMETRY_DUPLICATE_MIN_AREA_RATIO &&
-      pageBoxIntersectionRatio(candidate.box, entry.box) >= KAKAO_GEOMETRY_DUPLICATE_MIN_INTERSECTION;
+    return !!selectKakaoVisualDuplicateLoser(
+      {
+        scopeKey: candidateKey,
+        regionType: candidateBubble && candidateBubble.region_type,
+        stitchOverflow: candidateBubble && candidateBubble.stitch_overflow === true,
+        box: candidate.box
+      },
+      {
+        scopeKey: entryKey,
+        regionType: entryBubble && entryBubble.region_type,
+        stitchOverflow: entryBubble && entryBubble.stitch_overflow === true,
+        box: entry.box
+      }
+    );
   }
 
   function isKakaoGlobalDuplicateCandidate(candidate, entry) {
@@ -2589,6 +2613,7 @@
     runDedupeGlobalBubbles,
     isKakaoBoundaryNeighborBubble,
     isKakaoBoundaryOwnPair,
+    selectKakaoVisualDuplicateLoser,
     isKakaoGlobalDuplicateCandidate,
     hasAttachedShortPageBubble,
     buildSingleFallbackPayload,

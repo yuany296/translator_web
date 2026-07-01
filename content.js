@@ -52,6 +52,8 @@
   const LOADING_OVERLAY_TIMEOUT_MS = 30000;
   const PRETRANSLATE_AHEAD_COUNT = 6;
   const RUNTIME_OWNER_ATTRIBUTE = "data-manga-translator-runtime-owner";
+  const RUNTIME_FEATURE_ATTRIBUTE = "data-manga-translator-feature-version";
+  const RUNTIME_FEATURE_VERSION = "visual-dedupe-v1";
   const MAX_EMBEDDED_IMAGE_CACHE = 40;
   const STATUS_INFO_THROTTLE_MS = 1200;
   const CONTEXT_INVALIDATED_RE = /extension context invalidated/i;
@@ -2510,6 +2512,7 @@
     state.overlayLayer.appendChild(root);
     state.overlaysById.set(targetId, overlayState);
     syncOverlayPosition(overlayState);
+    pruneKakaoVisualDuplicateBubbles();
     ensureOverlayFrameSync();
     logOcrDebugMapping(overlayState, result);
     if (result && result.debug) {
@@ -2535,6 +2538,54 @@
       bubbleCount: bubbleNodes.length,
       targetKey: String(targetKey).slice(0, 80)
     });
+  }
+
+  function pruneKakaoVisualDuplicateBubbles() {
+    if (!IS_KAKAOPAGE_READER || !KP || typeof KP.selectKakaoVisualDuplicateLoser !== "function") {
+      return;
+    }
+
+    const candidates = [];
+    state.overlaysById.forEach((overlayState) => {
+      if (!overlayState || !overlayState.root || !overlayState.root.isConnected) return;
+      overlayState.bubbleNodes.forEach((node) => {
+        if (!node || !node.isConnected) return;
+        const rect = node.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) return;
+        candidates.push({
+          overlayState,
+          node,
+          descriptor: {
+            scopeKey: overlayState.targetKey,
+            regionType: String(node.dataset.regionType || ""),
+            stitchOverflow: node.dataset.stitchOverflow === "true",
+            box: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+          }
+        });
+      });
+    });
+
+    const removed = new Set();
+    for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+      const left = candidates[leftIndex];
+      if (removed.has(left.node)) continue;
+      for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+        const right = candidates[rightIndex];
+        if (removed.has(right.node)) continue;
+        const loserSide = KP.selectKakaoVisualDuplicateLoser(left.descriptor, right.descriptor);
+        if (!loserSide) continue;
+        const loser = loserSide === "left" ? left : right;
+        loser.node.remove();
+        removed.add(loser.node);
+        loser.overlayState.bubbleNodes = loser.overlayState.bubbleNodes.filter((node) => node !== loser.node);
+        loser.overlayState.bubbleCount = loser.overlayState.bubbleNodes.length;
+        console.debug("[MangaTranslator][KakaoPage] pruned rendered overflow duplicate", {
+          targetKey: loser.overlayState.targetKey,
+          original: loser.node.dataset.original || ""
+        });
+        if (loser === left) break;
+      }
+    }
   }
 
   function appendOcrDebugNodes(root, result) {
@@ -5502,6 +5553,7 @@
     const previousOwner = root.getAttribute(RUNTIME_OWNER_ATTRIBUTE);
     const staleUiExists = !!document.querySelector(".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe");
     root.setAttribute(RUNTIME_OWNER_ATTRIBUTE, state.runtimeOwnerToken);
+    root.setAttribute(RUNTIME_FEATURE_ATTRIBUTE, RUNTIME_FEATURE_VERSION);
     document
       .querySelectorAll(".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe")
       .forEach((node) => node.remove());

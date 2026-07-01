@@ -570,6 +570,13 @@ test("cross-page dedupe removes superseded bubbles from the source-scoped cache"
   );
 });
 
+test("rendered Kakao overlays prune an overflow copy after final layout", () => {
+  assert.match(contentSource, /syncOverlayPosition\(overlayState\);\s*pruneKakaoVisualDuplicateBubbles\(\);/);
+  assert.match(contentSource, /KP\.selectKakaoVisualDuplicateLoser\(/);
+  assert.match(contentSource, /loser\.overlayState\.bubbleNodes = loser\.overlayState\.bubbleNodes\.filter/);
+  assert.match(contentSource, /root\.setAttribute\(RUNTIME_FEATURE_ATTRIBUTE, RUNTIME_FEATURE_VERSION\)/);
+});
+
 test("pretranslation mode defaults to manual", () => {
   assert.equal(runtime.__test.normalizePretranslateMode("ahead"), "ahead");
   assert.equal(runtime.__test.normalizePretranslateMode("continuous"), "continuous");

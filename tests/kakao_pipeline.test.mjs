@@ -793,6 +793,26 @@ test("geometry-only overflow dedupe keeps same-page and different-region bubbles
   assert.equal(P.isKakaoGlobalDuplicateCandidate(candidate, differentRegion), false);
 });
 
+test("visual duplicate selection keeps the owner box over an overflow copy", () => {
+  const owner = {
+    scopeKey: "page-owner",
+    regionType: "caption_panel",
+    stitchOverflow: false,
+    box: { left: 697.98, top: 543.77, width: 449.71, height: 291.9 }
+  };
+  const overflow = {
+    scopeKey: "page-overflow",
+    regionType: "caption_panel",
+    stitchOverflow: true,
+    box: { left: 719.41, top: 654.47, width: 415.15, height: 176.54 }
+  };
+
+  assert.equal(P.selectKakaoVisualDuplicateLoser(owner, overflow), "right");
+  assert.equal(P.selectKakaoVisualDuplicateLoser(overflow, owner), "left");
+  assert.equal(P.selectKakaoVisualDuplicateLoser(owner, { ...overflow, scopeKey: owner.scopeKey }), null);
+  assert.equal(P.selectKakaoVisualDuplicateLoser(owner, { ...overflow, regionType: "effect_text" }), null);
+});
+
 test("superseded Kakao entry keeps the source-scoped cache identity", async () => {
   const store = P.createStore();
   const target = {

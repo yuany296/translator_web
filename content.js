@@ -43,22 +43,12 @@
   const EMBEDDED_MAX_CANVAS_PIXELS = 24 * 1000 * 1000;
   const EMBEDDED_MAX_ORIGINAL_BYTES = 16 * 1024 * 1024;
   const MAX_LOCAL_RESULT_CACHE = 120;
-  const KAKAO_STITCH_MAX_CONTEXT_PX = 480;
-  const KAKAO_STITCH_MIN_CONTEXT_PX = 96;
-  const KAKAO_STITCH_CONTEXT_CSS_PX = 360;
-  const KAKAO_STITCH_CONTEXT_HEIGHT_RATIO = 0.35;
-  const KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX = 32;
-  const KAKAO_STITCH_MIN_WIDTH_RATIO = 0.82;
-  const KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT = 420;
-  const KAKAO_SHORT_PAGE_ATTACH_HEIGHT_RATIO = 0.45;
-  const KAKAO_OVERLAP_SAMPLE_WIDTH = 96;
-  const KAKAO_OVERLAP_MIN_RATIO = 0.28;
-  const KAKAO_OVERLAP_MAX_RATIO = 0.88;
-  const KAKAO_OVERLAP_MAX_MAE = 12;
-  const KAKAO_OVERLAP_MIN_UNIQUE_PX = 96;
-  const KAKAO_THIN_STRIP_MAX_NATURAL_HEIGHT = 100;
-  const KAKAO_THIN_STRIP_MIN_HEIGHT = 8;
-  const KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS = 8000;
+  const KP = globalThis.MangaTranslatorKakaoPipeline;
+  const {
+    KAKAO_OVERLAP_SAMPLE_WIDTH,
+    KAKAO_THIN_STRIP_MIN_HEIGHT
+  } = KP;
+
   const LOADING_OVERLAY_TIMEOUT_MS = 30000;
   const PRETRANSLATE_AHEAD_COUNT = 6;
   const RUNTIME_OWNER_ATTRIBUTE = "data-manga-translator-runtime-owner";
@@ -135,7 +125,8 @@
     overlayPreviousVisibility: "",
     payloadCacheByTargetKey: new Map(),
     localResultCache: new Map(),
-    kakaoGlobalOcrEntries: new Map(),
+    /** Kakao 管线 Store（由 kakao-pipeline.js 提供） */
+    kakaoStore: null,
     lastRecoveryAt: 0,
     syncRaf: 0,
     overlayFrameRaf: 0,
@@ -152,6 +143,55 @@
     runtimeOwnerToken: `${Date.now()}-${Math.random().toString(36).slice(2)}`
   };
 
+  // 初始化 Kakao 管线 Store（如可用）
+  if (KP && typeof KP.createStore === "function") {
+    state.kakaoStore = KP.createStore();
+  }
+
+  const kakaoRetryScheduler = KP.createRetryScheduler({
+    store: state.kakaoStore,
+    setTimer: (callback, delay) => window.setTimeout(callback, delay),
+    clearTimer: (timer) => window.clearTimeout(timer),
+    isPlaceholder: (target) =>
+      target instanceof HTMLImageElement && isDataUrl(resolveImageUrl(target)),
+    isTargetUsable: (target) => !!target && target.isConnected && !state.invalidated,
+    isTargetReady: (target) =>
+      target instanceof HTMLImageElement && target.complete && passesTargetFilter(target, true),
+    onReady: queuePageAutoTranslate
+  });
+
+  const kakaoPipeline = KP && typeof KP.createPipeline === "function"
+    ? KP.createPipeline({
+      store: state.kakaoStore,
+      extractTargetPayload: (target, scopedKey) =>
+        extractTargetPayload(target, scopedKey, { skipKakaoStitch: true }),
+      requestTranslationForPayload,
+      renderTranslationResult,
+      clearRenderedTarget,
+      renderOverlay,
+      computeTargetKey,
+      getQuickSourceToken,
+      buildTargetSourceCacheKey,
+      captureTargetSnapshot,
+      isTargetSnapshotStillValid,
+      shouldUseKakaoStitchedOcr,
+      buildKakaoStitchedPayload,
+      mapStitchedResult: mapKakaoStitchedResultForPipeline,
+      dedupeResult: dedupeKakaoResultByPageCoordinates,
+      renderLoadingOverlay,
+      renderPipelineResult: renderKakaoPipelineResult,
+      renderCachedPipelineResult: renderCachedKakaoPipelineResult,
+      releaseAttachedShortPagesOnError: releaseKakaoPipelineErrorAttachments,
+      reportPipelineError: reportKakaoPipelineError,
+      findTargetByScopedKey,
+      queueTranslate,
+      queuePageAutoTranslate,
+      scheduleAutoTranslateRetry,
+      tracePipeline,
+      state
+    })
+    : null;
+
   const api = {
     invalidated: false,
     rescan,
@@ -159,6 +199,11 @@
     togglePageAutoTranslate,
     getPageAutoTranslateStatus,
     __test: {
+      /** 直接访问 pipeline 模块（只读） */
+      get pipeline() { return globalThis.MangaTranslatorKakaoPipeline; },
+      /** 访问 Store（已封装） */
+      get kakaoStore() { return state.kakaoStore; },
+      get kakaoPipeline() { return kakaoPipeline; },
       mapKakaoStitchedResult,
       dedupeKakaoResultByPageCoordinates,
       buildKakaoStitchWindowPlan,
@@ -503,6 +548,8 @@
     const sourceToken = getQuickSourceToken(target);
     const oldSourceToken = target.dataset.mtSourceToken || "";
     if (oldSourceToken && oldSourceToken !== sourceToken) {
+      const oldScopedTargetKey = buildTargetSourceCacheKey(computeTargetKey(target), oldSourceToken);
+      state.kakaoStore.cancelPageJob(oldScopedTargetKey);
       const oldTranslatedKey = target.dataset.mtLastTranslatedKey || "";
       if (oldTranslatedKey) {
         state.payloadCacheByTargetKey.delete(oldTranslatedKey);
@@ -512,21 +559,12 @@
       target.dataset.mtLastTranslatedKey = "";
       target.dataset.mtNoTextKey = "";
       target.dataset.mtRecoveryReqAt = "";
-      // 清理短页附着标记
-      delete target.dataset.mtKakaoAttachedToKey;
-      delete target.dataset.mtKakaoAttachedToAt;
+      state.kakaoStore.clearShortPage(target);
       delete target.dataset.mtBoundaryReadyToken;
-      // 清理重试状态：防止 SVG 占位符的 retry 干扰真实图片
-      delete target.dataset.mtRetryCount;
-      delete target.dataset.mtRetryAttempts;
-      const retryTimer = autoTranslateRetryTimers.get(target);
-      if (retryTimer) {
-        window.clearTimeout(retryTimer);
-        autoTranslateRetryTimers.delete(target);
-      }
+      kakaoRetryScheduler.cancel(target);
       // 清理全局去重条目
       if (oldTranslatedKey) {
-        state.kakaoGlobalOcrEntries.delete(oldTranslatedKey);
+        state.kakaoStore.deleteEntriesForKey(oldTranslatedKey);
       }
       // 允许该 DOM 元素重新入队
       state.queuedTargets.delete(target);
@@ -793,6 +831,19 @@
     return true;
   }
 
+  function isKakaoShortPageQueueBlocked(target) {
+    if (!IS_KAKAOPAGE_READER) {
+      return false;
+    }
+    const gate = KP.getShortPageAttachmentGate(state.kakaoStore, target);
+    if (gate.timedOut) {
+      tracePipeline("skipped", target, { skipReason: "shortPageAttachmentTimeout" });
+    } else if (gate.blocked) {
+      tracePipeline("skipped", target, { skipReason: "shortPageAttached" });
+    }
+    return gate.blocked;
+  }
+
   function queueTranslate(target, options) {
     if (!isSupportedTarget(target) || !target.isConnected || state.invalidated) {
       return;
@@ -806,14 +857,7 @@
       return;
     }
 
-    // 短页附着超时检查：owner 失败后允许独立翻译
-    const p1AttachedAt = Number(target.dataset.mtKakaoAttachedToAt || 0);
-    if (target.dataset.mtKakaoAttachedToKey && Date.now() - p1AttachedAt > KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS) {
-      delete target.dataset.mtKakaoAttachedToKey;
-      delete target.dataset.mtKakaoAttachedToAt;
-      tracePipeline("skipped", target, { skipReason: "shortPageAttachmentTimeout" });
-    } else if (target.dataset.mtKakaoAttachedToKey) {
-      tracePipeline("skipped", target, { skipReason: "shortPageAttached" });
+    if (isKakaoShortPageQueueBlocked(target)) {
       return;
     }
 
@@ -1023,6 +1067,8 @@
     }
 
     const task = (async () => {
+      let payload = null;
+      let renderPayload = null;
       try {
         const targetKey = computeTargetKey(target);
         const targetId = getTargetId(target);
@@ -1065,6 +1111,9 @@
 
         const localCachedResult = state.localResultCache.get(scopedTargetKey);
         if (!options.force && localCachedResult) {
+          if (IS_KAKAOPAGE_READER && kakaoPipeline) {
+            return kakaoPipeline.runCached(target, localCachedResult, options);
+          }
           const dedupedCachedResult = await dedupeKakaoResultByPageCoordinates(localCachedResult, target, targetKey);
           state.localResultCache.set(scopedTargetKey, dedupedCachedResult);
           if (dedupedCachedResult.bubbles.length > 0) {
@@ -1081,62 +1130,24 @@
           return { ok: true, reused: true, bubbles: dedupedCachedResult.bubbles.length };
         }
 
+        if (IS_KAKAOPAGE_READER && kakaoPipeline) {
+          return kakaoPipeline.run(target, options);
+        }
+
         // Stale result defense: capture snapshot before translation
         const preTranslateSnapshot = captureTargetSnapshot(target);
         renderLoadingOverlay(target, targetKey, "OCR + 翻译中...");
-        const payload = await extractTargetPayload(target, scopedTargetKey);
+        payload = await extractTargetPayload(target, scopedTargetKey);
         updateLoadingOverlayText(target, targetKey, "模型翻译中...");
-        let renderPayload = payload;
-        let response = null;
-        try {
-          response = await requestTranslationForPayload(payload, buildOcrRequestKey(targetKey, payload));
-        } catch (error) {
-          if (!payload.stitch || !payload.singleImagePayload) {
-            throw error;
-          }
-          console.warn("[MangaTranslator][KakaoPage] 拼接 OCR 抛出异常，回退当前单图", {
-            targetKey: targetKey.slice(0, 80),
-            error: getErrorMessage(error)
-          });
-          renderPayload = buildSingleFallbackPayload(payload.singleImagePayload, payload, "stitched request threw");
-          response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
-        }
-
-        if ((!response || !response.ok) && renderPayload === payload && payload.stitch && payload.singleImagePayload) {
-          console.warn("[MangaTranslator][KakaoPage] 拼接 OCR 请求失败，回退当前单图", {
-            targetKey: targetKey.slice(0, 80),
-            error: response && response.error ? response.error : "unknown stitched request failure"
-          });
-          renderPayload = buildSingleFallbackPayload(
-            payload.singleImagePayload,
-            payload,
-            response && response.error ? response.error : "stitched request failed"
-          );
-          response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
-        }
-
+        renderPayload = payload;
+        const response = await requestTranslationForPayload(
+          payload,
+          buildOcrRequestKey(targetKey, payload)
+        );
         if (!response || !response.ok) {
           throw new Error(response && response.error ? response.error : "Translate request failed");
         }
-
-        let result = normalizeResult(mapKakaoStitchedResult(response.result, renderPayload, target, targetKey));
-        const fallbackReason = renderPayload === payload
-          ? shouldFallbackFromKakaoStitch(payload, response.result, result)
-          : "";
-        if (fallbackReason && payload.singleImagePayload) {
-          console.warn("[MangaTranslator][KakaoPage] 拼接 OCR 结果异常，回退当前单图", {
-            targetKey: targetKey.slice(0, 80),
-            reason: fallbackReason
-          });
-          renderPayload = buildSingleFallbackPayload(payload.singleImagePayload, payload, fallbackReason);
-          response = await requestTranslationForPayload(renderPayload, buildOcrRequestKey(targetKey, renderPayload));
-          if (!response || !response.ok) {
-            throw new Error(response && response.error ? response.error : "Single-image OCR fallback failed");
-          }
-          result = normalizeResult(response.result);
-        }
-        result = await dedupeKakaoResultByPageCoordinates(result, target, targetKey);
-
+        const result = normalizeResult(response.result);
         // Stale result defense: check if target changed during OCR
         if (preTranslateSnapshot && !isTargetSnapshotStillValid(target, preTranslateSnapshot)) {
           console.warn("[MangaTranslator] Stale result dropped: target changed during OCR, skipping clearRenderedTarget");
@@ -1195,8 +1206,10 @@
           for (const shortKey of attachedShortPageKeys) {
             const el = findTargetByScopedKey(shortKey);
             if (el) {
-              delete el.dataset.mtKakaoAttachedToKey;
-              delete el.dataset.mtKakaoAttachedToAt;
+              state.kakaoStore.releaseShortPage(el, buildTargetSourceCacheKey(
+                computeTargetKey(target),
+                getQuickSourceToken(target)
+              ));
               tracePipeline("skipped", el, { skipReason: "ownerFailedReleasingShortPage" });
             }
           }
@@ -1284,12 +1297,14 @@
     return task;
   }
 
-  async function extractTargetPayload(target, targetKey) {
+  async function extractTargetPayload(target, targetKey, options = {}) {
     const cacheKey = String(targetKey || computeTargetKey(target));
     // 优先检查 stitch 专用缓存 key，避免单图缓存误吞拼接版本
-    const cachedStitch = getPayloadCache(cacheKey + "|stitch");
-    if (cachedStitch) {
-      return cachedStitch;
+    if (options.skipKakaoStitch !== true) {
+      const cachedStitch = getPayloadCache(cacheKey + "|stitch");
+      if (cachedStitch) {
+        return cachedStitch;
+      }
     }
     const cached = getPayloadCache(cacheKey);
     if (cached) {
@@ -1319,6 +1334,11 @@
 
     // 单图版本始终缓存到普通 key
     const singlePayload = payload;
+
+    if (options.skipKakaoStitch === true) {
+      rememberPayloadCache(cacheKey, singlePayload);
+      return singlePayload;
+    }
 
     if (shouldUseKakaoStitchedOcr(target, singlePayload)) {
       const stitched = await buildKakaoStitchedPayload(target, singlePayload);
@@ -1422,227 +1442,42 @@
   }
 
   async function buildKakaoStitchedPayload(target, ownerPayload) {
-    const singlePayload = markSingleKakaoPayload(ownerPayload, target, "");
-    const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
-      (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
-    );
-    const ownerIndex = ordered.indexOf(target);
-    if (ownerIndex < 0) {
-      return markSingleKakaoPayload(ownerPayload, target, "owner not found");
-    }
-
-    const orderedEntries = buildKakaoStitchCandidateEntries(ordered);
-    const ownerDescriptor = orderedEntries[ownerIndex] && orderedEntries[ownerIndex].descriptor;
-    const previousTarget = findKakaoStitchNeighborTarget(orderedEntries, ownerIndex, "previous");
-    const nextTarget = findKakaoStitchNeighborTarget(orderedEntries, ownerIndex, "next");
-    if (!previousTarget && !nextTarget) {
-      return markSingleKakaoPayload(ownerPayload, target, "no verified neighbor");
-    }
-    const previousPayload = previousTarget ? await extractAdjacentKakaoPayload(previousTarget) : null;
-    const nextPayload = nextTarget ? await extractAdjacentKakaoPayload(nextTarget) : null;
-    const payloads = [previousPayload, ownerPayload, nextPayload].filter(Boolean);
-    const decoded = await Promise.all(payloads.map((payload) => loadImageFromDataUrl(payload.dataUrl)));
-    let decodedIndex = 0;
-    const previousImage = previousPayload ? decoded[decodedIndex++] : null;
-    const ownerImage = decoded[decodedIndex++];
-    const nextImage = nextPayload ? decoded[decodedIndex] : null;
-    const canonicalWidth = Math.max(
-      1,
-      Math.min(IMAGE_MAX_SIDE, Number(ownerPayload.width) || ownerImage.naturalWidth || ownerImage.width)
-    );
-    const scaledHeight = (image) =>
-      Math.max(1, Math.round(((image.naturalHeight || image.height) / Math.max(1, image.naturalWidth || image.width)) * canonicalWidth));
-    const ownerHeight = scaledHeight(ownerImage);
-    const previousHeight = previousImage ? scaledHeight(previousImage) : 0;
-    const nextHeight = nextImage ? scaledHeight(nextImage) : 0;
-    const rejection = shouldRejectKakaoPageEdgeStitch({
-      owner: ownerDescriptor,
-      ownerHeight,
-      canonicalWidth,
-      previous: previousTarget ? describeKakaoStitchTarget(previousTarget) : null,
-      next: nextTarget ? describeKakaoStitchTarget(nextTarget) : null,
-      previousHeight,
-      nextHeight
+    return KP.buildKakaoStitchedPayload(target, ownerPayload, {
+      collectCandidates: (owner) => collectKakaopageManualTargetCandidates(true, owner),
+      isReadyImageTarget: (candidate) =>
+        candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete,
+      describeTarget: describeKakaoStitchTarget,
+      extractAdjacentPayload: extractAdjacentKakaoPayload,
+      loadImage: loadImageFromDataUrl,
+      createCanvas: (width, height) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        return canvas;
+      },
+      imageMaxSide: IMAGE_MAX_SIDE,
+      imageJpegQuality: IMAGE_JPEG_QUALITY,
+      computeTargetKey,
+      getQuickSourceToken,
+      buildTargetSourceCacheKey
     });
-    if (rejection) {
-      return markSingleKakaoPayload(singlePayload, target, rejection);
-    }
-    const plan = buildKakaoStitchWindowPlan({
-      owner: ownerDescriptor,
-      previous: previousTarget ? describeKakaoStitchTarget(previousTarget) : null,
-      next: nextTarget ? describeKakaoStitchTarget(nextTarget) : null,
-      canonicalWidth,
-      ownerHeight,
-      previousHeight,
-      nextHeight
-    });
-    const previousSlice = previousImage ? plan.previousSlice : 0;
-    const nextSlice = nextImage ? plan.nextSlice : 0;
-    if (previousSlice <= 0 && nextSlice <= 0) {
-      return markSingleKakaoPayload(ownerPayload, target, "empty stitch slices");
-    }
-    const compositeWidth = canonicalWidth;
-    const compositeHeight = previousSlice + ownerHeight + nextSlice;
-
-    const ownerEntry = {
-      source: "owner",
-      targetKey: computeTargetKey(target),
-      src: getQuickSourceToken(target),
-      drawRect: { x: 0, y: previousSlice, w: canonicalWidth, h: ownerHeight },
-      sourceCrop: { x: 0, y: 0, w: ownerImage.naturalWidth || ownerImage.width, h: ownerImage.naturalHeight || ownerImage.height },
-      naturalWidth: ownerImage.naturalWidth || ownerImage.width,
-      naturalHeight: ownerImage.naturalHeight || ownerImage.height
-    };
-
-    let previousEntry = null;
-    if (previousTarget && previousImage && previousSlice > 0) {
-      const prevNatW = previousImage.naturalWidth || previousImage.width;
-      const prevNatH = previousImage.naturalHeight || previousImage.height;
-      const sourceCropHeight = prevNatH * (previousSlice / Math.max(1, previousHeight));
-      const shortPageAttachment = plan.previousShortPageAttachment === true && previousSlice >= previousHeight - 1;
-      previousEntry = {
-        source: "previous",
-        shortPageAttachment,
-        targetKey: computeTargetKey(previousTarget),
-        src: getQuickSourceToken(previousTarget),
-        drawRect: { x: 0, y: 0, w: canonicalWidth, h: previousSlice },
-        sourceCrop: { x: 0, y: prevNatH - sourceCropHeight, w: prevNatW, h: sourceCropHeight },
-        naturalWidth: prevNatW,
-        naturalHeight: prevNatH
-      };
-    }
-
-    let nextEntry = null;
-    if (nextTarget && nextImage && nextSlice > 0) {
-      const nextNatW = nextImage.naturalWidth || nextImage.width;
-      const nextNatH = nextImage.naturalHeight || nextImage.height;
-      const sourceCropHeight = nextNatH * (nextSlice / Math.max(1, nextHeight));
-      const shortPageAttachment = plan.nextShortPageAttachment === true && nextSlice >= nextHeight - 1;
-      nextEntry = {
-        source: "next",
-        shortPageAttachment,
-        targetKey: computeTargetKey(nextTarget),
-        src: getQuickSourceToken(nextTarget),
-        drawRect: { x: 0, y: previousSlice + ownerHeight, w: canonicalWidth, h: nextSlice },
-        sourceCrop: { x: 0, y: 0, w: nextNatW, h: sourceCropHeight },
-        naturalWidth: nextNatW,
-        naturalHeight: nextNatH
-      };
-    }
-    const segments = [previousEntry, ownerEntry, nextEntry].filter(Boolean);
-
-    const canvas = document.createElement("canvas");
-    canvas.width = canonicalWidth;
-    canvas.height = compositeHeight;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return ownerPayload;
-    }
-
-    if (previousImage && previousSlice > 0) {
-      const naturalHeight = previousImage.naturalHeight || previousImage.height;
-      const naturalWidth = previousImage.naturalWidth || previousImage.width;
-      const sourceHeight = naturalHeight * (previousSlice / previousHeight);
-      context.drawImage(previousImage, 0, naturalHeight - sourceHeight, naturalWidth, sourceHeight, 0, 0, canonicalWidth, previousSlice);
-    }
-    context.drawImage(ownerImage, 0, 0, canonicalWidth, ownerHeight, 0, previousSlice, canonicalWidth, ownerHeight);
-    if (nextImage && nextSlice > 0) {
-      const naturalHeight = nextImage.naturalHeight || nextImage.height;
-      const naturalWidth = nextImage.naturalWidth || nextImage.width;
-      const sourceHeight = naturalHeight * (nextSlice / nextHeight);
-      context.drawImage(nextImage, 0, 0, naturalWidth, sourceHeight, 0, previousSlice + ownerHeight, canonicalWidth, nextSlice);
-    }
-
-    const sourceKeys = [previousTarget, target, nextTarget].map((item) => (item ? getQuickSourceToken(item) : "edge"));
-    return {
-      ...ownerPayload,
-      ocrMode: "stitch",
-      stitchAdmission: "accepted",
-      sourceToken: getQuickSourceToken(target),
-      dataUrl: canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY),
-      imageUrl: `kakao-stitch:${sourceKeys.join("|")}`,
-      width: canonicalWidth,
-      height: compositeHeight,
-      stitchKey: `${computeTargetKey(target)}|stitch:${previousSlice}:${nextSlice}|${sourceKeys.join("|")}`,
-      singleImagePayload: ownerPayload,
-      attachedShortPageKeys: [previousEntry, nextEntry]
-        .filter(e => e && e.shortPageAttachment)
-        .map(e => buildTargetSourceCacheKey(e.targetKey, e.src)),
-      stitch: {
-        canvasWidth: canonicalWidth,
-        canvasHeight: compositeHeight,
-        sourceKeys,
-        verified: true,
-        ocrMode: "stitch",
-        owner: ownerEntry,
-        previous: previousEntry,
-        next: nextEntry,
-        segments
-      }
-    };
   }
-
-  function markSingleKakaoPayload(payload, target, rejectionReason) {
-    const reason = String(rejectionReason || "").trim();
-    return {
-      ...payload,
-      ocrMode: "single",
-      sourceToken: getQuickSourceToken(target),
-      ...(reason ? { stitchAdmission: "rejected", stitchRejectionReason: reason } : {})
-    };
-  }
-
-  function buildSingleFallbackPayload(singlePayload, stitchedPayload, fallbackReason) {
-    const reason = String(fallbackReason || "stitched result rejected").trim();
-    return {
-      ...singlePayload,
-      ocrMode: "single-fallback",
-      sourceToken: String(stitchedPayload && stitchedPayload.sourceToken || singlePayload && singlePayload.sourceToken || ""),
-      fallbackReason: reason,
-      stitchAdmission: "fallback"
-    };
-  }
-
   function buildOcrRequestKey(targetKey, payload) {
-    const mode = String(payload && payload.ocrMode || "single");
-    const sourceToken = String(payload && payload.sourceToken || "");
-    const reason = String(payload && (payload.fallbackReason || payload.stitchRejectionReason) || "");
-    const stitchKey = String(payload && payload.stitchKey || "");
-    return [
-      String(targetKey || ""),
-      `src:${hashSourceIdentity(sourceToken)}`,
-      `mode:${mode}`,
-      reason ? `reason:${hashSourceIdentity(reason)}` : "",
-      stitchKey ? `stitch:${hashSourceIdentity(stitchKey)}` : ""
-    ].filter(Boolean).join("|");
+    return KP.buildOcrRequestKey(targetKey, payload);
   }
-
   function shouldRejectKakaoPageEdgeStitch({ owner, ownerHeight, canonicalWidth, previous, next, previousHeight, nextHeight } = {}) {
-    if (!owner || !isKakaoPageEdgeSource(owner.sourceKey)) {
-      return "";
-    }
-    const width = Math.max(1, Number(canonicalWidth) || Number(owner.width) || 1);
-    const height = Math.max(1, Number(ownerHeight) || 0);
-    const isFragment = height < Math.max(760, width * 1.05);
-    if (!isFragment) {
-      return "";
-    }
-    const neighborHeights = [
-      previous ? Number(previousHeight || 0) : 0,
-      next ? Number(nextHeight || 0) : 0
-    ].filter((value) => value > 0);
-    const hasStableNeighborHeight = neighborHeights.some((neighborHeight) => {
-      const ratio = Math.min(height, neighborHeight) / Math.max(height, neighborHeight);
-      return ratio >= 0.78;
+    return KP.shouldRejectKakaoPageEdgeStitch({
+      owner,
+      ownerHeight,
+      canonicalWidth,
+      previous,
+      next,
+      previousHeight,
+      nextHeight
     });
-    return hasStableNeighborHeight
-      ? ""
-      : "page-edge fragmented image stitch admission rejected";
   }
 
-  function isKakaoPageEdgeSource(source) {
-    return /(^|\/\/)page-edge\.kakao\.com\//i.test(String(source || ""));
-  }
+  const isKakaoPageEdgeSource = KP.isKakaoPageEdgeSource;
 
   // Kakao page-edge CDN URLs must include authentication parameters
   // (signature, credential, expires) to be fetchable. If the URL lacks
@@ -1701,157 +1536,39 @@
   }
 
   function buildKakaoStitchCandidateEntries(targets) {
-    return (Array.isArray(targets) ? targets : []).map((target) => ({
-      target,
-      descriptor: describeKakaoStitchTarget(target)
-    }));
+    return KP.buildKakaoStitchCandidateEntries(targets, describeKakaoStitchTarget);
   }
 
   function findKakaoStitchNeighborTarget(entries, ownerIndex, direction) {
-    const ownerEntry = Array.isArray(entries) ? entries[ownerIndex] : null;
-    const owner = ownerEntry && ownerEntry.descriptor;
-    if (!owner || (direction !== "previous" && direction !== "next")) {
-      return null;
-    }
-    const step = direction === "previous" ? -1 : 1;
-    for (let index = ownerIndex + step; index >= 0 && index < entries.length; index += step) {
-      const candidateEntry = entries[index];
-      const candidate = candidateEntry && candidateEntry.descriptor;
-      if (!candidate) {
-        continue;
-      }
-      if (isKakaoStitchCandidatePastNeighborWindow(owner, candidate, direction)) {
-        break;
-      }
-      if (isVerifiedKakaoStitchNeighbor(owner, candidate, direction)) {
-        return candidateEntry.target || null;
-      }
-    }
-    return null;
+    return KP.findKakaoStitchNeighborTarget(entries, ownerIndex, direction);
   }
 
   function findKakaoShortPageAttachmentOwnerTarget(entries, targetIndex, direction) {
-    const targetEntry = Array.isArray(entries) ? entries[targetIndex] : null;
-    const target = targetEntry && targetEntry.descriptor;
-    if (!target || (direction !== "previous" && direction !== "next")) {
-      return null;
-    }
-    const step = direction === "previous" ? -1 : 1;
-    const ownerDirection = direction === "previous" ? "next" : "previous";
-    for (let index = targetIndex + step; index >= 0 && index < entries.length; index += step) {
-      const ownerEntry = entries[index];
-      const owner = ownerEntry && ownerEntry.descriptor;
-      if (!owner) {
-        continue;
-      }
-      if (isKakaoStitchCandidatePastNeighborWindow(target, owner, direction)) {
-        break;
-      }
-      if (
-        isVerifiedKakaoStitchNeighbor(owner, target, ownerDirection) &&
-        isAttachableKakaoShortPage(target, owner, target.height, owner.height)
-      ) {
-        return ownerEntry.target || null;
-      }
-    }
-    return null;
+    return KP.findKakaoShortPageAttachmentOwnerTarget(entries, targetIndex, direction);
   }
 
   function isKakaoStitchCandidatePastNeighborWindow(owner, candidate, direction) {
-    if (!owner || !candidate) {
-      return false;
-    }
-    const scrollY = window.scrollY || 0;
-    const ownerTop = Number(owner.top || 0) + scrollY;
-    const ownerBottom = Number(owner.bottom || (Number(owner.top || 0) + Number(owner.height || 0))) + scrollY;
-    const candidateTop = Number(candidate.top || 0) + scrollY;
-    const candidateBottom = Number(candidate.bottom || (Number(candidate.top || 0) + Number(candidate.height || 0))) + scrollY;
-    const maxGap = KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX;
-    return direction === "previous"
-      ? candidateBottom < ownerTop - maxGap
-      : candidateTop > ownerBottom + maxGap;
+    return KP.isKakaoStitchCandidatePastNeighborWindow(owner, candidate, direction);
   }
 
   function isVerifiedKakaoStitchNeighbor(owner, candidate, direction) {
-    if (!owner || !candidate || !candidate.sourceKey || candidate.sourceKey === owner.sourceKey) {
-      return false;
-    }
-    // Verify different image sources to catch virtual list element reuse
-    const ownerSrc = owner.currentSrc || owner.src || "";
-    const candidateSrc = candidate.currentSrc || candidate.src || "";
-    if (ownerSrc && candidateSrc && ownerSrc === candidateSrc) {
-      return false;
-    }
-    if (!(candidate.height >= KAKAO_THIN_STRIP_MIN_HEIGHT)) {
-      return false;
-    }
-    const widthRatio = Math.min(owner.width, candidate.width) / Math.max(owner.width, candidate.width);
-    if (widthRatio < KAKAO_STITCH_MIN_WIDTH_RATIO) {
-      return false;
-    }
-    const ownerCenter = owner.left + owner.width / 2;
-    const candidateCenter = candidate.left + candidate.width / 2;
-    const centerDelta = Math.abs(ownerCenter - candidateCenter);
-    if (centerDelta > Math.max(owner.width, candidate.width) * 0.12) {
-      return false;
-    }
-
-    const scrollY = window.scrollY || 0;
-    const ownerVisualTop = owner.top + scrollY;
-    const ownerVisualBottom = owner.bottom + scrollY;
-    const candidateVisualTop = candidate.top + scrollY;
-    const candidateVisualBottom = candidate.bottom + scrollY;
-
-    if (direction === "previous") {
-      if (!(candidateVisualTop < ownerVisualTop)) return false;
-      if (candidateVisualBottom > ownerVisualTop + 24) return false;
-    } else {
-      if (!(candidateVisualTop > ownerVisualTop)) return false;
-      if (candidateVisualTop < ownerVisualBottom - 24) return false;
-    }
-
-    const seamGap = direction === "previous"
-      ? ownerVisualTop - candidateVisualBottom
-      : candidateVisualTop - ownerVisualBottom;
-    if (seamGap < -16) {
-      return false;
-    }
-    return Math.abs(seamGap) <= KAKAO_STITCH_MAX_SEAM_GAP_CSS_PX;
+    return KP.isVerifiedKakaoStitchNeighbor(owner, candidate, direction);
   }
 
   function buildKakaoStitchWindowPlan({ owner, previous, next, canonicalWidth, ownerHeight, previousHeight, nextHeight }) {
-    if (!owner || !(owner.width > 0) || !(ownerHeight > 0) || !(canonicalWidth > 0)) {
-      return { previousSlice: 0, nextSlice: 0, previousShortPageAttachment: false, nextShortPageAttachment: false };
-    }
-    const bitmapPerCssPixel = canonicalWidth / owner.width;
-    const desiredContext = clamp(
-      Math.round(Math.min(KAKAO_STITCH_CONTEXT_CSS_PX, owner.height * KAKAO_STITCH_CONTEXT_HEIGHT_RATIO) * bitmapPerCssPixel),
-      KAKAO_STITCH_MIN_CONTEXT_PX,
-      KAKAO_STITCH_MAX_CONTEXT_PX
-    );
-    const previousShortPageAttachment = isAttachableKakaoShortPage(previous, owner, previousHeight, ownerHeight);
-    const nextShortPageAttachment = isAttachableKakaoShortPage(next, owner, nextHeight, ownerHeight);
-    return {
-      previousSlice: previous && previousHeight > 0
-        ? Math.min(previousShortPageAttachment ? previousHeight : desiredContext, previousHeight)
-        : 0,
-      nextSlice: next && nextHeight > 0
-        ? Math.min(nextShortPageAttachment ? nextHeight : desiredContext, nextHeight)
-        : 0,
-      previousShortPageAttachment,
-      nextShortPageAttachment
-    };
+    return KP.buildKakaoStitchWindowPlan({
+      owner,
+      previous,
+      next,
+      canonicalWidth,
+      ownerHeight,
+      previousHeight,
+      nextHeight
+    });
   }
 
   function isAttachableKakaoShortPage(candidate, owner, candidateHeight, ownerHeight) {
-    if (!candidate || !owner || !(candidateHeight > 0) || !(ownerHeight > 0)) {
-      return false;
-    }
-    const cssHeight = Number(candidate.height || 0);
-    const scaledRatio = candidateHeight / Math.max(1, ownerHeight);
-    const ownerIsClearlyLarger = ownerHeight / Math.max(1, candidateHeight) >= 1.35;
-    return ((cssHeight > 0 && cssHeight <= KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT) && ownerIsClearlyLarger) ||
-      scaledRatio <= KAKAO_SHORT_PAGE_ATTACH_HEIGHT_RATIO;
+    return KP.isAttachableKakaoShortPage(candidate, owner, candidateHeight, ownerHeight);
   }
 
   async function requestTranslationForPayload(payload, requestKey) {
@@ -1869,57 +1586,11 @@
   }
 
   function getBubbleLineCount(bubble) {
-    if (bubble && Number.isFinite(Number(bubble.source_line_count)) && Number(bubble.source_line_count) >= 1) {
-      return Math.round(Number(bubble.source_line_count));
-    }
-    if (bubble && Array.isArray(bubble.items) && bubble.items.length > 0) {
-      return bubble.items.length;
-    }
-    const text = String((bubble && (bubble.original_text || bubble.text || "")) || "");
-    const lines = String(text).split(/\n+/).filter(Boolean).length;
-    return Math.max(1, lines);
+    return KP.getBubbleLineCount(bubble);
   }
 
   function shouldFallbackFromKakaoStitch(payload, rawResult, mappedResult) {
-    if (!payload || !payload.stitch || !payload.singleImagePayload) {
-      return "";
-    }
-    const rawBubbles = rawResult && Array.isArray(rawResult.bubbles) ? rawResult.bubbles : [];
-    const mappedBubbles = mappedResult && Array.isArray(mappedResult.bubbles) ? mappedResult.bubbles : [];
-    if (rawBubbles.length === 0) {
-      return "stitched OCR produced no owner text";
-    }
-    // Check drop ratio
-    if (mappedBubbles.length === 0 && rawBubbles.length > 0) {
-      return "stitched OCR dropped all bubbles";
-    }
-    const dropRatio = rawBubbles.length > 0 ? (rawBubbles.length - mappedBubbles.length) / rawBubbles.length : 0;
-    if (dropRatio > 0.7) {
-      return "stitched OCR drop ratio exceeded 70%";
-    }
-    const invalid = mappedBubbles.some((bubble) => {
-      const values = [bubble.x, bubble.y, bubble.w, bubble.h].map((v) => Number(v));
-      if (values.some((v) => !Number.isFinite(v))) return true;
-      const bw = values[2];
-      const bh = values[3];
-      if (bw <= 0 || bh <= 0) return true;
-      const bx = values[0];
-      const by = values[1];
-      if (bubble.stitch_overflow) {
-        // Overflow bubble: y can be negative, y+h can > 100
-        if (by + bh < -35 || by > 135) return true;
-        if (bh > 60) return true;
-      } else {
-        // Normal bubble
-        if (bx < -5 || bx + bw > 105) return true;
-        if (by < -5 || by + bh > 105) return true;
-        const lineCount = getBubbleLineCount(bubble);
-        const maxH = lineCount > 1 ? 60 : 35;
-        if (bh > maxH) return true;
-      }
-      return false;
-    });
-    return invalid ? "stitched OCR produced implausible owner coordinates" : "";
+    return KP.shouldFallbackFromKakaoStitch(payload, rawResult, mappedResult);
   }
 
   async function extractAdjacentKakaoPayload(target) {
@@ -1931,360 +1602,58 @@
     }
   }
 
-  function mapKakaoStitchedResult(result, payload, target, targetKey) {
+  function mapKakaoStitchedResultForPipeline(result, payload, target, targetKey) {
     if (!payload || !payload.stitch || !result || !Array.isArray(result.bubbles)) {
       return result;
     }
-    const stitch = payload.stitch;
-    const canvasWidth = Math.max(1, Number(stitch.canvasWidth || Number(payload.width) || 1));
-    const canvasHeight = Math.max(1, Number(stitch.canvasHeight || Number(payload.height) || 1));
-    const ownerDraw = stitch.owner && stitch.owner.drawRect
-      ? stitch.owner.drawRect
-      : { x: 0, y: 0, w: canvasWidth, h: canvasHeight };
-    const segments = normalizeKakaoStitchSegments(stitch, canvasWidth, canvasHeight, ownerDraw);
-    const targetRect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
-
-    console.debug("[MangaTranslator][KakaoStitch] Mapping result", {
-      targetKey: targetKey && targetKey.slice(0, 80),
-      canvasWidth,
-      canvasHeight,
-      bubbleCount: result.bubbles.length,
-      segments: segments.map((s) => ({
-        source: s.source,
-        targetKey: s.targetKey,
-        src: String(s.src || "").slice(0, 80),
-        drawRect: s.drawRect,
-        sourceCrop: s.sourceCrop
-      }))
-    });
-
-    const mapped = result.bubbles.map((bubble) => {
-      const bx = Number(bubble.x);
-      const by = Number(bubble.y);
-      const bw = Number(bubble.w);
-      const bh = Number(bubble.h);
-
-      if (![bx, by, bw, bh].every(Number.isFinite) || bw <= 0 || bh <= 0) {
-        console.warn("[MangaTranslator][KakaoStitch] Discarding bubble with invalid coords", {
-          raw: { x: bubble.x, y: bubble.y, w: bubble.w, h: bubble.h },
-          text: String(bubble.original_text || "").slice(0, 40)
-        });
-        return null;
-      }
-
-      const bubblePx = {
-        x: (bx / 100) * canvasWidth,
-        y: (by / 100) * canvasHeight,
-        w: (bw / 100) * canvasWidth,
-        h: (bh / 100) * canvasHeight
-      };
-
-      const bubbleArea = Math.max(1, bubblePx.w * bubblePx.h);
-      const ranked = segments.map((segment) => {
-        const rect = segment && segment.drawRect;
-        if (!rect) return { segment, ratio: 0 };
-        const left = Math.max(bubblePx.x, rect.x);
-        const top = Math.max(bubblePx.y, rect.y);
-        const right = Math.min(bubblePx.x + bubblePx.w, rect.x + rect.w);
-        const bottom = Math.min(bubblePx.y + bubblePx.h, rect.y + rect.h);
-        const overlap = Math.max(0, right - left) * Math.max(0, bottom - top);
-        return { segment, ratio: overlap / bubbleArea };
-      }).sort((a, b) => b.ratio - a.ratio);
-
-      const best = ranked[0];
-      const ownerRank = ranked.find((r) => r.segment && r.segment.source === "owner");
-      const ownerRatio = ownerRank ? ownerRank.ratio : 0;
-
-      console.debug("[MangaTranslator][KakaoStitch] Bubble overlap ratios", {
-        text: String(bubble.original_text || "").slice(0, 50),
-        rawPercent: { x: bx, y: by, w: bw, h: bh },
-        px: bubblePx,
-        overlaps: ranked.map((r) => ({
-          source: r.segment && r.segment.source,
-          ratio: Number(r.ratio.toFixed(4))
-        })),
-        bestSource: best && best.segment && best.segment.source,
-        bestRatio: best ? Number(best.ratio.toFixed(4)) : 0
-      });
-
-      const isShortPageAttachment = best && best.segment &&
-        best.segment.shortPageAttachment === true &&
-        (best.segment.source === "previous" || best.segment.source === "next") &&
-        best.ratio >= 0.6;
-
-      if (!isShortPageAttachment && (!best || !best.segment || best.segment.source !== "owner" || best.ratio < 0.6)) {
-        const boundaryNeighbor = mapKakaoAdjacentBoundaryBubble(
-          bubble,
-          bubblePx,
-          best,
-          ownerDraw,
-          canvasHeight
-        );
-        if (boundaryNeighbor) {
-          return boundaryNeighbor;
-        }
-        console.debug("[MangaTranslator][KakaoStitch] Discarding bubble: not in owner region", {
-          bestSource: best && best.segment && best.segment.source,
-          bestRatio: best ? Number(best.ratio.toFixed(4)) : 0
-        });
-        return null;
-      }
-
-      const ownerRect = ownerDraw;
-      if (isShortPageAttachment) {
-        const mappedY = ((bubblePx.y - ownerRect.y) / ownerRect.h) * 100;
-        const mappedH = (bubblePx.h / ownerRect.h) * 100;
-
-        if (mappedY + mappedH < -80 || mappedY > 180 || mappedH > 70) {
-          console.warn("[MangaTranslator][KakaoStitch] Discarding short page attachment out of bounds", {
-            text: String(bubble.original_text || "").slice(0, 40),
-            mappedY: Number(mappedY.toFixed(2)),
-            mappedBottom: Number((mappedY + mappedH).toFixed(2)),
-            mappedH: Number(mappedH.toFixed(2))
-          });
-          return null;
-        }
-
-        return {
-          ...bubble,
-          x: ((bubblePx.x - ownerRect.x) / ownerRect.w) * 100,
-          y: mappedY,
-          w: (bubblePx.w / ownerRect.w) * 100,
-          h: mappedH,
-          stitch_overflow: true,
-          stitch_attached_short_page: true,
-          fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
-          polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
-          region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
-        };
-      }
-
-      const crossesBoundary = bubblePx.y < ownerRect.y ||
-        (bubblePx.y + bubblePx.h) > (ownerRect.y + ownerRect.h);
-      const overflow = crossesBoundary && ownerRatio >= 0.25;
-
-      if (overflow) {
-        const mappedY = ((bubblePx.y - ownerRect.y) / ownerRect.h) * 100;
-        const mappedH = (bubblePx.h / ownerRect.h) * 100;
-
-        if (mappedY + mappedH < -35 || mappedY > 135 || mappedH > 60) {
-          console.warn("[MangaTranslator][KakaoStitch] Discarding overflow bubble out of bounds", {
-            text: String(bubble.original_text || "").slice(0, 40),
-            mappedY: Number(mappedY.toFixed(2)),
-            mappedBottom: Number((mappedY + mappedH).toFixed(2)),
-            mappedH: Number(mappedH.toFixed(2))
-          });
-          return null;
-        }
-
-        return {
-          ...bubble,
-          x: ((bubblePx.x - ownerRect.x) / ownerRect.w) * 100,
-          y: mappedY,
-          w: (bubblePx.w / ownerRect.w) * 100,
-          h: mappedH,
-          stitch_overflow: true,
-          fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
-          polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
-          region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
-        };
-      }
-
-      // Normal bubble: clip to owner drawRect
-      const clippedLeft = Math.max(bubblePx.x, ownerRect.x);
-      const clippedTop = Math.max(bubblePx.y, ownerRect.y);
-      const clippedRight = Math.min(bubblePx.x + bubblePx.w, ownerRect.x + ownerRect.w);
-      const clippedBottom = Math.min(bubblePx.y + bubblePx.h, ownerRect.y + ownerRect.h);
-      const clippedW = Math.max(0, clippedRight - clippedLeft);
-      const clippedH = Math.max(0, clippedBottom - clippedTop);
-      if (clippedW <= 0 || clippedH <= 0) {
-        console.warn("[MangaTranslator][KakaoStitch] Discarding normal bubble: zero area after clipping");
-        return null;
-      }
-
-      const mappedX = ((clippedLeft - ownerRect.x) / ownerRect.w) * 100;
-      const mappedY = ((clippedTop - ownerRect.y) / ownerRect.h) * 100;
-      const mappedW = (clippedW / ownerRect.w) * 100;
-      const mappedH = (clippedH / ownerRect.h) * 100;
-
-      const lineCount = getBubbleLineCount(bubble);
-      const maxH = lineCount > 1 ? 60 : 35;
-      if (mappedX < -5 || mappedX + mappedW > 105 ||
-          mappedY < -5 || mappedY + mappedH > 105) {
-        console.warn("[MangaTranslator][KakaoStitch] Discarding normal bubble out of bounds", {
-          text: String(bubble.original_text || "").slice(0, 40),
-          mapped: { x: Number(mappedX.toFixed(2)), y: Number(mappedY.toFixed(2)),
-                     w: Number(mappedW.toFixed(2)), h: Number(mappedH.toFixed(2)) },
-          maxH,
-          lineCount
-        });
-        return null;
-      }
-
-      // 高度超阈值时 clamp 而非丢弃，同时清除不可靠的几何辅助信息
-      const clampedH = mappedH > maxH ? maxH : mappedH;
-      const clampAdjusted = mappedH !== clampedH;
-      if (clampAdjusted) {
-        console.warn("[MangaTranslator][KakaoStitch] Clamping normal bubble height", {
-          text: String(bubble.original_text || "").slice(0, 40),
-          fromH: Number(mappedH.toFixed(2)),
-          toH: Number(clampedH.toFixed(2)),
-          maxH
-        });
-      }
-
-      return {
-        ...bubble,
-        x: mappedX,
-        y: mappedY,
-        w: mappedW,
-        h: clampedH,
-        stitch_overflow: false,
-        fill_box: clampAdjusted ? null : mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
-        polygon: clampAdjusted ? null : mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
-        region_polygon: clampAdjusted ? null : mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
-      };
-    }).filter(Boolean);
-
+    const targetRect = target && typeof target.getBoundingClientRect === "function"
+      ? target.getBoundingClientRect()
+      : null;
+    const mappedResult = KP.mapKakaoStitchedResult(
+      result,
+      payload.stitch,
+      targetRect,
+      window.scrollX || 0,
+      window.scrollY || 0
+    );
+    const mapped = Array.isArray(mappedResult && mappedResult.bubbles)
+      ? mappedResult.bubbles
+      : [];
     const withGlobalBoxes = mapped.map((bubble) => ({
       ...bubble,
       global_box: computeKakaoGlobalBoxFromTarget(bubble, target)
     }));
-    const deduped = dedupeKakaoGlobalBubbles(withGlobalBoxes, target, targetRect, targetKey);
-
-    console.debug("[MangaTranslator][KakaoStitch] Mapping complete", {
-      rawCount: result.bubbles.length,
-      mappedCount: mapped.length,
-      dedupedCount: deduped.length,
-      dropRatio: result.bubbles.length > 0
-        ? Number(((result.bubbles.length - deduped.length) / result.bubbles.length).toFixed(3))
-        : 0
-    });
-
     tracePipeline("mapped", target, {
       rawBubbleCount: result.bubbles.length,
       mappedBubbleCount: mapped.length,
-      dedupeRemoved: result.bubbles.length - deduped.length,
       targetKey: String(targetKey).slice(0, 80)
     });
-
     return {
-      ...result,
-      bubbles: deduped,
-      debug: normalizeKakaoStitchDebugCoordinates(result.debug, payload.stitch)
+      ...mappedResult,
+      bubbles: withGlobalBoxes
     };
   }
 
-  function mapKakaoAdjacentBoundaryBubble(bubble, bubblePx, rankedEntry, ownerRect, canvasHeight) {
-    const mapped = mapKakaoAdjacentBoundaryRect(bubblePx, rankedEntry, ownerRect);
-    if (!mapped) {
-      return null;
+  function mapKakaoStitchedResult(result, payload, target, targetKey) {
+    const mappedResult = mapKakaoStitchedResultForPipeline(result, payload, target, targetKey);
+    if (!mappedResult || !Array.isArray(mappedResult.bubbles)) {
+      return mappedResult;
     }
-
+    const targetRect = target && typeof target.getBoundingClientRect === "function"
+      ? target.getBoundingClientRect()
+      : null;
     return {
-      ...bubble,
-      ...mapped,
-      stitch_overflow: true,
-      stitch_boundary_neighbor: true,
-      fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerRect.y, ownerRect.h, canvasHeight),
-      polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerRect.y, ownerRect.h, canvasHeight),
-      region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerRect.y, ownerRect.h, canvasHeight)
+      ...mappedResult,
+      bubbles: dedupeKakaoGlobalBubbles(mappedResult.bubbles, target, targetRect, targetKey)
     };
   }
-
-  function mapKakaoAdjacentBoundaryRect(rect, rankedEntry, ownerRect) {
-    const segment = rankedEntry && rankedEntry.segment;
-    const segmentRect = segment && segment.drawRect;
-    if (
-      !rect ||
-      !segmentRect ||
-      (segment.source !== "previous" && segment.source !== "next") ||
-      segment.shortPageAttachment === true
-    ) {
-      return null;
-    }
-
-    const contextSlice = segmentRect.h <= ownerRect.h * 0.45;
-    if (!contextSlice) {
-      return null;
-    }
-
-    const expectedEdge = segment.source === "previous"
-      ? ownerRect.y
-      : ownerRect.y + ownerRect.h;
-    const actualEdge = segment.source === "previous"
-      ? segmentRect.y + segmentRect.h
-      : segmentRect.y;
-    if (Math.abs(actualEdge - expectedEdge) > Math.max(2, ownerRect.h * 0.02)) {
-      return null;
-    }
-
-    const rectTop = rect.y;
-    const rectBottom = rect.y + rect.h;
-    const crossesOwnerEdge = segment.source === "previous"
-      ? rectTop < ownerRect.y && rectBottom > ownerRect.y
-      : rectTop < ownerRect.y + ownerRect.h && rectBottom > ownerRect.y + ownerRect.h;
-    const requiredRatio = crossesOwnerEdge ? 0.45 : 0.6;
-    if (rankedEntry.ratio < requiredRatio) {
-      return null;
-    }
-
-    const mappedY = ((rect.y - ownerRect.y) / ownerRect.h) * 100;
-    const mappedH = (rect.h / ownerRect.h) * 100;
-    const segmentStart = ((segmentRect.y - ownerRect.y) / ownerRect.h) * 100;
-    const segmentEnd = ((segmentRect.y + segmentRect.h - ownerRect.y) / ownerRect.h) * 100;
-    const tolerance = 5;
-    const inPreviousSlice = segment.source === "previous" &&
-      mappedY <= tolerance &&
-      mappedY + mappedH >= segmentStart - tolerance;
-    const inNextSlice = segment.source === "next" &&
-      mappedY + mappedH >= 100 - tolerance &&
-      mappedY <= segmentEnd + tolerance;
-
-    if ((!inPreviousSlice && !inNextSlice) || mappedH <= 0 || mappedH > 60) {
-      return null;
-    }
-
-    return {
-      x: ((rect.x - ownerRect.x) / ownerRect.w) * 100,
-      y: mappedY,
-      w: (rect.w / ownerRect.w) * 100,
-      h: mappedH
-    };
-  }
-
   function mapKakaoStitchedFillBox(box, ownerY, ownerH, compositeH) {
-    if (!box || typeof box !== "object") return null;
-    const x = Number(box.x);
-    const y = Number(box.y);
-    const w = Number(box.w);
-    const h = Number(box.h);
-    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
-    const topPx = (y / 100) * compositeH;
-    const heightPx = (h / 100) * compositeH;
-    const mappedH = (heightPx / ownerH) * 100;
-    // 高度合理性检查：不应超过 300%
-    if (mappedH > 300) return null;
-    return {
-      x,
-      y: ((topPx - ownerY) / ownerH) * 100,
-      w,
-      h: mappedH
-    };
+    return KP.mapKakaoStitchedFillBox(box, ownerY, ownerH, compositeH);
   }
 
   function mapKakaoStitchedPolygon(points, ownerY, ownerH, compositeH) {
-    if (!Array.isArray(points) || points.length === 0) return null;
-    const mapped = points.map((point) => {
-      const x = Number(point && point.x);
-      const rawY = Number(point && point.y);
-      if (!Number.isFinite(x) || !Number.isFinite(rawY)) return null;
-      const pixY = (rawY / 100) * compositeH;
-      return { x, y: ((pixY - ownerY) / ownerH) * 100 };
-    });
-    return mapped.every(Boolean) ? mapped : null;
+    return KP.mapKakaoStitchedPolygon(points, ownerY, ownerH, compositeH);
   }
-
   function computeKakaoGlobalBoxFromTarget(bubble, target) {
     if (!target || typeof target.getBoundingClientRect !== "function") return null;
     const rect = target.getBoundingClientRect();
@@ -2304,270 +1673,45 @@
   }
 
   function normalizeKakaoStitchSegments(stitch, compositeWidth, compositeHeight, ownerDraw) {
-    const rawSegments = Array.isArray(stitch && stitch.segments) ? stitch.segments : [];
-    const segments = rawSegments
-      .filter((segment) => segment && segment.drawRect)
-      .map((segment) => ({
-        ...segment,
-        drawRect: normalizeRectLike(segment.drawRect)
-      }))
-      .filter((segment) => segment.drawRect && segment.drawRect.w > 0 && segment.drawRect.h > 0);
-    if (segments.length > 0) {
-      return segments;
-    }
-    // Fallback: derive from canvas dimensions and ownerDraw
-    const cw = Number(stitch && stitch.canvasWidth) || compositeWidth;
-    const ch = Number(stitch && stitch.canvasHeight) || compositeHeight;
-    // Backward compat: also check old field names
-    const prevSlice = Math.max(0, Number(stitch && (stitch.previousSlice || (stitch.previous && stitch.previous.drawRect && stitch.previous.drawRect.h))) || 0);
-    const nextSlice = Math.max(0, Number(stitch && (stitch.nextSlice || (stitch.next && stitch.next.drawRect && stitch.next.drawRect.h))) || 0);
-    const owner = normalizeRectLike(ownerDraw) || {
-      x: 0,
-      y: prevSlice,
-      w: cw,
-      h: Math.max(1, ch - prevSlice - nextSlice)
-    };
-    const fallback = [];
-    if (prevSlice > 0) {
-      fallback.push({ source: "previous", drawRect: { x: 0, y: 0, w: cw, h: prevSlice } });
-    }
-    fallback.push({ source: "owner", drawRect: owner });
-    if (nextSlice > 0) {
-      fallback.push({ source: "next", drawRect: { x: 0, y: owner.y + owner.h, w: cw, h: nextSlice } });
-    }
-    return fallback;
-  }
-
-  function normalizeRectLike(rect) {
-    if (!rect || typeof rect !== "object") return null;
-    const x = Number(rect.x);
-    const y = Number(rect.y);
-    const w = Number(rect.w || rect.width);
-    const h = Number(rect.h || rect.height);
-    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
-      return null;
-    }
-    return { x, y, w, h };
-  }
-
-  function getKakaoStitchBestOverlap(bubbleRect, segments) {
-    if (!bubbleRect || !Array.isArray(segments) || segments.length === 0) {
-      return null;
-    }
-    const area = Math.max(1, bubbleRect.w * bubbleRect.h);
-    const ranked = segments
-      .map((segment) => {
-        const rect = segment && segment.drawRect;
-        if (!rect) return { segment, ratio: 0 };
-        const left = Math.max(bubbleRect.x, rect.x);
-        const top = Math.max(bubbleRect.y, rect.y);
-        const right = Math.min(bubbleRect.x + bubbleRect.w, rect.x + rect.w);
-        const bottom = Math.min(bubbleRect.y + bubbleRect.h, rect.y + rect.h);
-        const overlap = Math.max(0, right - left) * Math.max(0, bottom - top);
-        return { segment, ratio: overlap / area };
-      })
-      .sort((a, b) => b.ratio - a.ratio);
-    return ranked[0] || null;
+    return KP.normalizeKakaoStitchSegments(stitch, compositeWidth, compositeHeight, ownerDraw);
   }
 
   function getKakaoStitchOwnerOverlap(bubbleRect, segments) {
-    const best = getKakaoStitchBestOverlap(bubbleRect, segments);
-    return best && best.segment && best.segment.source === "owner" && best.ratio >= 0.6 ? best : null;
+    return KP.getKakaoStitchOwnerOverlap(bubbleRect, segments);
   }
 
   function normalizeKakaoStitchDebugCoordinates(debug, stitch) {
-    if (!debug || !stitch) {
-      return debug;
-    }
-    const cw = Math.max(1, Number(stitch.canvasWidth || stitch.compositeWidth) || Number(debug.imageWidth) || 1);
-    const ch = Math.max(1, Number(stitch.canvasHeight || stitch.compositeHeight) || Number(debug.imageHeight) || 1);
-    const ownerDraw = stitch.owner && stitch.owner.drawRect
-      ? stitch.owner.drawRect
-      : { x: 0, y: 0, w: cw, h: ch };
-    const ownerRect = normalizeRectLike(ownerDraw) || { x: 0, y: 0, w: cw, h: ch };
-    const context = {
-      stitch,
-      compositeWidth: cw,
-      compositeHeight: ch,
-      ownerDraw: ownerRect,
-      segments: normalizeKakaoStitchSegments(stitch, cw, ch, ownerRect)
-    };
-    return {
-      ...debug,
-      imageWidth: ownerRect.w,
-      imageHeight: ownerRect.h,
-      rawItems: normalizeDebugCoordinateItems(debug.rawItems, debug, context),
-      duplicateItems: normalizeDebugCoordinateItems(debug.duplicateItems, debug, context),
-      dedupedItems: normalizeDebugCoordinateItems(debug.dedupedItems, debug, context)
-    };
+    return KP.normalizeKakaoStitchDebugCoordinates(debug, stitch);
   }
 
   function normalizeDebugCoordinateItems(items, debug, context = {}) {
-    if (!Array.isArray(items) || !context || !context.stitch) {
-      return Array.isArray(items) ? items : [];
-    }
-    const imageWidth = Math.max(1, Number(debug && debug.imageWidth) || Number(context.compositeWidth) || 1);
-    const imageHeight = Math.max(1, Number(debug && debug.imageHeight) || Number(context.compositeHeight) || 1);
-    const compositeWidth = Math.max(1, Number(context.compositeWidth) || imageWidth);
-    const compositeHeight = Math.max(1, Number(context.compositeHeight) || imageHeight);
-    const ownerDraw = context.ownerDraw || { x: 0, y: 0, w: compositeWidth, h: compositeHeight };
-    const segments = Array.isArray(context.segments) ? context.segments : [];
-    return items.map((item) => {
-      const percent = getDebugItemPercentWithImageSize(item, imageWidth, imageHeight);
-      if (!percent) return null;
-      const rect = {
-        x: (Number(percent.x) / 100) * compositeWidth,
-        y: (Number(percent.y) / 100) * compositeHeight,
-        w: (Number(percent.w) / 100) * compositeWidth,
-        h: (Number(percent.h) / 100) * compositeHeight
-      };
-      const ownerOverlap = getKakaoStitchOwnerOverlap(rect, segments);
-      const mapped = ownerOverlap
-        ? mapKakaoOwnerDebugRect(rect, ownerDraw)
-        : mapKakaoAdjacentBoundaryRect(rect, getKakaoStitchBestOverlap(rect, segments), ownerDraw);
-      return mapped && mapped.w > 0 && mapped.h > 0 ? { ...item, percent: mapped } : null;
-    }).filter(Boolean);
-  }
-
-  function mapKakaoOwnerDebugRect(rect, ownerDraw) {
-    const left = Math.max(rect.x, ownerDraw.x);
-    const top = Math.max(rect.y, ownerDraw.y);
-    const right = Math.min(rect.x + rect.w, ownerDraw.x + ownerDraw.w);
-    const bottom = Math.min(rect.y + rect.h, ownerDraw.y + ownerDraw.h);
-    return {
-      x: ((left - ownerDraw.x) / ownerDraw.w) * 100,
-      y: ((top - ownerDraw.y) / ownerDraw.h) * 100,
-      w: (Math.max(0, right - left) / ownerDraw.w) * 100,
-      h: (Math.max(0, bottom - top) / ownerDraw.h) * 100
-    };
+    return KP.normalizeDebugCoordinateItems(items, debug, context);
   }
 
   function getDebugItemPercentWithImageSize(item, imageWidth, imageHeight) {
-    if (item && item.percent && [item.percent.x, item.percent.y, item.percent.w, item.percent.h].every((value) => Number.isFinite(Number(value)))) {
-      return item.percent;
-    }
-    const box = item && (item.rawBox || item.box);
-    if (!box || ![box.left, box.top, box.width, box.height].every((value) => Number.isFinite(Number(value)))) {
-      return null;
-    }
-    return {
-      x: (Number(box.left) / imageWidth) * 100,
-      y: (Number(box.top) / imageHeight) * 100,
-      w: (Number(box.width) / imageWidth) * 100,
-      h: (Number(box.height) / imageHeight) * 100
-    };
+    return KP.getDebugItemPercent(item, imageWidth, imageHeight);
   }
-
   async function dedupeKakaoResultByPageCoordinates(result, target, targetKey) {
     if (!IS_KAKAOPAGE_READER || !result || !Array.isArray(result.bubbles) || !targetKey) {
       return result;
     }
-    const targetRect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
-    if (!targetRect || !(Number(targetRect.width) > 0) || !(Number(targetRect.height) > 0)) {
-      return result;
-    }
-    const bubbles = result.bubbles.map((bubble) => ({
-      ...bubble,
-      global_box: bubble.global_box || {
-        left: targetRect.left + window.scrollX + (Number(bubble.x) / 100) * targetRect.width,
-        top: targetRect.top + window.scrollY + (Number(bubble.y) / 100) * targetRect.height,
-        width: (Number(bubble.w) / 100) * targetRect.width,
-        height: (Number(bubble.h) / 100) * targetRect.height
-      }
-    }));
-    // 不在 await 前删除全局条目：让 dedupeKakaoGlobalBubbles (内部同做 delete) 处理清除，
-    // 避免 await 期间其他并列处理的目标看不到本目标的条目而漏去重。
-    const trimmed = await trimKakaoBoundaryOverlapBubbles(bubbles, targetKey);
-    const deduped = dedupeKakaoGlobalBubbles(trimmed, target, targetRect, targetKey);
-    return {
-      ...result,
-      bubbles: deduped,
-      debug: syncOcrDebugFinalBubbles(result.debug, deduped)
-    };
+    return KP.dedupeKakaoResultByPageCoordinates({
+      result,
+      target,
+      targetKey,
+      scopedTargetKey: targetKey,
+      store: state.kakaoStore,
+      adapters: {
+        translateTrimmedBubble: translateTrimmedKakaoBubble,
+        onSupersededEntry: removeSupersededKakaoGlobalEntry
+      },
+      scrollX: window.scrollX || 0,
+      scrollY: window.scrollY || 0
+    });
   }
+  function trimKakaoBubbleBoundary(bubble, overlap) { return KP.trimKakaoBubbleBoundary(bubble, overlap); }
 
-  async function trimKakaoBoundaryOverlapBubbles(bubbles, targetKey) {
-    const existing = Array.from(state.kakaoGlobalOcrEntries.values()).flat();
-    const output = [];
-    for (const bubble of bubbles) {
-      let nextBubble = bubble;
-      const text = normalizeOcrSimilarityText(bubble.original_text);
-      const entry = existing.find((candidate) => {
-        const overlap = getSubstantialOcrBoundaryOverlap(text, candidate.text);
-        return overlap && areKakaoGlobalBoxesRelated(bubble.global_box, candidate.box);
-      });
-      if (entry) {
-        const overlap = getSubstantialOcrBoundaryOverlap(text, entry.text);
-        const trimmed = trimKakaoBubbleBoundary(nextBubble, overlap);
-        if (trimmed) {
-          nextBubble = await translateTrimmedKakaoBubble(trimmed, targetKey);
-        }
-      }
-      output.push(nextBubble);
-    }
-    return output;
-  }
-
-  function trimKakaoBubbleBoundary(bubble, overlap) {
-    if (!bubble || !overlap || !(overlap.length > 0)) {
-      return null;
-    }
-    const originalText = String(bubble.original_text || "");
-    const normalizedLength = Math.max(1, normalizeOcrSimilarityText(originalText).length);
-    const uniqueLength = normalizedLength - overlap.length;
-    if (uniqueLength < 2) {
-      return null;
-    }
-    const keepRatio = Math.max(0.12, Math.min(1, uniqueLength / normalizedLength));
-    const keepSuffix = overlap.trim === "prefix";
-    const uniqueText = sliceTextByNormalizedBoundary(originalText, overlap.length, keepSuffix);
-    if (normalizeOcrSimilarityText(uniqueText).length < 2) {
-      return null;
-    }
-    const originalY = Number(bubble.y);
-    const originalH = Number(bubble.h);
-    const nextY = keepSuffix ? originalY + originalH * (1 - keepRatio) : originalY;
-    const nextH = originalH * keepRatio;
-    const globalBox = bubble.global_box ? {
-      ...bubble.global_box,
-      top: keepSuffix
-        ? Number(bubble.global_box.top) + Number(bubble.global_box.height) * (1 - keepRatio)
-        : Number(bubble.global_box.top),
-      height: Number(bubble.global_box.height) * keepRatio
-    } : null;
-    return {
-      ...bubble,
-      original_text: uniqueText,
-      translated_text: "",
-      y: nextY,
-      h: nextH,
-      fill_box: null,
-      polygon: null,
-      region_polygon: null,
-      global_box: globalBox,
-      source_line_count: Math.max(1, Math.round(Number(bubble.source_line_count || 1) * keepRatio)),
-      boundary_trimmed: true
-    };
-  }
-
-  function sliceTextByNormalizedBoundary(text, overlapLength, keepSuffix) {
-    const chars = Array.from(String(text || ""));
-    let count = 0;
-    if (keepSuffix) {
-      let index = 0;
-      while (index < chars.length && count < overlapLength) {
-        count += normalizeOcrSimilarityText(chars[index]).length;
-        index += 1;
-      }
-      return chars.slice(index).join("").trim();
-    }
-    let index = chars.length - 1;
-    while (index >= 0 && count < overlapLength) {
-      count += normalizeOcrSimilarityText(chars[index]).length;
-      index -= 1;
-    }
-    return chars.slice(0, index + 1).join("").trim();
-  }
+  function sliceTextByNormalizedBoundary(text, overlapLength, keepSuffix) { return KP.sliceTextByNormalizedBoundary(text, overlapLength, keepSuffix); }
 
   async function translateTrimmedKakaoBubble(bubble, targetKey) {
     try {
@@ -2596,216 +1740,69 @@
   }
 
   function filterOcrDebugFinalBubbles(debug, bubbles) {
-    if (!debug || typeof debug !== "object") {
-      return debug;
-    }
-    const keptBlockIds = new Set((Array.isArray(bubbles) ? bubbles : [])
-      .map((bubble) => String(bubble && (bubble.block_id || bubble.id) || ""))
-      .filter(Boolean));
-    const finalBubbles = (Array.isArray(debug.finalBubbles) ? debug.finalBubbles : [])
-      .filter((item) => keptBlockIds.has(String(item && (item.blockId || item.block_id || item.id) || "")));
-    return {
-      ...debug,
-      finalBubbles,
-      items: finalBubbles
-    };
+    return KP.filterOcrDebugFinalBubbles(debug, bubbles);
   }
 
   function syncOcrDebugFinalBubbles(debug, bubbles) {
-    const filtered = filterOcrDebugFinalBubbles(debug, bubbles);
-    if (!filtered) {
-      return filtered;
-    }
-    const byId = new Map((Array.isArray(bubbles) ? bubbles : []).map((bubble) => [
-      String(bubble && (bubble.block_id || bubble.id) || ""),
-      bubble
-    ]));
-    const finalBubbles = filtered.finalBubbles.map((item) => {
-      const bubble = byId.get(String(item && (item.blockId || item.block_id || item.id) || ""));
-      return bubble ? {
-        ...item,
-        text: bubble.original_text,
-        translatedText: bubble.translated_text,
-        percent: { x: bubble.x, y: bubble.y, w: bubble.w, h: bubble.h }
-      } : item;
-    });
-    return { ...filtered, finalBubbles, items: finalBubbles };
+    return KP.syncOcrDebugFinalBubbles(debug, bubbles);
   }
-
   function dedupeKakaoGlobalBubbles(bubbles, target, targetRect, targetKey) {
-    if (!targetRect || !targetKey) {
-      return bubbles;
-    }
-    state.kakaoGlobalOcrEntries.delete(targetKey);
-    const existing = Array.from(state.kakaoGlobalOcrEntries.values()).flat();
-    const accepted = [];
-    const entries = [];
-    for (const bubble of bubbles) {
-      const box = bubble.global_box || {
-        left: targetRect.left + window.scrollX + (Number(bubble.x) / 100) * targetRect.width,
-        top: targetRect.top + window.scrollY + (Number(bubble.y) / 100) * targetRect.height,
-        width: (Number(bubble.w) / 100) * targetRect.width,
-        height: (Number(bubble.h) / 100) * targetRect.height
-      };
-      const text = normalizeOcrSimilarityText(bubble.original_text);
-      const translatedText = normalizeOcrSimilarityText(bubble.translated_text);
-      const duplicates = existing.concat(entries).filter((entry) =>
-        isKakaoGlobalDuplicateCandidate({ box, text, translatedText, bubble }, entry)
-      );
-      // 边界邻居气泡（stitch_boundary_neighbor）文字属于相邻页，不应与相邻页自己的
-      // OCR 结果平等竞争。给它的 completeness 打折扣，确保相邻页自己的气泡总能胜出，
-      // 避免用户在下一页看到已被 owner overflow 渲染过的文字被错误移除。
-      const rawCompleteness = Math.max(text.length, translatedText.length);
-      const completeness = bubble.stitch_boundary_neighbor
-        ? Math.max(1, Math.floor(rawCompleteness * 0.5))
-        : rawCompleteness;
-      const strongestExisting = duplicates.reduce(
-        (best, entry) => !best || entry.completeness > best.completeness ? entry : best,
-        null
-      );
-      if (strongestExisting && strongestExisting.completeness >= completeness) {
-        continue;
+    return KP.runDedupeGlobalBubbles(
+      bubbles,
+      target,
+      targetRect,
+      targetKey,
+      state.kakaoStore,
+      {
+        scrollX: window.scrollX || 0,
+        scrollY: window.scrollY || 0,
+        onSupersededEntry: removeSupersededKakaoGlobalEntry
       }
-      duplicates.forEach((entry) => removeSupersededKakaoGlobalEntry(entry));
-      accepted.push(bubble);
-      entries.push({
-        box,
-        text,
-        translatedText,
-        completeness,
-        target,
-        targetKey,
-        bubble,
-        bubbleContainer: accepted,
-        entryContainer: entries
-      });
-    }
-    state.kakaoGlobalOcrEntries.set(targetKey, entries);
-    return accepted;
+    );
   }
 
   function isKakaoGlobalDuplicateCandidate(candidate, entry) {
-    if (!candidate || !entry || !candidate.box || !entry.box) {
-      return false;
-    }
-    if (!areKakaoGlobalBoxesRelated(candidate.box, entry.box)) {
-      return false;
-    }
-    if (isKakaoBoundaryOwnPair(candidate, entry)) {
-      return isKakaoBoundaryOwnDuplicateCandidate(candidate, entry);
-    }
-    const sourceRelated = areOcrTextsDuplicateOrContained(candidate.text, entry.text);
-    const translationRelated = areOcrTextsDuplicateOrContained(candidate.translatedText, entry.translatedText);
-    if (sourceRelated || translationRelated) {
-      return true;
-    }
-    return false;
+    return KP.isKakaoGlobalDuplicateCandidate(candidate, entry);
   }
 
   function isKakaoBoundaryOwnPair(candidate, entry) {
-    return isKakaoBoundaryNeighborBubble(candidate && candidate.bubble) !==
-      isKakaoBoundaryNeighborBubble(entry && entry.bubble);
-  }
-
-  function isKakaoBoundaryOwnDuplicateCandidate(candidate, entry) {
-    // 边界邻图气泡可能只命中下一页完整气泡的一段 OCR，需要比普通去重更宽松。
-    // 但不能只靠译文相同去删：跨页断开的上下半句常会被翻成同一句，删掉会漏字。
-    return areOcrTextsDuplicateOrContained(candidate.text, entry.text) ||
-      hasSubstantialOcrTokenOverlap(candidate.text, entry.text);
+    return KP.isKakaoBoundaryOwnPair(candidate, entry);
   }
 
   function isKakaoBoundaryNeighborBubble(bubble) {
-    return !!(bubble && bubble.stitch_boundary_neighbor);
+    return KP.isKakaoBoundaryNeighborBubble(bubble);
   }
 
   function areKakaoGlobalBoxesRelated(leftBox, rightBox) {
-    if (!leftBox || !rightBox) {
-      return false;
-    }
-    const overlap = pageBoxIntersectionRatio(leftBox, rightBox);
-    const leftCenterX = leftBox.left + leftBox.width / 2;
-    const rightCenterX = rightBox.left + rightBox.width / 2;
-    const horizontalOverlap = Math.max(
-      0,
-      Math.min(leftBox.left + leftBox.width, rightBox.left + rightBox.width) -
-        Math.max(leftBox.left, rightBox.left)
-    );
-    const horizontalOverlapRatio = horizontalOverlap / Math.max(1, Math.min(leftBox.width, rightBox.width));
-    const verticalGap = Math.max(
-      0,
-      Math.max(leftBox.top, rightBox.top) -
-        Math.min(leftBox.top + leftBox.height, rightBox.top + rightBox.height)
-    );
-    const closeAcrossBoundary = verticalGap <= Math.max(leftBox.height, rightBox.height) * 0.28 &&
-      (horizontalOverlapRatio >= 0.35 ||
-        Math.abs(leftCenterX - rightCenterX) <= Math.max(leftBox.width, rightBox.width) * 0.35);
-    return overlap >= 0.08 || closeAcrossBoundary;
+    return KP.areKakaoGlobalBoxesRelated(leftBox, rightBox);
   }
 
   function areOcrTextsDuplicateOrContained(first, second) {
-    if (!first || !second) {
-      return false;
-    }
-    const shorter = first.length <= second.length ? first : second;
-    const longer = first.length > second.length ? first : second;
-    return textSimilarity(first, second) >= 0.82 ||
-      (shorter.length >= 3 && longer.includes(shorter));
+    return KP.areOcrTextsDuplicateOrContained(first, second);
   }
 
   function hasSubstantialOcrTokenOverlap(first, second) {
-    if (!first || !second) {
-      return false;
-    }
-    const firstChars = Array.from(first);
-    const secondChars = Array.from(second);
-    const shorterLength = Math.min(firstChars.length, secondChars.length);
-    if (shorterLength < 5) {
-      return false;
-    }
-    const minimumLength = Math.max(5, Math.ceil(shorterLength * 0.35));
-    return getLongestCommonSubstringLength(firstChars, secondChars, minimumLength) >= minimumLength;
+    return KP.hasSubstantialOcrTokenOverlap(first, second);
   }
 
   function getLongestCommonSubstringLength(firstChars, secondChars, stopAt) {
-    let previous = Array.from({ length: secondChars.length + 1 }, () => 0);
-    let best = 0;
-    for (const firstChar of firstChars) {
-      const current = [0];
-      for (let secondIndex = 0; secondIndex < secondChars.length; secondIndex += 1) {
-        const next = firstChar === secondChars[secondIndex] ? previous[secondIndex] + 1 : 0;
-        current.push(next);
-        best = Math.max(best, next);
-        if (best >= stopAt) {
-          return best;
-        }
-      }
-      previous = current;
-    }
-    return best;
+    return KP.getLongestCommonSubstringLength(firstChars, secondChars, stopAt);
   }
 
   function getSubstantialOcrBoundaryOverlap(first, second) {
-    const minimumLength = Math.max(6, Math.ceil(Math.min(first.length, second.length) * 0.55));
-    const maximumLength = Math.min(first.length, second.length);
-    for (let length = maximumLength; length >= minimumLength; length -= 1) {
-      if (first.endsWith(second.slice(0, length))) {
-        return { length, trim: "suffix" };
-      }
-      if (second.endsWith(first.slice(0, length))) {
-        return { length, trim: "prefix" };
-      }
-    }
-    return null;
+    return KP.getSubstantialOcrBoundaryOverlap(first, second);
   }
-
   function removeSupersededKakaoGlobalEntry(entry) {
     if (!entry) {
       return;
     }
-    const ownerEntries = state.kakaoGlobalOcrEntries.get(entry.targetKey) || [];
-    state.kakaoGlobalOcrEntries.set(
+    const ownerEntries = state.kakaoStore.getEntriesForKey(entry.targetKey);
+    state.kakaoStore.setEntriesForKey(
       entry.targetKey,
-      ownerEntries.filter((candidate) => candidate !== entry)
+      ownerEntries.filter((candidate) =>
+        candidate !== entry &&
+        !(candidate.bubble && entry.bubble && candidate.bubble === entry.bubble)
+      )
     );
     if (Array.isArray(entry.bubbleContainer)) {
       const index = entry.bubbleContainer.indexOf(entry.bubble);
@@ -2849,35 +1846,16 @@
   }
 
   function pageBoxIntersectionRatio(left, right) {
-    const width = Math.max(0, Math.min(left.left + left.width, right.left + right.width) - Math.max(left.left, right.left));
-    const height = Math.max(0, Math.min(left.top + left.height, right.top + right.height) - Math.max(left.top, right.top));
-    return (width * height) / Math.max(1, Math.min(left.width * left.height, right.width * right.height));
+    return KP.pageBoxIntersectionRatio(left, right);
   }
 
   function normalizeOcrSimilarityText(value) {
-    return String(value || "").normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    return KP.normalizeOcrSimilarityText(value);
   }
 
   function textSimilarity(first, second) {
-    if (first === second) {
-      return first ? 1 : 0;
-    }
-    if (!first || !second) {
-      return 0;
-    }
-    const firstChars = Array.from(first);
-    const secondChars = Array.from(second);
-    let previous = Array.from({ length: secondChars.length + 1 }, (_, index) => index);
-    firstChars.forEach((firstChar, firstIndex) => {
-      const current = [firstIndex + 1];
-      secondChars.forEach((secondChar, secondIndex) => {
-        current.push(Math.min(current[secondIndex] + 1, previous[secondIndex + 1] + 1, previous[secondIndex] + (firstChar === secondChar ? 0 : 1)));
-      });
-      previous = current;
-    });
-    return 1 - previous[previous.length - 1] / Math.max(firstChars.length, secondChars.length);
+    return KP.textSimilarity(first, second);
   }
-
   async function normalizeKakaopagePayload(target, payload) {
     if (!IS_KAKAOPAGE_READER || !payload || !isSupportedTarget(target)) {
       return payload;
@@ -2889,17 +1867,7 @@
     }
 
     const rect = target.getBoundingClientRect();
-    const payloadHeight = Number(payload.height || 0);
-    const payloadWidth = Number(payload.width || 0);
-    const cssHeight = Number(payload.cssHeight || rect.height || 0);
-    const cssWidth = Number(payload.cssWidth || rect.width || 0);
-    const looksLikeStrip =
-      payloadHeight < 220 ||
-      cssHeight < 180 ||
-      payloadWidth / Math.max(1, payloadHeight) > 5.2 ||
-      cssWidth / Math.max(1, cssHeight) > 5.2;
-
-    if (!looksLikeStrip) {
+    if (!KP.isKakaoStripPayload(payload, rect)) {
       return payload;
     }
 
@@ -2913,101 +1881,27 @@
   }
 
   async function maybeCropKakaoOverlappedPayload(target, payload) {
-    if (
-      !(target instanceof HTMLImageElement) ||
-      !target.complete ||
-      !payload ||
-      payload.kakaoOverlapCrop === true ||
-      !isDataUrl(payload.dataUrl) ||
-      state.captureMode !== CAPTURE_MODE_DIRECT
-    ) {
-      return null;
-    }
-
-    const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
-      (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
-    );
-    const index = ordered.indexOf(target);
-    const orderedEntries = buildKakaoStitchCandidateEntries(ordered);
-    const currentDescriptor = orderedEntries[index] && orderedEntries[index].descriptor;
-    const previous = findKakaoStitchNeighborTarget(orderedEntries, index, "previous");
-    const previousDescriptor = describeKakaoStitchTarget(previous);
-    if (
-      !previous ||
-      !isVerifiedKakaoStitchNeighbor(previousDescriptor, currentDescriptor, "next") ||
-      isAttachableKakaoShortPage(currentDescriptor, previousDescriptor, currentDescriptor && currentDescriptor.height, previousDescriptor && previousDescriptor.height)
-    ) {
-      return null;
-    }
-
-    const previousPayload = await getKakaoNeighborPayloadForOverlap(previous);
-    if (!previousPayload || !isDataUrl(previousPayload.dataUrl)) {
-      return null;
-    }
-
-    const [previousImage, currentImage] = await Promise.all([
-      loadImageFromDataUrl(previousPayload.dataUrl),
-      loadImageFromDataUrl(payload.dataUrl)
-    ]);
-    const currentWidth = currentImage.naturalWidth || currentImage.width || Number(payload.width || 0);
-    const currentHeight = currentImage.naturalHeight || currentImage.height || Number(payload.height || 0);
-    const previousWidth = previousImage.naturalWidth || previousImage.width || Number(previousPayload.width || 0);
-    const previousHeight = previousImage.naturalHeight || previousImage.height || Number(previousPayload.height || 0);
-    if (
-      !(currentWidth > 0 && currentHeight > 0 && previousWidth > 0 && previousHeight > 0) ||
-      Math.min(currentWidth, previousWidth) / Math.max(currentWidth, previousWidth) < KAKAO_STITCH_MIN_WIDTH_RATIO
-    ) {
-      return null;
-    }
-
-    const overlap = findKakaoVerticalOverlap(
-      sampleKakaoImageForOverlap(previousImage),
-      sampleKakaoImageForOverlap(currentImage)
-    );
-    if (!overlap || !overlap.accepted) {
-      return null;
-    }
-
-    const cropTop = Math.round((overlap.rows / Math.max(1, overlap.currentRows)) * currentHeight);
-    const cropHeight = currentHeight - cropTop;
-    if (cropTop <= 0 || cropHeight < KAKAO_OVERLAP_MIN_UNIQUE_PX) {
-      return null;
-    }
-
-    const canvas = document.createElement("canvas");
-    canvas.width = currentWidth;
-    canvas.height = cropHeight;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return null;
-    }
-    context.drawImage(currentImage, 0, cropTop, currentWidth, cropHeight, 0, 0, currentWidth, cropHeight);
-
-    const rect = target.getBoundingClientRect();
-    const cssWidth = Number(payload.cssWidth || rect.width || 0);
-    const cssHeight = Number(payload.cssHeight || rect.height || 0);
-    const cropCssY = cssHeight * (cropTop / Math.max(1, currentHeight));
-    const cropCssHeight = cssHeight * (cropHeight / Math.max(1, currentHeight));
-
-    return {
-      ...payload,
-      dataUrl: canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY),
-      width: currentWidth,
-      height: cropHeight,
-      source: "kakao-overlap-crop",
-      coordinateSpace: "source-image-v1",
-      kakaoOverlapCrop: true,
-      overlapCropTop: cropTop,
-      imageUrl: `${payload.imageUrl || getQuickSourceToken(target)}#overlap-crop-${cropTop}`,
-      displayRect: {
-        offsetX: 0,
-        offsetY: cropCssY,
-        width: cssWidth,
-        height: cropCssHeight
-      }
-    };
+    return KP.maybeCropKakaoOverlappedPayload(target, payload, {
+      isReadyImageTarget: (candidate) =>
+        candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete,
+      isDataUrl,
+      directCapture: state.captureMode === CAPTURE_MODE_DIRECT,
+      collectCandidates: (owner) => collectKakaopageManualTargetCandidates(true, owner),
+      describeTarget: describeKakaoStitchTarget,
+      getNeighborPayload: getKakaoNeighborPayloadForOverlap,
+      loadImage: loadImageFromDataUrl,
+      sampleImage: sampleKakaoImageForOverlap,
+      createCanvas: (width, height) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        return canvas;
+      },
+      getTargetRect: (candidate) => candidate.getBoundingClientRect(),
+      getQuickSourceToken,
+      imageJpegQuality: IMAGE_JPEG_QUALITY
+    });
   }
-
   async function getKakaoNeighborPayloadForOverlap(target) {
     const targetKey = computeTargetKey(target);
     const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
@@ -3035,70 +1929,16 @@
     }
     context.drawImage(image, 0, 0, width, height);
     const pixels = context.getImageData(0, 0, width, height).data;
-    const gray = new Uint8Array(width * height);
-    for (let index = 0, pixel = 0; index < gray.length; index += 1, pixel += 4) {
-      gray[index] = Math.round(pixels[pixel] * 0.299 + pixels[pixel + 1] * 0.587 + pixels[pixel + 2] * 0.114);
-    }
-    return { width, height, gray };
+    return KP.computeGraySample({ data: pixels, width, height });
   }
 
   function findKakaoVerticalOverlap(previousSample, currentSample) {
-    if (
-      !previousSample ||
-      !currentSample ||
-      previousSample.width !== currentSample.width ||
-      !(previousSample.height > 0 && currentSample.height > 0) ||
-      !previousSample.gray ||
-      !currentSample.gray
-    ) {
-      return null;
-    }
-    const width = previousSample.width;
-    const maxRows = Math.floor(Math.min(
-      previousSample.height,
-      currentSample.height * KAKAO_OVERLAP_MAX_RATIO
-    ));
-    const minRows = Math.ceil(currentSample.height * KAKAO_OVERLAP_MIN_RATIO);
-    if (maxRows < minRows) {
-      return null;
-    }
-
-    let bestRows = 0;
-    let bestMae = Infinity;
-    const step = Math.max(1, Math.round(currentSample.height / 180));
-    for (let rows = minRows; rows <= maxRows; rows += step) {
-      const previousOffset = (previousSample.height - rows) * width;
-      let total = 0;
-      const count = rows * width;
-      for (let offset = 0; offset < count; offset += 1) {
-        total += Math.abs(previousSample.gray[previousOffset + offset] - currentSample.gray[offset]);
-      }
-      const mae = total / Math.max(1, count);
-      if (mae < bestMae) {
-        bestMae = mae;
-        bestRows = rows;
-      }
-    }
-
-    const uniqueRows = currentSample.height - bestRows;
-    const accepted = bestMae <= KAKAO_OVERLAP_MAX_MAE &&
-      bestRows >= minRows &&
-      bestRows <= maxRows &&
-      uniqueRows / Math.max(1, currentSample.height) >= 1 - KAKAO_OVERLAP_MAX_RATIO;
-    return {
-      accepted,
-      rows: bestRows,
-      previousRows: previousSample.height,
-      currentRows: currentSample.height,
-      mae: bestMae,
-      overlapRatio: bestRows / Math.max(1, currentSample.height)
-    };
+    return KP.findKakaoVerticalOverlap(previousSample, currentSample);
   }
 
   function hasUsableKakaoStripCaptureRect(captureRect) {
-    return !!captureRect && captureRect.height >= 180 && captureRect.width >= 180;
+    return KP.hasUsableKakaoStripCaptureRect(captureRect);
   }
-
   async function extractImagePayload(img) {
     if (!img.complete) {
       throw new Error("Image is not loaded yet");
@@ -3426,6 +2266,93 @@
     } catch {
       return canvas.toDataURL("image/png");
     }
+  }
+
+  async function renderCachedKakaoPipelineResult({ target, targetKey, scopedTargetKey, result }) {
+    state.localResultCache.set(scopedTargetKey, result);
+    if (result.bubbles.length === 0) {
+      clearRenderedTarget(target);
+      return;
+    }
+    if (shouldUseEmbeddedRender(target)) {
+      renderLoadingOverlay(target, targetKey, "生成嵌入图片中...");
+    }
+    const payload = shouldUseEmbeddedRender(target)
+      ? await extractTargetPayload(target, scopedTargetKey, { skipKakaoStitch: true })
+      : null;
+    await renderTranslationResult(target, targetKey, result, payload);
+  }
+
+  async function renderKakaoPipelineResult({
+    target,
+    targetKey,
+    scopedTargetKey,
+    result,
+    payload,
+    response,
+    options,
+    context
+  }) {
+    const expectedSourceImageId = String(payload && payload.sourceImageId || "");
+    if (!target.isConnected || (expectedSourceImageId && getSourceImageIdForTarget(target) !== expectedSourceImageId)) {
+      clearRenderedTarget(target);
+      return;
+    }
+
+    releaseUncoveredKakaoShortPages(
+      context && context.stitchPayload || payload,
+      result,
+      target,
+      "ownerSucceededWithoutShortPageBubble"
+    );
+    rememberLocalResult(scopedTargetKey, result);
+
+    if (result.bubbles.length > 0) {
+      updateLoadingOverlayText(target, targetKey, shouldUseEmbeddedRender(target) ? "生成嵌入图片中..." : "排版中...");
+      await renderTranslationResult(target, targetKey, result, payload, { stream: true });
+      target.dataset.mtNoTextKey = "";
+    } else {
+      updateLoadingOverlayText(target, targetKey, "未识别到文本");
+      await sleep(1500);
+      clearRenderedTarget(target);
+      target.dataset.mtNoTextKey = targetKey;
+    }
+
+    target.dataset.mtLastTranslatedKey = targetKey;
+    await reportStatus("info", "translation done", {
+      reason: options && options.reason,
+      bubbles: result.bubbles.length,
+      cached: !!(response && response.cached)
+    });
+  }
+
+  function releaseKakaoPipelineErrorAttachments(payload, owner, ownerScopedKey) {
+    const attachedKeys = payload && Array.isArray(payload.attachedShortPageKeys)
+      ? payload.attachedShortPageKeys
+      : [];
+    for (const shortKey of attachedKeys) {
+      const target = findTargetByScopedKey(shortKey);
+      if (!target) {
+        continue;
+      }
+      KP.releaseShortPagesForOwner(state.kakaoStore, [target], ownerScopedKey);
+      tracePipeline("short-detached", target, {
+        reason: "ownerFailedReleasingShortPage",
+        ownerScopedKey
+      });
+    }
+  }
+
+  async function reportKakaoPipelineError(error, target, options) {
+    const reason = getErrorMessage(error);
+    if (CONTEXT_INVALIDATED_RE.test(reason)) {
+      markInvalidated(reason);
+      return;
+    }
+    await reportStatus("error", reason, {
+      reason: options && options.reason,
+      targetTag: target && target.tagName ? target.tagName.toLowerCase() : "unknown"
+    });
   }
 
   async function renderTranslationResult(target, targetKey, result, payload, options = {}) {
@@ -5276,14 +4203,7 @@
       return;
     }
 
-    // 短页附着超时回退：owner 失败后允许独立翻译
-    const attachedAt = Number(target.dataset.mtKakaoAttachedToAt || 0);
-    if (target.dataset.mtKakaoAttachedToKey && Date.now() - attachedAt > KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS) {
-      delete target.dataset.mtKakaoAttachedToKey;
-      delete target.dataset.mtKakaoAttachedToAt;
-      tracePipeline("skipped", target, { skipReason: "shortPageAttachmentTimeout" });
-    } else if (target.dataset.mtKakaoAttachedToKey) {
-      tracePipeline("skipped", target, { skipReason: "shortPageAttached" });
+    if (isKakaoShortPageQueueBlocked(target)) {
       return;
     }
 
@@ -5342,14 +4262,10 @@
     const owner = attachment.owner;
     const ownerKey = computeTargetKey(owner);
     const ownerScopedKey = buildTargetSourceCacheKey(ownerKey, getQuickSourceToken(owner));
-    const detachedOwnerKey = String(target.dataset.mtKakaoDetachedFromOwnerKey || "");
-    const detachedAt = Number(target.dataset.mtKakaoDetachedFromOwnerAt || 0);
-    if (detachedOwnerKey === ownerScopedKey && Date.now() - detachedAt <= KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS) {
+    if (!KP.attachShortPageIfAllowed(state.kakaoStore, target, ownerScopedKey)) {
       tracePipeline("short-attachment-suppressed", target, { ownerScopedKey });
       return false;
     }
-    target.dataset.mtKakaoAttachedToKey = ownerScopedKey;
-    target.dataset.mtKakaoAttachedToAt = String(Date.now());
     target.dataset.mtNoTextKey = "";
     tracePipeline("short-attached", target, { attachedToKey: ownerScopedKey });
 
@@ -5371,33 +4287,11 @@
   }
 
   function findKakaoShortPageAttachmentOwner(target) {
-    const ordered = collectKakaopageManualTargetCandidates(true, target).filter(
+    const candidates = collectKakaopageManualTargetCandidates(true, target).filter(
       (candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete
     );
-    const index = ordered.indexOf(target);
-    if (index < 0) {
-      return null;
-    }
-
-    const orderedEntries = buildKakaoStitchCandidateEntries(ordered);
-    const targetDescriptor = orderedEntries[index] && orderedEntries[index].descriptor;
-    if (!targetDescriptor) {
-      return null;
-    }
-
-    const previous = findKakaoShortPageAttachmentOwnerTarget(orderedEntries, index, "previous");
-    if (previous) {
-      return { owner: previous, direction: "next" };
-    }
-
-    const next = findKakaoShortPageAttachmentOwnerTarget(orderedEntries, index, "next");
-    if (next) {
-      return { owner: next, direction: "previous" };
-    }
-
-    return null;
+    return KP.findKakaoShortPageAttachmentOwner(target, candidates, describeKakaoStitchTarget);
   }
-
   function releaseShortPagesAttachedDuringInflight(owner) {
     if (!owner || typeof owner.getBoundingClientRect !== "function") {
       return;
@@ -5407,20 +4301,16 @@
     const ownerScopedKey = buildTargetSourceCacheKey(ownerKey, getQuickSourceToken(owner));
     if (!ownerScopedKey) return;
 
-    const candidates = collectKakaopageManualTargetCandidates(true, owner);
-    for (const candidate of candidates) {
-      if (candidate === owner) continue;
-      const attachedKey = String(candidate.dataset.mtKakaoAttachedToKey || "");
-      if (attachedKey !== ownerScopedKey) continue;
-
+    const released = KP.releaseShortPagesForOwner(
+      state.kakaoStore,
+      collectKakaopageManualTargetCandidates(true, owner).filter((candidate) => candidate !== owner),
+      ownerScopedKey
+    );
+    for (const candidate of released) {
       // 这个短页在 owner inflight 期间被附着 → owner 的 payload 不包含它
       // 释放标记，让短页走独立翻译流程
-      delete candidate.dataset.mtKakaoAttachedToKey;
-      delete candidate.dataset.mtKakaoAttachedToAt;
       delete candidate.dataset.mtNoTextKey;
       delete candidate.dataset.mtLastTranslatedKey;
-      candidate.dataset.mtKakaoDetachedFromOwnerKey = ownerScopedKey;
-      candidate.dataset.mtKakaoDetachedFromOwnerAt = String(Date.now());
       tracePipeline("short-detached", candidate, { reason: "ownerInflightCompleted", ownerScopedKey });
 
       queuePageAutoTranslate(candidate);
@@ -5452,12 +4342,9 @@
         continue;
       }
 
-      delete el.dataset.mtKakaoAttachedToKey;
-      delete el.dataset.mtKakaoAttachedToAt;
+      KP.releaseShortPagesForOwner(state.kakaoStore, [el], ownerScopedKey);
       delete el.dataset.mtNoTextKey;
       delete el.dataset.mtLastTranslatedKey;
-      el.dataset.mtKakaoDetachedFromOwnerKey = ownerScopedKey;
-      el.dataset.mtKakaoDetachedFromOwnerAt = String(Date.now());
       tracePipeline("short-detached", el, { reason, ownerScopedKey });
       released += 1;
 
@@ -5475,72 +4362,13 @@
     );
   }
 
-  const autoTranslateRetryTimers = new Map();
-  const AUTO_TRANSLATE_RETRY_DELAY_MS = 1200;
-  const AUTO_TRANSLATE_RETRY_MAX_DELAY_MS = 20000;
-  const MAX_AUTO_TRANSLATE_RETRY_ATTEMPTS = 5;
-
   function scheduleAutoTranslateRetry(target) {
-    // Already has a pending retry — let it fire.
-    if (autoTranslateRetryTimers.has(target)) {
-      return;
-    }
-
-    // SVG 占位符（data: URL）不重试 — 等 src 变成真实图片后再触发
-    if (target instanceof HTMLImageElement && isDataUrl(resolveImageUrl(target))) {
-      return;
-    }
-
-    // 限制重试次数：超过上限后不再重试，避免对已滚出视口的图片无限循环
-    const attempts = Number(target.dataset.mtRetryAttempts || 0);
-    if (attempts >= MAX_AUTO_TRANSLATE_RETRY_ATTEMPTS) {
-      return;
-    }
-    target.dataset.mtRetryAttempts = String(attempts + 1);
-
-    scheduleNextAutoTranslateRetry(target, AUTO_TRANSLATE_RETRY_DELAY_MS);
-  }
-
-  function scheduleNextAutoTranslateRetry(target, delayMs) {
-    if (autoTranslateRetryTimers.has(target)) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      autoTranslateRetryTimers.delete(target);
-      if (!target.isConnected || state.invalidated) {
-        return;
-      }
-
-      // SVG 占位符（data: URL）不重试 — 清理计数并停止
-      if (target instanceof HTMLImageElement && isDataUrl(resolveImageUrl(target))) {
-        delete target.dataset.mtRetryCount;
-        return;
-      }
-
-      // If the image is now ready (complete + passes filter), queue it.
-      if (target instanceof HTMLImageElement && target.complete && passesTargetFilter(target, true)) {
-        queuePageAutoTranslate(target);
-        return;
-      }
-
-      // Still not ready — schedule another retry with exponential backoff.
-      const retries = Number(target.dataset.mtRetryCount || "0") + 1;
-      target.dataset.mtRetryCount = String(retries);
-      const nextDelay = Math.min(AUTO_TRANSLATE_RETRY_DELAY_MS * Math.pow(2, retries - 1), AUTO_TRANSLATE_RETRY_MAX_DELAY_MS);
-      scheduleNextAutoTranslateRetry(target, nextDelay);
-    }, delayMs);
-
-    autoTranslateRetryTimers.set(target, timer);
+    return kakaoRetryScheduler.schedule(target);
   }
 
   function clearAutoTranslateRetryTimers() {
-    for (const timer of autoTranslateRetryTimers.values()) {
-      window.clearTimeout(timer);
-    }
-    autoTranslateRetryTimers.clear();
+    kakaoRetryScheduler.clear();
   }
-
   function collectVisibleTargets(options = {}) {
     const relaxed = options.relaxed === true;
     const includeLimit = options.includeLimit !== false;
@@ -6626,6 +5454,7 @@
 
     clearAllOverlays();
     clearAutoTranslateRetryTimers();
+    state.kakaoStore.reset();
     state.queue.length = 0;
     state.preloadQueue.length = 0;
     state.payloadCacheByTargetKey.clear();

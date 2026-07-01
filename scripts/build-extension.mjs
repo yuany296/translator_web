@@ -8,6 +8,7 @@ const dist = path.join(root, "dist");
 const extensionFiles = [
   "manifest.json",
   "background.js",
+  "kakao-pipeline.js",
   "content.js",
   "popup.html",
   "popup.js",
@@ -16,7 +17,7 @@ const extensionFiles = [
 
 // 根目录是唯一源码；构建只负责校验并生成可加载副本。
 JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
-for (const file of ["background.js", "content.js", "popup.js"]) {
+for (const file of ["background.js", "kakao-pipeline.js", "content.js", "popup.js"]) {
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 

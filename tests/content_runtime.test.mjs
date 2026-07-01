@@ -9,6 +9,7 @@ globalThis.location = { hostname: "page.kakao.com", pathname: "/content/1" };
 globalThis.window = { scrollX: 0, scrollY: 0, innerHeight: 800 };
 globalThis.HTMLImageElement = class HTMLImageElement {};
 
+await import("../kakao-pipeline.js");
 await import("../content.js");
 
 const runtime = globalThis.__MANGA_TRANSLATOR_V3__;
@@ -741,7 +742,7 @@ test("Kakao short page queueing is redirected before standalone OCR gates", () =
   assert.ok(pageAutoIndex >= 0);
   assert.ok(pageAutoRedirectIndex > pageAutoIndex);
   assert.ok(pageAutoRedirectIndex < noTextGateIndex);
-  assert.match(contentSource, /target\.dataset\.mtKakaoAttachedToKey = ownerScopedKey/);
+  assert.match(contentSource, /KP\.attachShortPageIfAllowed\(state\.kakaoStore, target, ownerScopedKey\)/);
 });
 
 test("Kakao short page attachment release is gated on stitched result coverage", () => {
@@ -754,13 +755,13 @@ test("Kakao short page attachment release is gated on stitched result coverage",
     true
   );
 
-  const resultReadyIndex = contentSource.indexOf("result = await dedupeKakaoResultByPageCoordinates(result, target, targetKey)");
-  const releaseIndex = contentSource.indexOf("releaseUncoveredKakaoShortPages(payload, result, target", resultReadyIndex);
-  const cacheIndex = contentSource.indexOf("rememberLocalResult(scopedTargetKey, result)", resultReadyIndex);
-  assert.ok(resultReadyIndex >= 0);
-  assert.ok(releaseIndex > resultReadyIndex);
+  const renderStageIndex = contentSource.indexOf("async function renderKakaoPipelineResult");
+  const releaseIndex = contentSource.indexOf("releaseUncoveredKakaoShortPages(", renderStageIndex);
+  const cacheIndex = contentSource.indexOf("rememberLocalResult(scopedTargetKey, result)", renderStageIndex);
+  assert.ok(renderStageIndex >= 0);
+  assert.ok(releaseIndex > renderStageIndex);
   assert.ok(releaseIndex < cacheIndex);
-  assert.match(contentSource, /mtKakaoDetachedFromOwnerKey/);
+  assert.match(contentSource, /state\.kakaoStore\.releaseShortPage/);
   assert.match(contentSource, /short-attachment-suppressed/);
 });
 

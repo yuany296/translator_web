@@ -49,6 +49,8 @@ const DEFAULTS = {
   enabled: true
 };
 
+const CONTENT_SCRIPT_FILES = Object.freeze(["kakao-pipeline.js", "content.js"]);
+
 const providerMeta = {
   anthropic: {
     apiKeyLabel: "Anthropic API Key",
@@ -683,7 +685,7 @@ function mergeManualFrameResults(frameResults) {
 
 async function ensureContentInjected(tabId) {
   await insertCss(tabId, "styles.css");
-  await executeScript(tabId, "content.js");
+  await executeScriptFiles(tabId, CONTENT_SCRIPT_FILES);
 }
 
 async function refreshCacheStats() {
@@ -900,12 +902,12 @@ function sendRuntimeMessage(message) {
   });
 }
 
-function executeScript(tabId, file) {
+function executeScriptFiles(tabId, files) {
   return new Promise((resolve, reject) => {
     chrome.scripting.executeScript(
       {
         target: { tabId, allFrames: true },
-        files: [file]
+        files: [...files]
       },
       () => {
         if (chrome.runtime.lastError) {

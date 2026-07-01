@@ -5,6 +5,6 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-extension.mjs",
-    "test": "node --test tests/content_runtime.test.mjs tests/background_runtime.test.mjs tests/overlay_style.test.mjs"
+    "test": "node --test tests/kakao_pipeline.test.mjs tests/content_runtime.test.mjs tests/background_runtime.test.mjs tests/overlay_style.test.mjs"
   }
 }

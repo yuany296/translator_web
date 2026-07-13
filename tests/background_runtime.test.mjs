@@ -23,7 +23,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildOpenAICompatibleTranslationPrompt, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta };`,
+  `${glossarySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildOpenAICompatibleTranslationPrompt, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta };`,
   context,
   { filename: "background.js" }
 );
@@ -32,7 +32,7 @@ test("translation cache cleanup recognizes old cache versions and quota errors",
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v4:def"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_api_key"), false);
-  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v20:/);
+  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v21:/);
   assert.equal(
     context.__backgroundTest.isStorageQuotaError(new Error("Resource::kQuotaBytes quota exceeded")),
     true
@@ -332,6 +332,124 @@ test("paragraph merge rejects large whitespace, title/body scale, remote columns
     first,
     { ...line("가운데 기울임", 165, 148, 170, 55), rotation: -7 }
   ), true);
+});
+
+test("short Hangul utterances inside reliable speech bubbles survive every OCR filter", async () => {
+  const cases = [
+    {
+      name: "single-syllable reply",
+      // 短页作为相邻页拼入高画布后，文字框本身不变，但面积占比会显著下降。
+      imageSize: { width: 864, height: 1616 },
+      text: "…!네!",
+      score: 0.7288035750389099,
+      box: { left: 608, top: 9, width: 115, height: 65 },
+      regionBox: { left: 574.11, top: 0, width: 181.89, height: 140.97 },
+      regionConfidence: 0.9921
+    },
+    {
+      name: "single-syllable hesitation",
+      imageSize: { width: 760, height: 1350 },
+      text: "음.",
+      score: 0.8876966834068298,
+      box: { left: 288, top: 1246, width: 46, height: 46 },
+      regionBox: { left: 273.55, top: 1199.01, width: 76.38, height: 140.33 },
+      regionConfidence: 0.9981
+    },
+    {
+      name: "two-syllable reply",
+      imageSize: { width: 760, height: 1350 },
+      text: "나도.",
+      score: 0.8707183003425598,
+      box: { left: 514, top: 70, width: 71, height: 44 },
+      regionBox: { left: 492.04, top: 24.87, width: 115.46, height: 135 },
+      regionConfidence: 0.9607
+    }
+  ];
+
+  for (const item of cases) {
+    const region = {
+      region_id: "speech-region",
+      region_type: "speech_bubble",
+      region_box: item.regionBox,
+      region_polygon: [
+        [item.regionBox.left, item.regionBox.top],
+        [item.regionBox.left + item.regionBox.width, item.regionBox.top],
+        [item.regionBox.left + item.regionBox.width, item.regionBox.top + item.regionBox.height],
+        [item.regionBox.left, item.regionBox.top + item.regionBox.height]
+      ],
+      bg_color: "#ffffff",
+      region_confidence: item.regionConfidence
+    };
+    const merged = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+      {
+        imageWidth: item.imageSize.width,
+        imageHeight: item.imageSize.height,
+        items: [{ ...region, text: item.text, score: item.score, box: item.box }]
+      },
+      item.imageSize,
+      "",
+      false
+    );
+
+    assert.equal(merged.length, 1, `${item.name}: cluster stage`);
+    const candidate = context.__backgroundTest.normalizeBaiduOcrItem(merged[0], 0, item.imageSize);
+    assert.equal(
+      context.__backgroundTest.getFinalCandidateDropReason(
+        candidate,
+        item.imageSize,
+        context.__backgroundTest.getDefaultOcrTuning(),
+        "local_paddle"
+      ),
+      "",
+      `${item.name}: final stage`
+    );
+  }
+});
+
+test("isolated or weak tiny Hangul remains filtered as noise", async () => {
+  const imageSize = { width: 760, height: 1350 };
+  const cases = [
+    { name: "no region" },
+    {
+      name: "caption panel",
+      region_id: "caption-region",
+      region_type: "caption_panel",
+      region_confidence: 0.9981
+    },
+    {
+      name: "weak speech-bubble region",
+      region_id: "weak-region",
+      region_type: "speech_bubble",
+      region_confidence: 0.7
+    },
+    {
+      name: "weak OCR",
+      region_id: "speech-region",
+      region_type: "speech_bubble",
+      region_confidence: 0.9981,
+      score: 0.55
+    }
+  ];
+
+  for (const item of cases) {
+    const merged = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+      {
+        imageWidth: imageSize.width,
+        imageHeight: imageSize.height,
+        items: [{
+          text: "음.",
+          score: item.score ?? 0.8876966834068298,
+          box: { left: 288, top: 1246, width: 46, height: 46 },
+          ...item
+        }]
+      },
+      imageSize,
+      "",
+      false
+    );
+
+    assert.equal(merged.length, 0, item.name);
+  }
 });
 
 test("slanted edge lettering stays separate across owner and adjacent-page OCR variants", async () => {

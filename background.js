@@ -101,7 +101,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v20:";
+const CACHE_PREFIX = "mt_cache_v21:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -2316,6 +2316,9 @@ function shouldDropLocalPaddleNoiseItem(item, imageSize) {
   if (!box || !text) {
     return true;
   }
+  if (isReliableShortSpeechBubbleItem(item)) {
+    return false;
+  }
   if (shouldDropLowConfidenceLocalPaddleText(text, Number(item.confidence || 0))) {
     return true;
   }
@@ -2360,6 +2363,9 @@ function shouldDropUnmergedLocalPaddleFragment(item, imageSize) {
   if (!box || !text) {
     return true;
   }
+  if (isReliableShortSpeechBubbleItem(item)) {
+    return false;
+  }
   const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
   const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
   const areaRatio = (box.width * box.height) / Math.max(1, imageWidth * imageHeight);
@@ -2368,6 +2374,28 @@ function shouldDropUnmergedLocalPaddleFragment(item, imageSize) {
 
 function countScriptChars(text) {
   return (String(text || "").match(/[\uac00-\ud7af\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
+}
+
+function isReliableShortSpeechBubbleItem(item) {
+  const text = String(item && (item.words ?? item.text ?? item.original_text) || "").replace(/\s+/g, "");
+  const hangulChars = (text.match(/[\uac00-\ud7af]/g) || []).length;
+  if (
+    hangulChars < 1 || hangulChars > 2 || countScriptChars(text) !== hangulChars ||
+    /[A-Za-z0-9\u3130-\u318f]/.test(text)
+  ) {
+    return false;
+  }
+
+  const regionId = String(item && item.region_id || "").trim();
+  const regionType = String(item && item.region_type || "").trim().toLowerCase();
+  const confidence = Number(item && (item.confidence ?? item.score)) || 0;
+  const regionConfidence = Number(item && (item.region_confidence ?? item.bg_confidence)) || 0;
+  return (
+    !!regionId &&
+    regionType === "speech_bubble" &&
+    confidence >= 0.7 &&
+    regionConfidence >= 0.9
+  );
 }
 
 function normalizeLocalPaddleOcrItem(item, imageSize) {
@@ -2679,8 +2707,9 @@ function getOcrWordDropReason(item, imageSize, tuning = getDefaultOcrTuning()) {
   const confidence = Number(item.confidence || item.score || 0);
   const aspectRatio = Math.max(box.width / Math.max(1, box.height), box.height / Math.max(1, box.width));
   const scriptChars = countScriptChars(text);
+  const reliableShortSpeechBubble = isReliableShortSpeechBubbleItem(item);
 
-  if (confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
+  if (!reliableShortSpeechBubble && confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
     if (scriptChars <= 2 || areaRatio < 0.012) {
       return "low-confidence";
     }
@@ -2698,10 +2727,10 @@ function getOcrWordDropReason(item, imageSize, tuning = getDefaultOcrTuning()) {
   if (aspectRatio > maxAspectRatio && !isReadableHorizontalOcrLine(item, box, text, maxAspectRatio)) {
     return "bad-aspect-ratio";
   }
-  if (scriptChars <= 1 && areaRatio < 0.003 && confidence < 0.98) {
+  if (!reliableShortSpeechBubble && scriptChars <= 1 && areaRatio < 0.003 && confidence < 0.98) {
     return "tiny-single-character";
   }
-  if (shouldDropLowConfidenceLocalPaddleText(text, confidence)) {
+  if (!reliableShortSpeechBubble && shouldDropLowConfidenceLocalPaddleText(text, confidence)) {
     return "weak-script-confidence";
   }
   return "";
@@ -2735,7 +2764,8 @@ function getFinalCandidateDropReason(item, imageSize, tuning, engine) {
     return "invalid-final-box";
   }
   const confidence = Number(item.confidence || 0);
-  if (confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
+  const reliableShortSpeechBubble = isReliableShortSpeechBubbleItem(item);
+  if (!reliableShortSpeechBubble && confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
     const text = String(item.original_text || "");
     const scriptChars = countScriptChars(text);
     const areaRatio =
@@ -3862,6 +3892,9 @@ function shouldDropLocalPaddleCandidateBubble(item, imageSize) {
   const box = getNormalizedCandidatePixelBox(item, imageSize);
   if (!box) {
     return true;
+  }
+  if (isReliableShortSpeechBubbleItem(item)) {
+    return false;
   }
 
   const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);

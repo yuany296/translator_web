@@ -4,6 +4,7 @@ if (typeof importScripts === "function") {
 
 const glossaryCore = globalThis.MangaGlossary;
 const termDiscoveryCore = globalThis.MangaTermDiscovery;
+const CONTENT_SCRIPT_FILES = Object.freeze(["kakao-reconciler.js", "kakao-pipeline.js", "content.js"]);
 
 const STORAGE_KEYS = {
   provider: "mt_provider",
@@ -6393,7 +6394,7 @@ async function reinjectContentScriptsToOpenTabs() {
 
       try {
         await safeInsertCss(tabId, "styles.css");
-        await safeExecuteScript(tabId, "content.js");
+        await safeExecuteScriptFiles(tabId, CONTENT_SCRIPT_FILES);
       } catch {
         // Ignore per-tab injection errors.
       }
@@ -6422,12 +6423,12 @@ function queryAllTabs() {
   });
 }
 
-function safeExecuteScript(tabId, file) {
+function safeExecuteScriptFiles(tabId, files) {
   return new Promise((resolve, reject) => {
     chrome.scripting.executeScript(
       {
         target: { tabId, allFrames: true },
-        files: [file]
+        files: [...files]
       },
       () => {
         if (chrome.runtime.lastError) {

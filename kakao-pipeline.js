@@ -2968,6 +2968,7 @@
           return cancelJob(target, identity, pageRecord.pageId, "page revision superseded during page OCR");
         }
 
+        loading(target, identity.targetKey, "解析识别结果...");
         const evidence = normalizeOcrEvidence(response.result, [pageRecord], "page");
         if (!preserveReadyPhase) store.setCanonicalPagePhase(pageRecord.pageId, CanonicalPhase.OBSERVING);
         trace("observe", target, { pageId: pageRecord.pageId });
@@ -3026,6 +3027,7 @@
 
         // Interior canonical bubbles are translated before any seam work completes.
         ensureEdgeWait(pageRecord);
+        loading(target, identity.targetKey, "翻译文字中...");
         const pageRefresh = await refreshCanonicalState({
           reason: "page-ocr",
           focusPageIds: [pageRecord.pageId],
@@ -3036,6 +3038,7 @@
         }
 
         // A seam is an optional evidence request. It can never replace or clear page OCR.
+        loading(target, identity.targetKey, "处理跨页...");
         const pairResult = await processAdjacentPairs(
           pageRecord,
           () => isCurrentJob(target, identity) && isCurrentPageRevision(pageRecord)
@@ -3045,6 +3048,7 @@
         }
         const pairPageIds = pairResult.pageIds;
         releaseCompletedEdgeWaits();
+        loading(target, identity.targetKey, "渲染结果...");
         const pairRefresh = await refreshCanonicalState({
           reason: "pair-terminal",
           focusPageIds: Array.from(new Set([pageRecord.pageId, ...pairPageIds])),

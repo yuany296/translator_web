@@ -32,6 +32,19 @@ test("manifest loads the Kakao module before content.js", () => {
     "popup recovery should inject the complete ordered dependency list"
   );
   assert.match(popupSource, /files:\s*\[\.\.\.files\]/);
+
+  const backgroundSource = fs.readFileSync(path.join(root, "background.js"), "utf8");
+  const backgroundFilesMatch = backgroundSource.match(
+    /const CONTENT_SCRIPT_FILES = Object\.freeze\((\[[\s\S]*?\])\);/
+  );
+  assert.ok(backgroundFilesMatch, "background should declare its ordered content-script dependencies");
+  assert.deepEqual(JSON.parse(backgroundFilesMatch[1]), manifest.content_scripts[0].js);
+  assert.match(
+    backgroundSource,
+    /await safeExecuteScriptFiles\(tabId, CONTENT_SCRIPT_FILES\)/,
+    "extension-update recovery should inject the complete ordered dependency list"
+  );
+  assert.match(backgroundSource, /files:\s*\[\.\.\.files\]/);
 });
 
 /* =================================================================

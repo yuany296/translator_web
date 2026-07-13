@@ -173,6 +173,8 @@
     kakaoLoadListenerTargets: new WeakSet(),
     kakaoProjectionRefreshPageIds: new Set(),
     kakaoProjectionRefreshTimer: 0,
+    /** registerTarget 检测到的邻页关系，在 pipeline commitPageIdentity 时触发 seam。 */
+    pendingKakaoAdjacency: null,
     /** Kakao 管线 Store（由 kakao-pipeline.js 提供） */
     kakaoStore: null,
     lastRecoveryAt: 0,
@@ -268,6 +270,7 @@
       detectAdjacentPixelRisk: detectAdjacentKakaoPixelRisk,
       getTargetForPageId: getTargetForKakaoPageId,
       renderCanonicalProjections,
+      renderSeamCrossPage,
       clearCanonicalProjection: (target) => clearRenderedTarget(target),
       computeTargetKey,
       getQuickSourceToken,
@@ -576,15 +579,18 @@
 
   function overlayFrameSyncTick() {
     state.overlayFrameRaf = 0;
-    if (state.invalidated || state.overlaysById.size === 0) {
+    if (state.invalidated) {
       return;
     }
 
     for (const overlayState of state.overlaysById.values()) {
       syncOverlayPosition(overlayState);
     }
+    syncSeamCrossPageOverlays();
     syncKakaoVisualDuplicateBubbles();
-    state.overlayFrameRaf = window.requestAnimationFrame(overlayFrameSyncTick);
+    if (state.overlaysById.size > 0) {
+      state.overlayFrameRaf = window.requestAnimationFrame(overlayFrameSyncTick);
+    }
   }
 
   function ensureOverlayFrameSync() {
@@ -840,10 +846,10 @@
       return;
     }
     if (shouldUseKakaoCanonicalPipeline(target) && kakaoCanonicalPipeline) {
+      // 延迟触发邻页 seam，等 pipeline 建立 handle 后再执行。
       if (typeof kakaoCanonicalPipeline.onAdjacentTargetAvailable === "function") {
-        Promise.resolve(kakaoCanonicalPipeline.onAdjacentTargetAvailable(previous, target)).catch((error) => {
-          console.warn("[MangaTranslator][Kakao canonical] adjacent reconcile failed:", error);
-        });
+        if (!state.pendingKakaoAdjacency) state.pendingKakaoAdjacency = new Map();
+        state.pendingKakaoAdjacency.set(target, previous);
       }
       return;
     }
@@ -2008,6 +2014,47 @@
     const targets = state.kakaoTargetsByPageId.get(pageId) || new Set();
     targets.add(target);
     state.kakaoTargetsByPageId.set(pageId, targets);
+
+    // handle 已建立，触发 pending 邻页 seam
+    if (state.pendingKakaoAdjacency && state.pendingKakaoAdjacency.size > 0 && kakaoCanonicalPipeline) {
+      resolvePendingKakaoAdjacency(target, pageId);
+    }
+  }
+
+  function resolvePendingKakaoAdjacency(target, pageId) {
+    const previous = state.pendingKakaoAdjacency.get(target);
+    if (previous && previous.isConnected) {
+      state.pendingKakaoAdjacency.delete(target);
+      const store = state.kakaoStore;
+      if (store && typeof store.getPageHandleForTarget === "function") {
+        const prevHandle = store.getPageHandleForTarget(previous);
+        const curHandle = store.getPageHandleForTarget(target);
+        if (prevHandle && curHandle) {
+          kakaoCanonicalPipeline.onAdjacentTargetAvailable(previous, target).catch((error) => {
+            console.warn("[MangaTranslator][Kakao canonical] pending adjacent reconcile failed:", error);
+          });
+        }
+      }
+    }
+    // 也检查是否有其他 target pending 和本 target 配对
+    if (state.pendingKakaoAdjacency) {
+      for (const [pendingTarget, pendingPrevious] of state.pendingKakaoAdjacency) {
+        if (pendingPrevious === target && pendingTarget.isConnected) {
+          state.pendingKakaoAdjacency.delete(pendingTarget);
+          const store = state.kakaoStore;
+          if (store && typeof store.getPageHandleForTarget === "function") {
+            const prevHandle = store.getPageHandleForTarget(target);
+            const curHandle = store.getPageHandleForTarget(pendingTarget);
+            if (prevHandle && curHandle) {
+              kakaoCanonicalPipeline.onAdjacentTargetAvailable(target, pendingTarget).catch((error) => {
+                console.warn("[MangaTranslator][Kakao canonical] pending adjacent reconcile failed:", error);
+              });
+            }
+          }
+          break;
+        }
+      }
+    }
   }
 
   function unbindKakaoTargetFromPage(target) {
@@ -3733,6 +3780,145 @@
     );
   }
 
+  function renderSeamCrossPage(input = {}) {
+    const { pageA, pageB, canvasWidth, canvasHeight, segments, observations } = input;
+    if (!pageA || !pageB || !canvasWidth || !canvasHeight || !segments) return;
+    const targetA = pageA.target;
+    const targetB = pageB.target;
+    if (!targetA || !targetA.isConnected || !targetB || !targetB.isConnected) return;
+
+    const renderKey = `seam-cross-${input.pairKey || `${pageA.pageId}|${pageB.pageId}`}`;
+    if (!state.seamCrossPages) state.seamCrossPages = new Map();
+
+    // 移除旧的同 key overlay（如果有）
+    const oldEntry = state.seamCrossPages.get(renderKey);
+    if (oldEntry && oldEntry.root && oldEntry.root.isConnected) {
+      oldEntry.root.remove();
+    }
+
+    ensureOverlayLayer();
+
+    const rectA = targetA.getBoundingClientRect();
+    // CSS px per source pixel, based on merged image
+    const cssPerSrcPx = rectA.width / Math.max(1, segments[0]?.naturalWidth || canvasWidth);
+
+    const segA = segments.find((s) => s.pageId === pageA.pageId);
+    const segB = segments.find((s) => s.pageId === pageB.pageId);
+    if (!segA || !segB) return;
+
+    // overlay 顶边 = 页 A 的裁剪区顶边在文档流中的位置
+    const seamCropTop = segA.sourceCrop.y * cssPerSrcPx;
+    const cssTop = rectA.top + seamCropTop;
+    const cssWidth = rectA.width;
+    const cssHeight = canvasHeight * cssPerSrcPx;
+
+    const root = document.createElement("div");
+    root.className = "mt-overlay-root mt-seam-cross-page";
+    root.dataset.mangaTranslatorOverlay = "true";
+    root.dataset.seamCrossRenderKey = renderKey;
+
+    const bubbleNodes = [];
+    const bubbles = (Array.isArray(observations) ? observations : [])
+      .filter((obs) => String(obs.originalText || obs.original_text || "").trim());
+
+    for (let idx = 0; idx < bubbles.length; idx++) {
+      const obs = bubbles[idx];
+      const rawBox = obs.visual?.box || obs.box || obs.bbox;
+      if (!rawBox) continue;
+      const bx = Number(rawBox.x ?? rawBox.left) || 0;
+      const by = Number(rawBox.y ?? rawBox.top) || 0;
+      const bw = Math.max(1, Number(rawBox.w ?? rawBox.width) || 0);
+      const bh = Math.max(1, Number(rawBox.h ?? rawBox.height) || 0);
+      const isPercent = bx <= 100 && by <= 100 && bw <= 100 && bh <= 100 && canvasWidth > 100;
+      const xPct = isPercent ? bx : (bx * cssPerSrcPx / cssWidth) * 100;
+      const yPct = isPercent ? by : (by * cssPerSrcPx / cssHeight) * 100;
+      const wPct = isPercent ? bw : (bw * cssPerSrcPx / cssWidth) * 100;
+      const hPct = isPercent ? bh : (bh * cssPerSrcPx / cssHeight) * 100;
+
+      const originalText = String(obs.originalText || obs.original_text || "");
+      const translatedText = String(obs.translatedText || obs.translated_text || originalText);
+      const visual = obs.visual || {};
+
+      const bubble = {
+        x: xPct, y: yPct, w: wPct, h: hPct,
+        original_text: originalText,
+        translated_text: translatedText,
+        source_line_count: Math.max(1, Math.round(originalText.length / 8)),
+        bg_type: visual.bgType || visual.bg_type || "none",
+        bg_color: visual.bgColor || visual.bg_color || "",
+        bgConfidence: visual.bgConfidence ?? visual.bg_confidence ?? 0,
+        region_type: visual.regionType || visual.region_type || "plain_text",
+        region_polygon: visual.regionPolygon || visual.region_polygon || null,
+        fill_box: visual.fillBox || visual.fill_box || null,
+        cleaned_source_box: visual.cleanedSourceBox || visual.cleaned_source_box || null,
+        rotation_deg: 0,
+        canonical_id: "",
+        block_id: "seam-cross-" + idx,
+        projection_role: "text_primary"
+      };
+
+      const node = createBubbleNode(bubble, idx, { backgroundTarget: false });
+      if (!node) continue;
+
+      // createBubbleNode 可能把韩文误判为日文竖排，根据 OCR rotation_deg 纠正
+      const rotDeg = Math.abs(Number(visual.rotationDeg ?? visual.rotation_deg) || 0);
+      const isVertical = rotDeg > 45 && rotDeg < 135;
+      node.classList.toggle("mt-jp-vertical", isVertical);
+
+      // 重新设置文字，确保竖排纠正后文字正确
+      node.textContent = isVertical ? translatedText : translatedText;
+      node.title = originalText;
+      if (!isVertical) {
+        node.style.removeProperty("writing-mode");
+        node.style.removeProperty("text-orientation");
+      }
+
+      // 字号拟合（跨页 overlay 不走 syncOverlayPosition）
+      const bubbleWidthPx = cssWidth * wPct / 100;
+      const bubbleHeightPx = cssHeight * hPct / 100;
+      const fittedSize = fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx);
+      node.style.fontSize = `${fittedSize}px`;
+      node.style.setProperty("--mt-stroke-width", `${getDynamicStrokeWidth(fittedSize)}px`);
+
+      bubbleNodes.push(node);
+      root.appendChild(node);
+    }
+
+    if (bubbleNodes.length === 0) return;
+
+    root.style.position = "absolute";
+    root.style.left = `${rectA.left + (window.scrollX || 0)}px`;
+    root.style.top = `${cssTop + (window.scrollY || 0)}px`;
+    root.style.width = `${cssWidth}px`;
+    root.style.height = `${cssHeight}px`;
+    root.style.overflow = "visible";
+
+    state.overlayLayer.appendChild(root);
+    state.seamCrossPages.set(renderKey, {
+      root, targetA, targetB, scale: cssPerSrcPx, rectA, seamCropTop, cssHeight
+    });
+
+    // 去重：隐藏 per-page 覆盖层中靠近接缝的气泡，避免和跨页 overlay 重复显示
+    for (const ov of state.overlaysById.values()) {
+      if (!ov || !Array.isArray(ov.bubbleNodes)) continue;
+      if (ov.target === targetA) {
+        // 页 A 底部（靠近接缝）的气泡
+        for (const bNode of ov.bubbleNodes) {
+          const yPct = Number(bNode.dataset.yPercent || "50");
+          const hPct = Number(bNode.dataset.hPercent || "0");
+          if (yPct + hPct * 0.5 > 85) bNode.style.display = "none";
+        }
+      } else if (ov.target === targetB) {
+        // 页 B 顶部（靠近接缝）的气泡
+        for (const bNode of ov.bubbleNodes) {
+          const yPct = Number(bNode.dataset.yPercent || "50");
+          const hPct = Number(bNode.dataset.hPercent || "0");
+          if (yPct - hPct * 0.5 < 15) bNode.style.display = "none";
+        }
+      }
+    }
+  }
+
   async function renderCanonicalProjections(input = {}) {
     const pages = normalizeProjectionPages(input);
     const seamSurfaces = normalizeSeamRenderSurfaces(input).filter((surface) =>
@@ -5368,7 +5554,7 @@
       syncKakaoVisualDuplicateBubbles();
       ensureOverlayFrameSync();
     }
-
+    syncSeamCrossPageOverlays();
     recoverRenderedTargets();
   }
 
@@ -5793,6 +5979,35 @@
     return true;
   }
 
+  function syncSeamCrossPageOverlays() {
+    if (!state.seamCrossPages || state.seamCrossPages.size === 0) return;
+    const scrollX = window.scrollX || 0;
+    const scrollY = window.scrollY || 0;
+    for (const [renderKey, entry] of state.seamCrossPages) {
+      if (!entry.root.isConnected) {
+        state.seamCrossPages.delete(renderKey);
+        continue;
+      }
+      const targetA = entry.targetA && entry.targetA.isConnected ? entry.targetA : null;
+      const targetB = entry.targetB && entry.targetB.isConnected ? entry.targetB : null;
+      if (!targetA || !targetB) {
+        entry.root.remove();
+        state.seamCrossPages.delete(renderKey);
+        continue;
+      }
+      const rectA = targetA.getBoundingClientRect();
+      const cssTop = rectA.top + entry.seamCropTop;
+      const newLeft = rectA.left + scrollX;
+      const newTop = cssTop + scrollY;
+      if (entry.lastLeft !== newLeft || entry.lastTop !== newTop) {
+        entry.root.style.left = `${newLeft}px`;
+        entry.root.style.top = `${newTop}px`;
+        entry.lastLeft = newLeft;
+        entry.lastTop = newTop;
+      }
+    }
+  }
+
   function removeOverlayForTarget(target) {
     const targetId = state.targetIdByElement.get(target);
     if (!targetId) {
@@ -5952,6 +6167,12 @@
     state.fontFitCache.clear();
     state.seamLayoutCache.clear();
     state.seamSourceModeByRenderKey.clear();
+    if (state.seamCrossPages) {
+      for (const entry of state.seamCrossPages.values()) {
+        if (entry.root && entry.root.isConnected) entry.root.remove();
+      }
+      state.seamCrossPages.clear();
+    }
     if (state.bubbleMeasureProbe && state.bubbleMeasureProbe.isConnected) {
       state.bubbleMeasureProbe.remove();
     }

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import io
 import sys
 from pathlib import Path
-import io
 
 import pytest
 from PIL import Image, ImageDraw
@@ -29,6 +31,109 @@ def test_local_ocr_request_defaults_to_fast_mode() -> None:
     import server
 
     assert server.OcrRequest(image="placeholder").mode == "fast"
+
+
+def test_local_ocr_request_limits_supplemental_cleaned_masks() -> None:
+    import server
+
+    mask = {"coordinateSpace": "percent", "box": {"x": 10, "y": 20, "w": 30, "h": 40}}
+    request = server.OcrRequest(image="placeholder", cleaned_masks=[mask])
+    assert request.cleaned_masks == [mask]
+
+    with pytest.raises(ValueError):
+        server.OcrRequest(image="placeholder", cleaned_masks=[mask] * 201)
+
+
+def test_ocr_request_forwards_cleaned_masks_without_adding_ocr_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import server
+
+    masks = [{"coordinateSpace": "percent", "box": {"x": 20, "y": 90, "w": 50, "h": 10}}]
+    recognized = [{"text": "본문", "box": {"left": 10, "top": 10, "width": 20, "height": 10}}]
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(server, "PADDLE_IMPORT_ERROR", None)
+    monkeypatch.setattr(server, "decode_data_url", lambda _value: b"image")
+    monkeypatch.setattr(
+        server,
+        "run_ocr",
+        lambda *_args: {
+            "items": recognized,
+            "boxes": [],
+            "regions": [],
+            "imageWidth": 100,
+            "imageHeight": 100,
+            "rawItems": [],
+            "counts": {},
+        },
+    )
+
+    def fake_cleaned_image(
+        image_bytes: bytes,
+        items: list[dict],
+        supplemental_masks: list[dict],
+    ) -> str:
+        captured.update(image_bytes=image_bytes, items=items, masks=supplemental_masks)
+        return "data:image/png;base64,AA=="
+
+    monkeypatch.setattr(server, "build_cleaned_image_data_url", fake_cleaned_image)
+    response = asyncio.run(
+        server.ocr(server.OcrRequest(
+            image="placeholder",
+            return_cleaned_image=True,
+            cleaned_masks=masks,
+            cleaned_mask_token="mask-token-a",
+        ))
+    )
+
+    assert response["items"] == recognized
+    assert response["cleanedMaskToken"] == "mask-token-a"
+    assert captured == {"image_bytes": b"image", "items": recognized, "masks": masks}
+
+
+def test_ocr_request_acknowledges_cleaned_artifact_with_empty_masks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import server
+
+    cleaned_calls: list[tuple[bytes, list[dict], list[dict]]] = []
+    raw_items = [{"text": "raw", "box": {"left": 1, "top": 2, "width": 3, "height": 4}}]
+    monkeypatch.setattr(server, "PADDLE_IMPORT_ERROR", None)
+    monkeypatch.setattr(server, "decode_data_url", lambda _value: b"image")
+    monkeypatch.setattr(
+        server,
+        "run_ocr",
+        lambda *_args: {
+            "items": [],
+            "boxes": [],
+            "regions": [],
+            "imageWidth": 100,
+            "imageHeight": 100,
+            "rawItems": raw_items,
+            "counts": {},
+        },
+    )
+
+    def fake_cleaned_image(image_bytes: bytes, items: list[dict], masks: list[dict]) -> str:
+        cleaned_calls.append((image_bytes, items, masks))
+        return ""
+
+    monkeypatch.setattr(server, "build_cleaned_image_data_url", fake_cleaned_image)
+
+    response = asyncio.run(
+        server.ocr(server.OcrRequest(
+            image="placeholder",
+            return_cleaned_image=True,
+            cleaned_mask_token="artifact-token-empty-mask",
+        ))
+    )
+
+    assert response["cleanedMaskToken"] == "artifact-token-empty-mask"
+    assert "cleanedImage" not in response
+    assert response["imageWidth"] == 100
+    assert response["imageHeight"] == 100
+    assert response["rawItems"] == raw_items
+    assert cleaned_calls == [(b"image", [], [])]
 
 
 def build_visual_region_fixture(background: str, panel: str, ink: str) -> tuple[bytes, list[dict]]:
@@ -326,6 +431,67 @@ def test_cleaned_image_inpaints_only_complex_background_text() -> None:
     assert cleaned and cleaned.startswith("data:image/png;base64,")
 
 
+def test_cleaned_image_applies_supplemental_cross_page_mask() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = Image.new("RGB", (160, 100), "#c33b22")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((30, 28, 130, 64), fill="black")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    masks = [{
+        "coordinateSpace": "percent",
+        "box": {"x": 18.75, "y": 28, "w": 62.5, "h": 36},
+    }]
+
+    binary_mask = server.build_complex_text_inpaint_mask((100, 160), [], masks)
+    assert binary_mask is not None
+    assert int(binary_mask[46, 80]) == 255
+    assert int(binary_mask[5, 5]) == 0
+
+    boundary_mask = server.build_complex_text_inpaint_mask((100, 160), [], [
+        {"coordinateSpace": "percent", "box": {"x": 30, "y": 0, "w": 20, "h": 10}},
+        {"coordinateSpace": "percent", "box": {"x": 30, "y": 90, "w": 20, "h": 10}},
+    ])
+    assert boundary_mask is not None
+    assert int(boundary_mask[0, 80]) == 255
+    assert int(boundary_mask[99, 80]) == 255
+
+    cleaned = server.build_cleaned_image_data_url(buffer.getvalue(), [], masks)
+    assert cleaned and cleaned.startswith("data:image/png;base64,")
+    payload = base64.b64decode(cleaned.split(",", 1)[1])
+    decoded = server.cv2.imdecode(server.np.frombuffer(payload, dtype=server.np.uint8), server.cv2.IMREAD_COLOR)
+    assert decoded is not None
+    assert int(decoded[46, 80].sum()) > 100
+    assert decoded[5, 5].tolist() == [0x22, 0x3B, 0xC3]
+
+
+def test_supplemental_polygon_unions_with_existing_ocr_mask() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    items = [{
+        "text": "left",
+        "box": {"left": 10, "top": 20, "width": 30, "height": 20},
+        "polygon": [[10, 20], [40, 20], [40, 40], [10, 40]],
+        "region_id": "",
+    }]
+    supplemental_masks = [{
+        "coordinateSpace": "percent",
+        "polygon": [{"x": 60, "y": 50}, {"x": 90, "y": 50}, {"x": 80, "y": 80}],
+    }]
+
+    binary_mask = server.build_complex_text_inpaint_mask((100, 100), items, supplemental_masks)
+
+    assert binary_mask is not None
+    assert int(binary_mask[30, 25]) == 255
+    assert int(binary_mask[60, 75]) == 255
+    assert int(binary_mask[5, 5]) == 0
+
+
 def test_visual_region_analysis_prefers_white_bubble_over_white_page() -> None:
     import server
 
@@ -503,6 +669,45 @@ def test_fast_perspective_pipeline_tries_both_vertical_directions_and_keeps_poly
     assert result["items"][0]["text"] == "덤벼라"
     assert result["items"][0]["polygon"] == polygon
     assert result["items"][0]["orientation_applied"] == -90
+
+
+def test_fast_perspective_pipeline_keeps_raw_detection_boxes_when_final_items_are_filtered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import server
+
+    image = Image.new("RGB", (160, 80), "white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    polygon = [[10, 20], [145, 20], [145, 50], [10, 50]]
+    detection = {
+        "polygon": polygon,
+        "box": server._polygon_to_box(polygon),
+        "det_score": 0.91,
+        "rotation_deg": 0.0,
+    }
+    monkeypatch.setattr(server, "_run_detection_only", lambda *_args, **_kwargs: [detection])
+    monkeypatch.setattr(
+        server,
+        "recognize_candidate_rows",
+        lambda rows, languages: [
+            {
+                **row,
+                "text": "희미한글",
+                "score": 0.2,
+                "lang": languages[0],
+            }
+            for row in rows
+        ],
+    )
+    params = {**PARAMS, "text_rec_score_thresh": 0.9}
+
+    result = server._run_slice_ocr_pipeline(buffer.getvalue(), "korean", params)
+
+    assert result["items"] == []
+    assert len(result["rawItems"]) == 1
+    assert result["rawItems"][0]["text"] == "희미한글"
+    assert result["rawItems"][0]["polygon"] == polygon
 
 
 def test_recognition_candidates_are_sent_as_one_batch(monkeypatch: pytest.MonkeyPatch) -> None:

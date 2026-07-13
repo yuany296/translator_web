@@ -1227,6 +1227,7 @@ function createCanonicalHarness(options = {}) {
   const traces = [];
   const timers = [];
   const ocrMetas = [];
+  const renderInputs = [];
   const targets = {
     a: { name: "a", sourceToken: "source-a", generation: 0, isConnected: true },
     b: { name: "b", sourceToken: "source-b", generation: 0, isConnected: true }
@@ -1240,6 +1241,7 @@ function createCanonicalHarness(options = {}) {
     b: [makeCanonicalObservation("page-b", "rev-b", "obs-b", 40, "inside B")]
   };
   const store = P.createStore();
+  const loadingClears = [];
   const adapters = {
     store,
     computeTargetKey: (target) => `target-${target.name}`,
@@ -1261,7 +1263,10 @@ function createCanonicalHarness(options = {}) {
           result: {
             observations: options.seamObservations || [],
             filteredObservations: [],
-            edgeSignals: {}
+            edgeSignals: {},
+            ...(options.seamCleanedImage ? { cleanedImage: options.seamCleanedImage } : {}),
+            ...(options.seamCleanedImageToken ? { cleanedImageToken: options.seamCleanedImageToken } : {}),
+            ...(options.seamDebug ? { debug: options.seamDebug } : {})
           }
         };
       }
@@ -1273,6 +1278,9 @@ function createCanonicalHarness(options = {}) {
           observations: pageObservations[targetName] || [],
           filteredObservations: options.filteredObservations && options.filteredObservations[targetName] || [],
           edgeSignals: options.edgeSignals && options.edgeSignals[targetName] || {},
+          ...(options.pageDebug && options.pageDebug[targetName]
+            ? { debug: options.pageDebug[targetName] }
+            : {}),
           ...(meta.forceCleanedImageArtifact && options.artifactCleanedImage
             ? { cleanedImage: options.artifactCleanedImage, debug: { artifact: true } }
             : {})
@@ -1295,7 +1303,9 @@ function createCanonicalHarness(options = {}) {
         }
       };
     },
-    renderCanonicalProjections: async ({ pageId, projections }) => {
+    renderCanonicalProjections: async (input) => {
+      const { pageId, projections } = input;
+      renderInputs.push(input);
       calls.push(`render:${pageId}:${projections.filter((item) => item.activeText).length}`);
     },
     findAdjacentKakaoPageTargets: (target) => target.name === "a"
@@ -1303,13 +1313,14 @@ function createCanonicalHarness(options = {}) {
       : { previous: targets.a },
     buildKakaoSeamPayload: async (_pageA, _pageB, plan) => {
       calls.push(`seam-payload:${plan.bandHeight}`);
-      return { dataUrl: "data:image/png;base64,seam", width: 800, height: plan.bandHeight * 2 };
+      return options.seamPayload || { dataUrl: "data:image/png;base64,seam", width: 800, height: plan.bandHeight * 2 };
     },
     detectAdjacentKakaoPixelRisk: async () => options.pixelRisk || null,
     getTargetForKakaoPageId: (pageId) => pageId === "page-a" ? targets.a : pageId === "page-b" ? targets.b : null,
     captureTargetSnapshot: (target) => ({ sourceToken: target.sourceToken }),
     isTargetSnapshotStillValid: (target, snapshot) => target.sourceToken === snapshot.sourceToken,
     renderLoadingOverlay: () => {},
+    clearLoadingOverlay: (target) => loadingClears.push(target.name),
     tracePipeline: (event, _target, details) => traces.push({ event, details }),
     scheduleAutoTranslateRetry: () => calls.push("retry"),
     setTimer: (callback, delay) => {
@@ -1331,9 +1342,93 @@ function createCanonicalHarness(options = {}) {
     traces,
     timers,
     ocrMetas,
+    renderInputs,
+    loadingClears,
     identities
   };
 }
+
+test("ready page OCR debug is rendered before translation settles", async () => {
+  let releaseTranslation;
+  const translationGate = new Promise((resolve) => { releaseTranslation = resolve; });
+  const harness = createCanonicalHarness({
+    pageDebug: {
+      a: { rawItems: [{ text: "inside A", box: { left: 1, top: 2, width: 3, height: 4 } }] }
+    },
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      requestCanonicalTranslations: async (items) => {
+        harness.calls.push(`translate:${items.map((item) => item.id).join(",")}`);
+        return translationGate;
+      }
+    }
+  });
+
+  const pending = harness.pipeline.run(harness.targets.a);
+  for (let index = 0; index < 20 && !harness.calls.some((item) => item.startsWith("translate:")); index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.ok(harness.calls.some((item) => item.startsWith("translate:")));
+  const debugRender = harness.renderInputs.find((input) =>
+    input.pageId === "page-a" && input.projections.length === 0 && input.debug
+  );
+  assert.ok(debugRender);
+  assert.deepEqual(debugRender.debug, {
+    rawItems: [{ text: "inside A", box: { left: 1, top: 2, width: 3, height: 4 } }]
+  });
+
+  releaseTranslation({
+    ok: true,
+    result: {
+      translations: harness.store.getCanonicalSnapshot().map((item) => ({
+        id: item.id,
+        revision: item.revision,
+        translated_text: `ZH:${item.originalText}`
+      }))
+    }
+  });
+  const result = await pending;
+  assert.equal(result.ok, true);
+});
+
+test("debug-only refresh does not redraw an already translated neighbor", async () => {
+  const harness = createCanonicalHarness({
+    pageDebug: {
+      a: { rawItems: [{ text: "A", box: { left: 1, top: 2, width: 3, height: 4 } }] },
+      b: { rawItems: [{ text: "B", box: { left: 5, top: 6, width: 7, height: 8 } }] }
+    }
+  });
+  await harness.pipeline.run(harness.targets.a);
+  harness.renderInputs.length = 0;
+
+  await harness.pipeline.run(harness.targets.b);
+
+  assert.equal(
+    harness.renderInputs.some((input) => input.pageId === "page-a" && input.debugOnly === true),
+    false
+  );
+  assert.equal(
+    harness.renderInputs.some((input) =>
+      input.pageId === "page-b" && input.debugOnly === true && input.projections.length === 0
+    ),
+    true
+  );
+});
+
+test("a configured page resolver is authoritative when an old handle target remains", async () => {
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      getTargetForKakaoPageId: () => null
+    }
+  });
+
+  const result = await harness.pipeline.run(harness.targets.a);
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.renderInputs.length, 0);
+});
 
 test("canonical pipeline uses page OCR stages and never calls legacy stitch/dedupe hooks", async () => {
   let legacyCalls = 0;
@@ -1357,6 +1452,57 @@ test("canonical pipeline uses page OCR stages and never calls legacy stitch/dedu
     assert.ok(stages.includes(stage), `missing stage ${stage}`);
   }
   assert.equal(harness.store.getCanonicalPagePhase("page-a"), P.CanonicalPhase.RENDERED);
+  assert.deepEqual(harness.loadingClears, ["a"]);
+});
+
+test("canonical pipeline clears loading when a page terminates with an error", async () => {
+  const harness = createCanonicalHarness({ pageFailure: "a" });
+
+  const result = await harness.pipeline.run(harness.targets.a, { reason: "canonical-error" });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(harness.loadingClears, ["a"]);
+});
+
+test("canonical render skips another page while its authoritative OCR is still running", async () => {
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null })
+    }
+  });
+  harness.store.registerPageHandle({
+    ...harness.identities.b,
+    target: harness.targets.b,
+    targetKey: "target-b",
+    scopedTargetKey: "target-b|source-b",
+    payload: { dataUrl: "data:image/png;base64,b", width: 800, height: 2000 },
+    pageOcrState: "running"
+  });
+
+  const result = await harness.pipeline.run(harness.targets.a, { reason: "render-with-running-neighbor" });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    harness.renderInputs.some((input) => input.pageId === "page-b"),
+    false,
+    "a running page must remain pending instead of being rendered as empty"
+  );
+});
+
+test("canonical render marks no-text only after authoritative OCR completes empty", async () => {
+  const harness = createCanonicalHarness({
+    pageObservations: { a: [], b: [] },
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null })
+    }
+  });
+
+  const result = await harness.pipeline.run(harness.targets.a, { reason: "authoritative-empty" });
+  const render = harness.renderInputs.find((input) => input.pageId === "page-a");
+
+  assert.equal(result.ok, true);
+  assert.ok(render);
+  assert.equal(render.authoritativeEmpty, true);
 });
 
 test("same-URL generation change starts fresh OCR and cancels the late prior revision", async () => {
@@ -1956,6 +2102,98 @@ test("an active bgType none projection refreshes only the cleaned page artifact"
   assert.equal(harness.calls.filter((call) => call.startsWith("translate:")).length, 1);
 });
 
+test("a missing cleaned image releases the artifact attempt for a same-revision retry", async () => {
+  const observation = makeCanonicalObservation("page-a", "rev-a", "complex-page", 40, "complex");
+  observation.visual = { ...observation.visual, bgType: "none" };
+  const harness = createCanonicalHarness({
+    pageObservations: { a: [observation], b: [] }
+  });
+
+  await harness.pipeline.run(harness.targets.a);
+  assert.equal(
+    harness.ocrMetas.filter((meta) => meta.forceCleanedImageArtifact === true).length,
+    1
+  );
+  assert.equal(harness.store.getPageHandle("page-a").artifactRefreshAttemptedKey, "");
+  assert.equal(harness.store.getPageHandle("page-a").artifactRefreshRetryAfter, 6000);
+  const retryTimer = harness.timers.find((timer) => timer.delay === 5000);
+  assert.ok(retryTimer);
+
+  retryTimer.callback();
+  for (let index = 0; index < 20 && harness.ocrMetas.filter(
+    (meta) => meta.forceCleanedImageArtifact === true
+  ).length < 2; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(
+    harness.ocrMetas.filter((meta) => meta.forceCleanedImageArtifact === true).length,
+    2
+  );
+  assert.equal(harness.timers.filter((timer) => timer.delay === 5000).length, 1);
+});
+
+test("a cleaned artifact retry timer cannot refresh a newer page revision", async () => {
+  const observation = makeCanonicalObservation("page-a", "rev-a", "complex-page", 40, "complex");
+  observation.visual = { ...observation.visual, bgType: "none" };
+  const harness = createCanonicalHarness({
+    pageObservations: { a: [observation], b: [] }
+  });
+
+  await harness.pipeline.run(harness.targets.a);
+  const retryTimer = harness.timers.find((timer) => timer.delay === 5000);
+  assert.ok(retryTimer);
+  const previous = harness.store.getPageHandle("page-a");
+  harness.store.registerPageHandle({
+    ...previous,
+    imageRevision: "rev-new",
+    artifactRefreshRetryKey: "new-revision-artifact"
+  });
+
+  retryTimer.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(
+    harness.ocrMetas.filter((meta) => meta.forceCleanedImageArtifact === true).length,
+    1
+  );
+});
+
+test("canonical cleaned masks cover the full outer projection box for active cross-page outline projections", () => {
+  const projections = [{
+    canonicalId: "canonical-cross-page",
+    pageId: "page-a",
+    role: "primary",
+    active: true,
+    activeText: true,
+    visual: { bgType: "none" },
+    geometry: {
+      left: 20,
+      top: 85,
+      width: 58,
+      height: 15,
+      polygon: [[36, 89], [62, 89], [62, 97], [36, 97]]
+    },
+    geometries: [
+      { sourceType: "page", box: { x: 36, y: 89, w: 26, h: 8 } },
+      {
+        sourceType: "seam",
+        box: { x: 22, y: 86.8, w: 55, h: 13.2 },
+        polygon: [[36, 89], [62, 89], [62, 97], [36, 97]]
+      }
+    ]
+  }];
+
+  assert.deepEqual(P.buildCanonicalCleanMasks(projections, new Set(["canonical-cross-page"])), [{
+    coordinateSpace: "percent",
+    box: { x: 20, y: 85, w: 58, h: 15 }
+  }]);
+  assert.deepEqual(P.buildCanonicalCleanMasks(projections, new Set()), []);
+  assert.notEqual(
+    P.buildCleanedArtifactKey("revision-a", []),
+    P.buildCleanedArtifactKey("revision-a", P.buildCanonicalCleanMasks(projections, new Set(["canonical-cross-page"])))
+  );
+});
+
 test("seam-only complex evidence can request page artifacts after warm page OCR", async () => {
   const seamObservation = {
     id: "seam-only-complex",
@@ -1980,11 +2218,186 @@ test("seam-only complex evidence can request page artifacts after warm page OCR"
   await harness.pipeline.run(harness.targets.a);
   await harness.pipeline.run(harness.targets.b);
 
-  const artifactRequests = harness.ocrMetas.filter((meta) => meta.forceCleanedImageArtifact === true);
+  const artifactRequests = harness.ocrMetas.filter((meta) =>
+    meta.sourceType === "page" && meta.forceCleanedImageArtifact === true
+  );
   assert.deepEqual(artifactRequests.map((meta) => meta.pageIds[0]).sort(), ["page-a", "page-b"]);
+  assert.deepEqual(
+    artifactRequests.map((meta) => ({ pageId: meta.pageIds[0], masks: meta.cleanedMasks })),
+    [
+      {
+        pageId: "page-a",
+        masks: [{ coordinateSpace: "percent", box: { x: 20, y: 94, w: 20, h: 6 } }]
+      },
+      {
+        pageId: "page-b",
+        masks: [{ coordinateSpace: "percent", box: { x: 20, y: 0, w: 20, h: 6 } }]
+      }
+    ]
+  );
   assert.equal(harness.calls.filter((call) => call.startsWith("translate:")).length, 1);
   assert.equal(harness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
   assert.equal(harness.store.getPageHandle("page-b").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+});
+
+test("late seam masks refresh a cleaned artifact again on the same image revision", async () => {
+  const options = boundaryMergeHarnessOptions();
+  options.artifactCleanedImage = "data:image/png;base64,Y2xlYW4=";
+  options.pageObservations.a[0].visual = { ...options.pageObservations.a[0].visual, bgType: "none" };
+  options.pageObservations.b[0].visual = { ...options.pageObservations.b[0].visual, bgType: "none" };
+  options.seamObservations[0].visual = { ...options.seamObservations[0].visual, bgType: "none" };
+  const harness = createCanonicalHarness(options);
+
+  await harness.pipeline.run(harness.targets.a);
+  harness.timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  await harness.pipeline.run(harness.targets.b);
+
+  const pageAArtifacts = harness.ocrMetas.filter((meta) =>
+    meta.sourceType === "page" &&
+    meta.pageIds[0] === "page-a" &&
+    meta.forceCleanedImageArtifact === true
+  );
+  assert.equal(pageAArtifacts.length, 2);
+  assert.deepEqual(pageAArtifacts[0].cleanedMasks, []);
+  assert.deepEqual(pageAArtifacts[1].cleanedMasks, [
+    { coordinateSpace: "percent", box: { x: 20, y: 94, w: 20, h: 6 } }
+  ]);
+  assert.equal(
+    harness.store.getPageHandle("page-a").cleanedImageArtifactKey,
+    P.buildCleanedArtifactKey("rev-a", pageAArtifacts[1].cleanedMasks)
+  );
+});
+
+test("seam composite is cleaned once and atomically replaces both page projections", async () => {
+  const options = boundaryMergeHarnessOptions();
+  options.seamObservations[0].visual = {
+    ...options.seamObservations[0].visual,
+    bgType: "solid",
+    fillBox: { x: 24, y: 42, w: 52, h: 20 },
+    box: { x: 24, y: 42, w: 52, h: 20 },
+    regionPolygon: [
+      { x: 18, y: 38 },
+      { x: 82, y: 38 },
+      { x: 82, y: 66 },
+      { x: 18, y: 66 }
+    ],
+    sourceLineCount: 3
+  };
+  options.seamCleanedImage = "data:image/png;base64,c2VhbS1jbGVhbg==";
+  options.seamCleanedImageToken = "seam-artifact-token";
+  options.seamDebug = {
+    imageWidth: 800,
+    imageHeight: 600,
+    rawItems: [{ id: "raw-seam", box: { left: 160, top: 228, width: 480, height: 168 } }]
+  };
+  options.seamPayload = {
+    dataUrl: "data:image/png;base64,c2VhbQ==",
+    width: 800,
+    height: 600,
+    coordinateSpace: "kakao-seam-v1",
+    seam: {
+      canvasWidth: 800,
+      canvasHeight: 600,
+      alignedOverlap: 0,
+      segments: [
+        {
+          pageId: "page-a",
+          drawRect: { x: 0, y: 0, w: 800, h: 300 },
+          sourceCrop: { x: 0, y: 1700, w: 800, h: 300 },
+          naturalWidth: 800,
+          naturalHeight: 2000
+        },
+        {
+          pageId: "page-b",
+          drawRect: { x: 0, y: 300, w: 800, h: 300 },
+          sourceCrop: { x: 0, y: 0, w: 800, h: 300 },
+          naturalWidth: 800,
+          naturalHeight: 2000
+        }
+      ]
+    }
+  };
+  const harness = createCanonicalHarness(options);
+
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+
+  const seamRequests = harness.ocrMetas.filter((meta) => meta.sourceType === "seam");
+  assert.equal(seamRequests.length, 1);
+  assert.equal(seamRequests[0].requireCleanedImage, true);
+  assert.equal(seamRequests[0].forceCleanedImageArtifact, true);
+  assert.equal(
+    harness.ocrMetas.filter((meta) => meta.sourceType === "page" && meta.forceCleanedImageArtifact).length,
+    0,
+    "a usable composite artifact must suppress per-page cleaned artifacts"
+  );
+
+  const seamState = harness.store.getSeamStates().find((state) => state.status === "completed");
+  assert.ok(seamState);
+  assert.equal(seamState.cleanedImage, options.seamCleanedImage);
+  assert.equal(seamState.cleanedImageToken, options.seamCleanedImageToken);
+  assert.equal(seamState.canvasWidth, 800);
+  assert.equal(seamState.canvasHeight, 600);
+  assert.deepEqual(seamState.segments, options.seamPayload.seam.segments);
+  assert.ok(Object.isFrozen(seamState));
+  assert.ok(Object.isFrozen(seamState.segments));
+
+  const debugOnlyBatch = harness.renderInputs.find((input) =>
+    input.debugOnly === true &&
+    input.projectionsByPage instanceof Map &&
+    input.seamSurfaces?.some((surface) => surface.bubbles.length === 0 && surface.debug)
+  );
+  assert.ok(debugOnlyBatch, "seam debug must render atomically before translation is available");
+  assert.deepEqual([...debugOnlyBatch.projectionsByPage.keys()].sort(), ["page-a", "page-b"]);
+
+  const atomic = harness.renderInputs.findLast((input) =>
+    input.projectionsByPage instanceof Map &&
+    input.seamSurfaces?.some((surface) => surface.bubbles.length === 1)
+  );
+  assert.ok(atomic, "both seam windows should be submitted in one renderer call");
+  assert.deepEqual([...atomic.projectionsByPage.keys()].sort(), ["page-a", "page-b"]);
+  assert.deepEqual([...atomic.payloadByPage.keys()].sort(), ["page-a", "page-b"]);
+  assert.deepEqual([...atomic.debugByPage.keys()].sort(), ["page-a", "page-b"]);
+
+  const [surface] = atomic.seamSurfaces;
+  assert.equal(surface.cleanedImage, options.seamCleanedImage);
+  assert.equal(surface.cleanedImageToken, options.seamCleanedImageToken);
+  assert.equal(surface.artifactFingerprint, options.seamCleanedImageToken);
+  assert.equal(surface.bubbles.length, 1);
+  assert.deepEqual(
+    {
+      x: surface.bubbles[0].x,
+      y: surface.bubbles[0].y,
+      w: surface.bubbles[0].w,
+      h: surface.bubbles[0].h
+    },
+    { x: 18, y: 38, w: 64, h: 28 },
+    "solid captions must use the full region polygon instead of the inner OCR text union"
+  );
+  assert.ok(surface.bubbles[0].y < 50 && surface.bubbles[0].y + surface.bubbles[0].h > 50);
+  assert.deepEqual(surface.handledCanonicalIds, Object.keys(surface.canonicalRevisionById));
+  for (const projections of atomic.projectionsByPage.values()) {
+    assert.equal(
+      projections.some((projection) => surface.handledCanonicalIds.includes(projection.canonicalId)),
+      false,
+      "normal page cover/text projections must not coexist with the seam surface"
+    );
+  }
+
+  const beforeRefresh = {
+    renderKey: surface.renderKey,
+    layoutKey: surface.layoutKey,
+    seamRequests: seamRequests.length
+  };
+  await harness.pipeline.runCached(harness.targets.a, null, { reason: "stable-seam-refresh" });
+  const refreshed = harness.renderInputs.findLast((input) =>
+    input.seamSurfaces?.some((item) => item.bubbles.length === 1)
+  ).seamSurfaces[0];
+  assert.equal(refreshed.renderKey, beforeRefresh.renderKey);
+  assert.equal(refreshed.layoutKey, beforeRefresh.layoutKey);
+  assert.equal(harness.ocrMetas.filter((meta) => meta.sourceType === "seam").length, beforeRefresh.seamRequests);
 });
 
 test("canonical pipeline translates interior observations while edge candidates wait", async () => {
@@ -2509,14 +2922,26 @@ test("one page OCR failure does not clear another page canonical projection", as
   assert.equal(harness.store.getPageTerminal("page-b").state, "failed");
 });
 
-test("a whole canonical translation failure is surfaced and never re-requested for that revision", async () => {
+test("a whole canonical translation failure can recover on the same revision", async () => {
   let translationCalls = 0;
   const harness = createCanonicalHarness({
     adapterOverrides: {
       findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
-      requestCanonicalTranslations: async () => {
+      requestCanonicalTranslations: async (items) => {
         translationCalls += 1;
-        return { ok: false, error: "translation credentials invalid" };
+        if (translationCalls === 1) {
+          return { ok: false, error: "temporary translation timeout" };
+        }
+        return {
+          ok: true,
+          result: {
+            translations: items.map((item) => ({
+              id: item.id,
+              revision: item.revision,
+              translated_text: `ZH:${item.original_text}`
+            }))
+          }
+        };
       }
     }
   });
@@ -2525,13 +2950,12 @@ test("a whole canonical translation failure is surfaced and never re-requested f
   const second = await harness.pipeline.run(harness.targets.a, { reason: "same-revision-retry" });
 
   assert.equal(first.ok, false);
-  assert.match(first.error, /credentials invalid/);
-  assert.equal(second.ok, false);
-  assert.match(second.error, /credentials invalid/);
-  assert.equal(translationCalls, 1, "a canonical revision can make at most one external translation request");
+  assert.match(first.error, /temporary translation timeout/);
+  assert.equal(second.ok, true);
+  assert.equal(translationCalls, 2);
   assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
-  assert.equal(harness.store.getCanonicalPagePhase("page-a"), P.CanonicalPhase.RETRY_WAIT);
-  assert.equal(harness.store.getProjections("page-a").some((item) => item.activeText), false);
+  assert.equal(harness.store.getCanonicalPagePhase("page-a"), P.CanonicalPhase.RENDERED);
+  assert.equal(harness.store.getProjections("page-a").some((item) => item.activeText), true);
   assert.ok(harness.calls.includes("retry"));
 });
 
@@ -2560,12 +2984,14 @@ test("late translation is rejected when canonical revision has advanced", () => 
   assert.equal(store.getTranslation("canonical", 1), null);
 });
 
-test("a canonical revision is claimed for translation at most once", () => {
+test("a canonical revision prevents concurrent claims but permits released retries", () => {
   const store = P.createStore();
   const item = { id: "canonical", revision: 1, original_text: "source" };
   assert.equal(store.claimTranslations([item]).length, 1);
-  store.releaseTranslationClaims([item]);
   assert.equal(store.claimTranslations([item]).length, 0);
+  store.releaseTranslationClaims([item]);
+  assert.equal(store.claimTranslations([item]).length, 1);
+  store.releaseTranslationClaims([item]);
   assert.equal(store.claimTranslations([{ ...item, revision: 2 }]).length, 1);
 });
 
@@ -2675,17 +3101,88 @@ async function runFailedRevisionFallbackScenario({ reverse = false, throwError =
   if (throwError) {
     await assert.rejects(refresh, /translation unavailable/);
   } else {
-    await refresh();
+    await assert.rejects(refresh, /Translation response omitted 1 canonical item/);
   }
-  assert.equal(translationRequestCount, requestsBeforeRefresh, "a revision must not be requested twice");
+  assert.equal(
+    translationRequestCount,
+    requestsBeforeRefresh + 1,
+    "a failed revision must be retryable while retaining the prior visible projection"
+  );
   const visibleAfter = [...harness.store.getAllProjections().values()].flat()
     .filter((projection) => projection.activeText && projection.translated_text);
   assert.equal(visibleAfter.length, 1);
   assert.equal(visibleAfter[0].canonicalId, oldCanonical.id);
+  const fallbackRender = harness.renderInputs.findLast((input) =>
+    String(input.reason || "").includes("translation-fallback") &&
+    input.projections.some((projection) => projection.provisional === true)
+  );
+  assert.ok(fallbackRender, "the previous visible projection should be rendered as a fallback");
+  assert.equal(fallbackRender.translationComplete, false);
 }
 
 test("partial translation for a new revision keeps exactly one prior visible projection", async () => {
   await runFailedRevisionFallbackScenario({ reverse: false, throwError: false });
+});
+
+test("a mixed partial response settles successful items and retries only missing canonicals", async () => {
+  const requestedIds = [];
+  const harness = createCanonicalHarness({
+    pageObservations: {
+      a: [
+        makeCanonicalObservation("page-a", "rev-a", "mixed-a-1", 30, "first line"),
+        makeCanonicalObservation("page-a", "rev-a", "mixed-a-2", 60, "second line")
+      ],
+      b: []
+    },
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null })
+    },
+    translateDeferred: async (items) => {
+      requestedIds.push(items.map((item) => item.id));
+      const translatedItems = requestedIds.length === 1 ? items.slice(0, 1) : items;
+      return {
+        ok: true,
+        result: {
+          translations: translatedItems.map((item) => ({
+            id: item.id,
+            revision: item.revision,
+            translated_text: `ZH:${item.original_text}`
+          })),
+          partial: translatedItems.length !== items.length
+        }
+      };
+    }
+  });
+
+  const first = await harness.pipeline.run(harness.targets.a);
+  assert.equal(first.ok, false);
+  assert.match(first.error, /Translation response omitted 1 canonical item/);
+  assert.equal(requestedIds[0].length, 2);
+  assert.equal(
+    harness.store.getCanonicalSnapshot().filter((canonical) =>
+      harness.store.getTranslation(canonical.id, canonical.revision)
+    ).length,
+    1
+  );
+  assert.ok(harness.renderInputs.some((input) =>
+    String(input.reason || "").includes("translation-fallback") && input.translationComplete === false
+  ));
+
+  const second = await harness.pipeline.runCached(harness.targets.a, null, { reason: "recovery" });
+  assert.equal(second.ok, true);
+  assert.equal(
+    harness.calls.filter((call) => call === "ocr:page:page-a").length,
+    1,
+    "a ready page recovery must not repeat authoritative OCR"
+  );
+  assert.equal(requestedIds[1].length, 1, "only the missing canonical should be requested again");
+  assert.equal(
+    harness.store.getCanonicalSnapshot().filter((canonical) =>
+      harness.store.getTranslation(canonical.id, canonical.revision)
+    ).length,
+    2
+  );
+  assert.equal(harness.renderInputs.findLast((input) => input.pageId === "page-a").translationComplete, true);
 });
 
 test("thrown translation after an anchor supersession keeps exactly one prior visible projection", async () => {

@@ -156,20 +156,21 @@ test("Observation IDs are stable, punctuation-sensitive, and independent of prov
   assert.equal(Object.isFrozen(first.pageSpans[0]), true);
 });
 
-test("seam band uses the locked 15% clamp formula", () => {
-  assert.equal(R.calculateSeamBandHeight(500, 900), 160);
-  assert.equal(R.calculateSeamBandHeight(2000, 2400), 300);
-  assert.equal(R.calculateSeamBandHeight(4000, 5000), 420);
+test("seam band keeps enough context around ordinary 760px page boundaries", () => {
+  assert.equal(R.calculateSeamBandHeight(500, 900), 240);
+  assert.equal(R.calculateSeamBandHeight(760, 760), 266);
+  assert.equal(R.calculateSeamBandHeight(2000, 2400), 480);
+  assert.equal(R.calculateSeamBandHeight(4000, 5000), 480);
 });
 
 test("seam plan crops only the two edge bands and collapses detected overlap on its canvas", () => {
   const upper = page("a", 0, { width: 1200, height: 100 });
   const lower = page("b", 1, { width: 1000, height: 2000 });
   const plan = R.buildSeamPlan(upper, lower, { overlapPx: 25 });
-  assert.equal(plan.bandHeight, 160);
+  assert.equal(plan.bandHeight, 350);
   assert.equal(plan.upperCrop.height, 100, "a short page contributes at most its whole image");
-  assert.equal(plan.lowerCrop.height, 160);
-  assert.equal(plan.canvasHeight, 235);
+  assert.equal(plan.lowerCrop.height, 350);
+  assert.equal(plan.canvasHeight, 425);
   assert.equal(plan.draws[1].destY, 75);
 });
 
@@ -340,11 +341,15 @@ test("same-page equal text at different positions remains two authoritative cano
   assert.notEqual(result.ledger[first.id].canonicalId, result.ledger[second.id].canonicalId);
 });
 
-test("different visual regions are a hard constraint", () => {
+test("different visual regions remain a hard constraint without strong seam evidence", () => {
   const fixture = boundaryFixture("part one", "part two");
   const first = pageObservation(fixture.pages[0], "part one", fixture.upperBox, { regionType: "dialogue" });
   const second = pageObservation(fixture.pages[1], "part two", fixture.lowerBox, { regionType: "effect_text" });
-  const result = R.reconcile({ pages: fixture.pages, observations: [first, second, fixture.seam] });
+  const result = R.reconcile({
+    pages: fixture.pages,
+    observations: [first, second],
+    adjacentPagePairs: [[fixture.pages[0].pageId, fixture.pages[1].pageId]]
+  });
   assert.notEqual(result.ledger[first.id].canonicalId, result.ledger[second.id].canonicalId);
 });
 
@@ -409,6 +414,155 @@ test("capture-local regionId equality cannot masquerade as shared visual evidenc
   assert.notEqual(result.ledger[first.id].canonicalId, result.ledger[second.id].canonicalId);
 });
 
+test("a strong cross-page seam joins fragments despite per-page region classifier drift", () => {
+  const upper = page("title-upper", 0, { width: 760 });
+  const lower = page("title-lower", 1, { width: 760 });
+  const upperFragment = pageObservation(
+    upper,
+    "신입사원",
+    { x: 29.7, y: 87, w: 41.4, h: 9.5 },
+    { regionType: "effect_text", confidence: 0.95 }
+  );
+  const lowerFragment = pageObservation(
+    lower,
+    "수급기간의 시작이다.",
+    { x: 22.7, y: 0, w: 55.8, h: 15.3 },
+    { regionType: "caption_panel", confidence: 0.95 }
+  );
+  const completeSeam = seamObservation(
+    upper,
+    lower,
+    "신입사원 수습기간의 시작이다.",
+    { x: 22.6, y: 86.8, w: 55, h: 13.2 },
+    { x: 22.6, y: 0, w: 55, h: 15.4 },
+    {
+      regionType: "caption_panel",
+      upperOverlapRatio: 0.462,
+      lowerOverlapRatio: 0.538,
+      confidence: 0.99
+    }
+  );
+
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperFragment, lowerFragment, completeSeam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.canonicals.length, 1);
+  assert.deepEqual(result.canonicals[0].memberObservationIds, [
+    completeSeam.id,
+    lowerFragment.id,
+    upperFragment.id
+  ].sort());
+  assert.equal(result.canonicals[0].originalText, "신입사원 수습기간의 시작이다.");
+  for (const observation of [upperFragment, lowerFragment, completeSeam]) {
+    assert.equal(result.ledger[observation.id].resolution, "consumed");
+  }
+});
+
+test("a cross-page seam joins a geometrically aligned fragment with one OCR substitution", () => {
+  const upper = page("effect-upper", 0, { width: 760 });
+  const lower = page("effect-lower", 1, { width: 760 });
+  const upperFragment = pageObservation(
+    upper,
+    "저것이",
+    { x: 36.97, y: 89, w: 25.53, h: 8.2 },
+    { regionType: "effect_text", confidence: 0.99 }
+  );
+  const noisyLowerFragment = pageObservation(
+    lower,
+    "오럽자의'말로.",
+    { x: 22.63, y: 0.1, w: 53.82, h: 4.1 },
+    { regionType: "effect_text", confidence: 0.745 }
+  );
+  const correctedSeam = seamObservation(
+    upper,
+    lower,
+    "저것이 오답자의말로.",
+    { x: 22.37, y: 89, w: 54.34, h: 11 },
+    { x: 22.37, y: 0, w: 54.34, h: 4.4 },
+    {
+      regionType: "effect_text",
+      upperOverlapRatio: 0.714,
+      lowerOverlapRatio: 0.286,
+      confidence: 0.99
+    }
+  );
+
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperFragment, noisyLowerFragment, correctedSeam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText, "저것이 오답자의말로.");
+  assert.deepEqual(result.canonicals[0].memberObservationIds, [
+    correctedSeam.id,
+    noisyLowerFragment.id,
+    upperFragment.id
+  ].sort());
+});
+
+test("fuzzy seam fragments preserve semantic symbols instead of erasing them", () => {
+  const upper = page("symbol-upper", 0);
+  const lower = page("symbol-lower", 1);
+  const upperBox = { x: 25, y: 89, w: 50, h: 10 };
+  const lowerBox = { x: 25, y: 0, w: 50, h: 10 };
+  const first = pageObservation(upper, "A+B+C+D+E", upperBox);
+  const second = pageObservation(lower, "F+G+H+I+J", lowerBox);
+  const seam = seamObservation(upper, lower, "ABCDEFGHIJ", upperBox, lowerBox, {
+    upperOverlapRatio: 0.5,
+    lowerOverlapRatio: 0.5
+  });
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [first, second, seam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.diagnostics.acceptedEdges.length, 0);
+  assert.notEqual(result.ledger[first.id].canonicalId, result.ledger[second.id].canonicalId);
+});
+
+test("two OCR substitutions are not accepted as one fuzzy seam fragment", () => {
+  const upper = page("two-errors-upper", 0, { width: 760 });
+  const lower = page("two-errors-lower", 1, { width: 760 });
+  const upperFragment = pageObservation(
+    upper,
+    "저것이",
+    { x: 36.97, y: 89, w: 25.53, h: 8.2 },
+    { regionType: "effect_text" }
+  );
+  const noisyLowerFragment = pageObservation(
+    lower,
+    "오럽자의말로.",
+    { x: 22.63, y: 0.1, w: 53.82, h: 4.1 },
+    { regionType: "effect_text" }
+  );
+  const unrelatedSeam = seamObservation(
+    upper,
+    lower,
+    "저것이 오답자의길로.",
+    { x: 22.37, y: 89, w: 54.34, h: 11 },
+    { x: 22.37, y: 0, w: 54.34, h: 4.4 },
+    {
+      regionType: "effect_text",
+      upperOverlapRatio: 0.714,
+      lowerOverlapRatio: 0.286
+    }
+  );
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperFragment, noisyLowerFragment, unrelatedSeam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.diagnostics.acceptedEdges.length, 0);
+  assert.notEqual(result.ledger[upperFragment.id].canonicalId, result.ledger[noisyLowerFragment.id].canonicalId);
+});
+
 test("a seam that only repeats the upper page cannot support a cross-page merge", () => {
   const upper = page("a", 0);
   const lower = page("b", 1);
@@ -438,6 +592,100 @@ test("a one-percent seam spill is not treated as true cross-page evidence", () =
 
   assert.equal(result.diagnostics.acceptedEdges.length, 0);
   assert.notEqual(result.ledger[first.id].canonicalId, result.ledger[second.id].canonicalId);
+  assert.deepEqual(result.ledger[seam.id], {
+    resolution: "filtered",
+    filterReason: "seam_context_only"
+  });
+  assert.equal(result.canonicals.length, 2);
+});
+
+test("explicit zero-overlap seam spans never fall back to positive box-area evidence", () => {
+  const upper = page("a", 0);
+  const lower = page("b", 1);
+  const upperBox = { x: 30, y: 90, w: 40, h: 10 };
+  const lowerBox = { x: 30, y: 0, w: 40, h: 10 };
+  const first = pageObservation(upper, "오늘 학교에", upperBox);
+  const second = pageObservation(lower, "갑니다.", lowerBox);
+  const seam = seamObservation(upper, lower, "오늘 학교에갑니다.", upperBox, lowerBox, {
+    upperOverlapRatio: 0,
+    lowerOverlapRatio: 0
+  });
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [first, second, seam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.diagnostics.acceptedEdges.length, 0);
+  assert.notEqual(result.ledger[first.id].canonicalId, result.ledger[second.id].canonicalId);
+  assert.deepEqual(result.ledger[seam.id], {
+    resolution: "filtered",
+    filterReason: "seam_context_only"
+  });
+});
+
+test("a seam OCR fragment that contributes to only one page is filtered as context", () => {
+  const upper = page("a", 0);
+  const lower = page("b", 1);
+  const authoritative = pageObservation(
+    lower,
+    "천장에서 뭐가 흘러내려!",
+    { x: 35, y: 6.5, w: 30, h: 20.7 }
+  );
+  const clippedContext = R.createObservation({
+    provider: "fixture-ocr",
+    captureId: "seam:a:b:clipped-context",
+    sourceType: "seam",
+    pageIds: [upper.pageId, lower.pageId],
+    imageRevisionByPage: {
+      [upper.pageId]: upper.imageRevision,
+      [lower.pageId]: lower.imageRevision
+    },
+    pageSpans: [{
+      pageId: lower.pageId,
+      box: { x: 35, y: 6.2, w: 30, h: 9.8 },
+      coordinateSpace: "percent",
+      regionType: "dialogue",
+      overlapRatio: 1
+    }],
+    originalText: "천장에서 모기",
+    confidence: 0.99
+  });
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [authoritative, clippedContext],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.canonicals.length, 1);
+  assert.deepEqual(result.canonicals[0].memberObservationIds, [authoritative.id]);
+  assert.deepEqual(result.ledger[clippedContext.id], {
+    resolution: "filtered",
+    filterReason: "seam_context_only"
+  });
+});
+
+test("a seam-only observation with meaningful contributions from both pages remains canonical", () => {
+  const upper = page("a", 0);
+  const lower = page("b", 1);
+  const seam = seamObservation(
+    upper,
+    lower,
+    "진짜跨页대사",
+    { x: 30, y: 88, w: 40, h: 12 },
+    { x: 30, y: 0, w: 40, h: 12 },
+    { upperOverlapRatio: 0.45, lowerOverlapRatio: 0.55 }
+  );
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [seam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.canonicals.length, 1);
+  assert.deepEqual(result.canonicals[0].memberObservationIds, [seam.id]);
+  assert.deepEqual(Object.keys(result.canonicals[0].geometryByPage), [upper.pageId, lower.pageId]);
+  assert.equal(result.ledger[seam.id].resolution, "standalone");
 });
 
 test("candidate enumeration is chapter-partitioned and does not lose a true pair interleaved with retained SPA pages", () => {

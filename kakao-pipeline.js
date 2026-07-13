@@ -3062,6 +3062,18 @@
           return cancelJob(target, identity, pageRecord.pageId, "sourceChanged during pair refresh");
         }
 
+        // Direct seam cross-page render: 对已就绪的相邻页，无论是否有边缘证据，
+        // 都做合并图 OCR 渲染跨页 overlay。绕过 evaluateSeamEvidence 判断。
+        if (typeof adapters.renderSeamCrossPage === "function") {
+          for (const _rel of pageRecord.adjacentTargets || []) {
+            const _n = store.getPageHandleForTarget(_rel.target);
+            if (!_n || !isReadyPageRecord(_n)) continue;
+            const [_a, _b] = _rel.side === "previous" ? [_n, pageRecord] : [pageRecord, _n];
+            loading(target, identity.targetKey, "渲染跨页...");
+            runSeamCrossPageRender(_a, _b).catch(function () {});
+          }
+        }
+
         if (
           snapshot &&
           typeof adapters.isTargetSnapshotStillValid === "function" &&
@@ -3183,6 +3195,76 @@
         ...patch,
         adjacentPageIds: Object.freeze([...adjacentPageIds].sort())
       });
+    }
+
+    async function runSeamCrossPageRender(pageA, pageB) {
+      if (typeof buildSeamPayload !== "function") return;
+      const pairKey = buildCanonicalPairKey(pageA, pageB);
+      const bandHeight = calculateCanonicalSeamHeight(pageA.width, pageB.width);
+      let seamPayload;
+      try {
+        seamPayload = await buildSeamPayload(pageA, pageB, { height: bandHeight, bandHeight });
+      } catch (_error) {
+        trace("seam-cross-build-error", pageA.target || null, { pairKey, error: getErrorMessage(_error) });
+        return;
+      }
+      if (!seamPayload) return;
+      let response;
+      try {
+        response = await requestOcrForPayload(seamPayload,
+          buildOcrMeta("seam", [pageA, pageB], pairKey, { requireCleanedImage: false }));
+      } catch (_error) {
+        trace("seam-cross-ocr-error", pageA.target || null, { pairKey, error: getErrorMessage(_error) });
+        return;
+      }
+      if (!response || !response.ok) return;
+      let rawObservations = (response.result && response.result.observations || [])
+        .filter(function (obs) { return String(obs.originalText || obs.original_text || "").trim(); });
+      if (rawObservations.length === 0) return;
+
+      // 翻译 seam OCR 的原文
+      let translatedObservations = rawObservations;
+      if (typeof requestCanonicalTranslations === "function") {
+        try {
+          const items = rawObservations.map(function (obs, idx) { return {
+            id: "seam-cross-" + pairKey + "-" + idx,
+            revision: 1,
+            original_text: obs.originalText || obs.original_text || ""
+          }; });
+          const tResp = await requestCanonicalTranslations(items, {
+            sourceLanguage: adapters.sourceLanguage || "auto",
+            targetLanguage: adapters.targetLanguage || "zh-CN",
+            reason: "seam-cross-page"
+          });
+          if (tResp && tResp.ok) {
+            const tMap = new Map();
+            const tList = tResp.result && tResp.result.translations || tResp.translations || [];
+            tList.forEach(function (t) { tMap.set(String(t.id || ""), t); });
+            translatedObservations = rawObservations.map(function (obs, idx) {
+              var t = tMap.get("seam-cross-" + pairKey + "-" + idx);
+              var translated = t && String(t.translated_text || t.translatedText || "").trim();
+              return translated ? Object.assign({}, obs, { translatedText: translated, originalText: obs.originalText || obs.original_text }) : obs;
+            });
+          }
+        } catch (_error) {
+          trace("seam-cross-translate-error", pageA.target || null, { pairKey, error: getErrorMessage(_error) });
+        }
+      }
+
+      const payloadGeometry = captureSeamPayloadGeometry(seamPayload, [pageA, pageB]);
+      if (typeof adapters.renderSeamCrossPage !== "function") return;
+      try {
+        adapters.renderSeamCrossPage({
+          pageA, pageB, pairKey,
+          canvasWidth: payloadGeometry.canvasWidth,
+          canvasHeight: payloadGeometry.canvasHeight,
+          segments: payloadGeometry.segments,
+          observations: translatedObservations,
+          debug: response.result && response.result.debug || null
+        });
+      } catch (_error) {
+        trace("seam-cross-render-error", pageA.target || null, { pairKey, error: getErrorMessage(_error) });
+      }
     }
 
     async function processSeamPair(pageA, pageB) {

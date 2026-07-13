@@ -14,6 +14,10 @@ globalThis.location = {
 };
 globalThis.window = { scrollX: 0, scrollY: 0, innerWidth: 1200, innerHeight: 800 };
 globalThis.HTMLImageElement = class HTMLImageElement {};
+globalThis.getComputedStyle = (element) => element && element.__style || {
+  overflowX: "visible",
+  overflowY: "visible"
+};
 
 await import("../kakao-reconciler.js");
 await import("../kakao-pipeline.js");
@@ -59,6 +63,416 @@ test("Kakao page identity ignores CDN signing changes but tracks actual image by
   assert.notEqual(first.imageRevision, revised.imageRevision);
   assert.match(first.stableSource, /episode=7/);
   assert.doesNotMatch(first.stableSource, /signature|expires/i);
+});
+
+test("Kakao opaque token resource pages use image bytes to avoid same-size page collisions", async () => {
+  const createTarget = (currentSrc, top) => {
+    const target = new globalThis.HTMLImageElement();
+    target.currentSrc = currentSrc;
+    target.naturalWidth = 760;
+    target.naturalHeight = 1000;
+    target.width = 760;
+    target.height = 1000;
+    target.isConnected = true;
+    target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+    target.getBoundingClientRect = () => ({ top, width: 760, height: 1000 });
+    return target;
+  };
+
+  const first = await runtime.__test.buildKakaoPageIdentity(
+    createTarget("https://dw-img-page.kakao.com/sdownload/resource?token=page-a", 100),
+    {
+      dataUrl: "data:image/png;base64,AQID",
+      imageUrl: "https://dw-img-page.kakao.com/sdownload/resource?token=page-a",
+      width: 760,
+      height: 1000
+    }
+  );
+  const second = await runtime.__test.buildKakaoPageIdentity(
+    createTarget("https://dw-img-page.kakao.com/sdownload/resource?token=page-b", 1100),
+    {
+      dataUrl: "data:image/png;base64,AQIE",
+      imageUrl: "https://dw-img-page.kakao.com/sdownload/resource?token=page-b",
+      width: 760,
+      height: 1000
+    }
+  );
+  const resignedFirst = await runtime.__test.buildKakaoPageIdentity(
+    createTarget("https://dw-img-page.kakao.com/sdownload/resource?token=page-a-refreshed", 100),
+    {
+      dataUrl: "data:image/png;base64,AQID",
+      imageUrl: "https://dw-img-page.kakao.com/sdownload/resource?token=page-a-refreshed",
+      width: 760,
+      height: 1000
+    }
+  );
+
+  assert.notEqual(first.pageId, second.pageId);
+  assert.equal(first.pageId, resignedFirst.pageId);
+  assert.notEqual(first.stableSource, second.stableSource);
+  assert.match(first.stableSource, /content-revision=/);
+});
+
+test("opaque Kakao resource tokens still use image bytes when stable query fields remain", async () => {
+  const createTarget = (currentSrc) => {
+    const target = new globalThis.HTMLImageElement();
+    target.currentSrc = currentSrc;
+    target.naturalWidth = 760;
+    target.naturalHeight = 1000;
+    target.width = 760;
+    target.height = 1000;
+    target.isConnected = true;
+    target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+    target.getBoundingClientRect = () => ({ top: 100, width: 760, height: 1000 });
+    return target;
+  };
+  const source = "https://dw-img-page.kakao.com/sdownload/resource?episode=7&token=opaque-a";
+  const first = await runtime.__test.buildKakaoPageIdentity(createTarget(source), {
+    dataUrl: "data:image/png;base64,AQID",
+    imageUrl: source,
+    width: 760,
+    height: 1000
+  });
+  const second = await runtime.__test.buildKakaoPageIdentity(createTarget(source.replace("opaque-a", "opaque-b")), {
+    dataUrl: "data:image/png;base64,AQIE",
+    imageUrl: source.replace("opaque-a", "opaque-b"),
+    width: 760,
+    height: 1000
+  });
+
+  assert.match(first.stableSource, /episode=7/);
+  assert.match(first.stableSource, /content-revision=/);
+  assert.notEqual(first.pageId, second.pageId);
+});
+
+test("canonical content adapter wires terminal loading cleanup", () => {
+  const adapterStart = contentSource.indexOf("const kakaoCanonicalPipeline =");
+  const adapterEnd = contentSource.indexOf("const kakaoPipeline =", adapterStart);
+  const adapterSource = contentSource.slice(adapterStart, adapterEnd);
+
+  assert.ok(adapterStart >= 0 && adapterEnd > adapterStart);
+  assert.match(adapterSource, /clearLoadingOverlay\s*:\s*clearKakaoLoadingOverlay/);
+  assert.match(contentSource, /function clearKakaoLoadingOverlay\s*\(/);
+});
+
+test("settled no-text markers suppress overlay recovery for both key forms", () => {
+  const targetKey = "direct|page";
+  const scopedTargetKey = "direct|page|src:revision";
+
+  assert.equal(runtime.__test.matchesTargetMarker(targetKey, targetKey, scopedTargetKey), true);
+  assert.equal(runtime.__test.matchesTargetMarker(scopedTargetKey, targetKey, scopedTargetKey), true);
+  assert.equal(runtime.__test.matchesTargetMarker("direct|other", targetKey, scopedTargetKey), false);
+
+  assert.equal(runtime.__test.hasSettledNoTextMarker({
+    dataset: { mtNoTextKey: scopedTargetKey }
+  }, targetKey, scopedTargetKey), true);
+  assert.equal(runtime.__test.hasSettledNoTextMarker({
+    dataset: { mtNoTextKey: "direct|other" }
+  }, targetKey, scopedTargetKey), false);
+
+  assert.equal(runtime.__test.hasSettledTranslatedMarker({
+    dataset: { mtNoTextKey: scopedTargetKey }
+  }, targetKey, scopedTargetKey), false);
+  assert.equal(runtime.__test.hasSettledTranslatedMarker({
+    dataset: { mtLastTranslatedKey: scopedTargetKey }
+  }, targetKey, scopedTargetKey), true);
+});
+
+test("debug and loading overlays never count as reusable translated results", () => {
+  assert.equal(runtime.__test.isReusableRenderedState({ mode: "debug", bubbleCount: 0 }, true), false);
+  assert.equal(runtime.__test.isReusableRenderedState({ mode: "loading", bubbleCount: 0 }, true), false);
+  assert.equal(runtime.__test.isReusableRenderedState({ mode: "bubbles", bubbleCount: 2 }, false), false);
+  assert.equal(runtime.__test.isReusableRenderedState({ mode: "bubbles", bubbleCount: 2 }, true), true);
+  assert.equal(runtime.__test.isReusableRenderedState({ mode: "embedded", bubbleCount: 1 }, true), true);
+});
+
+test("known Kakao page bindings are idempotent until target or revision changes", () => {
+  const target = { isConnected: true };
+  const targets = new Set([target]);
+  assert.equal(runtime.__test.isCurrentKakaoPageBinding(
+    target,
+    "page-a",
+    { target, imageRevision: "rev-a" },
+    "rev-a",
+    targets
+  ), true);
+  assert.equal(runtime.__test.isCurrentKakaoPageBinding(
+    target,
+    "page-a",
+    { target, imageRevision: "rev-b" },
+    "rev-a",
+    targets
+  ), false);
+  assert.equal(runtime.__test.isCurrentKakaoPageBinding(
+    target,
+    "page-a",
+    { target: {}, imageRevision: "rev-a" },
+    "rev-a",
+    targets
+  ), false);
+});
+
+test("only a current ready Kakao page binding can reuse OCR facts", () => {
+  const target = { isConnected: true };
+  const handle = {
+    target,
+    pageId: "page-a",
+    imageRevision: "rev-a",
+    pageOcrState: "ready"
+  };
+  const terminal = { state: "ready", details: { imageRevision: "rev-a" } };
+  assert.equal(runtime.__test.isReusableKakaoReadyPageBinding(
+    target,
+    handle,
+    terminal,
+    "page-a",
+    "rev-a"
+  ), true);
+  assert.equal(runtime.__test.isReusableKakaoReadyPageBinding(
+    target,
+    handle,
+    terminal,
+    "page-a",
+    "rev-b"
+  ), false);
+  assert.equal(runtime.__test.isReusableKakaoReadyPageBinding(
+    target,
+    { ...handle, pageOcrState: "failed" },
+    terminal,
+    "page-a",
+    "rev-a"
+  ), false);
+});
+
+test("identical overlay payloads have a stable render signature", () => {
+  const first = {
+    bubbles: [{ canonical_id: "c1", x: 10, y: 20, w: 30, h: 8, translated_text: "译文" }],
+    debug: { rawItems: [{ id: "r1", percent: { x: 10, y: 20, w: 30, h: 8 } }] }
+  };
+  const second = JSON.parse(JSON.stringify(first));
+  assert.equal(runtime.__test.buildOverlayRenderSignature(first), runtime.__test.buildOverlayRenderSignature(second));
+  second.bubbles[0].translated_text = "新译文";
+  assert.notEqual(runtime.__test.buildOverlayRenderSignature(first), runtime.__test.buildOverlayRenderSignature(second));
+
+  const prefix = "data:image/png;base64," + "A".repeat(120);
+  const suffix = "Z".repeat(64);
+  const middleA = { bubbles: [], debug: {}, cleanedImage: `${prefix}first${suffix}` };
+  const middleB = { bubbles: [], debug: {}, cleanedImage: `${prefix}other${suffix}` };
+  assert.equal(middleA.cleanedImage.length, middleB.cleanedImage.length);
+  const middleSignature = runtime.__test.buildOverlayRenderSignature(middleA);
+  assert.equal(middleSignature, runtime.__test.buildOverlayRenderSignature(middleB));
+  assert.equal(runtime.__test.isSameOverlayRenderPayload(
+    { renderSignature: middleSignature, cleanedImage: middleA.cleanedImage },
+    middleSignature,
+    middleA.cleanedImage
+  ), true);
+  assert.equal(runtime.__test.isSameOverlayRenderPayload(
+    { renderSignature: middleSignature, cleanedImage: middleA.cleanedImage },
+    middleSignature,
+    middleB.cleanedImage
+  ), false,
+    "cleaned images that only differ in their middle bytes must not reuse one overlay"
+  );
+});
+
+test("changed overlay payloads replace the old root atomically", () => {
+  const start = contentSource.indexOf("function renderOverlay(");
+  const end = contentSource.indexOf("function scheduleTermDiscovery", start);
+  const renderSource = contentSource.slice(start, end);
+
+  assert.match(renderSource, /oldOverlay\.root\.replaceWith\(root\)/);
+  assert.doesNotMatch(renderSource, /oldOverlay\.root\.remove\(\)/);
+});
+
+test("canonical empty projections stay pending unless OCR authoritatively found no text", () => {
+  assert.equal(runtime.__test.classifyCanonicalProjectionRender([], { authoritativeEmpty: false }), "pending");
+  assert.equal(runtime.__test.classifyCanonicalProjectionRender([], { authoritativeEmpty: true }), "no-text");
+  assert.equal(runtime.__test.classifyCanonicalProjectionRender([
+    { translated_text: "译文" }
+  ], { authoritativeEmpty: false }), "translated");
+});
+
+test("provisional or explicitly incomplete canonical renders never become terminal", () => {
+  assert.equal(runtime.__test.isCanonicalRenderComplete([], { translationComplete: true }), true);
+  assert.equal(runtime.__test.isCanonicalRenderComplete([], { translationComplete: false }), false);
+  assert.equal(runtime.__test.isCanonicalRenderComplete([
+    { translated_text: "旧译文", provisional: true }
+  ], { translationComplete: true }), false);
+  assert.equal(runtime.__test.isCanonicalRenderComplete([
+    { translated_text: "旧译文", pendingCanonicalId: "new-revision" }
+  ], { translationComplete: true }), false);
+});
+
+test("canonical pending and retry failures preserve the last stable projection", () => {
+  const renderStart = contentSource.indexOf("async function renderCanonicalProjections");
+  const renderEnd = contentSource.indexOf("async function renderTranslationResult", renderStart);
+  const renderSource = contentSource.slice(renderStart, renderEnd);
+  assert.match(
+    renderSource,
+    /disposition === "pending"[\s\S]*?\{ stream: false, debugOnly: true \}/
+  );
+
+  const translateStart = contentSource.indexOf("async function translateTarget");
+  const translateEnd = contentSource.indexOf("function syncAllOverlays", translateStart);
+  const translateSource = contentSource.slice(translateStart, translateEnd);
+  assert.match(
+    translateSource,
+    /if \(shouldUseKakaoCanonicalPipeline\(target\)\) \{[\s\S]*?clearKakaoLoadingOverlay\(target\);[\s\S]*?\} else \{[\s\S]*?clearRenderedTarget\(target\);/
+  );
+});
+
+test("Kakao recommendation covers wait for visible flow instead of entering the ahead queue", () => {
+  const cover = new globalThis.HTMLImageElement();
+  cover.naturalWidth = 98;
+  cover.naturalHeight = 140;
+  cover.getBoundingClientRect = () => ({
+    left: 447,
+    right: 545,
+    top: 600,
+    bottom: 740,
+    width: 98,
+    height: 140
+  });
+
+  assert.equal(runtime.__test.shouldUseKakaoCanonicalPipeline(cover), true);
+  assert.equal(runtime.__test.isKakaoEpisodeImageTarget(cover), false);
+  cover.isConnected = true;
+  assert.equal(runtime.__test.passesKakaoAheadTargetFilter(cover), false);
+
+  const episodePage = new globalThis.HTMLImageElement();
+  episodePage.isConnected = true;
+  episodePage.naturalWidth = 760;
+  episodePage.naturalHeight = 1000;
+  episodePage.getBoundingClientRect = () => ({
+    left: 220,
+    right: 980,
+    top: 0,
+    bottom: 1000,
+    width: 760,
+    height: 1000
+  });
+  assert.equal(runtime.__test.isKakaoEpisodeImageTarget(episodePage), true);
+  assert.equal(runtime.__test.passesKakaoAheadTargetFilter(episodePage), true);
+});
+
+test("visible work is inserted before ahead work and ahead jobs preserve visible capacity", () => {
+  const ahead = { options: { reason: "ahead-viewport" } };
+  const queue = [ahead, { options: { reason: "ahead-image-load" } }];
+
+  assert.equal(runtime.__test.getTranslationQueueInsertIndex(queue, { reason: "page-auto" }), 0);
+  assert.equal(runtime.__test.getTranslationQueueInsertIndex(queue, { reason: "ahead-mutation" }), 2);
+  assert.equal(runtime.__test.canStartQueuedTranslation(ahead, {
+    runningJobs: 4,
+    runningAheadJobs: 4,
+    maxParallel: 6,
+    reservedSlots: 2
+  }), false);
+  assert.equal(runtime.__test.canStartQueuedTranslation({ options: { reason: "page-auto" } }, {
+    runningJobs: 4,
+    runningAheadJobs: 4,
+    maxParallel: 6,
+    reservedSlots: 2
+  }), true);
+  assert.equal(runtime.__test.canStartQueuedTranslation(ahead, {
+    runningJobs: 1,
+    runningAheadJobs: 1,
+    maxParallel: 6,
+    reservedSlots: 5
+  }), false, "only one Kakao ahead OCR may occupy the serial local-service queue");
+  assert.equal(runtime.__test.canStartQueuedTranslation(ahead, {
+    runningJobs: 0,
+    runningAheadJobs: 0,
+    maxParallel: 6,
+    reservedSlots: 5
+  }), true);
+});
+
+test("visible target rect is clipped by a horizontal scroll ancestor", () => {
+  const scroller = {
+    parentElement: null,
+    __style: { overflowX: "scroll", overflowY: "hidden" },
+    getBoundingClientRect: () => ({ left: 447, right: 1103, top: 500, bottom: 760 })
+  };
+  const hidden = {
+    parentElement: scroller,
+    getBoundingClientRect: () => ({
+      left: 1189,
+      right: 1287,
+      top: 600,
+      bottom: 740,
+      width: 98,
+      height: 140
+    })
+  };
+  const partial = {
+    parentElement: scroller,
+    getBoundingClientRect: () => ({
+      left: 1060,
+      right: 1158,
+      top: 600,
+      bottom: 740,
+      width: 98,
+      height: 140
+    })
+  };
+
+  assert.equal(runtime.__test.getVisibleViewportRect(hidden), null);
+  assert.deepEqual(runtime.__test.getVisibleViewportRect(partial), {
+    left: 1060,
+    top: 600,
+    right: 1103,
+    bottom: 740,
+    width: 43,
+    height: 140
+  });
+});
+
+test("canonical rendering forwards page OCR debug data to the overlay renderer", () => {
+  const start = contentSource.indexOf("async function renderCanonicalProjections");
+  const end = contentSource.indexOf("async function renderKakaoPipelineResult", start);
+  const renderSource = contentSource.slice(start, end);
+
+  assert.match(
+    renderSource,
+    /defaultDebug\s*=\s*input\.debug\s*\|\|\s*input\.result\s*&&\s*input\.result\.debug[\s\S]*getPageMappedValue\(input\.debugByPage,\s*pageId,\s*defaultDebug\)/
+  );
+});
+
+test("OCR debug remains renderable without translated bubbles", () => {
+  assert.equal(runtime.__test.hasRenderableOcrDebug({
+    bubbles: [],
+    debug: { rawItems: [{ box: { left: 1, top: 2, width: 3, height: 4 } }] }
+  }), true);
+  assert.equal(runtime.__test.hasRenderableOcrDebug({ bubbles: [], debug: {} }), false);
+  assert.equal(runtime.__test.hasRenderableOcrDebug({ bubbles: [] }), false);
+});
+
+test("visible canonical pages left pending are eligible for recovery requeue", () => {
+  const targetKey = "direct|page";
+  const scopedTargetKey = "direct|page|src:revision";
+
+  assert.equal(runtime.__test.hasPendingTranslationMarkerState({ dataset: {} }, targetKey, scopedTargetKey), true);
+  assert.equal(runtime.__test.hasPendingTranslationMarkerState({
+    dataset: { mtLastTranslatedKey: scopedTargetKey }
+  }, targetKey, scopedTargetKey), false);
+  assert.equal(runtime.__test.hasPendingTranslationMarkerState({
+    dataset: { mtNoTextKey: scopedTargetKey }
+  }, targetKey, scopedTargetKey), false);
+
+  const recoveryStart = contentSource.indexOf("function recoverRenderedTargets()");
+  const recoveryEnd = contentSource.indexOf("function syncOverlayPosition", recoveryStart);
+  const recoverySource = contentSource.slice(recoveryStart, recoveryEnd);
+  assert.match(recoverySource, /hasPendingTranslationMarkerState[\s\S]*queuePageAutoTranslate\(target\)/);
+});
+
+test("pending-page recovery waits for its cooldown after a failed cold request", () => {
+  assert.equal(runtime.__test.isTranslationRecoveryDue({ dataset: {} }, 10000), true);
+  assert.equal(runtime.__test.isTranslationRecoveryDue({
+    dataset: { mtRecoveryReqAt: "8000" }
+  }, 12000), false);
+  assert.equal(runtime.__test.isTranslationRecoveryDue({
+    dataset: { mtRecoveryReqAt: "8000" }
+  }, 13000), true);
 });
 
 test("Kakao page identity does not collide for equal-size inline or blob pages", async () => {
@@ -299,6 +713,33 @@ test("canonical projections adapt to renderer bubbles without turning cover proj
   assert.equal(primary.canonical_revision, 2);
   assert.equal(cover.translated_text, "");
   assert.equal(cover.projection_role, "cover_only");
+});
+
+test("canonical cleaned artifact requests forward supplemental page masks", () => {
+  const cleanedMasks = [{
+    coordinateSpace: "percent",
+    box: { x: 22, y: 89, w: 54, h: 11 }
+  }];
+  const sentMessage = runtime.__test.buildOcrMessageForPayload(
+    {
+      dataUrl: "data:image/png;base64,AQID",
+      imageUrl: "page-a",
+      ocrMode: "single",
+      pageSpans: []
+    },
+    {
+      sourceType: "page",
+      pageIds: ["page-a"],
+      imageRevision: "revision-a",
+      imageRevisionByPage: { "page-a": "revision-a" },
+      requestKey: "page:page-a:revision-a",
+      requireCleanedImage: true,
+      forceCleanedImageArtifact: true,
+      cleanedMasks
+    }
+  );
+  assert.deepEqual(sentMessage.cleanedMasks, cleanedMasks);
+  assert.equal(sentMessage.forceCleanedImageArtifact, true);
 });
 
 test("rendered OCR bubbles produce an asynchronous term-discovery payload", () => {
@@ -1756,6 +2197,10 @@ test("pipeline trace records collected stage with sourceToken and targetKey", ()
   assert.ok(collected.targetKey, "Should have targetKey");
   assert.equal(collected.stage, "collected");
   assert.ok(collected.detail.rect, "Should have rect detail");
+  assert.equal(target.dataset.mtPipelineStage, "collected");
+  const targetTrace = JSON.parse(target.dataset.mtPipelineTrace);
+  assert.equal(targetTrace.at(-1).stage, "collected");
+  assert.match(targetTrace.at(-1).summary, /\"width\":760/);
 
   // Clean up
   runtime.__test.clearPipelineTrace();
@@ -1798,6 +2243,201 @@ test("findTargetByScopedKey handles empty/non-existent keys gracefully", () => {
   // In Node test environment without DOM, document is undefined, so this is a no-op
   // In real browser context it will return null for unmatched keys
   assert.ok(true, "findTargetByScopedKey is exported and callable");
+});
+
+test("seam segment transforms expose one continuous virtual page through page-local windows", () => {
+  const upper = runtime.__test.getSeamSegmentTransform({
+    drawRect: { x: 0, y: 0, w: 760, h: 260 },
+    sourceCrop: { x: 0, y: 740, w: 760, h: 260 },
+    naturalWidth: 760,
+    naturalHeight: 1000
+  }, 760, 1000);
+  const lower = runtime.__test.getSeamSegmentTransform({
+    drawRect: { x: 0, y: 260, w: 760, h: 260 },
+    sourceCrop: { x: 0, y: 0, w: 760, h: 260 },
+    naturalWidth: 760,
+    naturalHeight: 1000
+  }, 760, 1000);
+
+  assert.deepEqual(upper, { scaleX: 1, scaleY: 1, left: 0, top: 740 });
+  assert.deepEqual(lower, { scaleX: 1, scaleY: 1, left: 0, top: -260 });
+  assert.equal(upper.top + 260, 1000, "upper seam slice reaches the exact page bottom");
+  assert.equal(lower.top + 260, 0, "lower seam slice starts at the exact page top");
+});
+
+test("seam sync installs the same scene in both windows and keeps the lower scene negative", () => {
+  const surface = { renderKey: "render-shared", layoutKey: "layout-shared" };
+  const makeEntry = (segment) => ({
+    surface,
+    segment,
+    windowNode: { style: {} },
+    composite: { style: {} }
+  });
+  const upper = makeEntry({
+    pageId: "upper",
+    drawRect: { x: 0, y: 0, w: 760, h: 260 },
+    sourceCrop: { x: 0, y: 740, w: 760, h: 260 },
+    naturalWidth: 760,
+    naturalHeight: 1000
+  });
+  const lower = makeEntry({
+    pageId: "lower",
+    drawRect: { x: 0, y: 260, w: 760, h: 260 },
+    sourceCrop: { x: 0, y: 0, w: 760, h: 260 },
+    naturalWidth: 760,
+    naturalHeight: 1000
+  });
+
+  runtime.__test.syncSeamOverlayTransforms({ seamEntries: [upper, lower] }, {
+    width: 760,
+    height: 1000
+  });
+
+  assert.equal(upper.surface, lower.surface);
+  assert.equal(upper.surface.renderKey, lower.surface.renderKey);
+  assert.equal(upper.surface.layoutKey, lower.surface.layoutKey);
+  assert.equal(upper.windowNode.style.display, "block");
+  assert.equal(lower.windowNode.style.display, "block");
+  assert.equal(upper.composite.style.top, "740px");
+  assert.equal(lower.composite.style.top, "-260px");
+  assert.ok(Number.parseFloat(lower.composite.style.top) < 0);
+  assert.equal(upper.composite.style.transform, lower.composite.style.transform);
+});
+
+test("two seam windows cover a cross-boundary bubble without a coordinate gap", () => {
+  const upper = runtime.__test.getSeamSegmentTransform({
+    drawRect: { x: 0, y: 0, w: 760, h: 260 },
+    sourceCrop: { x: 0, y: 740, w: 760, h: 260 },
+    naturalWidth: 760,
+    naturalHeight: 1000
+  }, 760, 1000);
+  const lower = runtime.__test.getSeamSegmentTransform({
+    drawRect: { x: 0, y: 260, w: 760, h: 260 },
+    sourceCrop: { x: 0, y: 0, w: 760, h: 260 },
+    naturalWidth: 760,
+    naturalHeight: 1000
+  }, 760, 1000);
+  const canvasHeight = 520;
+  const pageHeight = 1000;
+  const visibleInterval = (transform) => ({
+    start: Math.max(0, -transform.top / transform.scaleY),
+    end: Math.min(canvasHeight, (pageHeight - transform.top) / transform.scaleY)
+  });
+  const bubble = { start: 180, end: 340 };
+  const clip = (interval) => ({
+    start: Math.max(interval.start, bubble.start),
+    end: Math.min(interval.end, bubble.end)
+  });
+  const upperClip = clip(visibleInterval(upper));
+  const lowerClip = clip(visibleInterval(lower));
+
+  assert.deepEqual(upperClip, { start: 180, end: 260 });
+  assert.deepEqual(lowerClip, { start: 260, end: 340 });
+  assert.ok(lowerClip.start <= upperClip.end, "the two clips must not leave a blank seam");
+  assert.equal(
+    (upperClip.end - upperClip.start) + (lowerClip.end - lowerClip.start),
+    bubble.end - bubble.start
+  );
+});
+
+test("seam source mode toggles every window sharing one render key", () => {
+  const calls = [];
+  const entry = (renderKey, pageId) => ({
+    surface: { renderKey },
+    composite: {
+      classList: {
+        toggle: (className, enabled) => calls.push({ pageId, className, enabled })
+      }
+    }
+  });
+  const overlays = new Map([
+    ["upper", { seamEntries: [entry("shared", "upper")] }],
+    ["lower", { seamEntries: [entry("shared", "lower")] }],
+    ["other", { seamEntries: [entry("other", "other")] }]
+  ]);
+
+  runtime.__test.setSeamSourceModeForOverlays(overlays, "shared", true);
+  assert.deepEqual(calls, [
+    { pageId: "upper", className: "mt-show-source", enabled: true },
+    { pageId: "lower", className: "mt-show-source", enabled: true }
+  ]);
+});
+
+test("seam resize only updates the composite transform and never refits text", () => {
+  const positionStart = contentSource.indexOf("function syncOverlayPosition(");
+  const positionEnd = contentSource.indexOf("function compareOverlayViewportRects", positionStart);
+  const positionSource = contentSource.slice(positionStart, positionEnd);
+  const seamStart = contentSource.indexOf("function syncSeamOverlayTransforms(");
+  const seamEnd = contentSource.indexOf("function setSeamSourceModeForOverlays", seamStart);
+  const seamSource = contentSource.slice(seamStart, seamEnd);
+  assert.match(positionSource, /syncSeamOverlayTransforms\(overlayState/);
+  assert.doesNotMatch(seamSource, /applySeamBubbleLayout|fitBubbleFontSize/);
+});
+
+test("seam surface validation is atomic across targets and image revisions", () => {
+  const targets = {
+    upper: { isConnected: true, revision: "rev-a" },
+    lower: { isConnected: true, revision: "rev-b" }
+  };
+  const surface = runtime.__test.normalizeSeamRenderSurfaces({
+    seamSurfaces: [{
+      renderKey: "render-1",
+      layoutKey: "layout-1",
+      pairKey: "upper+lower",
+      coordinateSpace: "kakao-seam-v1",
+      canvasWidth: 760,
+      canvasHeight: 520,
+      pageIds: ["upper", "lower"],
+      imageRevisionByPage: { upper: "rev-a", lower: "rev-b" },
+      segments: [
+        {
+          pageId: "upper",
+          drawRect: { x: 0, y: 0, w: 760, h: 260 },
+          sourceCrop: { x: 0, y: 740, w: 760, h: 260 },
+          naturalWidth: 760,
+          naturalHeight: 1000
+        },
+        {
+          pageId: "lower",
+          drawRect: { x: 0, y: 260, w: 760, h: 260 },
+          sourceCrop: { x: 0, y: 0, w: 760, h: 260 },
+          naturalWidth: 760,
+          naturalHeight: 1000
+        }
+      ],
+      cleanedImage: "data:image/png;base64,AQID",
+      bubbles: [{ x: 20, y: 35, w: 60, h: 30, translated_text: "合并页" }],
+      handledCanonicalIds: ["canonical-1"]
+    }]
+  })[0];
+  const resolveTarget = (pageId) => targets[pageId];
+  const resolveRevision = (target) => target.revision;
+
+  assert.equal(runtime.__test.isSeamSurfaceRenderable(surface, resolveTarget, resolveRevision), true);
+  targets.lower.revision = "stale-revision";
+  assert.equal(runtime.__test.isSeamSurfaceRenderable(surface, resolveTarget, resolveRevision), false);
+  targets.lower.revision = "rev-b";
+  targets.lower.isConnected = false;
+  assert.equal(runtime.__test.isSeamSurfaceRenderable(surface, resolveTarget, resolveRevision), false);
+});
+
+test("seam render signature is stable and includes the shared layout and artifact", () => {
+  const base = {
+    renderKey: "render-1",
+    layoutKey: "layout-1",
+    cleanedImage: "data:image/png;base64,AQID",
+    bubbles: [{ x: 1, y: 2, w: 3, h: 4, translated_text: "译文" }]
+  };
+  const first = runtime.__test.buildSeamSurfaceRenderSignature(base);
+  assert.equal(first, runtime.__test.buildSeamSurfaceRenderSignature({ ...base }));
+  assert.notEqual(first, runtime.__test.buildSeamSurfaceRenderSignature({
+    ...base,
+    layoutKey: "layout-2"
+  }));
+  assert.notEqual(first, runtime.__test.buildSeamSurfaceRenderSignature({
+    ...base,
+    cleanedImage: "data:image/png;base64,AQIE"
+  }));
 });
 
 test("normalizeKakaoStitchSegments falls back to derived segments when none provided", () => {

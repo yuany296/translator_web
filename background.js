@@ -98,7 +98,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v17:";
+const CACHE_PREFIX = "mt_cache_v18:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -1683,7 +1683,45 @@ function buildLocalPaddleLineGroup(entries) {
 }
 
 function buildLocalPaddleParagraphGroups(lines) {
-  return buildConnectedLocalPaddleGroups(lines, shouldMergeLocalPaddleParagraphLines);
+  return buildConnectedLocalPaddleGroups(lines, shouldMergeLocalPaddleParagraphLines)
+    .flatMap(splitLocalPaddleParagraphGroup);
+}
+
+function splitLocalPaddleParagraphGroup(group) {
+  const sorted = [...group].sort((left, right) => left.box.top - right.box.top || left.box.left - right.box.left);
+  if (sorted.length < 4) {
+    return [sorted];
+  }
+  for (let index = 2; index < sorted.length - 1; index += 1) {
+    if (!isLocalPaddleParagraphBoundary(sorted[index - 1], sorted[index])) {
+      continue;
+    }
+    return [
+      ...splitLocalPaddleParagraphGroup(sorted.slice(0, index)),
+      ...splitLocalPaddleParagraphGroup(sorted.slice(index))
+    ];
+  }
+  return [sorted];
+}
+
+function isLocalPaddleParagraphBoundary(left, right) {
+  if (!left || !right || !left.box || !right.box) {
+    return false;
+  }
+  const avgHeight = Math.max(1, (left.box.height + right.box.height) / 2);
+  const verticalGap = getVerticalGap(left.box, right.box);
+  const overlapX = Math.max(0, Math.min(left.box.right, right.box.right) - Math.max(left.box.left, right.box.left));
+  const overlapRatio = overlapX / Math.max(1, Math.min(left.box.width, right.box.width));
+  const centerOffset = Math.abs(left.box.centerX - right.box.centerX);
+  const widthRatio = Math.min(left.box.width, right.box.width) / Math.max(left.box.width, right.box.width);
+  const largeBlankBreak = verticalGap >= avgHeight * 1.1;
+  const shiftedLayoutBreak = (
+    verticalGap >= avgHeight * 0.65 &&
+    centerOffset >= avgHeight * 2.5 &&
+    widthRatio < 0.62 &&
+    overlapRatio < 0.68
+  );
+  return largeBlankBreak || shiftedLayoutBreak;
 }
 
 function shouldMergeLocalPaddleParagraphLines(left, right) {

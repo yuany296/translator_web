@@ -455,12 +455,90 @@ def merge_visual_text_blocks(items: list[dict[str, Any]]) -> list[dict[str, Any]
         else:
             block["items"].append(item)
             block["box"] = union_boxes(block["box"], box)
+    split_blocks: list[dict[str, Any]] = []
     for block in blocks:
+        split_blocks.extend(split_visual_text_block_paragraphs(block))
+    for block in split_blocks:
         block["box"]["line_height"] = float(np.median([
             float((item.get("box") or {}).get("height") or 0)
             for item in block["items"]
         ]))
-    return blocks
+    return split_blocks
+
+
+def split_visual_text_block_paragraphs(block: dict[str, Any]) -> list[dict[str, Any]]:
+    """Split a broad solid panel into visually distinct multi-line paragraphs."""
+    rows: list[dict[str, Any]] = []
+    for item in sorted(
+        block.get("items") or [],
+        key=lambda value: (
+            float((value.get("box") or {}).get("top") or 0),
+            float((value.get("box") or {}).get("left") or 0),
+        ),
+    ):
+        item_box = item.get("box") if isinstance(item.get("box"), dict) else None
+        if not item_box:
+            continue
+        row = next((candidate for candidate in rows if visual_text_boxes_share_row(candidate["box"], item_box)), None)
+        if row is None:
+            rows.append({"box": dict(item_box), "items": [item]})
+        else:
+            row["items"].append(item)
+            row["box"] = union_boxes(row["box"], item_box)
+    rows.sort(key=lambda value: (float(value["box"].get("top") or 0), float(value["box"].get("left") or 0)))
+
+    def split_rows(values: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        if len(values) < 4:
+            return [values]
+        for index in range(2, len(values) - 1):
+            if is_visual_paragraph_boundary(values[index - 1]["box"], values[index]["box"]):
+                return split_rows(values[:index]) + split_rows(values[index:])
+        return [values]
+
+    results: list[dict[str, Any]] = []
+    for paragraph_rows in split_rows(rows):
+        paragraph_items = [item for row in paragraph_rows for item in row["items"]]
+        if not paragraph_items:
+            continue
+        paragraph_box = dict(paragraph_items[0]["box"])
+        for item in paragraph_items[1:]:
+            paragraph_box = union_boxes(paragraph_box, item["box"])
+        results.append({"box": paragraph_box, "items": paragraph_items})
+    return results or [block]
+
+
+def visual_text_boxes_share_row(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    first_top = float(first.get("top") or 0)
+    second_top = float(second.get("top") or 0)
+    first_height = max(1.0, float(first.get("height") or 0))
+    second_height = max(1.0, float(second.get("height") or 0))
+    overlap = min(first_top + first_height, second_top + second_height) - max(first_top, second_top)
+    return overlap >= min(first_height, second_height) * 0.45
+
+
+def is_visual_paragraph_boundary(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    first_left = float(first.get("left") or 0)
+    second_left = float(second.get("left") or 0)
+    first_width = max(1.0, float(first.get("width") or 0))
+    second_width = max(1.0, float(second.get("width") or 0))
+    first_height = max(1.0, float(first.get("height") or 0))
+    second_height = max(1.0, float(second.get("height") or 0))
+    first_bottom = float(first.get("top") or 0) + first_height
+    second_top = float(second.get("top") or 0)
+    average_height = max(1.0, (first_height + second_height) / 2)
+    vertical_gap = max(0.0, second_top - first_bottom)
+    overlap = max(0.0, min(first_left + first_width, second_left + second_width) - max(first_left, second_left))
+    overlap_ratio = overlap / max(1.0, min(first_width, second_width))
+    center_offset = abs((first_left + first_width / 2) - (second_left + second_width / 2))
+    width_ratio = min(first_width, second_width) / max(first_width, second_width)
+    large_blank_break = vertical_gap >= average_height * 1.1
+    shifted_layout_break = (
+        vertical_gap >= average_height * 0.65
+        and center_offset >= average_height * 2.5
+        and width_ratio < 0.62
+        and overlap_ratio < 0.68
+    )
+    return large_blank_break or shifted_layout_break
 
 
 def text_boxes_belong_to_same_block(first: dict[str, Any], second: dict[str, Any]) -> bool:
@@ -517,7 +595,6 @@ def detect_solid_region_for_box(
     if right - left < 4 or bottom - top < 4:
         return None
 
-    merged_height = max(1, bottom - top)
     line_height = max(1, int(math.ceil(float(source_box.get("line_height") or source_box.get("height") or 0) * scale)))
     near = measure_solid_background_scale(
         lab,
@@ -526,7 +603,7 @@ def detect_solid_region_for_box(
         0.35,
         text_polygons or [],
         scale,
-        merged_height,
+        line_height,
     )
     if near is None:
         return None

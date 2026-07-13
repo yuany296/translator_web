@@ -112,6 +112,57 @@ def test_visual_region_analysis_backfills_an_earlier_line(monkeypatch: pytest.Mo
     assert all(item["region_polygon"] == detected_region["polygon"] for item in items)
 
 
+def test_visual_text_blocks_split_shifted_multirow_paragraphs() -> None:
+    import server
+
+    items = [
+        {"text": "네?!그게 무슨..", "box": {"left": 181, "top": 882, "width": 223, "height": 46}},
+        {"text": "여긴 서울..아니에요?", "box": {"left": 161, "top": 935, "width": 287, "height": 46}},
+        {"text": "전 그냥", "box": {"left": 395, "top": 1022, "width": 104, "height": 46}},
+        {"text": "지하철을 타려고", "box": {"left": 338, "top": 1073, "width": 217, "height": 43}},
+        {"text": "했을 뿐인데....", "box": {"left": 347, "top": 1121, "width": 168, "height": 50}},
+    ]
+
+    blocks = server.merge_visual_text_blocks(items)
+
+    assert len(blocks) == 2
+    assert [len(block["items"]) for block in blocks] == [2, 3]
+    assert "지하철" not in " ".join(item["text"] for item in blocks[0]["items"])
+    assert "지하철" in " ".join(item["text"] for item in blocks[1]["items"])
+
+
+def test_solid_region_near_sampling_uses_line_height(monkeypatch: pytest.MonkeyPatch) -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = server.np.full((220, 360, 3), 48, dtype=server.np.uint8)
+    lab = server.cv2.cvtColor(image, server.cv2.COLOR_BGR2LAB)
+    vertical_references: list[int] = []
+
+    def measure(*args, **kwargs):
+        vertical_references.append(int(args[6]))
+        return {
+            "roi": (120, 60, 120, 100),
+            "median_bgr": server.np.asarray([48, 48, 48], dtype=server.np.uint8),
+            "lab_variance": 4.0,
+            "delta_e_p90": 5.0,
+            "dominant_coverage": 0.96,
+            "passes_thresholds": True,
+        }
+
+    monkeypatch.setattr(server, "measure_solid_background_scale", measure)
+    region = server.detect_solid_region_for_box(
+        image,
+        lab,
+        {"left": 100, "top": 40, "width": 160, "height": 147, "line_height": 46},
+        1.0,
+    )
+
+    assert region is not None
+    assert vertical_references == [46, 46]
+
+
 def test_visual_region_assignment_prefers_the_smallest_containing_panel() -> None:
     import server
 

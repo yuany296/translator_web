@@ -31,7 +31,7 @@ test("translation cache cleanup recognizes old cache versions and quota errors",
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v4:def"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_api_key"), false);
-  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v17:/);
+  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v18:/);
   assert.equal(
     context.__backgroundTest.isStorageQuotaError(new Error("Resource::kQuotaBytes quota exceeded")),
     true
@@ -442,6 +442,49 @@ test("local paragraph display box stays tight while solid paint keeps separate c
   assert.ok(fillLeft < block.location.left && fillTop < block.location.top);
   assert.ok(fillRight > block.location.left + block.location.width);
   assert.ok(fillBottom > block.location.top + block.location.height);
+});
+
+test("shifted multi-line paragraphs stay separate through final candidate coalescing", async () => {
+  const item = (text, left, top, width, height) => ({
+    text,
+    score: 0.97,
+    det_score: 0.91,
+    rotation_deg: 0,
+    box: { left, top, width, height }
+  });
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    {
+      imageWidth: 760,
+      imageHeight: 1700,
+      items: [
+        item("네?!그게 무슨..", 181, 882, 223, 46),
+        item("여긴 서울..아니에요?", 161, 935, 287, 46),
+        item("전 그냥", 395, 1022, 104, 46),
+        item("지하철을 타려고", 338, 1073, 217, 43),
+        item("했을 뿐인데....", 347, 1121, 168, 50)
+      ]
+    },
+    { width: 760, height: 1700 },
+    "",
+    false
+  );
+
+  assert.equal(result.length, 2, JSON.stringify(result.map((entry) => entry.words)));
+  assert.deepEqual(JSON.parse(JSON.stringify(result.map((entry) => entry.sourceLineCount))), [2, 3]);
+  assert.match(result[0].words, /여긴 서울/);
+  assert.doesNotMatch(result[0].words, /지하철/);
+  assert.match(result[1].words, /지하철을 타려고/);
+
+  const finalCandidates = context.__backgroundTest.coalesceOverlappingOcrCandidates(
+    result.map((entry, index) => context.__backgroundTest.normalizeBaiduOcrItem(
+      entry,
+      index,
+      { width: 760, height: 1700 }
+    ))
+  );
+  assert.equal(finalCandidates.length, 2, JSON.stringify(finalCandidates.map((entry) => entry.original_text)));
+  assert.doesNotMatch(finalCandidates[0].original_text, /지하철/);
+  assert.match(finalCandidates[1].original_text, /지하철을 타려고/);
 });
 
 test("Kakao comment panel keeps every long standalone OCR row", async () => {

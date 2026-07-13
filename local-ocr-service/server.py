@@ -94,6 +94,8 @@ class OcrRequest(BaseModel):
     debug: bool = False
     debug_id: str = ""
     return_cleaned_image: bool = False
+    cleaned_masks: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+    cleaned_mask_token: str = Field(default="", max_length=128)
 
 
 class BackgroundDebugRequest(BaseModel):
@@ -207,9 +209,12 @@ async def ocr(payload: OcrRequest) -> dict[str, Any]:
         "rawItems": result.get("rawItems", []),
     }
     if payload.return_cleaned_image:
-        cleaned_image = build_cleaned_image_data_url(image_bytes, result["items"])
+        cleaned_image = build_cleaned_image_data_url(image_bytes, result["items"], payload.cleaned_masks)
         if cleaned_image:
             response["cleanedImage"] = cleaned_image
+        # 只要请求清理产物就回显 token；空 masks 也必须能区分仍在运行、
+        # 会静默忽略 artifact 字段的旧服务。
+        response["cleanedMaskToken"] = payload.cleaned_mask_token
     return response
 
 
@@ -842,7 +847,11 @@ def classify_solid_region_type(image: Any, roi: tuple[int, int, int, int], bgr: 
     return "speech_bubble" if bright_background and has_border else "caption_panel"
 
 
-def build_cleaned_image_data_url(image_bytes: bytes, items: list[dict[str, Any]]) -> str | None:
+def build_cleaned_image_data_url(
+    image_bytes: bytes,
+    items: list[dict[str, Any]],
+    supplemental_masks: list[dict[str, Any]] | None = None,
+) -> str | None:
     """Inpaint complex-background OCR polygons and return the cleaned base image."""
     if not CV2_AVAILABLE:
         return None
@@ -850,7 +859,7 @@ def build_cleaned_image_data_url(image_bytes: bytes, items: list[dict[str, Any]]
     image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
     if image is None or image.size == 0:
         return None
-    mask = build_complex_text_inpaint_mask(image.shape[:2], items)
+    mask = build_complex_text_inpaint_mask(image.shape[:2], items, supplemental_masks)
     if mask is None or int(np.count_nonzero(mask)) == 0:
         return None
     cleaned = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
@@ -861,8 +870,12 @@ def build_cleaned_image_data_url(image_bytes: bytes, items: list[dict[str, Any]]
     return f"data:image/png;base64,{payload}"
 
 
-def build_complex_text_inpaint_mask(shape: tuple[int, int], items: list[dict[str, Any]]) -> Any | None:
-    """Build a 2-8px dilated mask only for text without a solid region."""
+def build_complex_text_inpaint_mask(
+    shape: tuple[int, int],
+    items: list[dict[str, Any]],
+    supplemental_masks: list[dict[str, Any]] | None = None,
+) -> Any | None:
+    """合并 OCR 文字框与额外百分比几何，生成 2-8px 膨胀后的擦除掩膜。"""
     image_height, image_width = shape
     mask = np.zeros((image_height, image_width), dtype=np.uint8)
     changed = False
@@ -877,14 +890,94 @@ def build_complex_text_inpaint_mask(shape: tuple[int, int], items: list[dict[str
         points = normalize_mask_polygon(polygon, box, image_width, image_height)
         if len(points) < 3:
             continue
-        item_mask = np.zeros((image_height, image_width), dtype=np.uint8)
-        cv2.fillPoly(item_mask, [np.asarray(points, dtype=np.int32)], 255)
         radius = int(max(2, min(8, round(box_height * 0.08))))
-        kernel_size = radius * 2 + 1
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-        mask = cv2.bitwise_or(mask, cv2.dilate(item_mask, kernel, iterations=1))
+        mask = union_dilated_mask_polygon(mask, points, radius)
+        changed = True
+
+    # supplemental mask 只参与清理图绘制，不进入 OCR items/boxes，也不影响识别结果。
+    masks = supplemental_masks if isinstance(supplemental_masks, list) else []
+    for value in masks[:200]:
+        points = normalize_percent_mask_polygon(value, image_width, image_height)
+        if len(points) < 3:
+            continue
+        polygon_height = max(point[1] for point in points) - min(point[1] for point in points)
+        radius = int(max(2, min(8, round(max(1, polygon_height) * 0.08))))
+        mask = union_dilated_mask_polygon(mask, points, radius)
         changed = True
     return mask if changed else None
+
+
+def union_dilated_mask_polygon(mask: Any, points: list[list[int]], radius: int) -> Any:
+    """将一个像素多边形膨胀后并入已有 mask。"""
+    polygon_mask = np.zeros(mask.shape, dtype=np.uint8)
+    cv2.fillPoly(polygon_mask, [np.asarray(points, dtype=np.int32)], 255)
+    kernel_size = max(1, int(radius) * 2 + 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    return cv2.bitwise_or(mask, cv2.dilate(polygon_mask, kernel, iterations=1))
+
+
+def normalize_percent_mask_polygon(
+    value: Any,
+    image_width: int,
+    image_height: int,
+) -> list[list[int]]:
+    """把百分比 polygon 或完整 box 转成图像像素多边形。"""
+    if not isinstance(value, dict):
+        return []
+    coordinate_space = str(
+        value.get("coordinateSpace") or value.get("coordinate_space") or "percent"
+    ).strip().lower()
+    if coordinate_space not in {"percent", "percentage", "percent-v1"}:
+        return []
+
+    def to_pixel(raw: Any, extent: int) -> int | None:
+        try:
+            number = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number):
+            return None
+        return int(max(0, min(extent - 1, round(number * extent / 100.0))))
+
+    polygon = value.get("polygon")
+    if isinstance(polygon, list) and len(polygon) >= 3:
+        points: list[list[int]] = []
+        for point in polygon:
+            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                raw_x, raw_y = point[0], point[1]
+            elif isinstance(point, dict):
+                raw_x, raw_y = point.get("x"), point.get("y")
+            else:
+                continue
+            x = to_pixel(raw_x, image_width)
+            y = to_pixel(raw_y, image_height)
+            if x is not None and y is not None:
+                points.append([x, y])
+        if len(points) >= 3:
+            return points
+
+    box = value.get("box") if isinstance(value.get("box"), dict) else value
+    try:
+        left = float(box.get("x", box.get("left")))
+        top = float(box.get("y", box.get("top")))
+        width = float(box.get("w", box.get("width")))
+        height = float(box.get("h", box.get("height")))
+    except (AttributeError, TypeError, ValueError):
+        return []
+    if not all(math.isfinite(number) for number in (left, top, width, height)) or width <= 0 or height <= 0:
+        return []
+    left_px = to_pixel(left, image_width)
+    top_px = to_pixel(top, image_height)
+    right_px = to_pixel(left + width, image_width)
+    bottom_px = to_pixel(top + height, image_height)
+    if None in (left_px, top_px, right_px, bottom_px) or right_px <= left_px or bottom_px <= top_px:
+        return []
+    return [
+        [left_px, top_px],
+        [right_px, top_px],
+        [right_px, bottom_px],
+        [left_px, bottom_px],
+    ]
 
 
 def normalize_mask_polygon(polygon: Any, box: dict[str, Any], image_width: int, image_height: int) -> list[list[int]]:
@@ -2570,6 +2663,23 @@ def _run_slice_ocr_pipeline(
         if current is None or recognition_quality(row) > recognition_quality(current):
             best_by_detection[row["detection_index"]] = row
 
+    raw_items: list[dict[str, Any]] = []
+    for det_index, det in enumerate(detections):
+        row = best_by_detection.get(det_index, {})
+        raw_items.append(
+            {
+                "text": str(row.get("text") or "").strip(),
+                "score": float(row.get("score") or 0.0),
+                "box": det["box"],
+                "polygon": det["polygon"],
+                "det_score": float(det.get("det_score") or 0.0),
+                "rotation_deg": float(det.get("rotation_deg") or 0.0),
+                "orientation_applied": int(row.get("orientation") or 0),
+                "lang": str(row.get("lang") or lang),
+                "variant": "perspective_fast_raw",
+            }
+        )
+
     recognized_items: list[dict[str, Any]] = []
     min_score = float(params.get("text_rec_score_thresh") or 0.0)
     for det_index, row in best_by_detection.items():
@@ -2595,6 +2705,7 @@ def _run_slice_ocr_pipeline(
     regions = annotate_visual_regions(image_bytes, normalized)
     return {
         "items": normalized,
+        "rawItems": raw_items,
         "boxes": response_boxes(normalized),
         "regions": regions,
         "imageWidth": image_width,

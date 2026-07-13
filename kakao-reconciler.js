@@ -22,6 +22,12 @@
   const MAX_COMPONENT_PAGES = 3;
   const DEFAULT_EDGE_WAIT_MS = 8000;
   const MIN_SEAM_PAGE_CONTRIBUTION = 0.08;
+  const SEAM_BAND_WIDTH_RATIO = 0.35;
+  const SEAM_BAND_MIN_PX = 240;
+  const SEAM_BAND_MAX_PX = 480;
+  const FUZZY_SEAM_FRAGMENT_MIN_LENGTH = 5;
+  const FUZZY_SEAM_FRAGMENT_THRESHOLD = 0.80;
+  const FUZZY_OCR_QUOTE_RE = /['"‘’“”＇＂]/gu;
   const AUTH_QUERY_PARAM_RE = /^(?:signature|credential|expires|policy|token|key-pair-id|x-amz-(?:algorithm|credential|date|expires|security-token|signature|signedheaders))$/i;
 
   function clamp(value, min, max) {
@@ -266,7 +272,11 @@
   }
 
   function calculateSeamBandHeight(pageAWidth, pageBWidth) {
-    return clamp(Math.round(Math.min(Number(pageAWidth) || 0, Number(pageBWidth) || 0) * 0.15), 160, 420);
+    return clamp(
+      Math.round(Math.min(Number(pageAWidth) || 0, Number(pageBWidth) || 0) * SEAM_BAND_WIDTH_RATIO),
+      SEAM_BAND_MIN_PX,
+      SEAM_BAND_MAX_PX
+    );
   }
 
   function buildSeamPairKey(pageA, pageB) {
@@ -497,6 +507,48 @@
     return clamp(Math.max(containment, diceSimilarity(left, right)), 0, 1);
   }
 
+  function fuzzyFragmentSimilarity(leftText, rightText) {
+    const normalizeFragment = (value) => Array.from(
+      normalizeComparableText(value).replace(FUZZY_OCR_QUOTE_RE, "")
+    );
+    const left = normalizeFragment(leftText);
+    const right = normalizeFragment(rightText);
+    if (!left.length || !right.length) return 0;
+    const shorter = left.length <= right.length ? left : right;
+    const longer = left.length > right.length ? left : right;
+    if (shorter.length < FUZZY_SEAM_FRAGMENT_MIN_LENGTH) return 0;
+
+    const editDistance = (first, second) => {
+      let previous = Array.from({ length: second.length + 1 }, (_, index) => index);
+      for (let firstIndex = 1; firstIndex <= first.length; firstIndex += 1) {
+        const current = [firstIndex];
+        for (let secondIndex = 1; secondIndex <= second.length; secondIndex += 1) {
+          const substitution = previous[secondIndex - 1]
+            + (first[firstIndex - 1] === second[secondIndex - 1] ? 0 : 1);
+          current[secondIndex] = Math.min(
+            previous[secondIndex] + 1,
+            current[secondIndex - 1] + 1,
+            substitution
+          );
+        }
+        previous = current;
+      }
+      return previous[second.length];
+    };
+
+    let best = 0;
+    const minimumWindowLength = Math.max(1, shorter.length - 1);
+    const maximumWindowLength = Math.min(longer.length, shorter.length + 1);
+    for (let windowLength = minimumWindowLength; windowLength <= maximumWindowLength; windowLength += 1) {
+      for (let start = 0; start + windowLength <= longer.length; start += 1) {
+        const window = longer.slice(start, start + windowLength);
+        const denominator = Math.max(shorter.length, window.length);
+        best = Math.max(best, 1 - editDistance(shorter, window) / denominator);
+      }
+    }
+    return clamp(best, 0, 1);
+  }
+
   function suffixPrefixOverlap(leftText, rightText) {
     const left = Array.from(normalizeText(leftText));
     const right = Array.from(normalizeText(rightText));
@@ -527,7 +579,10 @@
     const longer = left.length > right.length ? left : right;
     if (shorter.length >= 2 && longer.includes(shorter)) return true;
     const overlap = Math.max(suffixPrefixOverlap(left, right), suffixPrefixOverlap(right, left));
-    return overlap >= Math.max(2, Math.ceil(Math.min(left.length, right.length) * 0.45));
+    if (overlap >= Math.max(2, Math.ceil(Math.min(left.length, right.length) * 0.45))) return true;
+    // OCR 在跨页边缘容易把一个韩文字形识错，或多带一个引号。只对足够长的
+    // seam 片段做近似子串比较；保留数学、货币等语义符号，避免误合并。
+    return fuzzyFragmentSimilarity(left, right) >= FUZZY_SEAM_FRAGMENT_THRESHOLD;
   }
 
   function visualIdentity(value) {
@@ -549,7 +604,9 @@
       const explicitRatio = Number(span?.overlapRatio);
       const box = normalizeBox(span?.box);
       const fallbackArea = Math.max(0, box.width) * Math.max(0, box.height);
-      const weight = Number.isFinite(explicitRatio) && explicitRatio > 0 ? explicitRatio : fallbackArea;
+      // overlapRatio=0 是坐标映射明确给出的“没有贡献”，不能再用 box
+      // 面积回退成正权重，否则纯上下文 OCR 会伪装成跨页证据。
+      const weight = Number.isFinite(explicitRatio) ? Math.max(0, explicitRatio) : fallbackArea;
       contributions.set(pageId, Math.max(contributions.get(pageId) || 0, weight));
     }
     return contributions;
@@ -639,13 +696,23 @@
     };
   }
 
-  function geometryScoreForPair(upperObservation, lowerObservation, upperPage, lowerPage, bandHeight) {
+  function geometryScoreForPair(
+    upperObservation,
+    lowerObservation,
+    upperPage,
+    lowerPage,
+    bandHeight,
+    options = {}
+  ) {
     const upperSpan = getSpan(upperObservation, upperPage.pageId);
     const lowerSpan = getSpan(lowerObservation, lowerPage.pageId);
     if (!upperSpan || !lowerSpan) return null;
     if (!isSpanAtEdge(upperSpan, upperPage, "bottom", bandHeight)
       || !isSpanAtEdge(lowerSpan, lowerPage, "top", bandHeight)) return null;
-    if (!regionsCompatible(upperObservation, upperSpan, lowerObservation, lowerSpan)) return null;
+    if (
+      !regionsCompatible(upperObservation, upperSpan, lowerObservation, lowerSpan) &&
+      options.allowRegionMismatch !== true
+    ) return null;
     const upperBox = boxInNormalizedPage(upperSpan, upperPage);
     const lowerBox = boxInNormalizedPage(lowerSpan, lowerPage);
     const horizontal = horizontalRelation(upperBox, lowerBox);
@@ -778,14 +845,24 @@
         if (!isRevisionCurrent(upperObservation, pageById)) continue;
         for (const lowerObservation of observationsByPage.get(lowerPage.pageId) || []) {
           if (!isRevisionCurrent(lowerObservation, pageById)) continue;
-          const geometry = geometryScoreForPair(upperObservation, lowerObservation, upperPage, lowerPage, bandHeight);
-          if (!geometry) continue;
-          const pair = classifyPair(upperObservation, lowerObservation);
           const supports = seamObservations
             .map((seam) => seamSupportsPair(seam, upperObservation, lowerObservation, upperPage, lowerPage))
             .filter(Boolean)
             .sort((left, right) => right.score - left.score || left.seam.id.localeCompare(right.seam.id));
           const seamScore = supports[0]?.score || 0;
+          // 单页视觉分类会在页面边界处漂移（例如同一标题上半页被判 effect_text，
+          // 下半页被判 caption_panel）。只有同时覆盖两页、且文字与几何都能解释
+          // 两侧的强 seam 证据，才允许越过这个分类差异；普通异区文字仍是硬约束。
+          const geometry = geometryScoreForPair(
+            upperObservation,
+            lowerObservation,
+            upperPage,
+            lowerPage,
+            bandHeight,
+            { allowRegionMismatch: seamScore >= MERGE_THRESHOLD }
+          );
+          if (!geometry) continue;
+          const pair = classifyPair(upperObservation, lowerObservation);
           const visualScore = visualScoreForPair(
             upperObservation,
             lowerObservation,
@@ -1200,6 +1277,10 @@
       const chapters = observation.pageIds.map((pageId) => pageById.get(pageId)?.chapterId).filter((value) => value !== undefined);
       return new Set(chapters).size > 1;
     }).map((observation) => observation.id));
+    const seamContextOnlyIds = new Set(activeInput.filter((observation) => {
+      return observation.sourceType === "seam" &&
+        !hasMeaningfulCrossPageContribution(observation, observation.pageIds);
+    }).map((observation) => observation.id));
     for (const observation of filteredInput.sort((left, right) => left.id.localeCompare(right.id))) {
       ledgerBuilder.resolve(observation.id, "filtered", { filterReason: observation.filterReason || "provider_filtered" });
     }
@@ -1209,8 +1290,16 @@
     for (const observation of activeInput.filter((item) => crossChapterIds.has(item.id)).sort((left, right) => left.id.localeCompare(right.id))) {
       if (!ledgerBuilder.has(observation.id)) ledgerBuilder.resolve(observation.id, "filtered", { filterReason: "cross_chapter_evidence" });
     }
+    for (const observation of activeInput.filter((item) => seamContextOnlyIds.has(item.id)).sort((left, right) => left.id.localeCompare(right.id))) {
+      if (!ledgerBuilder.has(observation.id)) ledgerBuilder.resolve(observation.id, "filtered", { filterReason: "seam_context_only" });
+    }
     const active = activeInput
-      .filter((observation) => !explicitlyFilteredIds.has(observation.id) && !staleIds.has(observation.id) && !crossChapterIds.has(observation.id))
+      .filter((observation) =>
+        !explicitlyFilteredIds.has(observation.id) &&
+        !staleIds.has(observation.id) &&
+        !crossChapterIds.has(observation.id) &&
+        !seamContextOnlyIds.has(observation.id)
+      )
       .filter((observation, index, array) => array.findIndex((item) => item.id === observation.id) === index)
       .sort((left, right) => left.id.localeCompare(right.id));
     const pageObservations = active.filter((observation) => observation.sourceType === "page");

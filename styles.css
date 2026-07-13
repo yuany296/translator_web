@@ -23,6 +23,33 @@
   position: absolute;
 }
 
+.mt-seam-window {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.mt-seam-composite {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  transform-origin: 0 0;
+  background-repeat: no-repeat;
+  background-position: 0 0;
+  background-size: 100% 100%;
+  pointer-events: none;
+}
+
+.mt-seam-composite .mt-seam-bubble {
+  pointer-events: auto;
+}
+
+.mt-seam-composite .mt-seam-bubble.mt-bg-none {
+  background-image: none;
+}
+
 .mt-debug-box {
   position: absolute;
   z-index: 40;
@@ -196,6 +223,25 @@
 }
 
 .mt-overlay-root.mt-show-source .mt-bubble::before {
+  content: none;
+}
+
+.mt-seam-composite.mt-show-source {
+  background-image: none !important;
+}
+
+.mt-seam-composite.mt-show-source .mt-bubble {
+  color: transparent !important;
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-text-stroke: 0 transparent !important;
+  text-shadow: none !important;
+  opacity: 0;
+}
+
+.mt-seam-composite.mt-show-source .mt-bubble::before {
   content: none;
 }
 

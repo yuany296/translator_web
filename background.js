@@ -4,6 +4,7 @@ if (typeof importScripts === "function") {
 
 const glossaryCore = globalThis.MangaGlossary;
 const termDiscoveryCore = globalThis.MangaTermDiscovery;
+const CONTENT_SCRIPT_FILES = Object.freeze(["kakao-reconciler.js", "kakao-pipeline.js", "content.js"]);
 
 const STORAGE_KEYS = {
   provider: "mt_provider",
@@ -132,6 +133,13 @@ const LOCAL_OCR_BUBBLE_JOIN_GAP_RATIO = 1.65;
 const TERM_EXTRACTOR_TIMEOUT_MS = 8000;
 const TERM_EXTRACTOR_COOLDOWN_MS = 5 * 60 * 1000;
 const TERM_EXTRACTOR_HEALTH_CACHE_MS = 30 * 1000;
+const LOCAL_OCR_REQUEST_TIMEOUT_MS = 60 * 1000;
+const TRANSLATION_REQUEST_TIMEOUT_MS = 30 * 1000;
+const VISION_OCR_REQUEST_TIMEOUT_MS = 12 * 1000;
+const VISION_OCR_REPAIR_BUDGET_MS = 20 * 1000;
+const MAX_CLEANED_MASKS = 200;
+const CLEANED_MASK_COORDINATE_SCALE = 10000;
+const CLEANED_MASK_FINGERPRINT_VERSION = "cleaned-masks-v1";
 const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
 const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
 const inflightTranslateByCacheKey = new Map();
@@ -545,6 +553,7 @@ async function handleOcrDataUrl(message) {
     ...normalizedMeta,
     pageSpans: normalizeObservationPageSpanMeta(message && message.imageMeta && message.imageMeta.pageSpans)
   };
+  const cleanedMasks = normalizeCleanedMasks(message && message.cleanedMasks);
   const request = {
     dataUrl,
     sourceType,
@@ -553,11 +562,22 @@ async function handleOcrDataUrl(message) {
     imageDigest,
     imageMeta,
     targetKey: String(message && message.targetKey || "").trim(),
+    cleanedMasks,
     requireCleanedImage: message && message.requireCleanedImage === true,
     // 该标志只控制易失的渲染图像产物，不参与 OCR 语义缓存指纹。
     forceCleanedImageArtifact: message && message.forceCleanedImageArtifact === true
   };
   const cacheKey = buildOcrCacheKey({ request, settings });
+  const wantsCleanedImageArtifact = Boolean(
+    settings.provider === PROVIDERS.localPaddleDeepSeek &&
+    (request.requireCleanedImage || request.forceCleanedImageArtifact)
+  );
+  // 清理图是易失渲染产物，不进入持久语义缓存指纹；但并发中的强制产物请求
+  // 不能复用一个未请求 cleaned image 的普通 OCR promise。
+  const artifactFingerprint = wantsCleanedImageArtifact
+    ? buildCleanedMasksFingerprint(cleanedMasks)
+    : "none";
+  const inflightKey = `${cacheKey}:cleaned-image:${wantsCleanedImageArtifact ? "1" : "0"}:${artifactFingerprint}`;
 
   let cached = settings.localOcrDebug ? null : await getCache(cacheKey);
   const shouldRefreshCleanedImage = Boolean(
@@ -571,8 +591,8 @@ async function handleOcrDataUrl(message) {
     return { ok: true, result: deepFreezeObservationResult(cached), cached: true };
   }
 
-  if (inflightOcrByCacheKey.has(cacheKey)) {
-    return inflightOcrByCacheKey.get(cacheKey);
+  if (inflightOcrByCacheKey.has(inflightKey)) {
+    return inflightOcrByCacheKey.get(inflightKey);
   }
 
   const task = (async () => {
@@ -586,6 +606,9 @@ async function handleOcrDataUrl(message) {
           ...cached,
           ...(isDataUrl(refreshed && refreshed.cleanedImage)
             ? { cleanedImage: refreshed.cleanedImage }
+            : {}),
+          ...(String(refreshed && refreshed.cleanedImageToken || "")
+            ? { cleanedImageToken: String(refreshed.cleanedImageToken) }
             : {})
         })
         : refreshed;
@@ -597,10 +620,10 @@ async function handleOcrDataUrl(message) {
         error: `OCR failed (${settings.provider}): ${getErrorMessage(error) || "Unknown OCR error"}`
       };
     } finally {
-      inflightOcrByCacheKey.delete(cacheKey);
+      inflightOcrByCacheKey.delete(inflightKey);
     }
   })();
-  inflightOcrByCacheKey.set(cacheKey, task);
+  inflightOcrByCacheKey.set(inflightKey, task);
   return task;
 }
 
@@ -709,6 +732,118 @@ function normalizeObservationPageSpanMeta(value) {
       pageHeight: Math.max(0, Number(entry && (entry.pageHeight || entry.sourceHeight)) || 0)
     };
   }).filter((entry) => entry.pageId && entry.canvasBox && entry.pageBox && entry.pageWidth > 0 && entry.pageHeight > 0);
+}
+
+function normalizeCleanedMasks(value) {
+  const unique = new Map();
+  // 先规范化和稳定排序，再截取协议上限；这样同一组几何不会因输入顺序
+  // 不同而生成另一份 artifact 指纹。
+  for (const rawMask of Array.isArray(value) ? value : []) {
+    const mask = normalizeCleanedMask(rawMask);
+    if (!mask) continue;
+    const key = stableSerialize(mask);
+    if (!unique.has(key)) unique.set(key, mask);
+  }
+  return [...unique.entries()]
+    .sort(([left], [right]) => left === right ? 0 : left < right ? -1 : 1)
+    .slice(0, MAX_CLEANED_MASKS)
+    .map(([, mask]) => mask);
+}
+
+function normalizeCleanedMask(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const coordinateSpace = String(value.coordinateSpace || value.coordinate_space || "").trim().toLowerCase();
+  if (coordinateSpace !== "percent") return null;
+  const box = normalizeCleanedMaskBox(value.box);
+  // 一个 mask 只表达一种明确几何；canonical outer frame 优先使用 box，
+  // 避免同时携带较窄 polygon 时由下游误选而再次漏掉半截文字。
+  const polygon = box ? null : normalizeCleanedMaskPolygon(value.polygon);
+  if (!box && !polygon) return null;
+  return {
+    coordinateSpace: "percent",
+    ...(box ? { box } : {}),
+    ...(polygon ? { polygon } : {})
+  };
+}
+
+function normalizeCleanedMaskBox(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const rawX = Number(value.x ?? value.left);
+  const rawY = Number(value.y ?? value.top);
+  const rawWidth = Number(value.w ?? value.width);
+  const rawHeight = Number(value.h ?? value.height);
+  if (![rawX, rawY, rawWidth, rawHeight].every(Number.isFinite) || rawWidth <= 0 || rawHeight <= 0) {
+    return null;
+  }
+  const left = quantizeCleanedMaskCoordinate(rawX);
+  const top = quantizeCleanedMaskCoordinate(rawY);
+  const right = quantizeCleanedMaskCoordinate(rawX + rawWidth);
+  const bottom = quantizeCleanedMaskCoordinate(rawY + rawHeight);
+  if (right <= left || bottom <= top) return null;
+  return {
+    x: left,
+    y: top,
+    w: quantizeCleanedMaskCoordinate(right - left),
+    h: quantizeCleanedMaskCoordinate(bottom - top)
+  };
+}
+
+function normalizeCleanedMaskPolygon(value) {
+  if (!Array.isArray(value)) return null;
+  const points = [];
+  const seen = new Set();
+  for (const rawPoint of value) {
+    const rawX = Number(Array.isArray(rawPoint) ? rawPoint[0] : rawPoint && rawPoint.x);
+    const rawY = Number(Array.isArray(rawPoint) ? rawPoint[1] : rawPoint && rawPoint.y);
+    if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) continue;
+    const point = {
+      x: quantizeCleanedMaskCoordinate(rawX),
+      y: quantizeCleanedMaskCoordinate(rawY)
+    };
+    const key = `${point.x},${point.y}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    points.push(point);
+  }
+  if (points.length < 3 || cleanedMaskPolygonArea(points) <= 0) return null;
+  return canonicalizeCleanedMaskPolygon(points);
+}
+
+function canonicalizeCleanedMaskPolygon(points) {
+  const rotateFromSmallestPoint = (input) => {
+    let smallestIndex = 0;
+    for (let index = 1; index < input.length; index += 1) {
+      const current = input[index];
+      const smallest = input[smallestIndex];
+      if (current.x < smallest.x || (current.x === smallest.x && current.y < smallest.y)) {
+        smallestIndex = index;
+      }
+    }
+    return [...input.slice(smallestIndex), ...input.slice(0, smallestIndex)];
+  };
+  const forward = rotateFromSmallestPoint(points);
+  const reverse = rotateFromSmallestPoint([...points].reverse());
+  return stableSerialize(forward) <= stableSerialize(reverse) ? forward : reverse;
+}
+
+function quantizeCleanedMaskCoordinate(value) {
+  const clamped = Math.min(100, Math.max(0, Number(value) || 0));
+  const quantized = Math.round(clamped * CLEANED_MASK_COORDINATE_SCALE) / CLEANED_MASK_COORDINATE_SCALE;
+  return Object.is(quantized, -0) ? 0 : quantized;
+}
+
+function cleanedMaskPolygonArea(points) {
+  let doubledArea = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    doubledArea += current.x * next.y - next.x * current.y;
+  }
+  return Math.abs(doubledArea) / 2;
+}
+
+function buildCleanedMasksFingerprint(value) {
+  return stableHash128(`${CLEANED_MASK_FINGERPRINT_VERSION}|${stableSerialize(normalizeCleanedMasks(value))}`);
 }
 
 function normalizeObservationPixelBox(value) {
@@ -859,7 +994,9 @@ async function requestLocalPaddleOcrObservations({ request, settings }) {
     mode,
     params: getLocalOcrParams(settings),
     debug: settings.localOcrDebug === true,
-    debugId: buildLocalOcrDebugId(request.targetKey || request.pageIds.join("-"), request.imageMeta)
+    debugId: buildLocalOcrDebugId(request.targetKey || request.pageIds.join("-"), request.imageMeta),
+    returnCleanedImage: request.requireCleanedImage === true || request.forceCleanedImageArtifact === true,
+    cleanedMasks: request.cleanedMasks
   });
   ocrPayload = collectSourceImageOcrPayload(ocrPayload, imageSize, request.imageMeta);
   const coordinateImageSize = {
@@ -895,6 +1032,7 @@ async function requestLocalPaddleOcrObservations({ request, settings }) {
     ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese,
     serviceCounts: ocrPayload && ocrPayload.counts,
     cleanedImage: ocrPayload && ocrPayload.cleanedImage,
+    cleanedImageToken: ocrPayload && ocrPayload.cleanedMaskToken,
     debug: settings.localOcrDebug === true
   });
 }
@@ -916,6 +1054,7 @@ function buildProviderNeutralObservationResult({
   ignoreSimplifiedChinese,
   serviceCounts,
   cleanedImage,
+  cleanedImageToken,
   debug
 }) {
   const retained = [];
@@ -977,6 +1116,7 @@ function buildProviderNeutralObservationResult({
       ...(serviceCounts && typeof serviceCounts === "object" ? serviceCounts : {})
     },
     ...(isDataUrl(cleanedImage) ? { cleanedImage } : {}),
+    ...(String(cleanedImageToken || "") ? { cleanedImageToken: String(cleanedImageToken) } : {}),
     ...(debug ? { debug: buildUnifiedOcrDebugPayload(ocrDebug, retained, { provider, sourceType: request.sourceType }) } : {})
   };
   return deepFreezeObservationResult(result);
@@ -1596,7 +1736,8 @@ async function handleTranslateDataUrl(message, sender) {
         mode: settings.localOcrMode || DEFAULT_LOCAL_OCR_MODE,
         params: getLocalOcrParams(settings),
         debug: false,
-        debugId: buildLocalOcrDebugId(targetKey, imageMeta)
+        debugId: buildLocalOcrDebugId(targetKey, imageMeta),
+        returnCleanedImage: true
       });
       cached = isDataUrl(refreshedOcr && refreshedOcr.cleanedImage)
         ? { ...cached, cleanedImage: refreshedOcr.cleanedImage }
@@ -1723,7 +1864,7 @@ async function handleTranslateDataUrl(message, sender) {
   return task;
 }
 
-async function requestOpenAICompatibleVision({ model, apiKey, baseUrl, dataUrl, prompt }) {
+async function requestOpenAICompatibleVision({ model, apiKey, baseUrl, dataUrl, prompt, requestTimeoutMs }) {
   const endpoint = buildOpenAICompatibleEndpoint(baseUrl);
 
   try {
@@ -1732,7 +1873,8 @@ async function requestOpenAICompatibleVision({ model, apiKey, baseUrl, dataUrl, 
       model,
       apiKey,
       dataUrl,
-      prompt
+      prompt,
+      requestTimeoutMs
     });
   } catch (error) {
     const reason = getErrorMessage(error);
@@ -1750,7 +1892,8 @@ async function requestOpenAICompatibleVision({ model, apiKey, baseUrl, dataUrl, 
       model,
       apiKey,
       dataUrl: jpegDataUrl,
-      prompt
+      prompt,
+      requestTimeoutMs
     });
 
     return text;
@@ -2034,40 +2177,68 @@ function buildOcrBlockId(sourceImageId, item) {
   return `block-${hashString(`${sourceImageId}|${normalizeTextForLocalPaddle(item.original_text)}|${bbox}`)}`;
 }
 
-async function requestLocalPaddleOcr({ dataUrl, baseUrl, lang, mode, params, debug, debugId }) {
+async function requestLocalPaddleOcr({
+  dataUrl,
+  baseUrl,
+  lang,
+  mode,
+  params,
+  debug,
+  debugId,
+  returnCleanedImage = false,
+  cleanedMasks = [],
+  requestTimeoutMs = LOCAL_OCR_REQUEST_TIMEOUT_MS
+}) {
   const endpoint = `${sanitizeLocalOcrBaseUrl(baseUrl)}/ocr`;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000);
+  const timeoutMs = Math.max(1, Number(requestTimeoutMs) || LOCAL_OCR_REQUEST_TIMEOUT_MS);
+  const normalizedCleanedMasks = normalizeCleanedMasks(cleanedMasks);
+  const cleanedMaskToken = returnCleanedImage === true
+    ? buildCleanedMasksFingerprint(normalizedCleanedMasks)
+    : "";
 
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
+    const { response, payload } = await fetchJsonWithTimeout(
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          image: dataUrl,
+          lang: normalizeLocalOcrLang(lang),
+          mode: normalizeLocalOcrMode(mode),
+          text_det_thresh: normalizeLocalOcrNumber(params && params.text_det_thresh, DEFAULT_LOCAL_OCR_DET_THRESH),
+          text_det_box_thresh: normalizeLocalOcrNumber(
+            params && params.text_det_box_thresh,
+            DEFAULT_LOCAL_OCR_DET_BOX_THRESH
+          ),
+          text_det_unclip_ratio: normalizeLocalOcrNumber(
+            params && params.text_det_unclip_ratio,
+            DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO
+          ),
+          text_rec_score_thresh: normalizeLocalOcrNumber(params && params.text_rec_score_thresh, 0),
+          debug: debug === true,
+          debug_id: debugId || "",
+          return_cleaned_image: returnCleanedImage === true,
+          cleaned_masks: normalizedCleanedMasks,
+          cleaned_mask_token: cleanedMaskToken
+        })
       },
-      body: JSON.stringify({
-        image: dataUrl,
-        lang: normalizeLocalOcrLang(lang),
-        mode: normalizeLocalOcrMode(mode),
-        text_det_thresh: normalizeLocalOcrNumber(params && params.text_det_thresh, DEFAULT_LOCAL_OCR_DET_THRESH),
-        text_det_box_thresh: normalizeLocalOcrNumber(
-          params && params.text_det_box_thresh,
-          DEFAULT_LOCAL_OCR_DET_BOX_THRESH
-        ),
-        text_det_unclip_ratio: normalizeLocalOcrNumber(
-          params && params.text_det_unclip_ratio,
-          DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO
-        ),
-        text_rec_score_thresh: normalizeLocalOcrNumber(params && params.text_rec_score_thresh, 0),
-        debug: debug === true,
-        debug_id: debugId || ""
-      }),
-      signal: controller.signal
-    });
-    const payload = await safeJson(response);
+      {
+        timeoutMs,
+        timeoutMessage: "本地 OCR 服务请求超时，请确认 local-ocr-service 正在运行"
+      }
+    );
     if (!response.ok) {
       const message = payload && payload.error ? payload.error : `${response.status} ${response.statusText}`;
       throw new Error(`Local OCR request failed: ${message}`);
+    }
+    if (!payload || typeof payload !== "object") {
+      throw new Error("本地 OCR 服务返回了无效 JSON");
+    }
+    if (cleanedMaskToken && String(payload.cleanedMaskToken || "") !== cleanedMaskToken) {
+      throw new Error("本地 OCR 服务未确认跨页清理范围，请重启 local-ocr-service 后重试");
     }
     console.debug("[MangaTranslator][OCR] Server response items:", payload && Array.isArray(payload.items) ? payload.items.length : 0, "boxes:", payload && Array.isArray(payload.boxes) ? payload.boxes.length : 0, "imageWidth:", payload && payload.imageWidth, "imageHeight:", payload && payload.imageHeight);
     return payload;
@@ -2080,8 +2251,6 @@ async function requestLocalPaddleOcr({ dataUrl, baseUrl, lang, mode, params, deb
       throw new Error("本地 OCR 服务不可用，请先启动 local-ocr-service");
     }
     throw error;
-  } finally {
-    clearTimeout(timeoutId);
   }
 }
 
@@ -2105,7 +2274,10 @@ async function buildLocalPaddleBubbleItems(
     console.warn("[MangaTranslator][buildBubbles] OCR returned zero items, ocrPayload keys:", Object.keys(payload || {}));
   }
   if (ocrDebug) {
-    ocrDebug.rawItems = sourceItems.map((item, index) => toDebugOcrItem(item, index, ocrImageSize, "raw"));
+    const debugSourceItems = getLocalOcrPayloadItems(payload, true);
+    ocrDebug.rawItems = debugSourceItems.map((item, index) =>
+      toDebugOcrItem(item, index, ocrImageSize, "raw")
+    );
   }
 
   let words = sourceItems
@@ -2190,7 +2362,13 @@ async function repairLowConfidenceLocalPaddleWordsWithVision(words, dataUrl, ima
 
   const usedIndexes = new Set();
   const replacements = [];
+  const deadlineAt = Date.now() + VISION_OCR_REPAIR_BUDGET_MS;
   for (const group of groups) {
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      if (debug) console.warn("[MangaTranslator] Vision OCR repair budget exhausted");
+      break;
+    }
     const box = getBaiduGroupBox(group.map((entry) => entry.item));
     if (!box) {
       continue;
@@ -2201,7 +2379,8 @@ async function repairLowConfidenceLocalPaddleWordsWithVision(words, dataUrl, ima
         dataUrl: cropDataUrl,
         apiKey: options.apiKey,
         baseUrl: options.baseUrl,
-        model: options.model
+        model: options.model,
+        requestTimeoutMs: Math.min(VISION_OCR_REQUEST_TIMEOUT_MS, remainingMs)
       });
       if (!isUsableVisionCropOcrText(recognized)) {
         continue;
@@ -2354,14 +2533,21 @@ async function cropDataUrlByImageBox(dataUrl, box, imageSize) {
   }
 }
 
-async function requestVisionCropOcr({ dataUrl, apiKey, baseUrl, model }) {
+async function requestVisionCropOcr({ dataUrl, apiKey, baseUrl, model, requestTimeoutMs }) {
   const prompt = [
     "Read the Korean text in this cropped manga image.",
     "Return JSON only: {\"text\":\"...\"}.",
     "Do not translate. Preserve Korean text, spaces, and punctuation.",
     "If the crop is unreadable or contains no Korean text, return {\"text\":\"\"}."
   ].join("\n");
-  const raw = await requestOpenAICompatibleVision({ model, apiKey, baseUrl, dataUrl, prompt });
+  const raw = await requestOpenAICompatibleVision({
+    model,
+    apiKey,
+    baseUrl,
+    dataUrl,
+    prompt,
+    requestTimeoutMs
+  });
   try {
     const payload = parseModelJson(raw);
     return cleanDecorativeSymbols(String(payload && payload.text ? payload.text : "").trim());
@@ -4752,17 +4938,29 @@ function buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl, glos
   ].join("|"))}`;
 }
 
-async function sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body) {
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`
+async function sendOpenAICompatibleTranslationRequest(
+  endpoint,
+  apiKey,
+  body,
+  requestTimeoutMs = TRANSLATION_REQUEST_TIMEOUT_MS
+) {
+  const timeoutMs = Math.max(1, Number(requestTimeoutMs) || TRANSLATION_REQUEST_TIMEOUT_MS);
+  const { response, payload } = await fetchJsonWithTimeout(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(body)
     },
-    body: JSON.stringify(body)
-  });
+    {
+      timeoutMs,
+      timeoutMessage: `Translation request timed out after ${timeoutMs}ms`
+    }
+  );
 
-  const payload = await safeJson(response);
   if (!response.ok) {
     const reason = getErrorMessage(toProviderError(payload, response.status, response.statusText, "OpenAI-compatible translation API error"));
     if (body.response_format && shouldRetryWithoutJsonResponseFormat(reason)) {
@@ -4828,7 +5026,14 @@ function formatBaiduError(payload, response) {
   return response ? `${response.status} ${response.statusText}` : "Unknown Baidu error";
 }
 
-async function sendOpenAICompatibleWithJsonFallback({ endpoint, model, apiKey, dataUrl, prompt }) {
+async function sendOpenAICompatibleWithJsonFallback({
+  endpoint,
+  model,
+  apiKey,
+  dataUrl,
+  prompt,
+  requestTimeoutMs
+}) {
   try {
     return await sendOpenAICompatibleOnce({
       endpoint,
@@ -4836,7 +5041,8 @@ async function sendOpenAICompatibleWithJsonFallback({ endpoint, model, apiKey, d
       apiKey,
       dataUrl,
       prompt,
-      useJsonResponseFormat: true
+      useJsonResponseFormat: true,
+      requestTimeoutMs
     });
   } catch (error) {
     const reason = getErrorMessage(error);
@@ -4850,7 +5056,8 @@ async function sendOpenAICompatibleWithJsonFallback({ endpoint, model, apiKey, d
       apiKey,
       dataUrl,
       prompt,
-      useJsonResponseFormat: false
+      useJsonResponseFormat: false,
+      requestTimeoutMs
     });
   }
 }
@@ -4861,7 +5068,8 @@ async function sendOpenAICompatibleOnce({
   apiKey,
   dataUrl,
   prompt,
-  useJsonResponseFormat
+  useJsonResponseFormat,
+  requestTimeoutMs = VISION_OCR_REQUEST_TIMEOUT_MS
 }) {
   const body = {
     model: model || DEFAULT_VISION_OCR_MODEL,
@@ -4893,16 +5101,23 @@ async function sendOpenAICompatibleOnce({
     body.response_format = { type: "json_object" };
   }
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`
+  const timeoutMs = Math.max(1, Number(requestTimeoutMs) || VISION_OCR_REQUEST_TIMEOUT_MS);
+  const { response, payload } = await fetchJsonWithTimeout(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(body)
     },
-    body: JSON.stringify(body)
-  });
+    {
+      timeoutMs,
+      timeoutMessage: `Vision OCR request timed out after ${timeoutMs}ms`
+    }
+  );
 
-  const payload = await safeJson(response);
   if (!response.ok) {
     throw toProviderError(payload, response.status, response.statusText, "OpenAI-compatible API error");
   }
@@ -5866,7 +6081,12 @@ function buildCacheSafeTranslationResult(value) {
   }
 
   // 清理图和逐阶段调试数据可能达到数 MB；缓存只保留重新渲染所需的翻译气泡。
-  const { cleanedImage: _cleanedImage, debug: _debug, ...cacheSafeValue } = value;
+  const {
+    cleanedImage: _cleanedImage,
+    cleanedImageToken: _cleanedImageToken,
+    debug: _debug,
+    ...cacheSafeValue
+  } = value;
   return {
     ...cacheSafeValue,
     ...(translationResultNeedsCleanedImage(value) ? { requiresCleanedImage: true } : {})
@@ -6133,7 +6353,12 @@ function buildCacheSafeOcrResult(value) {
   if (!value || typeof value !== "object") {
     return value;
   }
-  const { cleanedImage: _cleanedImage, debug: _debug, ...cacheSafeValue } = value;
+  const {
+    cleanedImage: _cleanedImage,
+    cleanedImageToken: _cleanedImageToken,
+    debug: _debug,
+    ...cacheSafeValue
+  } = value;
   const requiresCleanedImage = Boolean(
     Array.isArray(value.observations) &&
     value.observations.some((observation) => observation && observation.visual && observation.visual.bgType === "none")
@@ -6368,6 +6593,49 @@ function safeJson(response) {
   return response.json().catch(() => null);
 }
 
+async function fetchJsonWithTimeout(endpoint, init, options = {}) {
+  const timeoutMs = Math.max(1, Number(options.timeoutMs) || 1);
+  const timeoutMessage = String(options.timeoutMessage || `Request timed out after ${timeoutMs}ms`);
+  const controller = new AbortController();
+  let timeoutId = 0;
+  let timedOut = false;
+  const timeout = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  const request = (async () => {
+    const response = await fetch(endpoint, {
+      ...(init || {}),
+      signal: controller.signal
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      // Abort 必须交给超时边界处理；普通 JSON 解析失败仍沿用原先的 null 语义。
+      if (timedOut || (error && error.name === "AbortError")) {
+        throw error;
+      }
+    }
+    return { response, payload };
+  })();
+
+  try {
+    return await Promise.race([request, timeout]);
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function storageGet(keys) {
   return new Promise((resolve, reject) => {
     chrome.storage.local.get(keys, (result) => {
@@ -6416,7 +6684,7 @@ async function reinjectContentScriptsToOpenTabs() {
 
       try {
         await safeInsertCss(tabId, "styles.css");
-        await safeExecuteScript(tabId, "content.js");
+        await safeExecuteScriptFiles(tabId, CONTENT_SCRIPT_FILES);
       } catch {
         // Ignore per-tab injection errors.
       }
@@ -6445,12 +6713,12 @@ function queryAllTabs() {
   });
 }
 
-function safeExecuteScript(tabId, file) {
+function safeExecuteScriptFiles(tabId, files) {
   return new Promise((resolve, reject) => {
     chrome.scripting.executeScript(
       {
         target: { tabId, allFrames: true },
-        files: [file]
+        files: [...files]
       },
       () => {
         if (chrome.runtime.lastError) {

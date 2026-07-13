@@ -27,43 +27,10 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, blobToDataUrl };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms };`,
   context,
   { filename: "background.js" }
 );
-
-test("blob conversion has a hard deadline and ignores a late FileReader callback", async () => {
-  let reader = null;
-  context.FileReader = class HangingFileReader {
-    constructor() {
-      reader = this;
-      this.result = "data:image/png;base64,bGF0ZQ==";
-    }
-    readAsDataURL() {}
-    abort() {
-      if (typeof this.onabort === "function") this.onabort();
-    }
-  };
-
-  await assert.rejects(
-    context.__backgroundTest.blobToDataUrl(new Blob(["pending"], { type: "image/png" }), 5),
-    /timed out after 5ms/
-  );
-  assert.ok(reader);
-  assert.doesNotThrow(() => reader.onload());
-
-  context.FileReader = class CompletingFileReader {
-    readAsDataURL() {
-      this.result = "data:image/png;base64,b2s=";
-      setTimeout(() => this.onload(), 0);
-    }
-    abort() {}
-  };
-  assert.equal(
-    await context.__backgroundTest.blobToDataUrl(new Blob(["ok"], { type: "image/png" }), 50),
-    "data:image/png;base64,b2s="
-  );
-});
 
 test("term extractor enters cooldown after failure and recovers after success", () => {
   const background = context.__backgroundTest;
@@ -1158,12 +1125,83 @@ test("v22 OCR cache separates image evidence and excludes translation and render
     request,
     settings: { ...settings, ignoreSimplifiedChinese: true }
   });
+  const newCleanedMask = build({
+    request: {
+      ...request,
+      cleanedMasks: [{ coordinateSpace: "percent", box: { x: 20, y: 90, w: 50, h: 10 } }]
+    },
+    settings
+  });
 
   assert.match(first, /^mt_cache_v22:ocr:/);
   assert.equal(first, translationAndRenderChanged);
+  assert.equal(first, newCleanedMask, "render-only masks must not split semantic OCR cache entries");
   assert.notEqual(first, newImage);
   assert.notEqual(first, newRevision);
   assert.notEqual(first, newChineseFilter);
+});
+
+test("cleaned masks clamp, quantize, deduplicate, sort, and reject non-percent geometry", () => {
+  const normalize = context.__backgroundTest.normalizeCleanedMasks;
+  const duplicateBox = {
+    coordinate_space: "percent",
+    box: { left: -10, top: 89.99996, width: 30, height: 20 }
+  };
+  const masks = normalize([
+    { coordinateSpace: "pixel", box: { x: 0, y: 0, w: 5, h: 5 } },
+    { coordinateSpace: "percent", box: { x: 25, y: 30, w: 0, h: 10 } },
+    {
+      coordinateSpace: "percent",
+      polygon: [[110, -5], { x: 80.00004, y: 10 }, { x: 70, y: 30 }, { x: 110, y: -5 }]
+    },
+    duplicateBox,
+    { coordinateSpace: "percent", box: { x: -10.00001, y: 90, w: 30.00001, h: 10 } }
+  ]);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(masks)), [
+    {
+      coordinateSpace: "percent",
+      box: { x: 0, y: 90, w: 20, h: 10 }
+    },
+    {
+      coordinateSpace: "percent",
+      polygon: [{ x: 70, y: 30 }, { x: 100, y: 0 }, { x: 80, y: 10 }]
+    }
+  ]);
+});
+
+test("cleaned mask normalization is order-stable and caps the artifact contract at 200 masks", () => {
+  const background = context.__backgroundTest;
+  const inputs = Array.from({ length: 205 }, (_value, index) => ({
+    coordinateSpace: "percent",
+    box: {
+      x: index % 100,
+      y: Math.floor(index / 100),
+      w: 0.25,
+      h: 0.25
+    }
+  }));
+  const forward = background.normalizeCleanedMasks(inputs);
+  const reverse = background.normalizeCleanedMasks([...inputs].reverse());
+
+  assert.equal(forward.length, 200);
+  assert.deepEqual(forward, reverse);
+  assert.equal(
+    background.buildCleanedMasksFingerprint([...inputs, inputs[0]]),
+    background.buildCleanedMasksFingerprint([...inputs].reverse())
+  );
+  assert.notEqual(
+    background.buildCleanedMasksFingerprint(inputs),
+    background.buildCleanedMasksFingerprint([{ coordinateSpace: "percent", box: { x: 1, y: 1, w: 1, h: 1 } }])
+  );
+  const polygon = [{ x: 10, y: 10 }, { x: 80, y: 20 }, { x: 70, y: 60 }, { x: 20, y: 70 }];
+  assert.equal(
+    background.buildCleanedMasksFingerprint([{ coordinateSpace: "percent", polygon }]),
+    background.buildCleanedMasksFingerprint([{
+      coordinateSpace: "percent",
+      polygon: [polygon[2], polygon[1], polygon[0], polygon[3]]
+    }])
+  );
 });
 
 test("v22 semantic fingerprints do not inherit known 32-bit hash collisions", () => {
@@ -1384,10 +1422,12 @@ test("OCR cache removes cleaned image bytes while retaining the refresh requirem
     observations: [{ id: "obs-a", visual: { bgType: "none" } }],
     filteredObservations: [],
     cleanedImage: "data:image/png;base64,QUJDRA==",
+    cleanedImageToken: "artifact-token",
     debug: { large: true }
   });
 
   assert.equal(safe.cleanedImage, undefined);
+  assert.equal(safe.cleanedImageToken, undefined);
   assert.equal(safe.debug, undefined);
   assert.equal(safe.requiresCleanedImage, true);
 
@@ -1423,7 +1463,8 @@ test("warm OCR cache refreshes only required cleaned artifacts and preserves cac
         }],
         filteredObservations: [],
         edgeSignals: {},
-        cleanedImage: `data:image/png;base64,${call === 1 ? "QUJDRA==" : "RUZHSA=="}`
+        cleanedImage: `data:image/png;base64,${call === 1 ? "QUJDRA==" : "RUZHSA=="}`,
+        cleanedImageToken: `artifact-${pageId}-${call}`
       };
     }
   });
@@ -1446,6 +1487,7 @@ test("warm OCR cache refreshes only required cleaned artifacts and preserves cac
   assert.equal(callsByPage.get("page-solid"), 2);
   assert.equal(forcedSolidArtifact.result.observations[0].id, "page-solid-stable");
   assert.match(forcedSolidArtifact.result.cleanedImage, /^data:image\/png;base64,/);
+  assert.equal(forcedSolidArtifact.result.cleanedImageToken, "artifact-page-solid-2");
 
   const noneRequest = {
     dataUrl: "data:image/png;base64,Tk9ORQ==",
@@ -1584,6 +1626,338 @@ test("concurrent canonical fingerprints share one external request and warm cach
   assert.ok(Object.keys(stored).some((key) => key.startsWith("mt_cache_v22:translation:")));
 });
 
+test("OpenAI-compatible text translation aborts a stalled fetch within its request deadline", async () => {
+  const originalFetch = context.fetch;
+  context.fetch = () => new Promise(() => {});
+  try {
+    const outcome = await Promise.race([
+      context.__backgroundTest.sendOpenAICompatibleTranslationRequest(
+        "https://api.example.test/chat/completions",
+        "translation-key",
+        { model: "model-a", messages: [] },
+        20
+      ).then(
+        () => "resolved",
+        (error) => `rejected:${error && error.message}`
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still-pending"), 120))
+    ]);
+
+    assert.match(outcome, /^rejected:.*timed out/i);
+  } finally {
+    context.fetch = originalFetch;
+  }
+});
+
+test("OpenAI-compatible text translation timeout includes stalled JSON body reads", async () => {
+  const originalFetch = context.fetch;
+  let requestSignal = null;
+  context.fetch = async (_url, init) => {
+    requestSignal = init.signal;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("body read aborted");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      })
+    };
+  };
+  try {
+    const outcome = await Promise.race([
+      context.__backgroundTest.sendOpenAICompatibleTranslationRequest(
+        "https://api.example.test/chat/completions",
+        "translation-key",
+        { model: "model-a", messages: [] },
+        20
+      ).then(
+        () => "resolved",
+        (error) => `rejected:${error && error.message}`
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still-pending"), 120))
+    ]);
+
+    assert.match(outcome, /^rejected:.*timed out/i);
+    assert.equal(requestSignal && requestSignal.aborted, true);
+  } finally {
+    context.fetch = originalFetch;
+  }
+});
+
+test("low-confidence Vision OCR aborts a stalled fetch within its request deadline", async () => {
+  const originalFetch = context.fetch;
+  context.fetch = () => new Promise(() => {});
+  try {
+    const outcome = await Promise.race([
+      context.__backgroundTest.sendOpenAICompatibleOnce({
+        endpoint: "https://vision.example.test/chat/completions",
+        model: "vision-model",
+        apiKey: "vision-key",
+        dataUrl: "data:image/png;base64,AQID",
+        prompt: "read text",
+        useJsonResponseFormat: true,
+        requestTimeoutMs: 20
+      }).then(
+        () => "resolved",
+        (error) => `rejected:${error && error.message}`
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still-pending"), 120))
+    ]);
+
+    assert.match(outcome, /^rejected:.*timed out/i);
+  } finally {
+    context.fetch = originalFetch;
+  }
+});
+
+test("low-confidence Vision OCR timeout includes stalled JSON body reads", async () => {
+  const originalFetch = context.fetch;
+  let requestSignal = null;
+  context.fetch = async (_url, init) => {
+    requestSignal = init.signal;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("body read aborted");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      })
+    };
+  };
+  try {
+    const outcome = await Promise.race([
+      context.__backgroundTest.sendOpenAICompatibleOnce({
+        endpoint: "https://vision.example.test/chat/completions",
+        model: "vision-model",
+        apiKey: "vision-key",
+        dataUrl: "data:image/png;base64,AQID",
+        prompt: "read text",
+        useJsonResponseFormat: true,
+        requestTimeoutMs: 20
+      }).then(
+        () => "resolved",
+        (error) => `rejected:${error && error.message}`
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still-pending"), 120))
+    ]);
+
+    assert.match(outcome, /^rejected:.*timed out/i);
+    assert.equal(requestSignal && requestSignal.aborted, true);
+  } finally {
+    context.fetch = originalFetch;
+  }
+});
+
+test("local OCR forwards the cleaned-image artifact flag to the service", async () => {
+  const originalFetch = context.fetch;
+  const requestBodies = [];
+  context.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    requestBodies.push(body);
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        items: [],
+        imageWidth: 1,
+        imageHeight: 1,
+        ...(body.cleaned_mask_token ? { cleanedMaskToken: body.cleaned_mask_token } : {})
+      })
+    };
+  };
+  const baseRequest = {
+    dataUrl: "data:image/png;base64,AQID",
+    baseUrl: "http://127.0.0.1:8765",
+    lang: "korean",
+    mode: "fast",
+    params: {},
+    debug: false,
+    debugId: "artifact-wire-test"
+  };
+
+  try {
+    await context.__backgroundTest.requestLocalPaddleOcr(baseRequest);
+    await context.__backgroundTest.requestLocalPaddleOcr({
+      ...baseRequest,
+      returnCleanedImage: true
+    });
+    await context.__backgroundTest.requestLocalPaddleOcr({
+      ...baseRequest,
+      returnCleanedImage: true,
+      cleanedMasks: [{ coordinateSpace: "percent", box: { x: 20, y: 90, w: 50, h: 10 } }]
+    });
+  } finally {
+    context.fetch = originalFetch;
+  }
+
+  assert.equal(requestBodies.length, 3);
+  assert.equal(requestBodies[0].return_cleaned_image, false);
+  assert.equal(requestBodies[0].cleaned_mask_token, "");
+  assert.equal(requestBodies[1].return_cleaned_image, true);
+  assert.deepEqual(requestBodies[1].cleaned_masks, []);
+  assert.match(requestBodies[1].cleaned_mask_token, /^[a-f0-9]{32}$/);
+  assert.equal(requestBodies[2].return_cleaned_image, true);
+  assert.deepEqual(requestBodies[2].cleaned_masks, [
+    { coordinateSpace: "percent", box: { x: 20, y: 90, w: 50, h: 10 } }
+  ]);
+  assert.match(requestBodies[2].cleaned_mask_token, /^[a-f0-9]{32}$/);
+  assert.notEqual(requestBodies[1].cleaned_mask_token, requestBodies[2].cleaned_mask_token);
+});
+
+test("local OCR rejects a cleaned artifact when an old service does not acknowledge artifact support", async () => {
+  const originalFetch = context.fetch;
+  context.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    json: async () => ({
+      items: [],
+      imageWidth: 1,
+      imageHeight: 1,
+      cleanedImage: "data:image/png;base64,AQID"
+    })
+  });
+  try {
+    await assert.rejects(
+      context.__backgroundTest.requestLocalPaddleOcr({
+        dataUrl: "data:image/png;base64,AQID",
+        baseUrl: "http://127.0.0.1:8765",
+        lang: "korean",
+        mode: "fast",
+        params: {},
+        debug: false,
+        debugId: "old-service-artifact-test",
+        returnCleanedImage: true
+      }),
+      /重启 local-ocr-service/
+    );
+  } finally {
+    context.fetch = originalFetch;
+  }
+});
+
+test("local OCR body timeout rejects instead of returning an empty authoritative payload", async () => {
+  const originalFetch = context.fetch;
+  let requestSignal = null;
+  context.fetch = async (_url, init) => {
+    requestSignal = init.signal;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("body read aborted");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      })
+    };
+  };
+
+  try {
+    const outcome = await Promise.race([
+      context.__backgroundTest.requestLocalPaddleOcr({
+        dataUrl: "data:image/png;base64,AQID",
+        baseUrl: "http://127.0.0.1:8765",
+        lang: "korean",
+        mode: "fast",
+        params: {},
+        debug: true,
+        debugId: "stalled-local-body",
+        requestTimeoutMs: 20
+      }).then(
+        (value) => `resolved:${JSON.stringify(value)}`,
+        (error) => `rejected:${error && error.message}`
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still-pending"), 120))
+    ]);
+
+    assert.match(outcome, /^rejected:.*OCR.*超时/i);
+    assert.equal(requestSignal && requestSignal.aborted, true);
+  } finally {
+    context.fetch = originalFetch;
+  }
+});
+
+test("local OCR rejects an invalid successful JSON body instead of treating it as no text", async () => {
+  const originalFetch = context.fetch;
+  context.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    json: async () => {
+      throw new SyntaxError("invalid JSON");
+    }
+  });
+
+  try {
+    await assert.rejects(
+      () => context.__backgroundTest.requestLocalPaddleOcr({
+        dataUrl: "data:image/png;base64,AQID",
+        baseUrl: "http://127.0.0.1:8765",
+        lang: "korean",
+        mode: "fast",
+        params: {},
+        debug: false,
+        debugId: "invalid-local-json",
+        requestTimeoutMs: 100
+      }),
+      /无效 JSON/
+    );
+  } finally {
+    context.fetch = originalFetch;
+  }
+});
+
+test("local OCR debug preserves raw detector boxes even when final OCR items are empty", async () => {
+  const debug = {
+    rawItems: [],
+    filteredItems: [],
+    mergedItems: [],
+    filterReasons: []
+  };
+  const items = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    {
+      items: [],
+      rawItems: [{
+        text: "희미한글",
+        score: 0.2,
+        box: { left: 10, top: 20, width: 80, height: 24 },
+        lang: "korean",
+        variant: "perspective_fast_raw"
+      }],
+      imageWidth: 160,
+      imageHeight: 80
+    },
+    { width: 160, height: 80 },
+    "",
+    false,
+    null,
+    context.__backgroundTest.getDefaultOcrTuning(),
+    debug
+  );
+
+  assert.deepEqual(Array.from(items), []);
+  assert.equal(debug.rawItems.length, 1);
+  assert.equal(debug.rawItems[0].text, "희미한글");
+  assert.deepEqual(JSON.parse(JSON.stringify(debug.rawItems[0].rawBox)), {
+    left: 10,
+    top: 20,
+    width: 80,
+    height: 24
+  });
+});
+
 test("legacy combined adapter keeps its bubble wire shape and fails the whole request on a missing translation", async () => {
   const background = context.__backgroundTest;
   installMemoryStorage({});
@@ -1691,5 +2065,175 @@ test("identical OCR fingerprints share one provider request and then use the war
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
   assert.equal(warm.cached, true);
+  assert.equal(providerCalls, 1);
+});
+
+test("a forced cleaned-image OCR request does not reuse a plain in-flight request", async () => {
+  const background = context.__backgroundTest;
+  installMemoryStorage({
+    mt_provider: "local_paddle_deepseek",
+    mt_local_ocr_base_url: "http://127.0.0.1:8765"
+  });
+  let markFirstStarted;
+  let releaseRequests;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  const requestGate = new Promise((resolve) => { releaseRequests = resolve; });
+  const artifactFlags = [];
+  background.setBackgroundTestHooks({
+    requestProviderNeutralOcr: async ({ request, settings }) => {
+      artifactFlags.push(request.requireCleanedImage === true || request.forceCleanedImageArtifact === true);
+      markFirstStarted();
+      await requestGate;
+      return {
+        provider: settings.provider,
+        sourceType: request.sourceType,
+        pageIds: request.pageIds,
+        imageRevisionByPage: request.imageRevisionByPage,
+        observations: [],
+        filteredObservations: [],
+        edgeSignals: { hasAny: false },
+        ...(request.requireCleanedImage ? { cleanedImage: "data:image/png;base64,Q0xFQU4=" } : {})
+      };
+    }
+  });
+  const request = {
+    dataUrl: "data:image/png;base64,T0NSLUFSVElGQUNU",
+    sourceType: "page",
+    pageIds: ["page-artifact-inflight"],
+    imageRevision: "revision-artifact-inflight"
+  };
+
+  const plain = background.handleOcrDataUrl(request);
+  await firstStarted;
+  const forced = background.handleOcrDataUrl({
+    ...request,
+    requireCleanedImage: true,
+    forceCleanedImageArtifact: true
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseRequests();
+  const [plainResult, forcedResult] = await Promise.all([plain, forced]);
+  background.setBackgroundTestHooks(null);
+
+  assert.equal(plainResult.ok, true);
+  assert.equal(forcedResult.ok, true);
+  assert.deepEqual(artifactFlags.sort(), [false, true]);
+  assert.match(forcedResult.result.cleanedImage, /^data:image\/png;base64,/);
+});
+
+test("forced cleaned-image requests with different canonical masks do not share an artifact", async () => {
+  const background = context.__backgroundTest;
+  installMemoryStorage({
+    mt_provider: "local_paddle_deepseek",
+    mt_local_ocr_base_url: "http://127.0.0.1:8765"
+  });
+  let releaseRequests;
+  const requestGate = new Promise((resolve) => { releaseRequests = resolve; });
+  const receivedMasks = [];
+  background.setBackgroundTestHooks({
+    requestProviderNeutralOcr: async ({ request, settings }) => {
+      receivedMasks.push(request.cleanedMasks);
+      await requestGate;
+      return {
+        provider: settings.provider,
+        sourceType: request.sourceType,
+        pageIds: request.pageIds,
+        imageRevisionByPage: request.imageRevisionByPage,
+        observations: [],
+        filteredObservations: [],
+        edgeSignals: { hasAny: false },
+        cleanedImage: "data:image/png;base64,Q0xFQU4="
+      };
+    }
+  });
+  const base = {
+    dataUrl: "data:image/png;base64,TUFTSy1JTkZMSUdIVA==",
+    sourceType: "page",
+    pageIds: ["page-mask-inflight"],
+    imageRevision: "revision-mask-inflight",
+    requireCleanedImage: true,
+    forceCleanedImageArtifact: true
+  };
+  const firstMasks = [{ coordinateSpace: "percent", box: { x: 20, y: 90, w: 40, h: 10 } }];
+  const secondMasks = [{ coordinateSpace: "percent", box: { x: 20, y: 85, w: 40, h: 15 } }];
+
+  const first = background.handleOcrDataUrl({ ...base, cleanedMasks: firstMasks });
+  const second = background.handleOcrDataUrl({ ...base, cleanedMasks: secondMasks });
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseRequests();
+  const results = await Promise.all([first, second]);
+  background.setBackgroundTestHooks(null);
+
+  assert.equal(results.every((result) => result.ok), true);
+  assert.equal(receivedMasks.length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(receivedMasks)), [firstMasks, secondMasks]);
+});
+
+test("equivalent cleaned masks share one artifact request after normalization", async () => {
+  const background = context.__backgroundTest;
+  installMemoryStorage({
+    mt_provider: "local_paddle_deepseek",
+    mt_local_ocr_base_url: "http://127.0.0.1:8765"
+  });
+  let providerCalls = 0;
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  let releaseRequest;
+  const requestGate = new Promise((resolve) => { releaseRequest = resolve; });
+  background.setBackgroundTestHooks({
+    requestProviderNeutralOcr: async ({ request, settings }) => {
+      providerCalls += 1;
+      if (providerCalls === 1) markFirstStarted();
+      await requestGate;
+      return {
+        provider: settings.provider,
+        sourceType: request.sourceType,
+        pageIds: request.pageIds,
+        imageRevisionByPage: request.imageRevisionByPage,
+        observations: [],
+        filteredObservations: [],
+        edgeSignals: { hasAny: false },
+        cleanedImage: "data:image/png;base64,Q0xFQU4="
+      };
+    }
+  });
+  const base = {
+    dataUrl: "data:image/png;base64,TUFTSy1TSEFSRUQ=",
+    sourceType: "page",
+    pageIds: ["page-mask-shared"],
+    imageRevision: "revision-mask-shared",
+    requireCleanedImage: true,
+    forceCleanedImageArtifact: true
+  };
+  const firstMasks = [
+    { coordinateSpace: "percent", box: { x: 40, y: 90, w: 20, h: 10 } },
+    { coordinateSpace: "percent", box: { x: 20, y: 85, w: 50, h: 15 } }
+  ];
+  const equivalentMasks = [
+    { coordinate_space: "percent", box: { left: 20, top: 85, width: 50, height: 15 } },
+    { coordinateSpace: "percent", box: { x: 40.00001, y: 90, w: 19.99999, h: 10 } },
+    firstMasks[0]
+  ];
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(background.normalizeCleanedMasks(firstMasks))),
+    JSON.parse(JSON.stringify(background.normalizeCleanedMasks(equivalentMasks)))
+  );
+  assert.equal(
+    background.buildCleanedMasksFingerprint(firstMasks),
+    background.buildCleanedMasksFingerprint(equivalentMasks)
+  );
+
+  const first = background.handleOcrDataUrl({ ...base, cleanedMasks: firstMasks });
+  await firstStarted;
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = background.handleOcrDataUrl({ ...base, cleanedMasks: equivalentMasks });
+  // 两次调用都要先完成异步 SHA-256/storage 读取，再进入 inflight map；
+  // 保持首个 provider 请求挂起，给第二次调用足够时间加入同一 promise。
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  releaseRequest();
+  const results = await Promise.all([first, second]);
+  background.setBackgroundTestHooks(null);
+
+  assert.equal(results.every((result) => result.ok), true);
   assert.equal(providerCalls, 1);
 });

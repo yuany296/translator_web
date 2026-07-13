@@ -48,3 +48,28 @@ test("Kakao 覆盖层使用页面坐标系跟随原图滚动", () => {
   assert.match(layerRule, /position:\s*absolute/);
   assert.match(rootRule, /position:\s*absolute/);
 });
+
+test("seam composite is clipped only by its two page-local windows", () => {
+  const css = readFileSync(path.resolve(projectRoot, "styles.css"), "utf8");
+  const ruleFor = (selector) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return css.match(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]+)\\}`, "m"))?.[1] ?? "";
+  };
+  const rootRule = ruleFor(".mt-overlay-root");
+  const windowRule = ruleFor(".mt-seam-window");
+  const compositeRule = ruleFor(".mt-seam-composite");
+  const noneRule = ruleFor(".mt-seam-composite .mt-seam-bubble.mt-bg-none");
+  const sourceRule = ruleFor(".mt-seam-composite.mt-show-source");
+  const sourceBubbleRule = ruleFor(".mt-seam-composite.mt-show-source .mt-bubble");
+
+  assert.match(rootRule, /overflow:\s*visible/);
+  assert.match(windowRule, /position:\s*absolute/);
+  assert.match(windowRule, /inset:\s*0/);
+  assert.match(windowRule, /overflow:\s*hidden/);
+  assert.match(compositeRule, /position:\s*absolute/);
+  assert.match(compositeRule, /transform-origin:\s*0\s+0/);
+  assert.match(compositeRule, /background-size:\s*100%\s+100%/);
+  assert.match(noneRule, /background-image:\s*none/);
+  assert.match(sourceRule, /background-image:\s*none\s*!important/);
+  assert.match(sourceBubbleRule, /opacity:\s*0/);
+});

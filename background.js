@@ -98,7 +98,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v9:";
+const CACHE_PREFIX = "mt_cache_v13:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -2694,7 +2694,8 @@ function getOcrWordDropReason(item, imageSize, tuning = getDefaultOcrTuning()) {
   if (box.width < Number(tuning.minBoxWidth || 0) || box.height < Number(tuning.minBoxHeight || 0)) {
     return "too-small-dimension";
   }
-  if (aspectRatio > Number(tuning.maxAspectRatio || 100)) {
+  const maxAspectRatio = Number(tuning.maxAspectRatio || 100);
+  if (aspectRatio > maxAspectRatio && !isReadableHorizontalOcrLine(item, box, text, maxAspectRatio)) {
     return "bad-aspect-ratio";
   }
   if (scriptChars <= 1 && areaRatio < 0.003 && confidence < 0.98) {
@@ -2704,6 +2705,25 @@ function getOcrWordDropReason(item, imageSize, tuning = getDefaultOcrTuning()) {
     return "weak-script-confidence";
   }
   return "";
+}
+
+function isReadableHorizontalOcrLine(item, box, text, maxAspectRatio) {
+  if (!box || !(box.width > box.height)) {
+    return false;
+  }
+  const confidence = Number(item && (item.confidence || item.score) || 0);
+  const readableChars = normalizeTextForLocalPaddle(text).length;
+  const aspectRatio = box.width / Math.max(1, box.height);
+  const configuredLimit = Math.max(1, Number(maxAspectRatio) || 1);
+
+  // 长横排句子的宽高比天然会超过普通气泡阈值；使用字符密度和置信度确认它是完整文本行，
+  // 同时继续拒绝字符很少的细长装饰框或检测噪声。
+  return (
+    confidence >= 0.72 &&
+    readableChars >= 12 &&
+    readableChars / aspectRatio >= 0.8 &&
+    aspectRatio <= configuredLimit * 1.75
+  );
 }
 
 function getFinalCandidateDropReason(item, imageSize, tuning, engine) {

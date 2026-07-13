@@ -53,7 +53,7 @@
   const PRETRANSLATE_AHEAD_COUNT = 6;
   const RUNTIME_OWNER_ATTRIBUTE = "data-manga-translator-runtime-owner";
   const RUNTIME_FEATURE_ATTRIBUTE = "data-manga-translator-feature-version";
-  const RUNTIME_FEATURE_VERSION = "visual-dedupe-v1";
+  const RUNTIME_FEATURE_VERSION = "visual-dedupe-v2";
   const MAX_EMBEDDED_IMAGE_CACHE = 40;
   const STATUS_INFO_THROTTLE_MS = 1200;
   const CONTEXT_INVALIDATED_RE = /extension context invalidated/i;
@@ -130,6 +130,7 @@
     /** Kakao 管线 Store（由 kakao-pipeline.js 提供） */
     kakaoStore: null,
     lastRecoveryAt: 0,
+    lastKakaoVisualDedupeAt: 0,
     syncRaf: 0,
     overlayFrameRaf: 0,
     syncInterval: 0,
@@ -435,6 +436,7 @@
     for (const overlayState of state.overlaysById.values()) {
       syncOverlayPosition(overlayState);
     }
+    syncKakaoVisualDuplicateBubbles();
     state.overlayFrameRaf = window.requestAnimationFrame(overlayFrameSyncTick);
   }
 
@@ -2512,7 +2514,7 @@
     state.overlayLayer.appendChild(root);
     state.overlaysById.set(targetId, overlayState);
     syncOverlayPosition(overlayState);
-    pruneKakaoVisualDuplicateBubbles();
+    syncKakaoVisualDuplicateBubbles(true);
     ensureOverlayFrameSync();
     logOcrDebugMapping(overlayState, result);
     if (result && result.debug) {
@@ -2540,14 +2542,31 @@
     });
   }
 
-  function pruneKakaoVisualDuplicateBubbles() {
+  function syncKakaoVisualDuplicateBubbles(force = false) {
     if (!IS_KAKAOPAGE_READER || !KP || typeof KP.selectKakaoVisualDuplicateLoser !== "function") {
       return;
     }
+    const now = performance.now();
+    if (!force && now - state.lastKakaoVisualDedupeAt < 120) {
+      return;
+    }
+    state.lastKakaoVisualDedupeAt = now;
+
+    // 每次按当前视口重新计算。之前隐藏的 overflow 在 owner 离开视口后必须恢复，
+    // 否则滚动时会把唯一仍可见的译文永久留在隐藏状态。
+    state.overlaysById.forEach((overlayState) => {
+      if (!overlayState || !Array.isArray(overlayState.bubbleNodes)) return;
+      overlayState.bubbleNodes.forEach((node) => {
+        if (!node || node.dataset.mtVisualDedupeHidden !== "true") return;
+        node.style.removeProperty("visibility");
+        delete node.dataset.mtVisualDedupeHidden;
+      });
+    });
 
     const candidates = [];
     state.overlaysById.forEach((overlayState) => {
       if (!overlayState || !overlayState.root || !overlayState.root.isConnected) return;
+      if (overlayState.root.style.display === "none") return;
       overlayState.bubbleNodes.forEach((node) => {
         if (!node || !node.isConnected) return;
         const rect = node.getBoundingClientRect();
@@ -2559,6 +2578,8 @@
             scopeKey: overlayState.targetKey,
             regionType: String(node.dataset.regionType || ""),
             stitchOverflow: node.dataset.stitchOverflow === "true",
+            originalText: String(node.dataset.original || ""),
+            translatedText: String(node.dataset.translated || ""),
             box: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
           }
         });
@@ -2575,14 +2596,9 @@
         const loserSide = KP.selectKakaoVisualDuplicateLoser(left.descriptor, right.descriptor);
         if (!loserSide) continue;
         const loser = loserSide === "left" ? left : right;
-        loser.node.remove();
+        loser.node.style.visibility = "hidden";
+        loser.node.dataset.mtVisualDedupeHidden = "true";
         removed.add(loser.node);
-        loser.overlayState.bubbleNodes = loser.overlayState.bubbleNodes.filter((node) => node !== loser.node);
-        loser.overlayState.bubbleCount = loser.overlayState.bubbleNodes.length;
-        console.debug("[MangaTranslator][KakaoPage] pruned rendered overflow duplicate", {
-          targetKey: loser.overlayState.targetKey,
-          original: loser.node.dataset.original || ""
-        });
         if (loser === left) break;
       }
     }
@@ -3427,6 +3443,7 @@
       for (const overlayState of state.overlaysById.values()) {
         syncOverlayPosition(overlayState);
       }
+      syncKakaoVisualDuplicateBubbles();
       ensureOverlayFrameSync();
     }
 

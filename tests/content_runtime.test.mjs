@@ -570,10 +570,13 @@ test("cross-page dedupe removes superseded bubbles from the source-scoped cache"
   );
 });
 
-test("rendered Kakao overlays prune an overflow copy after final layout", () => {
-  assert.match(contentSource, /syncOverlayPosition\(overlayState\);\s*pruneKakaoVisualDuplicateBubbles\(\);/);
+test("rendered Kakao overlays dynamically hide and restore visual duplicate copies", () => {
+  assert.match(contentSource, /function overlayFrameSyncTick\(\)[\s\S]*?syncKakaoVisualDuplicateBubbles\(\);/);
+  assert.match(contentSource, /syncKakaoVisualDuplicateBubbles\(true\);/);
   assert.match(contentSource, /KP\.selectKakaoVisualDuplicateLoser\(/);
-  assert.match(contentSource, /loser\.overlayState\.bubbleNodes = loser\.overlayState\.bubbleNodes\.filter/);
+  assert.match(contentSource, /node\.style\.removeProperty\("visibility"\);/);
+  assert.match(contentSource, /loser\.node\.style\.visibility = "hidden";/);
+  assert.doesNotMatch(contentSource, /loser\.node\.remove\(\)/);
   assert.match(contentSource, /root\.setAttribute\(RUNTIME_FEATURE_ATTRIBUTE, RUNTIME_FEATURE_VERSION\)/);
 });
 

@@ -570,11 +570,68 @@ test("findKakaoVerticalOverlap returns null for different widths", () => {
   assert.equal(P.findKakaoVerticalOverlap(w1, w2), null);
 });
 
+test("findKakaoVerticalOverlap rejects sparse text mismatches on white panels", () => {
+  const width = 96;
+  const height = 200;
+  const previous = new Uint8Array(width * height).fill(255);
+  const current = new Uint8Array(width * height).fill(255);
+  const drawTextStroke = (pixels, row, left, right) => {
+    for (let y = row; y < row + 2; y += 1) {
+      for (let x = left; x < right; x += 1) {
+        pixels[y * width + x] = 20;
+      }
+    }
+  };
+  [[44, 8, 42], [84, 18, 58], [124, 28, 72], [164, 10, 66]]
+    .forEach(([row, left, right]) => drawTextStroke(previous, row, left, right));
+  [[30, 35, 82], [70, 5, 30], [110, 42, 90], [150, 20, 48]]
+    .forEach(([row, left, right]) => drawTextStroke(current, row, left, right));
+
+  const overlap = P.findKakaoVerticalOverlap(
+    { width, height, gray: previous },
+    { width, height, gray: current }
+  );
+
+  assert.notEqual(overlap, null);
+  assert.equal(overlap.accepted, false, JSON.stringify(overlap));
+});
+
+test("findKakaoVerticalOverlap accepts matching sparse text on white panels", () => {
+  const width = 96;
+  const height = 200;
+  const previous = new Uint8Array(width * height).fill(255);
+  const current = new Uint8Array(width * height).fill(255);
+  const drawTextStroke = (pixels, row) => {
+    for (let y = row; y < row + 2; y += 1) {
+      for (let x = 12; x < 52; x += 1) {
+        pixels[y * width + x] = 20;
+      }
+    }
+  };
+  [90, 130, 170].forEach((row) => drawTextStroke(previous, row));
+  [10, 50, 90].forEach((row) => drawTextStroke(current, row));
+
+  const overlap = P.findKakaoVerticalOverlap(
+    { width, height, gray: previous },
+    { width, height, gray: current }
+  );
+
+  assert.notEqual(overlap, null);
+  assert.equal(overlap.accepted, true);
+  assert.ok(overlap.informativeMae <= 1);
+});
+
 test("hasUsableKakaoStripCaptureRect validates minimum dimensions", () => {
   assert.equal(P.hasUsableKakaoStripCaptureRect(null), false);
   assert.equal(P.hasUsableKakaoStripCaptureRect({ width: 100, height: 100 }), false);
   assert.equal(P.hasUsableKakaoStripCaptureRect({ width: 180, height: 180 }), true);
   assert.equal(P.hasUsableKakaoStripCaptureRect({ width: 760, height: 200 }), true);
+});
+
+test("overlap crop cannot complete a full page from a tiny unique suffix", () => {
+  assert.equal(P.hasUsefulKakaoOverlapCrop(857, 143, 1000), false);
+  assert.equal(P.hasUsefulKakaoOverlapCrop(750, 250, 1000), true);
+  assert.equal(P.hasUsefulKakaoOverlapCrop(100, 120, 500), false);
 });
 
 /* =================================================================
@@ -811,6 +868,36 @@ test("visual duplicate selection keeps the owner box over an overflow copy", () 
   assert.equal(P.selectKakaoVisualDuplicateLoser(overflow, owner), "left");
   assert.equal(P.selectKakaoVisualDuplicateLoser(owner, { ...overflow, scopeKey: owner.scopeKey }), null);
   assert.equal(P.selectKakaoVisualDuplicateLoser(owner, { ...overflow, regionType: "effect_text" }), null);
+});
+
+test("visual duplicate selection removes the less complete of two related overflow copies", () => {
+  const shorter = {
+    scopeKey: "page-overflow-a",
+    regionType: "effect_text",
+    stitchOverflow: true,
+    originalText: "이쪽 방향이어야",
+    translatedText: "应该是方向",
+    box: { left: 730, top: 520, width: 280, height: 150 }
+  };
+  const complete = {
+    scopeKey: "page-overflow-b",
+    regionType: "effect_text",
+    stitchOverflow: true,
+    originalText: "이쪽 방향이어야 한다.",
+    translatedText: "应该是这个方向。",
+    box: { left: 738, top: 526, width: 275, height: 148 }
+  };
+
+  assert.equal(P.selectKakaoVisualDuplicateLoser(shorter, complete), "left");
+  assert.equal(P.selectKakaoVisualDuplicateLoser(complete, shorter), "right");
+  assert.equal(
+    P.selectKakaoVisualDuplicateLoser(shorter, {
+      ...complete,
+      originalText: "완전히 다른 대사",
+      translatedText: "完全不同的对白"
+    }),
+    null
+  );
 });
 
 test("superseded Kakao entry keeps the source-scoped cache identity", async () => {

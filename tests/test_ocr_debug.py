@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "local-ocr-service"))
 from ocr_debug_common import count_hangul, predict_ocr, prepare_paddleocr_import, summarize_items
 
 FIXTURE = ROOT / "tests" / "fixtures" / "ocr" / "korean_comment.png"
+RECOVERY_FIXTURE = ROOT / "tests" / "fixtures" / "ocr" / "korean_comment_six_lines.png"
 VERTICAL_FIXTURE = ROOT / "tests" / "fixtures" / "ocr" / "vertical_korean_photo.png"
 PROBLEM_FIXTURE_DIR = ROOT / "image" / "promblems"
 PARAMS = {
@@ -49,6 +50,21 @@ def build_visual_region_fixture(background: str, panel: str, ink: str) -> tuple[
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue(), items
+
+
+def build_detection(server, left: float, top: float, width: float, height: float) -> dict:
+    polygon = [
+        [left, top],
+        [left + width, top],
+        [left + width, top + height],
+        [left, top + height],
+    ]
+    return {
+        "polygon": polygon,
+        "box": server._polygon_to_box(polygon),
+        "det_score": 0.9,
+        "rotation_deg": 0.0,
+    }
 
 
 def test_visual_region_analysis_groups_three_lines_in_one_colored_panel() -> None:
@@ -196,6 +212,37 @@ def test_visual_region_analysis_prefers_near_scale_when_far_metrics_fail(
     assert region["sampling_strategy"] == "near_priority"
     assert region["far_scale_passed"] is False
     assert region["background_variance"] == near["lab_variance"]
+
+
+def test_visual_region_analysis_keeps_solid_panel_when_far_scale_sees_paired_edges() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = Image.new("RGB", (360, 220), "white")
+    draw = ImageDraw.Draw(image)
+    outer_panel = [(95, 65), (180, 42), (265, 65), (265, 125), (180, 146), (95, 125)]
+    inner_panel = [(100, 68), (180, 47), (260, 68), (260, 122), (180, 141), (100, 122)]
+    draw.polygon(outer_panel, fill="#c77b82")
+    draw.polygon(inner_panel, fill="#515151")
+    box = {"left": 135, "top": 82, "width": 90, "height": 36}
+    draw.rectangle((150, 94, 210, 106), fill="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    items = [{
+        "text": "outlined panel",
+        "score": 0.98,
+        "box": box,
+        "polygon": [[135, 82], [225, 82], [225, 118], [135, 118]],
+    }]
+
+    regions = server.annotate_visual_regions(buffer.getvalue(), items)
+
+    assert len(regions) == 1
+    assert regions[0]["far_scale_passed"] is False
+    assert regions[0]["bg_color"] == "#515151"
+    assert items[0]["region_id"] == "region-1"
+    assert items[0]["region_type"] == "caption_panel"
 
 
 def test_cleaned_image_inpaints_only_complex_background_text() -> None:
@@ -455,6 +502,112 @@ def test_detection_only_reads_numpy_polygons_and_scores(monkeypatch: pytest.Monk
     assert items[0]["det_score"] == pytest.approx(0.94)
     assert len(items[0]["polygon"]) == 4
     assert items[0]["box"]["width"] > 80
+
+
+def test_merge_detection_passes_keeps_primary_and_only_adds_distinct_recovery_boxes() -> None:
+    import server
+
+    primary = [build_detection(server, 20, 20, 180, 50)]
+    recovery = [
+        build_detection(server, 24, 22, 174, 46),
+        build_detection(server, 55, 32, 35, 18),
+        build_detection(server, 20, 120, 180, 50),
+    ]
+
+    merged, recovery_added = server.merge_detection_passes(primary, recovery)
+
+    assert merged[0] is primary[0]
+    assert merged == [primary[0], recovery[2]]
+    assert recovery_added == 1
+
+
+def test_fast_pipeline_recovers_missing_middle_comment_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    import server
+
+    image_bytes = RECOVERY_FIXTURE.read_bytes()
+    all_detections = [
+        build_detection(server, 115, 82 + index * 92, 820, 55)
+        for index in range(6)
+    ]
+    primary = [all_detections[index] for index in (0, 1, 4, 5)]
+    detection_params = []
+    recognized_batches = []
+
+    def detect(_image_bytes, _lang, params):
+        detection_params.append(dict(params))
+        return primary if len(detection_params) == 1 else all_detections
+
+    def recognize(rows, languages):
+        recognized_batches.append(list(rows))
+        return [
+            {
+                "detection_index": row["detection_index"],
+                "orientation": row["orientation"],
+                "text": f"복구문장{row['detection_index'] + 1}",
+                "score": 0.99,
+                "lang": languages[0],
+            }
+            for row in rows
+        ]
+
+    params = {
+        "text_det_thresh": 0.3,
+        "text_det_box_thresh": 0.6,
+        "text_det_unclip_ratio": 1.2,
+        "text_rec_score_thresh": 0.72,
+    }
+    monkeypatch.setattr(server, "_run_detection_only", detect)
+    monkeypatch.setattr(server, "recognize_candidate_rows", recognize)
+
+    result = server._run_slice_ocr_pipeline(image_bytes, "korean", params)
+
+    assert detection_params[0]["text_det_thresh"] == 0.3
+    assert detection_params[0]["text_det_box_thresh"] == 0.6
+    assert detection_params[1]["text_det_thresh"] == 0.2
+    assert detection_params[1]["text_det_box_thresh"] == 0.42
+    assert len(recognized_batches[0]) == 6
+    assert sum(len(batch) for batch in recognized_batches) == 6
+    assert len(result["items"]) == 6
+    assert result["counts"]["primary_detections"] == 4
+    assert result["counts"]["recovery_detections"] == 6
+    assert result["counts"]["recovery_added"] == 2
+
+
+def test_fast_pipeline_uses_primary_results_when_relaxed_detection_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import server
+
+    image_bytes = RECOVERY_FIXTURE.read_bytes()
+    primary = [build_detection(server, 115, 82, 820, 55)]
+    detection_calls = 0
+
+    def detect(_image_bytes, _lang, _params):
+        nonlocal detection_calls
+        detection_calls += 1
+        if detection_calls == 2:
+            raise RuntimeError("relaxed detector unavailable")
+        return primary
+
+    def recognize(rows, languages):
+        return [
+            {
+                "detection_index": row["detection_index"],
+                "orientation": row["orientation"],
+                "text": "기본검출결과",
+                "score": 0.99,
+                "lang": languages[0],
+            }
+            for row in rows
+        ]
+
+    monkeypatch.setattr(server, "_run_detection_only", detect)
+    monkeypatch.setattr(server, "recognize_candidate_rows", recognize)
+
+    result = server._run_slice_ocr_pipeline(image_bytes, "korean", PARAMS)
+
+    assert [item["text"] for item in result["items"]] == ["기본검출결과"]
+    assert result["counts"]["primary_detections"] == 1
+    assert result["counts"]["recovery_detections"] == 0
+    assert result["counts"]["recovery_added"] == 0
 
 
 def test_fast_perspective_pipeline_retries_weak_horizontal_text_at_180(monkeypatch: pytest.MonkeyPatch) -> None:

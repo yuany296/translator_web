@@ -668,12 +668,13 @@ def measure_solid_background_scale(
 
 
 def has_interior_spanning_outlier(mask: Any) -> bool:
-    """Reject scene boundaries or effects that cross through the sampled background."""
+    """Reject scene boundaries, but keep paired edges that enclose a solid text panel."""
     if mask is None or mask.size == 0 or int(np.count_nonzero(mask)) == 0:
         return False
     height, width = mask.shape[:2]
     count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
     edge_margin_y = max(2, int(round(height * 0.06)))
+    spanning_components: list[tuple[bool, bool]] = []
     for label in range(1, count):
         x, y, component_width, component_height, area = [int(value) for value in stats[label]]
         if area < 12:
@@ -681,8 +682,23 @@ def has_interior_spanning_outlier(mask: Any) -> bool:
         spans_width = component_width >= width * 0.72
         crosses_interior_horizontally = spans_width and y + component_height > edge_margin_y and y < height - edge_margin_y
         if crosses_interior_horizontally:
-            return True
-    return False
+            touches_top = y <= edge_margin_y
+            touches_bottom = y + component_height >= height - edge_margin_y
+            spanning_components.append((touches_top, touches_bottom))
+    if not spanning_components:
+        return False
+
+    # 气泡或说明牌的近区为稳定纯色时，远区常会同时扫到上下两条外边界。
+    # 这种成对、贴边的横向色差说明文字位于一个被包围的色块内，不是穿过文字区的场景分界线。
+    has_top_edge = any(touches_top for touches_top, _touches_bottom in spanning_components)
+    has_bottom_edge = any(touches_bottom for _touches_top, touches_bottom in spanning_components)
+    all_components_touch_outer_edge = all(
+        touches_top or touches_bottom
+        for touches_top, touches_bottom in spanning_components
+    )
+    if has_top_edge and has_bottom_edge and all_components_touch_outer_edge:
+        return False
+    return True
 
 
 def classify_solid_region_type(image: Any, roi: tuple[int, int, int, int], bgr: list[int]) -> str:
@@ -2150,6 +2166,58 @@ def _polygon_to_box(polygon: list[list[float]]) -> dict[str, float]:
     }
 
 
+def detection_box_overlap(first: dict[str, Any], second: dict[str, Any]) -> tuple[float, float]:
+    """返回检测框的 IoU 与较小框覆盖率，用于合并两轮检测结果。"""
+    first_box = first.get("box") or {}
+    second_box = second.get("box") or {}
+    first_left = float(first_box.get("left") or 0.0)
+    first_top = float(first_box.get("top") or 0.0)
+    first_width = max(0.0, float(first_box.get("width") or 0.0))
+    first_height = max(0.0, float(first_box.get("height") or 0.0))
+    second_left = float(second_box.get("left") or 0.0)
+    second_top = float(second_box.get("top") or 0.0)
+    second_width = max(0.0, float(second_box.get("width") or 0.0))
+    second_height = max(0.0, float(second_box.get("height") or 0.0))
+
+    intersection_width = max(
+        0.0,
+        min(first_left + first_width, second_left + second_width) - max(first_left, second_left),
+    )
+    intersection_height = max(
+        0.0,
+        min(first_top + first_height, second_top + second_height) - max(first_top, second_top),
+    )
+    intersection = intersection_width * intersection_height
+    first_area = first_width * first_height
+    second_area = second_width * second_height
+    union = first_area + second_area - intersection
+    smaller_area = min(first_area, second_area)
+    iou = intersection / union if union > 0 else 0.0
+    smaller_coverage = intersection / smaller_area if smaller_area > 0 else 0.0
+    return iou, smaller_coverage
+
+
+def merge_detection_passes(
+    primary: list[dict[str, Any]],
+    recovery: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """主检测优先；宽松检测只补充没有被主检测框覆盖的新区域。"""
+    merged = list(primary)
+    recovery_added = 0
+    for candidate in recovery:
+        duplicate = False
+        for existing in merged:
+            iou, smaller_coverage = detection_box_overlap(existing, candidate)
+            if iou >= 0.45 or smaller_coverage >= 0.70:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        merged.append(candidate)
+        recovery_added += 1
+    return merged, recovery_added
+
+
 def _run_detection_only(
     image_bytes: bytes,
     lang: str,
@@ -2312,9 +2380,21 @@ def _run_slice_ocr_pipeline(
     debug: bool = False,
     debug_id: str = "",
 ) -> dict[str, Any]:
-    """检测一次，透视裁剪后批量识别所有方向候选。"""
+    """合并主/宽松检测框，透视裁剪后批量识别所有唯一候选。"""
     image_width, image_height = get_image_size(image_bytes)
-    detections = _run_detection_only(image_bytes, lang, params)
+    primary_detections = _run_detection_only(image_bytes, lang, params)
+    recovery_params = {
+        **params,
+        "text_det_thresh": min(float(params["text_det_thresh"]), 0.20),
+        "text_det_box_thresh": min(float(params["text_det_box_thresh"]), 0.42),
+    }
+    recovery_detections: list[dict[str, Any]] = []
+    try:
+        recovery_detections = _run_detection_only(image_bytes, lang, recovery_params)
+    except Exception as exc:
+        # 宽松检测仅用于补漏，失败时主检测结果仍应正常进入识别流程。
+        print(f"[slice-ocr] relaxed detection failed, using primary detections: {exc}", flush=True)
+    detections, recovery_added = merge_detection_passes(primary_detections, recovery_detections)
     candidate_rows: list[dict[str, Any]] = []
     failed_detections = 0
     for det_index, det in enumerate(detections):
@@ -2413,6 +2493,9 @@ def _run_slice_ocr_pipeline(
             "merged_blocks": len(normalized),
             "variants": 1,
             "langs": len(languages),
+            "primary_detections": len(primary_detections),
+            "recovery_detections": len(recovery_detections),
+            "recovery_added": recovery_added,
         },
     }
 

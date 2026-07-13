@@ -31,6 +31,7 @@ test("translation cache cleanup recognizes old cache versions and quota errors",
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v4:def"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_api_key"), false);
+  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v13:/);
   assert.equal(
     context.__backgroundTest.isStorageQuotaError(new Error("Resource::kQuotaBytes quota exceeded")),
     true
@@ -326,6 +327,44 @@ test("paragraph merge rejects large whitespace, title/body scale, remote columns
   assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("작은 본문", 110, 148, 285, 20)), false);
   assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("오른쪽 글", 500, 148, 220, 40)), false);
   assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("中文覆盖层", 110, 148, 285, 40)), false);
+});
+
+test("Kakao comment panel keeps every long standalone OCR row", async () => {
+  const item = (text, left, top, width, height) => ({
+    text,
+    score: 0.96,
+    det_score: 0.92,
+    rotation_deg: 0,
+    region_type: "effect_text",
+    box: { left, top, width, height }
+  });
+  const payload = {
+    imageWidth: 760,
+    imageHeight: 1700,
+    items: [
+      item("솔직히편집이개노잼이었음N", 53, 407, 367, 34),
+      item("자막너무오글거려", 49, 490, 244, 45),
+      item("저 구성과 컨셉으로 지루한것도 신기하더라", 53, 584, 493, 32),
+      item("테스타도나오고그외남돌라이징들다나왔는데", 53, 627, 579, 34),
+      item("국대출신 아이돌도 있었는데 화면을 그거밖에 못뽑아내", 55, 717, 657, 34),
+      item("유튜브에서 팬들이 재편집해놨는데 그거봐봐 존잼임", 55, 806, 597, 32),
+      item("화랑소재는잘잡아놓고ㅠㅠㅠ", 53, 892, 384, 34),
+      item("가나다라", 30, 960, 700, 20)
+    ]
+  };
+
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    payload,
+    { width: 760, height: 1700 },
+    "",
+    false
+  );
+  const texts = result.map((entry) => entry.words);
+
+  assert.equal(result.length, 6, JSON.stringify(texts));
+  assert.ok(texts.some((text) => text.includes("국대출신 아이돌도")));
+  assert.ok(texts.some((text) => text.includes("유튜브에서 팬들이")));
+  assert.ok(!texts.some((text) => text.includes("가나다라")));
 });
 
 test("screenshot crop OCR coordinates accumulate in the original image space", () => {

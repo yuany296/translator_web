@@ -32,7 +32,13 @@
   const KAKAO_OVERLAP_MIN_RATIO = 0.28;
   const KAKAO_OVERLAP_MAX_RATIO = 0.88;
   const KAKAO_OVERLAP_MAX_MAE = 12;
-  const KAKAO_OVERLAP_MIN_UNIQUE_PX = 96;
+  const KAKAO_OVERLAP_MIN_INFORMATIVE_RATIO = 0.002;
+  const KAKAO_OVERLAP_MAX_INFORMATIVE_MAE = 32;
+  const KAKAO_OVERLAP_MIN_INFORMATIVE_SPAN_RATIO = 0.25;
+  const KAKAO_OVERLAP_INFORMATIVE_LUMA = 245;
+  const KAKAO_OVERLAP_INFORMATIVE_DIFF = 10;
+  const KAKAO_OVERLAP_MIN_UNIQUE_PX = 220;
+  const KAKAO_OVERLAP_MIN_UNIQUE_RATIO = 0.22;
   const KAKAO_THIN_STRIP_MAX_NATURAL_HEIGHT = 100;
   const KAKAO_THIN_STRIP_MIN_HEIGHT = 8;
   const KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS = 8000;
@@ -513,24 +519,67 @@
 
     let bestRows = 0;
     let bestMae = Infinity;
+    let bestInformativeMae = Infinity;
+    let bestInformativeRatio = 0;
+    let bestInformativeSpanRatio = 0;
+    let bestScore = Infinity;
+    let bestQualified = false;
     const step = Math.max(1, Math.round(currentSample.height / 180));
 
     for (let rows = minRows; rows <= maxRows; rows += step) {
       const previousOffset = (previousSample.height - rows) * width;
       let total = 0;
+      let informativeTotal = 0;
+      let informativeCount = 0;
+      let firstInformativeRow = rows;
+      let lastInformativeRow = -1;
       const count = rows * width;
       for (let offset = 0; offset < count; offset += 1) {
-        total += Math.abs(previousSample.gray[previousOffset + offset] - currentSample.gray[offset]);
+        const previousLuma = previousSample.gray[previousOffset + offset];
+        const currentLuma = currentSample.gray[offset];
+        const difference = Math.abs(previousLuma - currentLuma);
+        total += difference;
+        if (
+          previousLuma <= KAKAO_OVERLAP_INFORMATIVE_LUMA ||
+          currentLuma <= KAKAO_OVERLAP_INFORMATIVE_LUMA ||
+          difference >= KAKAO_OVERLAP_INFORMATIVE_DIFF
+        ) {
+          informativeTotal += difference;
+          informativeCount += 1;
+          const row = Math.floor(offset / width);
+          firstInformativeRow = Math.min(firstInformativeRow, row);
+          lastInformativeRow = Math.max(lastInformativeRow, row);
+        }
       }
       const mae = total / Math.max(1, count);
-      if (mae < bestMae) {
+      const informativeMae = informativeCount > 0
+        ? informativeTotal / informativeCount
+        : 255;
+      const informativeRatio = informativeCount / Math.max(1, count);
+      const informativeSpanRatio = lastInformativeRow >= firstInformativeRow
+        ? (lastInformativeRow - firstInformativeRow + 1) / Math.max(1, rows)
+        : 0;
+      const score = mae + informativeMae * 0.25;
+      const qualified = mae <= KAKAO_OVERLAP_MAX_MAE &&
+        informativeRatio >= KAKAO_OVERLAP_MIN_INFORMATIVE_RATIO &&
+        informativeMae <= KAKAO_OVERLAP_MAX_INFORMATIVE_MAE &&
+        informativeSpanRatio >= KAKAO_OVERLAP_MIN_INFORMATIVE_SPAN_RATIO;
+      if ((qualified && !bestQualified) || (qualified === bestQualified && score < bestScore)) {
+        bestQualified = qualified;
+        bestScore = score;
         bestMae = mae;
+        bestInformativeMae = informativeMae;
+        bestInformativeRatio = informativeRatio;
+        bestInformativeSpanRatio = informativeSpanRatio;
         bestRows = rows;
       }
     }
 
     const uniqueRows = currentSample.height - bestRows;
     const accepted = bestMae <= KAKAO_OVERLAP_MAX_MAE &&
+      bestInformativeRatio >= KAKAO_OVERLAP_MIN_INFORMATIVE_RATIO &&
+      bestInformativeMae <= KAKAO_OVERLAP_MAX_INFORMATIVE_MAE &&
+      bestInformativeSpanRatio >= KAKAO_OVERLAP_MIN_INFORMATIVE_SPAN_RATIO &&
       bestRows >= minRows &&
       bestRows <= maxRows &&
       uniqueRows / Math.max(1, currentSample.height) >= 1 - KAKAO_OVERLAP_MAX_RATIO;
@@ -540,6 +589,9 @@
       previousRows: previousSample.height,
       currentRows: currentSample.height,
       mae: bestMae,
+      informativeMae: bestInformativeMae,
+      informativeRatio: bestInformativeRatio,
+      informativeSpanRatio: bestInformativeSpanRatio,
       overlapRatio: bestRows / Math.max(1, currentSample.height)
     };
   }
@@ -729,6 +781,16 @@
       cssWidth / Math.max(1, cssHeight) > 5.2;
   }
 
+  function hasUsefulKakaoOverlapCrop(cropTop, cropHeight, currentHeight) {
+    const sourceHeight = Math.max(1, Number(currentHeight) || 1);
+    const uniqueHeight = Number(cropHeight) || 0;
+    return (
+      Number(cropTop) > 0 &&
+      uniqueHeight >= KAKAO_OVERLAP_MIN_UNIQUE_PX &&
+      uniqueHeight / sourceHeight >= KAKAO_OVERLAP_MIN_UNIQUE_RATIO
+    );
+  }
+
   /** 检测相邻图片的重复像素并裁掉当前页顶部重叠区域。 */
   async function maybeCropKakaoOverlappedPayload(target, payload, adapters) {
     if (
@@ -787,7 +849,7 @@
     }
     const cropTop = Math.round((overlap.rows / Math.max(1, overlap.currentRows)) * currentHeight);
     const cropHeight = currentHeight - cropTop;
-    if (cropTop <= 0 || cropHeight < KAKAO_OVERLAP_MIN_UNIQUE_PX) {
+    if (!hasUsefulKakaoOverlapCrop(cropTop, cropHeight, currentHeight)) {
       return null;
     }
 
@@ -1345,7 +1407,7 @@
 
     const leftOverflow = left && left.stitchOverflow === true;
     const rightOverflow = right && right.stitchOverflow === true;
-    if (leftOverflow === rightOverflow) return null;
+    if (!leftOverflow && !rightOverflow) return null;
 
     const leftBox = left && left.box;
     const rightBox = right && right.box;
@@ -1358,6 +1420,28 @@
     if (areaRatio < KAKAO_GEOMETRY_DUPLICATE_MIN_AREA_RATIO ||
         pageBoxIntersectionRatio(leftBox, rightBox) < KAKAO_GEOMETRY_DUPLICATE_MIN_INTERSECTION) {
       return null;
+    }
+
+    // owner/overflow 成对时始终保留 owner；两个 overflow 副本则必须有文本证据，
+    // 避免仅凭相邻页边界处的几何重叠误删不同对白。
+    if (leftOverflow && rightOverflow) {
+      const leftOriginal = normalizeOcrSimilarityText(left && left.originalText);
+      const rightOriginal = normalizeOcrSimilarityText(right && right.originalText);
+      const leftTranslated = normalizeOcrSimilarityText(left && left.translatedText);
+      const rightTranslated = normalizeOcrSimilarityText(right && right.translatedText);
+      const textRelated = areOcrTextsDuplicateOrContained(leftOriginal, rightOriginal) ||
+        areOcrTextsDuplicateOrContained(leftTranslated, rightTranslated);
+      if (!textRelated) return null;
+
+      const leftCompleteness = Math.max(leftOriginal.length, leftTranslated.length);
+      const rightCompleteness = Math.max(rightOriginal.length, rightTranslated.length);
+      if (leftCompleteness !== rightCompleteness) {
+        return leftCompleteness < rightCompleteness ? "left" : "right";
+      }
+      if (leftArea !== rightArea) {
+        return leftArea < rightArea ? "left" : "right";
+      }
+      return "right";
     }
     return leftOverflow ? "left" : "right";
   }
@@ -1372,12 +1456,16 @@
         scopeKey: candidateKey,
         regionType: candidateBubble && candidateBubble.region_type,
         stitchOverflow: candidateBubble && candidateBubble.stitch_overflow === true,
+        originalText: candidate && candidate.text,
+        translatedText: candidate && candidate.translatedText,
         box: candidate.box
       },
       {
         scopeKey: entryKey,
         regionType: entryBubble && entryBubble.region_type,
         stitchOverflow: entryBubble && entryBubble.stitch_overflow === true,
+        originalText: entry && entry.text,
+        translatedText: entry && entry.translatedText,
         box: entry.box
       }
     );
@@ -2546,6 +2634,7 @@
     KAKAO_OVERLAP_MAX_RATIO,
     KAKAO_OVERLAP_MAX_MAE,
     KAKAO_OVERLAP_MIN_UNIQUE_PX,
+    KAKAO_OVERLAP_MIN_UNIQUE_RATIO,
     KAKAO_THIN_STRIP_MIN_HEIGHT,
     KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS,
 
@@ -2590,6 +2679,7 @@
     computeGraySample,
     findKakaoVerticalOverlap,
     hasUsableKakaoStripCaptureRect,
+    hasUsefulKakaoOverlapCrop,
     buildKakaoStitchedPayload,
     isKakaoStripPayload,
     maybeCropKakaoOverlappedPayload,

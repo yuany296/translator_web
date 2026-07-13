@@ -39,3 +39,12 @@ test("OCR 调试框不会参与页面命中测试", () => {
   assert.match(css, /\.mt-debug-deduped/);
   assert.match(css, /\.mt-debug-block/);
 });
+
+test("Kakao 覆盖层使用页面坐标系跟随原图滚动", () => {
+  const css = readFileSync(path.resolve(projectRoot, "styles.css"), "utf8");
+  const layerRule = css.match(/\.mt-overlay-layer\.mt-overlay-document-flow\s*\{([^}]+)\}/)?.[1] ?? "";
+  const rootRule = css.match(/\.mt-overlay-layer\.mt-overlay-document-flow\s+\.mt-overlay-root\s*\{([^}]+)\}/)?.[1] ?? "";
+
+  assert.match(layerRule, /position:\s*absolute/);
+  assert.match(rootRule, /position:\s*absolute/);
+});

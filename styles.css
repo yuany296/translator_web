@@ -15,6 +15,14 @@
   overflow: visible;
 }
 
+.mt-overlay-layer.mt-overlay-document-flow {
+  position: absolute;
+}
+
+.mt-overlay-layer.mt-overlay-document-flow .mt-overlay-root {
+  position: absolute;
+}
+
 .mt-debug-box {
   position: absolute;
   z-index: 40;

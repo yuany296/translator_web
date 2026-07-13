@@ -227,6 +227,8 @@
       buildSolidBackgroundBox,
       buildAheadTranslationOptions,
       compareOverlayViewportRects,
+      getOverlayPositionRect,
+      shouldHideOverlayRoot,
       getOverlayVisibilityRect,
       syncOverlayPosition,
       passesKakaopageTargetGeometry,
@@ -3543,18 +3545,19 @@
 
     const rect = getOverlayDisplayRect(overlayState);
     const visible = isRectVisible(getOverlayVisibilityRect(overlayState, rect));
+    const useDocumentFlow = IS_KAKAOPAGE_READER;
 
-    if (!visible || rect.width < 2 || rect.height < 2) {
+    if (shouldHideOverlayRoot(rect, visible, useDocumentFlow)) {
       overlayState.root.style.display = "none";
       return;
     }
 
-    const viewportRect = {
-      left: Math.round(rect.left),
-      top: Math.round(rect.top),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height)
-    };
+    const viewportRect = getOverlayPositionRect(
+      rect,
+      useDocumentFlow,
+      window.scrollX || 0,
+      window.scrollY || 0
+    );
     const changes = compareOverlayViewportRects(overlayState.lastViewportRect, viewportRect);
 
     overlayState.root.style.display = "block";
@@ -3600,6 +3603,25 @@
       positionChanged: previous.left !== next.left || previous.top !== next.top,
       sizeChanged: previous.width !== next.width || previous.height !== next.height
     };
+  }
+
+  function getOverlayPositionRect(rect, useDocumentFlow, scrollX = 0, scrollY = 0) {
+    const offsetX = useDocumentFlow ? Number(scrollX) || 0 : 0;
+    const offsetY = useDocumentFlow ? Number(scrollY) || 0 : 0;
+    return {
+      left: Math.round(rect.left + offsetX),
+      top: Math.round(rect.top + offsetY),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+  }
+
+  function shouldHideOverlayRoot(rect, visible, useDocumentFlow) {
+    if (!rect || !(Number(rect.width) >= 2) || !(Number(rect.height) >= 2)) {
+      return true;
+    }
+    // 页面坐标覆盖层即使暂时离开视口也保持挂载，由浏览器自然裁剪并随原图一起进入视口。
+    return !useDocumentFlow && !visible;
   }
 
   function getOverlayVisibilityRect(overlayState, rect) {
@@ -3958,6 +3980,10 @@
 
     const layer = document.createElement("div");
     layer.className = "mt-overlay-layer";
+    if (IS_KAKAOPAGE_READER) {
+      // 进入页面坐标系后，图片和覆盖层由浏览器合成线程同步滚动，避免 fixed 覆盖层逐帧追赶。
+      layer.classList.add("mt-overlay-document-flow");
+    }
     layer.dataset.mangaTranslatorOverlay = "true";
     document.documentElement.appendChild(layer);
 

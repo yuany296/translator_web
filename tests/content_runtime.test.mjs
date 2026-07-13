@@ -623,6 +623,45 @@ test("overlay movement updates position without triggering text layout", () => {
   );
 });
 
+test("Kakao overlays keep a stable document position while the page scrolls", () => {
+  const before = runtime.__test.getOverlayPositionRect(
+    { left: 20, top: 100, width: 600, height: 800 },
+    true,
+    12,
+    500
+  );
+  const after = runtime.__test.getOverlayPositionRect(
+    { left: 20, top: -140, width: 600, height: 800 },
+    true,
+    12,
+    740
+  );
+
+  assert.deepEqual(before, { left: 32, top: 600, width: 600, height: 800 });
+  assert.deepEqual(after, before);
+  assert.deepEqual(
+    runtime.__test.getOverlayPositionRect(
+      { left: 20, top: -140, width: 600, height: 800 },
+      false,
+      12,
+      740
+    ),
+    { left: 20, top: -140, width: 600, height: 800 }
+  );
+  assert.equal(
+    runtime.__test.shouldHideOverlayRoot({ width: 600, height: 800 }, false, true),
+    false
+  );
+  assert.equal(
+    runtime.__test.shouldHideOverlayRoot({ width: 600, height: 800 }, false, false),
+    true
+  );
+  assert.equal(
+    runtime.__test.shouldHideOverlayRoot({ width: 1, height: 800 }, true, true),
+    true
+  );
+});
+
 test("overlay resize triggers text layout", () => {
   assert.deepEqual(
     { ...runtime.__test.compareOverlayViewportRects(

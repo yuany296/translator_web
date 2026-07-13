@@ -66,6 +66,10 @@
   });
 
   const KAKAO_EDGE_WAIT_TIMEOUT_MS = 8000;
+  const KAKAO_PAGE_FETCH_TIMEOUT_MS = 16000;
+  const KAKAO_PAGE_IDENTITY_TIMEOUT_MS = 10000;
+  const KAKAO_PAGE_OCR_TIMEOUT_MS = 90000;
+  const KAKAO_SEAM_OPERATION_TIMEOUT_MS = 30000;
   const KAKAO_SEAM_HEIGHT_WIDTH_RATIO = 0.15;
   const KAKAO_SEAM_HEIGHT_MIN_PX = 160;
   const KAKAO_SEAM_HEIGHT_MAX_PX = 420;
@@ -2762,11 +2766,17 @@
       : defaultIsAuthoritativePagePayload;
     const setTimer = adapters.setTimer || globalThis.setTimeout;
     const clearTimer = adapters.clearTimer || globalThis.clearTimeout;
+    const setOperationTimer = adapters.setOperationTimer || globalThis.setTimeout;
+    const clearOperationTimer = adapters.clearOperationTimer || globalThis.clearTimeout;
     const now = typeof adapters.now === "function" ? adapters.now : () => Date.now();
     const getTargetGeneration = typeof adapters.getTargetGeneration === "function"
       ? adapters.getTargetGeneration
       : () => 0;
     const edgeWaitTimeoutMs = Math.max(0, Number(adapters.edgeWaitTimeoutMs ?? KAKAO_EDGE_WAIT_TIMEOUT_MS));
+    const pageFetchTimeoutMs = normalizeOperationTimeout(adapters.extractTimeoutMs, KAKAO_PAGE_FETCH_TIMEOUT_MS);
+    const pageIdentityTimeoutMs = normalizeOperationTimeout(adapters.identityTimeoutMs, KAKAO_PAGE_IDENTITY_TIMEOUT_MS);
+    const pageOcrTimeoutMs = normalizeOperationTimeout(adapters.pageOcrTimeoutMs, KAKAO_PAGE_OCR_TIMEOUT_MS);
+    const seamOperationTimeoutMs = normalizeOperationTimeout(adapters.seamTimeoutMs, KAKAO_SEAM_OPERATION_TIMEOUT_MS);
     const store = adapters.store || createStore();
     let runSeq = 0;
     let targetHandleSeq = 0;
@@ -2792,6 +2802,36 @@
       if (typeof adapters.renderLoadingOverlay === "function") {
         adapters.renderLoadingOverlay(target, targetKey, label);
       }
+    }
+
+    function withOperationTimeout(operation, timeoutMs, stage) {
+      const pending = Promise.resolve().then(operation);
+      if (!(timeoutMs > 0) || typeof setOperationTimer !== "function") return pending;
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = setOperationTimer(() => {
+          if (settled) return;
+          settled = true;
+          const error = new Error(`Kakao ${stage} timed out after ${timeoutMs}ms`);
+          error.name = "KakaoOperationTimeoutError";
+          error.code = `KAKAO_${String(stage || "operation").toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_TIMEOUT`;
+          reject(error);
+        }, timeoutMs);
+        pending.then(
+          (value) => {
+            if (settled) return;
+            settled = true;
+            if (typeof clearOperationTimer === "function") clearOperationTimer(timer);
+            resolve(value);
+          },
+          (error) => {
+            if (settled) return;
+            settled = true;
+            if (typeof clearOperationTimer === "function") clearOperationTimer(timer);
+            reject(error);
+          }
+        );
+      });
     }
 
     function targetIsUsable(target) {
@@ -2896,9 +2936,18 @@
         const snapshot = typeof adapters.captureTargetSnapshot === "function"
           ? adapters.captureTargetSnapshot(target)
           : null;
-        const payload = await extractTargetPayload(target, identity.scopedTargetKey);
+        const payload = await withOperationTimeout(
+          () => extractTargetPayload(target, identity.scopedTargetKey),
+          pageFetchTimeoutMs,
+          "page fetch"
+        );
         if (!isCurrentJob(target, identity)) return cancelJob(target, identity, "", "sourceChanged after fetch");
-        const authoritativePayload = await isAuthoritativePagePayload(payload, target);
+        loading(target, identity.targetKey, "校验单页图片...");
+        const authoritativePayload = await withOperationTimeout(
+          () => isAuthoritativePagePayload(payload, target),
+          pageIdentityTimeoutMs,
+          "payload admission"
+        );
         if (!isCurrentJob(target, identity)) {
           return cancelJob(target, identity, "", "sourceChanged during payload admission");
         }
@@ -2913,7 +2962,11 @@
           };
         }
 
-        const pageIdentity = await buildPageIdentity(target, payload, { ...identity, deferBind: true });
+        const pageIdentity = await withOperationTimeout(
+          () => buildPageIdentity(target, payload, { ...identity, deferBind: true }),
+          pageIdentityTimeoutMs,
+          "page identity"
+        );
         if (!isCurrentJob(target, identity)) {
           return cancelJob(target, identity, "", "sourceChanged while hashing page bytes");
         }
@@ -2953,7 +3006,11 @@
 
         const response = await store.getOrCreateInflightJob(
           `canonical-page-ocr:${pageRecord.pageId}:${pageRecord.imageRevision}`,
-          () => requestOcrForPayload(payload, buildOcrMeta("page", [pageRecord]))
+          () => withOperationTimeout(
+            () => requestOcrForPayload(payload, buildOcrMeta("page", [pageRecord])),
+            pageOcrTimeoutMs,
+            "page OCR"
+          )
         );
         if (!response || !response.ok) {
           throw new CanonicalPageOcrError(response && response.error ? response.error : "Page OCR failed");
@@ -3083,6 +3140,13 @@
         if (pageRecord && !isCurrentPageRevision(pageRecord)) {
           return cancelJob(target, identity, pageRecord.pageId, `superseded page revision error: ${reason}`);
         }
+        if (typeof adapters.clearLoadingOverlay === "function") {
+          try {
+            adapters.clearLoadingOverlay(target);
+          } catch {
+            // 清理 loading 只是 UI 恢复，不得覆盖原始失败原因。
+          }
+        }
         const currentPageReady = pageRecord ? isReadyPageRecord(store.getPageHandle(pageRecord.pageId)) : false;
         if (pageRecord && !pageOcrReady && !currentPageReady) {
           store.markPageTerminal(pageRecord.pageId, "failed", {
@@ -3178,7 +3242,11 @@
         if (currentState && currentState.status !== "running") return currentState;
         let overlapRisk = null;
         try {
-          overlapRisk = detectPixelRisk ? await detectPixelRisk(pageA, pageB) : null;
+          overlapRisk = detectPixelRisk ? await withOperationTimeout(
+            () => detectPixelRisk(pageA, pageB),
+            seamOperationTimeoutMs,
+            "seam pixel risk"
+          ) : null;
         } catch (error) {
           trace("pixel-risk-error", pageA.target, { pairKey, error: getErrorMessage(error) });
         }
@@ -3204,13 +3272,21 @@
         trace("seam-ocr", pageA.target, { pairKey });
 
         try {
-          const seamPayload = await buildSeamPayload(pageA, pageB, {
-            height: evidenceDecision.bandHeight,
-            bandHeight: evidenceDecision.bandHeight,
-            overlap: overlapRisk
-          });
+          const seamPayload = await withOperationTimeout(
+            () => buildSeamPayload(pageA, pageB, {
+              height: evidenceDecision.bandHeight,
+              bandHeight: evidenceDecision.bandHeight,
+              overlap: overlapRisk
+            }),
+            seamOperationTimeoutMs,
+            "seam payload"
+          );
           if (!seamPayload) throw new Error("Seam payload unavailable");
-          const response = await requestOcrForPayload(seamPayload, buildOcrMeta("seam", [pageA, pageB], pairKey));
+          const response = await withOperationTimeout(
+            () => requestOcrForPayload(seamPayload, buildOcrMeta("seam", [pageA, pageB], pairKey)),
+            seamOperationTimeoutMs,
+            "seam OCR"
+          );
           if (!response || !response.ok) throw new Error(response && response.error || "Seam OCR failed");
           if (!pageRevisionsStillMatch([pageA, pageB])) {
             return store.markSeamState(pairKey, {
@@ -3705,6 +3781,11 @@
       if (typeof adapters[name] === "function") return adapters[name];
     }
     throw new Error(`KakaoCanonicalPipeline: missing adapter "${names.join(" or ")}"`);
+  }
+
+  function normalizeOperationTimeout(value, fallback) {
+    const number = Number(value ?? fallback);
+    return Number.isFinite(number) && number >= 0 ? number : fallback;
   }
 
   function defaultIsAuthoritativePagePayload(payload) {

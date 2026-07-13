@@ -119,6 +119,7 @@ const MAX_BUBBLES = 400;
 const IMAGE_MAX_SIDE = 1536;
 const IMAGE_JPEG_QUALITY = 0.82;
 const FAST_PATH_MAX_JPEG_BYTES = 1900000;
+const BLOB_TO_DATA_URL_TIMEOUT_MS = 8000;
 const VISIBLE_TAB_CAPTURE_CACHE_MS = 700;
 const BAIDU_OCR_MIN_REQUEST_GAP_MS = 1200;
 const BAIDU_OCR_QPS_RETRY_DELAYS_MS = [1200, 2400, 4800];
@@ -1340,7 +1341,7 @@ async function handleFetchImageDataUrl(message) {
   } catch (error) {
     clearTimeout(timeoutId);
     const msg = error && error.name === "AbortError"
-      ? "Image fetch timed out after 10s"
+      ? "Image fetch timed out after 5s"
       : (error && error.message ? error.message : "Unknown error");
     return { ok: false, error: `Image fetch error: ${msg}` };
   }
@@ -6332,12 +6333,34 @@ async function transcodeBlob(blob, targetMime, quality) {
   }
 }
 
-function blobToDataUrl(blob) {
+function blobToDataUrl(blob, timeoutMs = BLOB_TO_DATA_URL_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Blob to data URL failed"));
-    reader.onload = () => resolve(reader.result);
-    reader.readAsDataURL(blob);
+    let settled = false;
+    let reader = null;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      callback(value);
+    };
+    const safeTimeoutMs = Math.max(0, Number(timeoutMs) || 0);
+    const timer = safeTimeoutMs > 0 ? setTimeout(() => {
+      finish(reject, new Error(`Blob to data URL timed out after ${safeTimeoutMs}ms`));
+      try {
+        if (reader && typeof reader.abort === "function") reader.abort();
+      } catch {
+        // FileReader 可能已在完成和 timeout 的竞态中关闭。
+      }
+    }, safeTimeoutMs) : 0;
+    try {
+      reader = new FileReader();
+      reader.onerror = () => finish(reject, new Error("Blob to data URL failed"));
+      reader.onabort = () => finish(reject, new Error("Blob to data URL was aborted"));
+      reader.onload = () => finish(resolve, reader.result);
+      reader.readAsDataURL(blob);
+    } catch (error) {
+      finish(reject, error);
+    }
   });
 }
 

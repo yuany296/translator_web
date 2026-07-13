@@ -21,6 +21,31 @@ await import("../content.js");
 
 const runtime = globalThis.__MANGA_TRANSLATOR_V3__;
 
+test("hidden-page paint waiting has a timer fallback instead of hanging forever", async () => {
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalSetTimeout = window.setTimeout;
+  const originalClearTimeout = window.clearTimeout;
+  globalThis.requestAnimationFrame = () => 0;
+  window.setTimeout = setTimeout;
+  window.clearTimeout = clearTimeout;
+  try {
+    await Promise.race([
+      runtime.__test.waitForPaint(5),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("paint wait stayed pending")), 100))
+    ]);
+  } finally {
+    globalThis.requestAnimationFrame = originalRaf;
+    window.setTimeout = originalSetTimeout;
+    window.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("Kakao image runtime requests and error overlays have bounded recovery wiring", () => {
+  assert.match(contentSource, /FETCH_IMAGE_DATA_URL" \|\| messageType === "CAPTURE_VISIBLE_TARGET_DATA_URL"[\s\S]*IMAGE_RUNTIME_MESSAGE_TIMEOUT_MS/);
+  assert.match(contentSource, /image-fetch-fallback[\s\S]*captureVisibleTargetPayload\(img, imageFetchError \|\| error/);
+  assert.match(contentSource, /reportKakaoPipelineError[\s\S]*clearKakaoLoadingOverlay\(target\)[\s\S]*pipeline-error-restore/);
+});
+
 test("Kakao page identity ignores CDN signing changes but tracks actual image bytes", async () => {
   const target = new globalThis.HTMLImageElement();
   target.currentSrc = "https://cdn.example.test/page.jpg?episode=7&signature=first&expires=100";

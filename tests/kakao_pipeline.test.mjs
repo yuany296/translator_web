@@ -2678,3 +2678,166 @@ test("partial translation for a new revision keeps exactly one prior visible pro
 test("thrown translation after an anchor supersession keeps exactly one prior visible projection", async () => {
   await runFailedRevisionFallbackScenario({ reverse: true, throwError: true });
 });
+
+async function settleWithin(promise, timeoutMs = 250) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`test operation did not settle within ${timeoutMs}ms`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+test("a permanently pending page extraction times out, releases inflight, and retries", async () => {
+  const never = new Promise(() => {});
+  let extractionAttempts = 0;
+  let clearedLoading = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({}),
+      extractTimeoutMs: 5,
+      extractTargetPayload: async (target) => {
+        extractionAttempts += 1;
+        if (extractionAttempts === 1) return never;
+        return { dataUrl: `data:image/png;base64,${target.name}`, width: 800, height: 2000 };
+      },
+      clearLoadingOverlay: () => { clearedLoading += 1; }
+    }
+  });
+
+  const failed = await settleWithin(harness.pipeline.run(harness.targets.a));
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /page fetch timed out/i);
+  assert.equal(clearedLoading, 1);
+  assert.equal(harness.calls.filter((call) => call === "retry").length, 1);
+
+  const retried = await settleWithin(harness.pipeline.run(harness.targets.a));
+  assert.equal(retried.ok, true);
+  assert.equal(extractionAttempts, 2);
+});
+
+test("a permanently pending page identity digest times out without committing late facts", async () => {
+  const never = new Promise(() => {});
+  let identityAttempts = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({}),
+      identityTimeoutMs: 5,
+      buildPageIdentity: async (target) => {
+        identityAttempts += 1;
+        if (identityAttempts === 1) return never;
+        return { ...harness.identities[target.name] };
+      }
+    }
+  });
+
+  const failed = await settleWithin(harness.pipeline.run(harness.targets.a));
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /page identity timed out/i);
+  assert.equal(harness.store.getPageHandles().length, 0);
+
+  const retried = await settleWithin(harness.pipeline.run(harness.targets.a));
+  assert.equal(retried.ok, true);
+  assert.equal(identityAttempts, 2);
+});
+
+test("a permanently pending page OCR times out and the same revision can retry", async () => {
+  const never = new Promise(() => {});
+  let pageOcrAttempts = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({}),
+      pageOcrTimeoutMs: 5,
+      requestOcrForPayload: async (_payload, meta) => {
+        if (meta.sourceType !== "page") {
+          return { ok: true, result: { observations: [], filteredObservations: [], edgeSignals: {} } };
+        }
+        pageOcrAttempts += 1;
+        if (pageOcrAttempts === 1) return never;
+        const pageId = meta.pageIds[0];
+        const revision = meta.imageRevisionByPage[pageId];
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation(pageId, revision, "retry-ocr", 40, "retry OCR")],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  const failed = await settleWithin(harness.pipeline.run(harness.targets.a));
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /page OCR timed out/i);
+  assert.equal(harness.store.getPageTerminal("page-a").state, "failed");
+
+  const retried = await settleWithin(harness.pipeline.run(harness.targets.a));
+  assert.equal(retried.ok, true);
+  assert.equal(pageOcrAttempts, 2);
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+});
+
+test("a permanently pending seam payload fails only the pair and preserves both pages", async () => {
+  const never = new Promise(() => {});
+  let seamAttempts = 0;
+  const harness = createCanonicalHarness({
+    ...boundaryMergeHarnessOptions(),
+    adapterOverrides: {
+      seamTimeoutMs: 5,
+      buildKakaoSeamPayload: async () => {
+        seamAttempts += 1;
+        return never;
+      }
+    }
+  });
+
+  assert.equal((await settleWithin(harness.pipeline.run(harness.targets.a))).ok, true);
+  assert.equal((await settleWithin(harness.pipeline.run(harness.targets.b))).ok, true);
+  assert.equal(seamAttempts, 1);
+  assert.equal(harness.store.getSeamStates().some((state) => state.status === "failed" && /seam payload timed out/i.test(state.error)), true);
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  assert.equal(harness.store.getPageTerminal("page-b").state, "ready");
+  const observationIds = harness.store.getObservations().map((item) => item.id);
+  assert.equal(observationIds.includes("merge-a"), true);
+  assert.equal(observationIds.includes("merge-b"), true);
+});
+
+test("an old generation timeout cannot clear the current generation loading state", async () => {
+  const never = new Promise(() => {});
+  let markOldStarted;
+  const oldStarted = new Promise((resolve) => { markOldStarted = resolve; });
+  let extractionAttempts = 0;
+  let clearedLoading = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({}),
+      extractTimeoutMs: 20,
+      extractTargetPayload: async (target) => {
+        extractionAttempts += 1;
+        if (extractionAttempts === 1) {
+          markOldStarted();
+          return never;
+        }
+        return { dataUrl: `data:image/png;base64,${target.name}`, width: 800, height: 2000 };
+      },
+      clearLoadingOverlay: () => { clearedLoading += 1; }
+    }
+  });
+
+  const oldRun = harness.pipeline.run(harness.targets.a);
+  await oldStarted;
+  harness.targets.a.generation += 1;
+  const currentRun = harness.pipeline.run(harness.targets.a);
+  assert.equal((await settleWithin(currentRun)).ok, true);
+  const stale = await settleWithin(oldRun);
+  assert.equal(stale.skipped, true);
+  assert.match(stale.reason, /cancelled:/);
+  assert.equal(clearedLoading, 0);
+});

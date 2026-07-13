@@ -47,6 +47,8 @@
   const KR = globalThis.MangaTranslatorKakaoReconciler;
   const KAKAO_CANONICAL_TARGET_LANGUAGE = "zh-CN";
   const KAKAO_CANONICAL_SOURCE_LANGUAGE = "auto";
+  const IMAGE_RUNTIME_MESSAGE_TIMEOUT_MS = 12000;
+  const STATUS_RUNTIME_MESSAGE_TIMEOUT_MS = 3000;
   const KAKAO_AUTH_QUERY_PARAM_RE = /^(?:signature|credential|expires|policy|token|key-pair-id|x-amz-(?:algorithm|credential|date|expires|security-token|signature|signedheaders))$/i;
   const {
     KAKAO_OVERLAP_SAMPLE_WIDTH,
@@ -239,6 +241,7 @@
       isTargetSnapshotStillValid,
       getTargetGeneration: getKakaoTargetGeneration,
       renderLoadingOverlay,
+      clearLoadingOverlay: clearKakaoLoadingOverlay,
       scheduleAutoTranslateRetry,
       reportPipelineError: reportKakaoPipelineError,
       tracePipeline,
@@ -324,6 +327,7 @@
       mapKakaoStitchedFillBox,
       mapKakaoStitchedPolygon,
       buildTermDiscoveryMessage,
+      waitForPaint,
       releaseUncoveredKakaoShortPages,
       releaseShortPagesAttachedDuringInflight,
       hasAttachedShortPageBubble,
@@ -2853,16 +2857,24 @@
       };
     }
 
+    let imageFetchError = null;
     if (isHttpUrl(imageUrl)) {
       // Pass page URL as referrer so background fetch can set the Referer header.
       // Kakao CDNs check Referer for hotlink protection.
-      const fetched = await sendRuntimeMessage({
-        type: "FETCH_IMAGE_DATA_URL",
-        url: imageUrl,
-        referrer: location.href,
-        preserveSize: shouldUseKakaoCanonicalPipeline(img),
-        maxOriginalBytes: EMBEDDED_MAX_ORIGINAL_BYTES
-      });
+      let fetched = null;
+      try {
+        fetched = await sendRuntimeMessage({
+          type: "FETCH_IMAGE_DATA_URL",
+          url: imageUrl,
+          referrer: location.href,
+          preserveSize: shouldUseKakaoCanonicalPipeline(img),
+          maxOriginalBytes: EMBEDDED_MAX_ORIGINAL_BYTES
+        });
+      } catch (error) {
+        if (CONTEXT_INVALIDATED_RE.test(getErrorMessage(error))) throw error;
+        imageFetchError = error;
+        tracePipeline("image-fetch-fallback", img, { error: getErrorMessage(error) });
+      }
 
       if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
         return {
@@ -2874,6 +2886,9 @@
           cssHeight: img.getBoundingClientRect().height,
           source: "img-fetch"
         };
+      }
+      if (fetched && fetched.ok === false) {
+        imageFetchError = new Error(String(fetched.error || "Image fetch failed"));
       }
     }
 
@@ -2895,7 +2910,7 @@
       if (IS_KAKAOPAGE_READER && img.isConnected && (img.naturalWidth || 0) > 0 && !getVisibleViewportRect(img)) {
         throw new Error(SCREENSHOT_TARGET_NOT_VISIBLE);
       }
-      return captureVisibleTargetPayload(img, error, imageUrl || "visible-tab-image-crop");
+      return captureVisibleTargetPayload(img, imageFetchError || error, imageUrl || "visible-tab-image-crop");
     }
   }
 
@@ -3067,11 +3082,17 @@
     }
   }
 
-  function waitForPaint() {
+  function waitForPaint(timeoutMs = 250) {
     return new Promise((resolve) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(resolve);
-      });
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        resolve();
+      };
+      const timeoutId = window.setTimeout(finish, Math.max(0, Number(timeoutMs) || 0));
+      requestAnimationFrame(() => requestAnimationFrame(finish));
     });
   }
 
@@ -3231,6 +3252,9 @@
       markInvalidated(reason);
       return;
     }
+    clearKakaoLoadingOverlay(target);
+    const pageId = String(state.kakaoPageIdByTarget.get(target) || "");
+    if (pageId) scheduleKakaoProjectionRefresh([pageId], "pipeline-error-restore");
     await reportStatus("error", reason, {
       reason: options && options.reason,
       targetTag: target && target.tagName ? target.tagName.toLowerCase() : "unknown"
@@ -4549,6 +4573,14 @@
     }
 
     recoverRenderedTargets();
+  }
+
+  function clearKakaoLoadingOverlay(target) {
+    const targetId = target && state.targetIdByElement.get(target);
+    const overlayState = targetId && state.overlaysById.get(targetId);
+    if (!overlayState || overlayState.mode !== "loading") return false;
+    removeOverlayForTarget(target);
+    return true;
   }
 
   function recoverRenderedTargets() {
@@ -6619,15 +6651,31 @@
     }
   }
 
-  function sendRuntimeMessage(message) {
+  function sendRuntimeMessage(message, options = {}) {
     if (state.invalidated) {
       return Promise.reject(new Error("Extension context invalidated"));
     }
 
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(message, (response) => {
-        if (chrome.runtime.lastError) {
-          const reason = chrome.runtime.lastError.message || "runtime message failed";
+      const messageType = String(message && message.type || "");
+      const defaultTimeoutMs = messageType === "FETCH_IMAGE_DATA_URL" || messageType === "CAPTURE_VISIBLE_TARGET_DATA_URL"
+        ? IMAGE_RUNTIME_MESSAGE_TIMEOUT_MS
+        : messageType === "REPORT_STATUS" ? STATUS_RUNTIME_MESSAGE_TIMEOUT_MS : 0;
+      const timeoutMs = Math.max(0, Number(options.timeoutMs ?? defaultTimeoutMs));
+      let settled = false;
+      const timeoutId = timeoutMs > 0 ? window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(`${messageType || "Runtime message"} timed out after ${timeoutMs}ms`));
+      }, timeoutMs) : 0;
+
+      const handleResponse = (response) => {
+        const runtimeError = chrome.runtime.lastError;
+        if (settled) return;
+        settled = true;
+        if (timeoutId) window.clearTimeout(timeoutId);
+        if (runtimeError) {
+          const reason = runtimeError.message || "runtime message failed";
           if (CONTEXT_INVALIDATED_RE.test(reason)) {
             markInvalidated(reason);
           }
@@ -6636,7 +6684,15 @@
         }
 
         resolve(response || null);
-      });
+      };
+      try {
+        chrome.runtime.sendMessage(message, handleResponse);
+      } catch (error) {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) window.clearTimeout(timeoutId);
+        reject(error);
+      }
     });
   }
 

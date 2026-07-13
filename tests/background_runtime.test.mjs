@@ -27,10 +27,43 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, blobToDataUrl };`,
   context,
   { filename: "background.js" }
 );
+
+test("blob conversion has a hard deadline and ignores a late FileReader callback", async () => {
+  let reader = null;
+  context.FileReader = class HangingFileReader {
+    constructor() {
+      reader = this;
+      this.result = "data:image/png;base64,bGF0ZQ==";
+    }
+    readAsDataURL() {}
+    abort() {
+      if (typeof this.onabort === "function") this.onabort();
+    }
+  };
+
+  await assert.rejects(
+    context.__backgroundTest.blobToDataUrl(new Blob(["pending"], { type: "image/png" }), 5),
+    /timed out after 5ms/
+  );
+  assert.ok(reader);
+  assert.doesNotThrow(() => reader.onload());
+
+  context.FileReader = class CompletingFileReader {
+    readAsDataURL() {
+      this.result = "data:image/png;base64,b2s=";
+      setTimeout(() => this.onload(), 0);
+    }
+    abort() {}
+  };
+  assert.equal(
+    await context.__backgroundTest.blobToDataUrl(new Blob(["ok"], { type: "image/png" }), 50),
+    "data:image/png;base64,b2s="
+  );
+});
 
 test("term extractor enters cooldown after failure and recovers after success", () => {
   const background = context.__backgroundTest;

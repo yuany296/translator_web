@@ -31,7 +31,7 @@ test("translation cache cleanup recognizes old cache versions and quota errors",
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v4:def"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_api_key"), false);
-  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v18:/);
+  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v19:/);
   assert.equal(
     context.__backgroundTest.isStorageQuotaError(new Error("Resource::kQuotaBytes quota exceeded")),
     true
@@ -394,7 +394,7 @@ test("slanted edge lettering stays separate across owner and adjacent-page OCR v
   }
 });
 
-test("local paragraph display box stays tight while solid paint keeps separate coverage", async () => {
+test("local paragraph display box stays tight and its solid background uses the same bounds", async () => {
   const region = {
     region_id: "region-panel",
     region_type: "caption_panel",
@@ -439,9 +439,10 @@ test("local paragraph display box stays tight while solid paint keeps separate c
   const fillTop = (candidate.fill_box.y / 100) * 900;
   const fillRight = fillLeft + (candidate.fill_box.w / 100) * 760;
   const fillBottom = fillTop + (candidate.fill_box.h / 100) * 900;
-  assert.ok(fillLeft < block.location.left && fillTop < block.location.top);
-  assert.ok(fillRight > block.location.left + block.location.width);
-  assert.ok(fillBottom > block.location.top + block.location.height);
+  assert.ok(Math.abs(fillLeft - block.location.left) < 1e-9);
+  assert.ok(Math.abs(fillTop - block.location.top) < 1e-9);
+  assert.ok(Math.abs(fillRight - (block.location.left + block.location.width)) < 1e-9);
+  assert.ok(Math.abs(fillBottom - (block.location.top + block.location.height)) < 1e-9);
 });
 
 test("shifted multi-line paragraphs stay separate through final candidate coalescing", async () => {

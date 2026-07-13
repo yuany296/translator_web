@@ -98,7 +98,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v18:";
+const CACHE_PREFIX = "mt_cache_v19:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -3428,7 +3428,11 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
     : clusterKind && clusterKind !== "bubbleText" ? "none" : "solid";
   const regionBox = normalizeLocalOcrRegionBox(item && item.regionBox);
   const rawDisplayBox = buildBaiduBox(sourceLeft, sourceTop, sourceLeft + sourceWidth, sourceTop + sourceHeight);
-  const solidPaintBox = bgType === "solid" ? buildLocalSolidPaintBox(rawDisplayBox, regionBox, imageSize) : null;
+  // 本地 OCR 的 displayBox 已经包含全部原文字框和安全边距，纯色背景无需再次向外扩张。
+  const expandSolidPaintBox = !clusterKind;
+  const solidPaintBox = bgType === "solid"
+    ? buildLocalSolidPaintBox(rawDisplayBox, regionBox, imageSize, expandSolidPaintBox)
+    : null;
   if (bgType === "solid" && !solidPaintBox) {
     bgType = "none";
   }
@@ -3478,14 +3482,14 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
   };
 }
 
-function buildLocalSolidPaintBox(rawBox, regionBox, imageSize) {
+function buildLocalSolidPaintBox(rawBox, regionBox, imageSize, expand = true) {
   if (!rawBox || !(rawBox.width > 0) || !(rawBox.height > 0)) {
     return null;
   }
   const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
   const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
-  const expandX = rawBox.width * 0.1;
-  const expandY = rawBox.height * 0.15;
+  const expandX = expand ? rawBox.width * 0.1 : 0;
+  const expandY = expand ? rawBox.height * 0.15 : 0;
   let left = Math.max(0, rawBox.left - expandX);
   let top = Math.max(0, rawBox.top - expandY);
   let right = Math.min(imageWidth, rawBox.right + expandX);

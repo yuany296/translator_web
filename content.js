@@ -24,6 +24,12 @@
   const MANUAL_MIN_HEIGHT = 60;
   const MAX_MANUAL_TARGETS = 4;
   const MAX_PARALLEL_TRANSLATIONS = IS_KAKAOPAGE_READER ? 6 : 3;
+  // 本地 Paddle 服务按全局锁串行执行 OCR；若同时放行多张 ahead 页面，
+  // 它们会先进入服务端 FIFO，让后来进入视口的正文排在队尾。Kakao 仅允许
+  // 一个 ahead 作业在途，其余槽位始终可由当前可视内容抢占。
+  const VISIBLE_TRANSLATION_RESERVED_SLOTS = IS_KAKAOPAGE_READER
+    ? MAX_PARALLEL_TRANSLATIONS - 1
+    : 0;
   const MANUAL_PARALLEL_TRANSLATIONS = 3;
   const MAX_PRELOAD_JOBS = 2;
   const PRELOAD_ROOT_MARGIN = "1400px 0px";
@@ -82,6 +88,12 @@
 
   // Pipeline trace — 默认关闭，零性能开销
   let ENABLE_PIPELINE_TRACE = false;
+  let ENABLE_FILTER_DEBUG = false;
+
+  function debugTargetFilter(message, details) {
+    if (!ENABLE_FILTER_DEBUG) return;
+    console.debug(`[MangaTranslator][Filter] ${message}`, details);
+  }
 
   function tracePipeline(stage, target, detail = {}) {
     if (!ENABLE_PIPELINE_TRACE) return;
@@ -99,6 +111,28 @@
       stage,
       detail
     });
+    if (target && target.dataset) {
+      let history = [];
+      try {
+        history = JSON.parse(target.dataset.mtPipelineTrace || "[]");
+        if (!Array.isArray(history)) history = [];
+      } catch {
+        history = [];
+      }
+      let summary = "";
+      try {
+        summary = JSON.stringify(detail).slice(0, 400);
+      } catch {
+        summary = "[unserializable]";
+      }
+      history.push({
+        stage: String(stage || ""),
+        at: Math.round(performance.now()),
+        summary
+      });
+      target.dataset.mtPipelineStage = String(stage || "");
+      target.dataset.mtPipelineTrace = JSON.stringify(history.slice(-12));
+    }
   }
 
   const state = {
@@ -120,6 +154,7 @@
     queue: [],
     queuedTargets: new WeakSet(),
     runningJobs: 0,
+    runningAheadJobs: 0,
     preloadQueue: [],
     preloadQueuedTargets: new WeakSet(),
     preloadRunningJobs: 0,
@@ -153,6 +188,8 @@
     floatingBallClose: null,
     bubbleMeasureProbe: null,
     fontFitCache: new Map(),
+    seamLayoutCache: new Map(),
+    seamSourceModeByRenderKey: new Map(),
     termDiscoverySentKeys: new Set(),
     lastInfoStatusAt: 0,
     runtimeOwnerToken: `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -239,6 +276,7 @@
       isTargetSnapshotStillValid,
       getTargetGeneration: getKakaoTargetGeneration,
       renderLoadingOverlay,
+      clearLoadingOverlay: clearKakaoLoadingOverlay,
       scheduleAutoTranslateRetry,
       reportPipelineError: reportKakaoPipelineError,
       tracePipeline,
@@ -274,8 +312,11 @@
       shouldRejectKakaoPageEdgeStitch,
       buildOcrRequestKey,
       shouldUseKakaoCanonicalPipeline,
+      isKakaoEpisodeImageTarget,
       normalizeKakaoStableImageSource,
       buildKakaoPageIdentity,
+      buildOcrMessageForPayload,
+      requestOcrForPayload,
       detachKakaoTargetForSourceChange,
       getTargetForKakaoPageId,
       prepareKakaoTargetRevisionCheck,
@@ -286,8 +327,32 @@
       normalizeOcrObservationResult,
       projectionToRendererBubble,
       normalizeProjectionPages,
+      normalizeSeamRenderSurfaces,
+      getSeamSegmentTransform,
+      buildSeamSurfaceRenderSignature,
+      isSeamSurfaceRenderable,
+      syncSeamOverlayTransforms,
+      setSeamSourceModeForOverlays,
+      toggleSeamSourceMode,
+      classifyCanonicalProjectionRender,
+      isCanonicalRenderComplete,
+      hasRenderableOcrDebug,
       normalizeDebugCoordinateItems,
       normalizePretranslateMode,
+      matchesTargetMarker,
+      hasSettledTranslatedMarker,
+      hasSettledNoTextMarker,
+      hasPendingTranslationMarkerState,
+      isTranslationRecoveryDue,
+      isReusableRenderedState,
+      isReusableKakaoReadyPageBinding,
+      isCurrentKakaoPageBinding,
+      buildOverlayRenderSignature,
+      isSameOverlayRenderPayload,
+      passesKakaoAheadTargetFilter,
+      isAheadTranslationOptions,
+      getTranslationQueueInsertIndex,
+      canStartQueuedTranslation,
       textSimilarity,
       formatTranslationForOriginalLines,
       normalizeBubbleRotation,
@@ -301,6 +366,7 @@
       getOverlayPositionRect,
       shouldHideOverlayRoot,
       getOverlayVisibilityRect,
+      getVisibleViewportRect,
       syncOverlayPosition,
       passesKakaopageTargetGeometry,
       hasUsableKakaoStripCaptureRect,
@@ -463,6 +529,13 @@
         state.pretranslateMode = normalizePretranslateMode(changes.mt_pretranslate_mode.newValue);
         if (shouldSchedulePagePretranslation()) {
           scheduleAheadPretranslation("setting-change");
+        }
+      }
+
+      if (changes.mt_local_ocr_debug) {
+        ENABLE_PIPELINE_TRACE = changes.mt_local_ocr_debug.newValue === true;
+        if (!ENABLE_PIPELINE_TRACE) {
+          globalThis.__MT_PIPELINE_TRACE__ = [];
         }
       }
 
@@ -735,13 +808,15 @@
     if (IS_KAKAOPAGE_READER && target instanceof HTMLImageElement && target.complete && sourceToken) {
       refreshPreviousKakaoBoundary(target, sourceToken);
     }
-    tracePipeline("collected", target, {
-      rect: {
-        top: target.getBoundingClientRect().top,
-        height: target.getBoundingClientRect().height,
-        width: target.getBoundingClientRect().width
-      }
-    });
+    if (isNewObservation || oldSourceToken !== sourceToken) {
+      tracePipeline("collected", target, {
+        rect: {
+          top: target.getBoundingClientRect().top,
+          height: target.getBoundingClientRect().height,
+          width: target.getBoundingClientRect().width
+        }
+      });
+    }
   }
 
   function refreshPreviousKakaoBoundary(target, sourceToken) {
@@ -969,6 +1044,11 @@
     }
     const rect = target.getBoundingClientRect();
     const canonicalTarget = shouldUseKakaoCanonicalPipeline(target);
+    // 领先/连续预翻译只服务正文长图。推荐横向卡片仍可在真正进入可视区后走普通翻译，
+    // 但不能抢占正文的预翻译槽位。
+    if (!canonicalTarget || !isKakaoEpisodeImageTarget(target)) {
+      return false;
+    }
     if (rect.width < 80 || rect.height < (canonicalTarget ? KAKAO_THIN_STRIP_MIN_HEIGHT : 80)) {
       return false;
     }
@@ -1029,7 +1109,9 @@
       if (shouldReuseTargetInflight(target.dataset.inflightSourceToken, getTargetExecutionToken(target))) return;
     }
 
-    state.queue.push({ target, options });
+    const item = { target, options };
+    const insertIndex = getTranslationQueueInsertIndex(state.queue, options);
+    state.queue.splice(insertIndex, 0, item);
     state.queuedTargets.add(target);
     tracePipeline("queued", target, {
       reason: options.reason,
@@ -1051,6 +1133,29 @@
     if (!queued) return false;
     queued.options = { ...(queued.options || {}), ...(options || {}), force: true };
     return true;
+  }
+
+  function isAheadTranslationOptions(options) {
+    return String(options && options.reason || "").startsWith("ahead-");
+  }
+
+  function getTranslationQueueInsertIndex(queue, options) {
+    const items = Array.isArray(queue) ? queue : [];
+    if (isAheadTranslationOptions(options)) return items.length;
+    const firstAhead = items.findIndex((item) => isAheadTranslationOptions(item && item.options));
+    return firstAhead >= 0 ? firstAhead : items.length;
+  }
+
+  function canStartQueuedTranslation(item, input = {}) {
+    const runningJobs = Number(input.runningJobs || 0);
+    const maxParallel = Math.max(1, Number(input.maxParallel || MAX_PARALLEL_TRANSLATIONS));
+    if (runningJobs >= maxParallel) return false;
+    if (!isAheadTranslationOptions(item && item.options)) return true;
+    const runningAheadJobs = Number(input.runningAheadJobs || 0);
+    const reservedSlots = Math.max(0, Number(
+      input.reservedSlots ?? VISIBLE_TRANSLATION_RESERVED_SLOTS
+    ));
+    return runningAheadJobs < Math.max(0, maxParallel - reservedSlots);
   }
 
   function queuePreload(target, options = {}) {
@@ -1081,6 +1186,16 @@
     }
 
     while (state.runningJobs < MAX_PARALLEL_TRANSLATIONS && state.queue.length > 0) {
+      const next = state.queue[0];
+      if (!canStartQueuedTranslation(next, {
+        runningJobs: state.runningJobs,
+        runningAheadJobs: state.runningAheadJobs,
+        maxParallel: MAX_PARALLEL_TRANSLATIONS,
+        reservedSlots: VISIBLE_TRANSLATION_RESERVED_SLOTS
+      })) {
+        break;
+      }
+
       const item = state.queue.shift();
       state.queuedTargets.delete(item.target);
 
@@ -1088,13 +1203,16 @@
         continue;
       }
 
+      const ahead = isAheadTranslationOptions(item.options);
       state.runningJobs += 1;
+      if (ahead) state.runningAheadJobs += 1;
       translateTarget(item.target, item.options)
         .catch(() => {
           // Error is handled in translateTarget.
         })
         .finally(() => {
           state.runningJobs -= 1;
+          if (ahead) state.runningAheadJobs = Math.max(0, state.runningAheadJobs - 1);
           pumpQueue();
         });
     }
@@ -1208,42 +1326,42 @@
   }
 
   async function runKakaoCanonicalTarget(target, options, cached = false) {
-    let result = cached
-      ? await kakaoCanonicalPipeline.runCached(target, null, options)
-      : await kakaoCanonicalPipeline.run(target, options);
-    if (result && result.fallbackLegacy === true && kakaoLegacyPipeline) {
-      tracePipeline("canonical-legacy-fallback", target, {
-        reason: result.reason || "non-authoritative-page-payload",
-        source: String(result.payload && result.payload.source || "")
-      });
-      const targetKey = computeTargetKey(target);
-      const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
-      // Canonical FETCH 已缓存了未经旧截图归一化的 payload；委托旧链路前移除它，
-      // 让截图/裁剪模式完整走原有提取与坐标适配流程。
-      state.payloadCacheByTargetKey.delete(scopedTargetKey);
-      state.payloadCacheByTargetKey.delete(buildKakaoCanonicalPayloadCacheKey(scopedTargetKey, target));
-      result = await kakaoLegacyPipeline.run(target, {
-        ...options,
-        reason: options && options.reason
-          ? `${options.reason}:canonical-payload-fallback`
-          : "canonical-payload-fallback"
-      });
-    }
-    if (result && result.ok) {
-      await reportStatus("info", "translation done", {
-        reason: options && options.reason,
-        pageId: result.pageId || "",
-        bubbles: Number(result.bubbles || 0),
-        cached: result.cached === true || result.reused === true,
-        pipeline: "kakao-canonical-v1"
-      });
-      // Canonical pipeline 的 run/runCached 通过 refreshCanonicalState →
-      // renderCanonicalProjections 渲染结果，但某些路径可能不会清理
-      // loading overlay（如 getTargetForKakaoPageId 返回 null，或缓存命中
-      // 时 projections 为空），导致 overlay 永久残留。此处显式清理。
+    try {
+      let result = cached
+        ? await kakaoCanonicalPipeline.runCached(target, null, options)
+        : await kakaoCanonicalPipeline.run(target, options);
+      if (result && result.fallbackLegacy === true && kakaoLegacyPipeline) {
+        tracePipeline("canonical-legacy-fallback", target, {
+          reason: result.reason || "non-authoritative-page-payload",
+          source: String(result.payload && result.payload.source || "")
+        });
+        const targetKey = computeTargetKey(target);
+        const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+        // Canonical FETCH 已缓存了未经旧截图归一化的 payload；委托旧链路前移除它，
+        // 让截图/裁剪模式完整走原有提取与坐标适配流程。
+        state.payloadCacheByTargetKey.delete(scopedTargetKey);
+        state.payloadCacheByTargetKey.delete(buildKakaoCanonicalPayloadCacheKey(scopedTargetKey, target));
+        result = await kakaoLegacyPipeline.run(target, {
+          ...options,
+          reason: options && options.reason
+            ? `${options.reason}:canonical-payload-fallback`
+            : "canonical-payload-fallback"
+        });
+      }
+      if (result && result.ok) {
+        await reportStatus("info", "translation done", {
+          reason: options && options.reason,
+          pageId: result.pageId || "",
+          bubbles: Number(result.bubbles || 0),
+          cached: result.cached === true || result.reused === true,
+          pipeline: "kakao-canonical-v1"
+        });
+      }
+      return result;
+    } finally {
+      // 无论成功、跳过还是失败，只清理当前目标的 loading；正式气泡不受影响。
       clearKakaoLoadingOverlay(target);
     }
-    return result;
   }
 
   async function translateTarget(target, options) {
@@ -1308,9 +1426,10 @@
             restoreEmbeddedForTarget(target);
           } else if (existingRendered.mode === "embedded" && !isEmbeddedRenderStillApplied(existingRendered)) {
             state.embeddedById.delete(targetId);
-          } else if (existingRendered.mode === "embedded") {
-            return { ok: true, reused: true, bubbles: existingRendered.bubbleCount };
-          } else {
+          } else if (isReusableRenderedState(
+            existingRendered,
+            hasSettledTranslatedMarker(target, targetKey, scopedTargetKey)
+          )) {
             syncOverlayPosition(existingRendered);
             return { ok: true, reused: true, bubbles: existingRendered.bubbleCount };
           }
@@ -1320,12 +1439,19 @@
         if (!options.force && refreshedRendered && refreshedRendered.targetKey === targetKey) {
           if (isBackgroundImageTarget(target) && refreshedRendered.mode === "embedded") {
             restoreEmbeddedForTarget(target);
-          } else if (refreshedRendered.mode === "embedded") {
-            return { ok: true, reused: true, bubbles: refreshedRendered.bubbleCount };
-          } else {
+          } else if (isReusableRenderedState(
+            refreshedRendered,
+            hasSettledTranslatedMarker(target, targetKey, scopedTargetKey)
+          )) {
             syncOverlayPosition(refreshedRendered);
             return { ok: true, reused: true, bubbles: refreshedRendered.bubbleCount };
           }
+        }
+
+        if (!options.force && hasReusableKakaoPageOcr(target)) {
+          // OCR 已经按 pageId + imageRevision 成为 Store 中的权威事实；恢复时只重试
+          // canonical 翻译/投影，不能因为没有本地 bubble cache 就重新跑整页 OCR。
+          return await runKakaoCanonicalTarget(target, options, true);
         }
 
         const localCachedResult = state.localResultCache.get(scopedTargetKey);
@@ -1440,7 +1566,13 @@
           }
         }
 
-        clearRenderedTarget(target);
+        if (shouldUseKakaoCanonicalPipeline(target)) {
+          // Canonical 管线会保留并标记上一版 provisional projection。
+          // 冷缓存重试失败时只清 loading，不能把仍有效的回退译文一起删掉。
+          clearKakaoLoadingOverlay(target);
+        } else {
+          clearRenderedTarget(target);
+        }
         if (isScreenshotTargetNotVisibleError(reason)) {
           if (IS_KAKAOPAGE_READER && state.autoTranslatePageEnabled) {
             scheduleAutoTranslateRetry(target);
@@ -1457,6 +1589,16 @@
             reason: options.reason,
             targetTag: target.tagName.toLowerCase()
           });
+        }
+
+        if (
+          shouldUseKakaoCanonicalPipeline(target) &&
+          state.autoTranslatePageEnabled &&
+          target.isConnected
+        ) {
+          // 冷请求超时或临时网络故障后释放并发槽，但给下一次恢复留出退避窗口，
+          // 避免 1.2 秒恢复扫描立即反复轰击翻译接口。
+          target.dataset.mtRecoveryReqAt = String(Date.now());
         }
 
         return { ok: false, error: reason };
@@ -1676,6 +1818,16 @@
     );
   }
 
+  function isKakaoEpisodeImageTarget(target) {
+    if (!(target instanceof HTMLImageElement) || typeof target.getBoundingClientRect !== "function") {
+      return false;
+    }
+    const rect = target.getBoundingClientRect();
+    const displayWidth = Number(rect && rect.width || 0);
+    const naturalWidth = Number(target.naturalWidth || 0);
+    return displayWidth >= 240 && (naturalWidth <= 0 || naturalWidth >= 240);
+  }
+
   function getStableChapterUrl() {
     const href = String(
       (typeof location !== "undefined" && location.href) ||
@@ -1717,6 +1869,27 @@
         .replace(/[?&]+$/, "")
         .replace(/\?&/, "?");
     }
+  }
+
+  function buildKakaoPageSourceIdentity(rawSource, stableSource, imageRevision) {
+    const normalized = String(stableSource || "");
+    if (!normalized) return `inline:${String(imageRevision || "")}`;
+    try {
+      const base = (typeof location !== "undefined" && location.href) || undefined;
+      const rawUrl = new URL(String(rawSource || ""), base);
+      const stableUrl = new URL(normalized, base);
+      const usesOpaqueToken = [...rawUrl.searchParams.keys()].some((key) => /^token$/i.test(key));
+      const genericResourceEndpoint = /\/s?download\/resource\/?$/i.test(stableUrl.pathname);
+      // Kakao 正文 URL 把真实资源身份放在 opaque token 中；若直接删除 token，
+      // 同尺寸的整章图片会全部折叠成同一个 pageId。此类端点改用图片字节摘要，
+      // 既区分不同页面，也能让同一图片在 token 刷新后保持稳定身份。
+      if (usesOpaqueToken && genericResourceEndpoint) {
+        return `${normalized}#content-revision=${String(imageRevision || "")}`;
+      }
+    } catch {
+      // URL 无法解析时保留原有稳定源，后续仍由 revision guard 保护。
+    }
+    return normalized;
   }
 
   async function sha256HexBytes(bytes) {
@@ -1775,7 +1948,8 @@
       target && target.dataset && getQuickSourceToken(target) ||
       payload && payload.sourceImageId || ""
     );
-    const stableSource = normalizeKakaoStableImageSource(rawSource) || `inline:${imageRevision}`;
+    const normalizedStableSource = normalizeKakaoStableImageSource(rawSource) || `inline:${imageRevision}`;
+    const stableSource = buildKakaoPageSourceIdentity(rawSource, normalizedStableSource, imageRevision);
     const pageId = `page-${await sha256HexText(`${chapterId}\n${stableSource}\n${width}x${height}`)}`;
     const rect = target && typeof target.getBoundingClientRect === "function"
       ? target.getBoundingClientRect()
@@ -1957,6 +2131,10 @@
     if (!previous || previous.imageRevision == null) return "";
     const boundRevision = String(state.kakaoImageRevisionByTarget.get(target) || "");
     if (boundRevision && boundRevision !== String(previous.imageRevision || "")) return "";
+    const boundTargets = state.kakaoTargetsByPageId.get(pageId);
+    if (isCurrentKakaoPageBinding(target, pageId, previous, boundRevision, boundTargets)) {
+      return pageId;
+    }
     bindKakaoTargetToPage(target, pageId, previous.imageRevision);
     if (typeof state.kakaoStore.registerPageHandle === "function") {
       state.kakaoStore.registerPageHandle({
@@ -1969,6 +2147,15 @@
     }
     scheduleKakaoProjectionRefresh([pageId], "page-handle-restored");
     return pageId;
+  }
+
+  function isCurrentKakaoPageBinding(target, pageId, handle, boundRevision, boundTargets) {
+    return !!(
+      target && target.isConnected !== false && pageId && handle &&
+      handle.target === target &&
+      String(boundRevision || "") === String(handle.imageRevision || "") &&
+      boundTargets && typeof boundTargets.has === "function" && boundTargets.has(target)
+    );
   }
 
   function getTargetForKakaoPageId(pageId) {
@@ -2086,8 +2273,8 @@
     const bitmapHeightB = Number(imageB.naturalHeight || imageB.height || 0);
     if (!(widthA > 0 && widthB > 0 && heightA > 0 && heightB > 0)) return null;
     const requestedHeight = Number(options.height || options.bandHeight || 0);
-    const bandHeight = Math.max(160, Math.min(420,
-      Math.round(requestedHeight || Math.min(widthA, widthB) * 0.15)));
+    const bandHeight = Math.max(240, Math.min(480,
+      Math.round(requestedHeight || Math.min(widthA, widthB) * 0.35)));
     const sourceBandA = Math.min(heightA, bandHeight);
     const sourceBandB = Math.min(heightB, bandHeight);
     const bitmapBandA = Math.min(bitmapHeightA, sourceBandA * bitmapHeightA / heightA);
@@ -2195,13 +2382,13 @@
     };
   }
 
-  async function requestOcrForPayload(payload, context = {}) {
+  function buildOcrMessageForPayload(payload, context = {}) {
     const sourceType = context.sourceType === "seam" ? "seam" : "page";
     const pageIds = Array.isArray(context.pageIds) ? context.pageIds.map(String) : [];
     const imageRevisionByPage = context.imageRevisionByPage && typeof context.imageRevisionByPage === "object"
       ? context.imageRevisionByPage
       : {};
-    const response = await sendRuntimeMessage({
+    return {
       type: "OCR_DATA_URL",
       dataUrl: payload && payload.dataUrl,
       imageUrl: payload && payload.imageUrl,
@@ -2214,6 +2401,7 @@
       imageRevisionByPage,
       requireCleanedImage: context.requireCleanedImage === true,
       forceCleanedImageArtifact: context.forceCleanedImageArtifact === true,
+      cleanedMasks: Array.isArray(context.cleanedMasks) ? context.cleanedMasks : [],
       imageMeta: {
         ...buildPayloadImageMeta(payload),
         ...(context.imageMeta || {}),
@@ -2223,12 +2411,17 @@
         pageSpans: payload && payload.pageSpans || context.imageMeta && context.imageMeta.pageSpans || null,
         seam: payload && payload.seam || null
       }
-    });
+    };
+  }
+
+  async function requestOcrForPayload(payload, context = {}) {
+    const message = buildOcrMessageForPayload(payload, context);
+    const response = await sendRuntimeMessage(message);
     if (!response || !response.ok) return response;
     const result = normalizeOcrObservationResult(response.result, {
-      sourceType,
-      pageIds,
-      imageRevisionByPage
+      sourceType: message.sourceType,
+      pageIds: message.pageIds,
+      imageRevisionByPage: message.imageRevisionByPage
     });
     return { ...response, result };
   }
@@ -3023,10 +3216,52 @@
 
   function getVisibleViewportRect(target) {
     const rect = target.getBoundingClientRect();
-    const left = clamp(rect.left, 0, window.innerWidth);
-    const top = clamp(rect.top, 0, window.innerHeight);
-    const right = clamp(rect.right, 0, window.innerWidth);
-    const bottom = clamp(rect.bottom, 0, window.innerHeight);
+    let left = clamp(Number(rect.left || 0), 0, window.innerWidth);
+    let top = clamp(Number(rect.top || 0), 0, window.innerHeight);
+    let right = clamp(
+      Number.isFinite(Number(rect.right)) ? Number(rect.right) : Number(rect.left || 0) + Number(rect.width || 0),
+      0,
+      window.innerWidth
+    );
+    let bottom = clamp(
+      Number.isFinite(Number(rect.bottom)) ? Number(rect.bottom) : Number(rect.top || 0) + Number(rect.height || 0),
+      0,
+      window.innerHeight
+    );
+
+    // 覆盖层挂在 document 根节点，默认不会继承目标祖先的 overflow 裁剪。
+    // 因此可见矩形必须显式与每个滚动/裁剪祖先求交，横向推荐列表尤其依赖这一点。
+    let ancestor = target && target.parentElement;
+    while (ancestor) {
+      let style = null;
+      try {
+        style = getComputedStyle(ancestor);
+      } catch {
+        style = null;
+      }
+      const clipX = /^(?:auto|scroll|hidden|clip)$/.test(String(style && style.overflowX || ""));
+      const clipY = /^(?:auto|scroll|hidden|clip)$/.test(String(style && style.overflowY || ""));
+      if ((clipX || clipY) && typeof ancestor.getBoundingClientRect === "function") {
+        const ancestorRect = ancestor.getBoundingClientRect();
+        const ancestorLeft = Number(ancestorRect.left || 0);
+        const ancestorTop = Number(ancestorRect.top || 0);
+        const ancestorRight = Number.isFinite(Number(ancestorRect.right))
+          ? Number(ancestorRect.right)
+          : ancestorLeft + Number(ancestorRect.width || 0);
+        const ancestorBottom = Number.isFinite(Number(ancestorRect.bottom))
+          ? Number(ancestorRect.bottom)
+          : ancestorTop + Number(ancestorRect.height || 0);
+        if (clipX && ancestorRight > ancestorLeft) {
+          left = Math.max(left, ancestorLeft);
+          right = Math.min(right, ancestorRight);
+        }
+        if (clipY && ancestorBottom > ancestorTop) {
+          top = Math.max(top, ancestorTop);
+          bottom = Math.min(bottom, ancestorBottom);
+        }
+      }
+      ancestor = ancestor.parentElement;
+    }
     const width = right - left;
     const height = bottom - top;
 
@@ -3034,7 +3269,7 @@
       return null;
     }
 
-    return { left, top, width, height };
+    return { left, top, right, bottom, width, height };
   }
 
   async function withOverlayLayerHidden(callback) {
@@ -3322,8 +3557,226 @@
     return normalized;
   }
 
+  function getPageMappedValue(values, pageId, fallback = null) {
+    const key = String(pageId || "");
+    if (values instanceof Map) {
+      return values.has(key) ? values.get(key) : fallback;
+    }
+    if (values && typeof values === "object" && Object.prototype.hasOwnProperty.call(values, key)) {
+      return values[key];
+    }
+    return fallback;
+  }
+
+  function normalizeSeamRect(value) {
+    const rect = value && typeof value === "object" ? value : {};
+    return {
+      x: Number(rect.x || 0),
+      y: Number(rect.y || 0),
+      w: Number(rect.w || rect.width || 0),
+      h: Number(rect.h || rect.height || 0)
+    };
+  }
+
+  function normalizeSeamRenderSurfaces(input = {}) {
+    const values = Array.isArray(input && input.seamSurfaces) ? input.seamSurfaces : [];
+    return values.map((surface) => {
+      const pageIds = Array.isArray(surface && surface.pageIds)
+        ? surface.pageIds.map(String).filter(Boolean)
+        : [];
+      const segments = Array.isArray(surface && surface.segments)
+        ? surface.segments.map((segment) => ({
+          pageId: String(segment && segment.pageId || ""),
+          drawRect: normalizeSeamRect(segment && segment.drawRect),
+          sourceCrop: normalizeSeamRect(segment && segment.sourceCrop),
+          naturalWidth: Number(segment && segment.naturalWidth || 0),
+          naturalHeight: Number(segment && segment.naturalHeight || 0)
+        }))
+        : [];
+      return {
+        renderKey: String(surface && surface.renderKey || ""),
+        layoutKey: String(surface && surface.layoutKey || surface && surface.renderKey || ""),
+        pairKey: String(surface && surface.pairKey || ""),
+        coordinateSpace: String(surface && surface.coordinateSpace || ""),
+        canvasWidth: Number(surface && surface.canvasWidth || 0),
+        canvasHeight: Number(surface && surface.canvasHeight || 0),
+        pageIds,
+        imageRevisionByPage: surface && surface.imageRevisionByPage && typeof surface.imageRevisionByPage === "object"
+          ? { ...surface.imageRevisionByPage }
+          : {},
+        canonicalRevisionById: surface && surface.canonicalRevisionById && typeof surface.canonicalRevisionById === "object"
+          ? { ...surface.canonicalRevisionById }
+          : {},
+        translationFingerprintByCanonicalId:
+          surface && surface.translationFingerprintByCanonicalId &&
+          typeof surface.translationFingerprintByCanonicalId === "object"
+            ? { ...surface.translationFingerprintByCanonicalId }
+            : {},
+        artifactFingerprint: String(surface && surface.artifactFingerprint || ""),
+        segments,
+        cleanedImage: String(surface && surface.cleanedImage || ""),
+        cleanedImageToken: String(surface && surface.cleanedImageToken || ""),
+        bubbles: Array.isArray(surface && surface.bubbles) ? surface.bubbles : [],
+        debug: surface && surface.debug && typeof surface.debug === "object" ? surface.debug : null,
+        handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds)
+          ? surface.handledCanonicalIds.map(String).filter(Boolean)
+          : []
+      };
+    });
+  }
+
+  function getSeamSegmentTransform(segment, pageCssWidth, pageCssHeight) {
+    const drawRect = normalizeSeamRect(segment && segment.drawRect);
+    const sourceCrop = normalizeSeamRect(segment && segment.sourceCrop);
+    const naturalWidth = Number(segment && segment.naturalWidth || 0);
+    const naturalHeight = Number(segment && segment.naturalHeight || 0);
+    const pageWidth = Number(pageCssWidth || 0);
+    const pageHeight = Number(pageCssHeight || 0);
+    if (
+      !(drawRect.w > 0 && drawRect.h > 0) ||
+      !(sourceCrop.w > 0 && sourceCrop.h > 0) ||
+      !(naturalWidth > 0 && naturalHeight > 0) ||
+      !(pageWidth > 0 && pageHeight > 0)
+    ) {
+      return null;
+    }
+    const scaleX = (sourceCrop.w / drawRect.w) * (pageWidth / naturalWidth);
+    const scaleY = (sourceCrop.h / drawRect.h) * (pageHeight / naturalHeight);
+    return {
+      scaleX,
+      scaleY,
+      left: sourceCrop.x * pageWidth / naturalWidth - drawRect.x * scaleX,
+      top: sourceCrop.y * pageHeight / naturalHeight - drawRect.y * scaleY
+    };
+  }
+
+  function buildSeamSurfaceRenderSignature(surface) {
+    try {
+      return hashSourceIdentity(JSON.stringify({
+        renderKey: String(surface && surface.renderKey || ""),
+        layoutKey: String(surface && surface.layoutKey || ""),
+        pairKey: String(surface && surface.pairKey || ""),
+        coordinateSpace: String(surface && surface.coordinateSpace || ""),
+        canvasWidth: Number(surface && surface.canvasWidth || 0),
+        canvasHeight: Number(surface && surface.canvasHeight || 0),
+        pageIds: Array.isArray(surface && surface.pageIds) ? surface.pageIds : [],
+        imageRevisionByPage: surface && surface.imageRevisionByPage || {},
+        canonicalRevisionById: surface && surface.canonicalRevisionById || {},
+        translationFingerprintByCanonicalId: surface && surface.translationFingerprintByCanonicalId || {},
+        artifactFingerprint: String(surface && surface.artifactFingerprint || ""),
+        segments: Array.isArray(surface && surface.segments) ? surface.segments : [],
+        cleanedImageHash: hashSourceIdentity(String(surface && surface.cleanedImage || "")),
+        bubbles: Array.isArray(surface && surface.bubbles) ? surface.bubbles : [],
+        debug: surface && surface.debug || null,
+        handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds)
+          ? surface.handledCanonicalIds
+          : []
+      }));
+    } catch {
+      return "";
+    }
+  }
+
+  function isSeamSurfaceRenderable(
+    surface,
+    resolveTarget = getTargetForKakaoPageId,
+    resolveRevision = (target) => state.kakaoImageRevisionByTarget.get(target)
+  ) {
+    const requiresCleanedImage = (Array.isArray(surface && surface.bubbles) ? surface.bubbles : [])
+      .some((bubble) => String(
+        bubble && (bubble.bg_type || bubble.visual && (bubble.visual.bgType || bubble.visual.bg_type)) || "none"
+      ).trim().toLowerCase() !== "solid");
+    if (
+      !surface || !surface.renderKey || !surface.layoutKey ||
+      !(surface.canvasWidth > 0 && surface.canvasHeight > 0) ||
+      (requiresCleanedImage && !isDataUrl(surface.cleanedImage)) ||
+      !Array.isArray(surface.pageIds) || surface.pageIds.length < 2 ||
+      new Set(surface.pageIds).size !== surface.pageIds.length
+    ) {
+      return false;
+    }
+    return surface.pageIds.every((pageId) => {
+      const segment = surface.segments.find((item) => item.pageId === pageId);
+      if (!segment || !getSeamSegmentTransform(segment, 1, 1)) return false;
+      const target = typeof resolveTarget === "function" ? resolveTarget(pageId) : null;
+      if (!target || target.isConnected === false) return false;
+      const expectedRevision = String(surface.imageRevisionByPage && surface.imageRevisionByPage[pageId] || "");
+      const currentRevision = String(typeof resolveRevision === "function" ? resolveRevision(target, pageId) || "" : "");
+      return !!expectedRevision && currentRevision === expectedRevision;
+    });
+  }
+
+  function classifyCanonicalProjectionRender(bubbles, input = {}) {
+    const seamBubbleCount = (Array.isArray(input && input.seamSurfaces) ? input.seamSurfaces : [])
+      .reduce((count, surface) => count + (Array.isArray(surface && surface.bubbles) ? surface.bubbles.length : 0), 0);
+    if ((Array.isArray(bubbles) && bubbles.length > 0) || seamBubbleCount > 0) return "translated";
+    return input && input.authoritativeEmpty === true ? "no-text" : "pending";
+  }
+
+  function isCanonicalRenderComplete(projections, input = {}) {
+    return input.translationComplete !== false &&
+      !(Array.isArray(projections) ? projections : []).some((projection) =>
+        projection && (projection.provisional === true || projection.pendingCanonicalId)
+      );
+  }
+
+  function hasRenderableOcrDebug(result) {
+    const debugPayloads = [
+      result && result.debug,
+      ...(Array.isArray(result && result.seamSurfaces)
+        ? result.seamSurfaces.map((surface) => surface && surface.debug)
+        : [])
+    ].filter((debug) => debug && typeof debug === "object");
+    return debugPayloads.some((debug) =>
+      [debug.rawItems, debug.duplicateItems, debug.dedupedItems, debug.finalBubbles]
+        .some((items) => Array.isArray(items) && items.length > 0)
+    );
+  }
+
   async function renderCanonicalProjections(input = {}) {
     const pages = normalizeProjectionPages(input);
+    const seamSurfaces = normalizeSeamRenderSurfaces(input).filter((surface) =>
+      isSeamSurfaceRenderable(surface)
+    );
+    const seamSurfacesByPage = new Map();
+    const handledCanonicalIds = new Set();
+    const atomicSeamPageIds = new Set();
+    seamSurfaces.forEach((surface) => {
+      surface.handledCanonicalIds.forEach((canonicalId) => handledCanonicalIds.add(canonicalId));
+      surface.pageIds.forEach((pageId) => {
+        if (!pages.has(pageId)) pages.set(pageId, []);
+        const pageSurfaces = seamSurfacesByPage.get(pageId) || [];
+        pageSurfaces.push(surface);
+        seamSurfacesByPage.set(pageId, pageSurfaces);
+        atomicSeamPageIds.add(pageId);
+      });
+    });
+
+    // pipeline 保留一份未被 surface 接管前的逐页投影。若 DOM revision 在提交瞬间变化、
+    // renderer 因而拒绝 surface，只恢复对应 canonical 的逐页结果，不让页面变空。
+    const fallbackPages = normalizeProjectionPages({
+      projectionsByPage: input && input.fallbackProjectionsByPage
+    });
+    for (const [pageId, fallbackProjections] of fallbackPages.entries()) {
+      if (!pages.has(pageId)) pages.set(pageId, []);
+      const current = pages.get(pageId);
+      const existingKeys = new Set(current.map((projection) => String(
+        projection && (projection.projectionId || projection.id) ||
+        `${projection && projection.canonicalId || ""}|${projection && projection.role || ""}`
+      )));
+      for (const projection of fallbackProjections) {
+        const canonicalId = String(projection && (projection.canonicalId || projection.groupId) || "");
+        if (canonicalId && handledCanonicalIds.has(canonicalId)) continue;
+        const projectionKey = String(
+          projection && (projection.projectionId || projection.id) ||
+          `${canonicalId}|${projection && projection.role || ""}`
+        );
+        if (existingKeys.has(projectionKey)) continue;
+        existingKeys.add(projectionKey);
+        current.push(projection);
+      }
+    }
+
     const allTextCandidates = new Map();
     for (const [pageId, projections] of pages.entries()) {
       for (const projection of projections) {
@@ -3331,7 +3784,7 @@
         const role = rawRole === "primary" ? "text_primary" : rawRole === "standby" ? "text_standby" : rawRole;
         if (role !== "text_primary" && role !== "text_standby") continue;
         const canonicalId = String(projection && (projection.canonicalId || projection.groupId || projection.id) || "");
-        if (!canonicalId) continue;
+        if (!canonicalId || handledCanonicalIds.has(canonicalId)) continue;
         const target = getTargetForKakaoPageId(pageId);
         if (!target) continue;
         const candidates = allTextCandidates.get(canonicalId) || [];
@@ -3353,10 +3806,16 @@
     }
 
     let renderedCount = 0;
+    const atomicRenderTasks = [];
     for (const [pageId, projections] of pages.entries()) {
       const target = getTargetForKakaoPageId(pageId) || (pageId === String(input.pageId || "") ? input.target : null);
       if (!target || !target.isConnected) continue;
-      const bubbles = [...projections]
+      const pageSurfaces = seamSurfacesByPage.get(pageId) || [];
+      const ordinaryProjections = [...projections].filter((projection) => {
+        const canonicalId = String(projection && (projection.canonicalId || projection.groupId) || "");
+        return !canonicalId || !handledCanonicalIds.has(canonicalId);
+      });
+      const bubbles = ordinaryProjections
         .sort((left, right) => {
           const leftCover = left && (left.role === "cover" || left.role === "cover_only" || left.coverOnly === true) ? 0 : 1;
           const rightCover = right && (right.role === "cover" || right.role === "cover_only" || right.coverOnly === true) ? 0 : 1;
@@ -3379,24 +3838,91 @@
         .filter((bubble) => bubble.projection_role === "cover_only" || bubble.translated_text);
       const targetKey = computeTargetKey(target);
       const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+      const defaultCleanedImage = input.result && input.result.cleanedImage || null;
+      const defaultDebug = input.debug || input.result && input.result.debug || null;
       const result = {
         bubbles,
-        cleanedImage: input.cleanedImageByPage && input.cleanedImageByPage[pageId] ||
-          input.result && input.result.cleanedImage || null,
-        debug: input.debugByPage && input.debugByPage[pageId] || null
+        cleanedImage: getPageMappedValue(input.cleanedImageByPage, pageId, defaultCleanedImage),
+        debug: getPageMappedValue(input.debugByPage, pageId, defaultDebug),
+        seamSurfaces: pageSurfaces,
+        seamPageId: pageId
       };
-      rememberLocalResult(scopedTargetKey, result);
-      if (bubbles.length > 0) {
-        await renderTranslationResult(target, targetKey, result, input.payloadByPage && input.payloadByPage[pageId] || input.payload || null, { stream: true });
-        target.dataset.mtNoTextKey = "";
-      } else {
-        clearRenderedTarget(target);
-        target.dataset.mtNoTextKey = scopedTargetKey;
+      const pageRenderOptions = {
+        ...input,
+        seamSurfaces: pageSurfaces,
+        translationComplete: getPageMappedValue(
+          input.translationCompleteByPage,
+          pageId,
+          input.translationComplete
+        ),
+        authoritativeEmpty: getPageMappedValue(
+          input.authoritativeEmptyByPage,
+          pageId,
+          input.authoritativeEmpty
+        )
+      };
+      const disposition = classifyCanonicalProjectionRender(bubbles, pageRenderOptions);
+      const invokeRender = (options) => {
+        const task = renderTranslationResult(
+          target,
+          targetKey,
+          result,
+          getPageMappedValue(input.payloadByPage, pageId, input.payload || null),
+          options
+        );
+        if (atomicSeamPageIds.has(pageId)) {
+          atomicRenderTasks.push(task);
+          return null;
+        }
+        return task;
+      };
+
+      if (disposition === "pending") {
+        if (hasRenderableOcrDebug(result)) {
+          const task = invokeRender({ stream: false, debugOnly: true });
+          if (task) await task;
+        }
+        if (input.debugOnly !== true) {
+          target.dataset.mtLastTranslatedKey = "";
+          target.dataset.mtNoTextKey = "";
+        }
+        continue;
       }
-      target.dataset.mtLastTranslatedKey = scopedTargetKey;
+      rememberLocalResult(scopedTargetKey, result);
+      if (disposition === "translated") {
+        const task = invokeRender({
+          stream: pageSurfaces.length === 0,
+          forceOverlay: pageSurfaces.length > 0
+        });
+        if (task) await task;
+        target.dataset.mtNoTextKey = "";
+        if (isCanonicalRenderComplete(ordinaryProjections, pageRenderOptions)) {
+          target.dataset.mtLastTranslatedKey = scopedTargetKey;
+          kakaoRetryScheduler.cancel(target);
+        } else {
+          target.dataset.mtLastTranslatedKey = "";
+        }
+      } else {
+        if (hasRenderableOcrDebug(result)) {
+          const task = invokeRender({ stream: false, debugOnly: input.debugOnly === true });
+          if (task) await task;
+        } else {
+          clearRenderedTarget(target);
+        }
+        target.dataset.mtNoTextKey = scopedTargetKey;
+        target.dataset.mtLastTranslatedKey = "";
+        kakaoRetryScheduler.cancel(target);
+      }
       renderedCount += bubbles.length;
     }
-    return { ok: true, bubbles: renderedCount };
+    if (atomicRenderTasks.length > 0) {
+      await Promise.all(atomicRenderTasks);
+    }
+    const seamBubbleCount = seamSurfaces.reduce(
+      (count, surface) => count + surface.bubbles.length,
+      0
+    );
+    return { ok: true, bubbles: renderedCount + seamBubbleCount };
   }
 
   async function renderTranslationResult(target, targetKey, result, payload, options = {}) {
@@ -3417,7 +3943,12 @@
 
     scheduleTermDiscovery(target, targetKey, result, payload);
 
-    if (shouldUseEmbeddedRender(target) && !getPayloadDisplayRect(payload)) {
+    if (
+      options.forceOverlay !== true &&
+      options.debugOnly !== true &&
+      shouldUseEmbeddedRender(target) &&
+      !getPayloadDisplayRect(payload)
+    ) {
       await renderEmbeddedTranslation(target, targetKey, result, payload);
       removeOverlayForTarget(target);
       return;
@@ -3473,6 +4004,48 @@
     return state.embeddedById.get(targetId) || state.overlaysById.get(targetId) || null;
   }
 
+  function isReusableRenderedState(renderedState, settled) {
+    if (!renderedState || settled !== true) return false;
+    if (renderedState.mode === "embedded") return true;
+    return renderedState.mode !== "loading" && renderedState.mode !== "debug" &&
+      Number(renderedState.bubbleCount || 0) > 0;
+  }
+
+  function isReusableKakaoReadyPageBinding(target, handle, terminal, boundPageId, boundRevision) {
+    if (!target || target.isConnected === false || !handle || !terminal) return false;
+    const pageId = String(handle.pageId || "");
+    const revision = String(handle.imageRevision || "");
+    const terminalRevision = String(terminal.details && terminal.details.imageRevision || "");
+    return !!pageId && !!revision &&
+      handle.target === target &&
+      handle.pageOcrState === "ready" &&
+      terminal.state === "ready" &&
+      String(boundPageId || "") === pageId &&
+      String(boundRevision || "") === revision &&
+      (!terminalRevision || terminalRevision === revision);
+  }
+
+  function hasReusableKakaoPageOcr(target) {
+    if (
+      !shouldUseKakaoCanonicalPipeline(target) ||
+      !kakaoCanonicalPipeline ||
+      !state.kakaoStore ||
+      typeof state.kakaoStore.getPageHandleForTarget !== "function" ||
+      typeof state.kakaoStore.getPageTerminal !== "function"
+    ) {
+      return false;
+    }
+    const handle = state.kakaoStore.getPageHandleForTarget(target);
+    const terminal = handle && state.kakaoStore.getPageTerminal(handle.pageId);
+    return isReusableKakaoReadyPageBinding(
+      target,
+      handle,
+      terminal,
+      state.kakaoPageIdByTarget.get(target),
+      state.kakaoImageRevisionByTarget.get(target)
+    );
+  }
+
   function isEmbeddedRenderStillApplied(renderedState) {
     if (!renderedState || renderedState.mode !== "embedded") {
       return true;
@@ -3492,11 +4065,174 @@
     return target.dataset.mtEmbeddedActive === "true" && isDataUrl(currentSource);
   }
 
+  function buildOverlayRenderSignature(result) {
+    try {
+      return hashSourceIdentity(JSON.stringify({
+        bubbles: Array.isArray(result && result.bubbles) ? result.bubbles : [],
+        debug: result && result.debug || null,
+        seamSurfaces: (Array.isArray(result && result.seamSurfaces) ? result.seamSurfaces : [])
+          .map(buildSeamSurfaceRenderSignature)
+      }));
+    } catch {
+      return hashSourceIdentity(`${Date.now()}`);
+    }
+  }
+
+  function isSameOverlayRenderPayload(oldOverlay, renderSignature, cleanedImage) {
+    return !!oldOverlay &&
+      oldOverlay.renderSignature === renderSignature &&
+      oldOverlay.cleanedImage === cleanedImage;
+  }
+
+  function getSeamBubbleIntrinsicGeometry(node, canvasWidth, canvasHeight) {
+    const polygonGeometry = getOverlayPolygonGeometry(node, {
+      width: canvasWidth,
+      height: canvasHeight
+    });
+    if (polygonGeometry) {
+      node.style.left = `${polygonGeometry.centerX}px`;
+      node.style.top = `${polygonGeometry.centerY}px`;
+      node.style.width = `${polygonGeometry.width}px`;
+      node.style.height = `${polygonGeometry.height}px`;
+      return polygonGeometry;
+    }
+    return {
+      width: canvasWidth * Number(node.dataset.wPercent || 0) / 100,
+      height: canvasHeight * Number(node.dataset.hPercent || 0) / 100
+    };
+  }
+
+  function applySeamBubbleLayout(surface, bubbleNodes) {
+    const layoutKey = String(surface && surface.layoutKey || surface && surface.renderKey || "");
+    const cached = state.seamLayoutCache.get(layoutKey);
+    let metrics = Array.isArray(cached) && cached.length === bubbleNodes.length ? cached : null;
+    if (!metrics) {
+      metrics = bubbleNodes.map((node) => {
+        const geometry = getSeamBubbleIntrinsicGeometry(
+          node,
+          Number(surface.canvasWidth),
+          Number(surface.canvasHeight)
+        );
+        const fontSize = fitBubbleFontSize(node, geometry.width, geometry.height);
+        return {
+          fontSize,
+          strokeWidth: getDynamicStrokeWidth(fontSize)
+        };
+      });
+      state.seamLayoutCache.set(layoutKey, metrics);
+      if (state.seamLayoutCache.size > MAX_FONT_FIT_CACHE) {
+        state.seamLayoutCache.delete(state.seamLayoutCache.keys().next().value);
+      }
+    } else {
+      bubbleNodes.forEach((node) => {
+        getSeamBubbleIntrinsicGeometry(
+          node,
+          Number(surface.canvasWidth),
+          Number(surface.canvasHeight)
+        );
+      });
+    }
+    bubbleNodes.forEach((node, index) => {
+      const metric = metrics[index];
+      if (!metric) return;
+      node.style.fontSize = `${Number(metric.fontSize).toFixed(1)}px`;
+      node.style.setProperty("--mt-stroke-width", `${Number(metric.strokeWidth).toFixed(1)}px`);
+    });
+  }
+
+  function createSeamWindowNode(surface, pageId) {
+    const segment = surface.segments.find((item) => item.pageId === pageId);
+    if (!segment) return null;
+
+    const windowNode = document.createElement("div");
+    windowNode.className = "mt-seam-window";
+    windowNode.dataset.mangaTranslatorOverlay = "true";
+    windowNode.dataset.seamRenderKey = surface.renderKey;
+    windowNode.dataset.seamLayoutKey = surface.layoutKey;
+    windowNode.dataset.seamPairKey = surface.pairKey;
+    windowNode.dataset.seamPageId = pageId;
+
+    const composite = document.createElement("div");
+    composite.className = "mt-seam-composite";
+    composite.dataset.mangaTranslatorOverlay = "true";
+    composite.dataset.seamRenderKey = surface.renderKey;
+    composite.dataset.seamLayoutKey = surface.layoutKey;
+    composite.dataset.seamPairKey = surface.pairKey;
+    composite.dataset.seamArtifactFingerprint = surface.artifactFingerprint || surface.cleanedImageToken || "";
+    composite.style.width = `${surface.canvasWidth}px`;
+    composite.style.height = `${surface.canvasHeight}px`;
+    if (isDataUrl(surface.cleanedImage)) {
+      composite.style.backgroundImage = `url("${surface.cleanedImage}")`;
+    }
+    composite.classList.toggle(
+      "mt-show-source",
+      state.seamSourceModeByRenderKey.get(surface.renderKey) === true
+    );
+
+    const bubbleNodes = surface.bubbles
+      .map(projectionToRendererBubble)
+      .filter((bubble) => bubble.w > 0 && bubble.h > 0)
+      .map((bubble, index) => createBubbleNode(bubble, index, {
+        seamRenderKey: surface.renderKey
+      }))
+      .filter(Boolean);
+    bubbleNodes.forEach((node) => {
+      node.classList.add("mt-seam-bubble");
+      composite.appendChild(node);
+    });
+    applySeamBubbleLayout(surface, bubbleNodes);
+    const debugNodeCount = appendOcrDebugNodes(composite, { debug: surface.debug });
+    windowNode.appendChild(composite);
+    return {
+      surface,
+      pageId,
+      segment,
+      windowNode,
+      composite,
+      bubbleNodes,
+      debugNodeCount
+    };
+  }
+
+  function syncSeamOverlayTransforms(overlayState, rect) {
+    (Array.isArray(overlayState && overlayState.seamEntries) ? overlayState.seamEntries : [])
+      .forEach((entry) => {
+        const transform = getSeamSegmentTransform(entry.segment, rect.width, rect.height);
+        if (!transform) {
+          entry.windowNode.style.display = "none";
+          return;
+        }
+        entry.windowNode.style.display = "block";
+        entry.composite.style.left = `${transform.left}px`;
+        entry.composite.style.top = `${transform.top}px`;
+        entry.composite.style.transform = `scale(${transform.scaleX}, ${transform.scaleY})`;
+      });
+  }
+
+  function setSeamSourceModeForOverlays(overlays, renderKey, showSource) {
+    const key = String(renderKey || "");
+    if (!key || !overlays || typeof overlays.forEach !== "function") return;
+    overlays.forEach((overlayState) => {
+      (Array.isArray(overlayState && overlayState.seamEntries) ? overlayState.seamEntries : [])
+        .filter((entry) => entry.surface.renderKey === key)
+        .forEach((entry) => entry.composite.classList.toggle("mt-show-source", showSource));
+    });
+  }
+
+  function toggleSeamSourceMode(renderKey) {
+    const key = String(renderKey || "");
+    if (!key) return;
+    const showSource = state.seamSourceModeByRenderKey.get(key) !== true;
+    state.seamSourceModeByRenderKey.set(key, showSource);
+    setSeamSourceModeForOverlays(state.overlaysById, key, showSource);
+  }
+
   function renderOverlay(target, targetKey, result, options = {}) {
     const bubbles = Array.isArray(result.bubbles) ? result.bubbles : [];
+    const seamSurfaces = Array.isArray(result && result.seamSurfaces) ? result.seamSurfaces : [];
     const stream = options.stream === true;
 
-    if (bubbles.length === 0) {
+    if (bubbles.length === 0 && seamSurfaces.length === 0 && !hasRenderableOcrDebug(result)) {
       removeOverlayForTarget(target);
       return;
     }
@@ -3505,19 +4241,50 @@
 
     const targetId = getTargetId(target);
     const oldOverlay = state.overlaysById.get(targetId);
-    if (oldOverlay) {
-      oldOverlay.root.remove();
-      state.overlaysById.delete(targetId);
+    const currentSourceToken = getQuickSourceToken(target);
+    const renderSignature = buildOverlayRenderSignature(result);
+    const cleanedImage = String(result && result.cleanedImage || "");
+    if (
+      oldOverlay &&
+      oldOverlay.targetKey === targetKey &&
+      oldOverlay.sourceToken === currentSourceToken
+    ) {
+      // OCR debug 是中间态，不能为了显示诊断框先删掉已经稳定可见的译文。
+      if (options.debugOnly === true && Number(oldOverlay.bubbleCount || 0) > 0) {
+        syncOverlayPosition(oldOverlay);
+        return;
+      }
+      // canonical 的全局 reconcile 可能多次提交完全相同的页面；相同结果只同步位置，
+      // 保留 root 与 bubble node 身份，避免肉眼可见的闪烁。
+      if (isSameOverlayRenderPayload(oldOverlay, renderSignature, cleanedImage)) {
+        oldOverlay.imageMeta = Object.prototype.hasOwnProperty.call(options, "imageMeta")
+          ? options.imageMeta
+          : oldOverlay.imageMeta || null;
+        oldOverlay.displayRect = Object.prototype.hasOwnProperty.call(options, "displayRect")
+          ? options.displayRect
+          : oldOverlay.displayRect || null;
+        syncOverlayPosition(oldOverlay);
+        return;
+      }
     }
-
     const root = document.createElement("div");
     root.className = "mt-overlay-root";
     root.dataset.mangaTranslatorOverlay = "true";
     root.dataset.targetId = targetId;
+    root.dataset.seamRenderKeys = seamSurfaces.map((surface) => surface.renderKey).join(" ");
     if (result && isDataUrl(result.cleanedImage)) {
       root.style.setProperty("--mt-cleaned-image", `url("${result.cleanedImage}")`);
     }
-    appendOcrDebugNodes(root, result);
+    const debugNodeCount = appendOcrDebugNodes(root, result);
+    const seamEntries = seamSurfaces
+      .map((surface) => createSeamWindowNode(
+        surface,
+        String(result && result.seamPageId || state.kakaoPageIdByTarget.get(target) || "")
+      ))
+      .filter(Boolean);
+    seamEntries.forEach((entry) => root.appendChild(entry.windowNode));
+    const seamBubbleCount = seamEntries.reduce((count, entry) => count + entry.bubbleNodes.length, 0);
+    const seamDebugNodeCount = seamEntries.reduce((count, entry) => count + entry.debugNodeCount, 0);
 
     const bubbleNodes = [];
     const backgroundTarget = IS_PIXIV_COMIC_VIEWER && isBackgroundImageTarget(target);
@@ -3534,7 +4301,7 @@
       }
     });
 
-    if (bubbleNodes.length === 0) {
+    if (bubbleNodes.length === 0 && seamBubbleCount === 0 && debugNodeCount + seamDebugNodeCount === 0) {
       return;
     }
 
@@ -3542,17 +4309,33 @@
       target,
       targetId,
       targetKey,
-      sourceToken: getQuickSourceToken(target),
+      sourceToken: currentSourceToken,
       root,
       bubbleNodes,
-      bubbleCount: bubbleNodes.length,
+      seamEntries,
+      bubbleCount: bubbleNodes.length + seamBubbleCount,
       isBackgroundTarget: backgroundTarget,
-      mode: "bubbles",
+      mode: bubbleNodes.length + seamBubbleCount > 0 ? "bubbles" : "debug",
+      debugNodeCount: debugNodeCount + seamDebugNodeCount,
+      renderSignature,
+      cleanedImage,
       imageMeta: options.imageMeta || null,
       displayRect: options.displayRect || null
     };
 
-    state.overlayLayer.appendChild(root);
+    if (oldOverlay) {
+      if (oldOverlay.loadingTimeout) {
+        window.clearTimeout(oldOverlay.loadingTimeout);
+        oldOverlay.loadingTimeout = 0;
+      }
+      if (oldOverlay.root && oldOverlay.root.isConnected && typeof oldOverlay.root.replaceWith === "function") {
+        oldOverlay.root.replaceWith(root);
+      } else {
+        state.overlayLayer.appendChild(root);
+      }
+    } else {
+      state.overlayLayer.appendChild(root);
+    }
     state.overlaysById.set(targetId, overlayState);
     syncOverlayPosition(overlayState);
     if (!bubbles.some((bubble) => bubble && bubble.canonical_id)) {
@@ -3562,7 +4345,8 @@
     logOcrDebugMapping(overlayState, result);
     if (result && result.debug) {
       console.info("[MangaTranslator][OCR chain] rendered", {
-        frontendRenderedOverlays: bubbleNodes.length,
+        frontendRenderedOverlays: bubbleNodes.length + seamBubbleCount,
+        frontendRenderedDebugBoxes: debugNodeCount + seamDebugNodeCount,
         targetKey,
         targetId
       });
@@ -3580,7 +4364,8 @@
       });
     }
     tracePipeline("rendered", target, {
-      bubbleCount: bubbleNodes.length,
+      bubbleCount: bubbleNodes.length + seamBubbleCount,
+      debugNodeCount: debugNodeCount + seamDebugNodeCount,
       targetKey: String(targetKey).slice(0, 80)
     });
   }
@@ -3715,8 +4500,9 @@
   function appendOcrDebugNodes(root, result) {
     const debug = result && result.debug;
     if (!debug || !root) {
-      return;
+      return 0;
     }
+    let appended = 0;
     const stages = [
       { name: "raw", items: debug.rawItems, className: "mt-debug-raw" },
       { name: "duplicate", items: debug.duplicateItems, className: "mt-debug-duplicate" },
@@ -3742,8 +4528,10 @@
         node.dataset.label = `${blockId}${duplicate}${original ? ` | ${original}` : ""}${translated ? ` → ${translated}` : ""}`;
         node.dataset.mangaTranslatorOverlay = "true";
         root.appendChild(node);
+        appended += 1;
       });
     });
+    return appended;
   }
 
   function getDebugItemPercent(item, debug) {
@@ -4267,7 +5055,17 @@
       syncOverlayPosition(oldOverlay);
       return;
     }
+    if (oldOverlay && oldOverlay.targetKey === targetKey && oldOverlay.mode !== "loading") {
+      // 单页译文或 OCR debug 已经可见时，后续 seam/投影阶段只在后台继续，
+      // loading 不得删掉稳定内容制造闪烁。
+      syncOverlayPosition(oldOverlay);
+      return;
+    }
     if (oldOverlay) {
+      if (oldOverlay.loadingTimeout) {
+        window.clearTimeout(oldOverlay.loadingTimeout);
+        oldOverlay.loadingTimeout = 0;
+      }
       oldOverlay.root.remove();
       state.overlaysById.delete(targetId);
     }
@@ -4304,15 +5102,17 @@
         if (state.overlaysById.size === 0) {
           stopOverlayFrameSync();
         }
-        // 清除已翻译标记以允许重试
-        if (target.dataset.mtLastTranslatedKey === targetKey) {
-          target.dataset.mtLastTranslatedKey = "";
-        }
-        if (target.isConnected && state.autoTranslatePageEnabled) {
+        const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+        const settled = hasSettledTranslationMarker(target, targetKey, scopedTargetKey);
+        const taskActive = state.inflightByTarget.has(target) || state.queuedTargets.has(target);
+        // UI 超时不能推翻已经完成的翻译，也不能给仍在运行的同一任务制造第二份作业。
+        if (target.isConnected && state.autoTranslatePageEnabled && !settled && !taskActive) {
           scheduleAutoTranslateRetry(target);
         }
         reportStatus("warn", "loading-overlay-timeout", {
-          targetKey: String(targetKey).slice(0, 80)
+          targetKey: String(targetKey).slice(0, 80),
+          settled,
+          taskActive
         }).catch(() => {});
       }, LOADING_OVERLAY_TIMEOUT_MS)
     };
@@ -4393,6 +5193,7 @@
     node.dataset.stitchOverflow = bubble.stitch_overflow === true ? "true" : "";
     node.dataset.blockId = String(bubble.block_id || bubble.id || `block-${index}`);
     node.dataset.canonicalId = String(bubble.canonical_id || "");
+    node.dataset.seamRenderKey = String(options.seamRenderKey || "");
     if (bgType === "none") {
       const sourceBox = normalizeFillBox(bubble.cleaned_source_box) || { x, y, w, h };
       const patchStyle = getCleanedPatchStyle(sourceBox);
@@ -4454,7 +5255,11 @@
     node.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      toggleOverlaySourceMode(node);
+      if (node.dataset.seamRenderKey) {
+        toggleSeamSourceMode(node.dataset.seamRenderKey);
+      } else {
+        toggleOverlaySourceMode(node);
+      }
     });
 
     return node;
@@ -4594,6 +5399,31 @@
         continue;
       }
 
+      const targetKey = computeTargetKey(target);
+      const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+      const renderedKey = target.dataset.mtLastTranslatedKey || "";
+      if (
+        shouldUseKakaoCanonicalPipeline(target) &&
+        kakaoCanonicalPipeline &&
+        state.autoTranslatePageEnabled &&
+        hasPendingTranslationMarkerState(target, targetKey, scopedTargetKey)
+      ) {
+        // 并发刷新可能让页面保持“有 OCR 证据、投影尚未完成”的 pending 状态。
+        // 它没有完成标记，必须在重新进入视口时显式回到统一队列，不能被恢复扫描直接跳过。
+        queuePageAutoTranslate(target);
+        continue;
+      }
+      if (!matchesTargetMarker(renderedKey, targetKey, scopedTargetKey)) {
+        continue;
+      }
+
+      // “无文字”是正常终态，本来就不应该存在气泡；恢复扫描不得重新启动 OCR。
+      if (hasSettledNoTextMarker(target, targetKey, scopedTargetKey)) {
+        clearKakaoLoadingOverlay(target);
+        kakaoRetryScheduler.cancel(target);
+        continue;
+      }
+
       const targetId = state.targetIdByElement.get(target);
       if (targetId) {
         const renderedState = getExistingRenderedState(targetId);
@@ -4605,16 +5435,9 @@
         }
       }
 
-      const targetKey = computeTargetKey(target);
-      const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
-      const renderedKey = target.dataset.mtLastTranslatedKey || "";
-      if (renderedKey !== targetKey && renderedKey !== scopedTargetKey) {
-        continue;
-      }
-
       if (shouldUseKakaoCanonicalPipeline(target) && kakaoCanonicalPipeline) {
-        Promise.resolve(kakaoCanonicalPipeline.runCached(target, null, { reason: "overlay-recovery" }))
-          .catch(() => undefined);
+        // 所有恢复作业都进入统一队列，确保 queued/inflight 与 finally 清理可观测且成对。
+        queueTranslate(target, { manual: true, reason: "overlay-recovery" });
         continue;
       }
 
@@ -4677,6 +5500,12 @@
     }
 
     const rect = getOverlayDisplayRect(overlayState);
+    const targetVisibleRect = getVisibleViewportRect(overlayState.target);
+    if (!targetVisibleRect) {
+      overlayState.root.style.display = "none";
+      overlayState.root.style.removeProperty("clip-path");
+      return;
+    }
     const visible = isRectVisible(getOverlayVisibilityRect(overlayState, rect));
     const useDocumentFlow = IS_KAKAOPAGE_READER;
 
@@ -4694,12 +5523,28 @@
     const changes = compareOverlayViewportRects(overlayState.lastViewportRect, viewportRect);
 
     overlayState.root.style.display = "block";
+    const clipLeft = Math.max(0, targetVisibleRect.left - rect.left);
+    const clipRight = Math.max(0, rect.right - targetVisibleRect.right);
+    if (clipLeft > 0.5 || clipRight > 0.5) {
+      overlayState.root.style.clipPath = `inset(0 ${clipRight}px 0 ${clipLeft}px)`;
+    } else {
+      overlayState.root.style.removeProperty("clip-path");
+    }
     if (changes.positionChanged || changes.sizeChanged) {
       overlayState.root.style.left = `${viewportRect.left}px`;
       overlayState.root.style.top = `${viewportRect.top}px`;
       overlayState.root.style.width = `${viewportRect.width}px`;
       overlayState.root.style.height = `${viewportRect.height}px`;
       overlayState.lastViewportRect = viewportRect;
+    }
+
+    // seam 内部使用固定的合并画布；页面尺寸变化时只更新整幅场景的平移和缩放，
+    // 不触发译文重新换行或字号拟合。
+    if (changes.sizeChanged) {
+      syncSeamOverlayTransforms(overlayState, {
+        width: viewportRect.width,
+        height: viewportRect.height
+      });
     }
 
     // 画面平移只更新根节点坐标；尺寸不变时不重新测量文字，避免滚动期间抖动。
@@ -4939,6 +5784,15 @@
     }
   }
 
+  function clearKakaoLoadingOverlay(target) {
+    const targetId = state.targetIdByElement.get(target);
+    if (!targetId) return false;
+    const overlayState = state.overlaysById.get(targetId);
+    if (!overlayState || overlayState.mode !== "loading") return false;
+    removeOverlayForTarget(target);
+    return true;
+  }
+
   function removeOverlayForTarget(target) {
     const targetId = state.targetIdByElement.get(target);
     if (!targetId) {
@@ -5088,10 +5942,16 @@
   function clearAllOverlays() {
     stopOverlayFrameSync();
     for (const overlayState of state.overlaysById.values()) {
+      if (overlayState.loadingTimeout) {
+        window.clearTimeout(overlayState.loadingTimeout);
+        overlayState.loadingTimeout = 0;
+      }
       overlayState.root.remove();
     }
     state.overlaysById.clear();
     state.fontFitCache.clear();
+    state.seamLayoutCache.clear();
+    state.seamSourceModeByRenderKey.clear();
     if (state.bubbleMeasureProbe && state.bubbleMeasureProbe.isConnected) {
       state.bubbleMeasureProbe.remove();
     }
@@ -5422,6 +6282,46 @@
     targets.forEach((target) => queuePageAutoTranslate(target));
   }
 
+  function matchesTargetMarker(value, targetKey, scopedTargetKey) {
+    const marker = String(value || "");
+    return !!marker && (marker === String(targetKey || "") || marker === String(scopedTargetKey || ""));
+  }
+
+  function hasSettledNoTextMarker(target, targetKey, scopedTargetKey) {
+    return !!target && matchesTargetMarker(
+      target.dataset && target.dataset.mtNoTextKey,
+      targetKey,
+      scopedTargetKey
+    );
+  }
+
+  function hasSettledTranslatedMarker(target, targetKey, scopedTargetKey) {
+    return !!target && matchesTargetMarker(
+      target.dataset && target.dataset.mtLastTranslatedKey,
+      targetKey,
+      scopedTargetKey
+    );
+  }
+
+  function hasPendingTranslationMarkerState(target, targetKey, scopedTargetKey) {
+    if (!target || !target.dataset) return false;
+    return !hasSettledTranslatedMarker(target, targetKey, scopedTargetKey) &&
+      !hasSettledNoTextMarker(target, targetKey, scopedTargetKey);
+  }
+
+  function isTranslationRecoveryDue(target, now = Date.now()) {
+    if (!target || !target.dataset) return false;
+    const lastRequestedAt = Number(target.dataset.mtRecoveryReqAt || 0);
+    return !Number.isFinite(lastRequestedAt) || lastRequestedAt <= 0 ||
+      Number(now) - lastRequestedAt >= RECOVERY_REQUEST_GAP_MS;
+  }
+
+  function hasSettledTranslationMarker(target, targetKey, scopedTargetKey) {
+    if (!target || !target.dataset) return false;
+    return hasSettledTranslatedMarker(target, targetKey, scopedTargetKey) ||
+      hasSettledNoTextMarker(target, targetKey, scopedTargetKey);
+  }
+
   function queuePageAutoTranslate(target) {
     if (!state.autoTranslatePageEnabled || !state.enabled || state.invalidated) {
       return;
@@ -5450,8 +6350,12 @@
       return;
     }
 
+    if (IS_KAKAOPAGE_READER && !isTranslationRecoveryDue(target)) {
+      return;
+    }
+
     if (!passesTargetFilter(target, true)) {
-      console.debug("[MangaTranslator][Filter] queuePageAutoTranslate rejected", {
+      debugTargetFilter("queuePageAutoTranslate rejected", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         rect: (() => { try { const r = target.getBoundingClientRect(); return `${Math.round(r.width)}x${Math.round(r.height)}`; } catch { return '?'; } })()
       });
@@ -5469,6 +6373,9 @@
       return;
     }
 
+    if (IS_KAKAOPAGE_READER) {
+      target.dataset.mtRecoveryReqAt = String(Date.now());
+    }
     queueTranslate(target, {
       manual: true,
       reason: "page-auto"
@@ -5479,6 +6386,7 @@
     if (
       !IS_KAKAOPAGE_READER ||
       shouldUseKakaoCanonicalPipeline(target) ||
+      !isKakaoEpisodeImageTarget(target) ||
       state.captureMode !== CAPTURE_MODE_DIRECT ||
       state.renderMode !== RENDER_MODE_OVERLAY ||
       !(target instanceof HTMLImageElement) ||
@@ -5828,7 +6736,7 @@
     }
 
     if (target instanceof HTMLImageElement && !target.complete) {
-      console.debug("[MangaTranslator][Filter] image not complete", {
+      debugTargetFilter("image not complete", {
         src: (target.currentSrc || target.src || '').slice(0, 60)
       });
       return false;
@@ -5851,7 +6759,7 @@
         : Math.max(stripMinHeight, heightLimit);
 
     if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
-      console.debug("[MangaTranslator][Filter] rect too small", {
+      debugTargetFilter("rect too small", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
         min: `${effectiveWidthLimit}x${effectiveHeightLimit}`,
@@ -5861,7 +6769,7 @@
     }
 
     if (IS_KAKAOPAGE_READER && !passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen)) {
-      console.debug("[MangaTranslator][Filter] KakaoPage geometry rejected", {
+      debugTargetFilter("KakaoPage geometry rejected", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
         manual,
@@ -5876,7 +6784,7 @@
     const effectiveMinRatio = IS_KAKAOPAGE_READER ? 0.01 : (relaxed ? 0.10 : AUTO_MIN_RATIO);
     const maxRatio = relaxed ? 20 : 14;
     if (ratio < effectiveMinRatio || ratio > maxRatio) {
-      console.debug("[MangaTranslator][Filter] aspect ratio out of bounds", {
+      debugTargetFilter("aspect ratio out of bounds", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         ratio: ratio.toFixed(3),
         min: effectiveMinRatio,
@@ -5906,7 +6814,7 @@
       // Lower thresholds so partially-scrolled images aren't filtered out.
       const minVisibleArea = canonicalTarget ? 1200 : relaxed ? 3000 : manual ? 6000 : 8000;
       if (!visibleRect || visibleArea < minVisibleArea) {
-        console.debug("[MangaTranslator][Filter] KakaoPage not enough visible area", {
+        debugTargetFilter("KakaoPage not enough visible area", {
           src: (target.currentSrc || target.src || '').slice(0, 60),
           visibleArea: visibleArea,
           minVisibleArea,
@@ -5919,7 +6827,7 @@
       const minVisibleHeight = canonicalTarget ? KAKAO_THIN_STRIP_MIN_HEIGHT : relaxed ? 40 : manual ? 50 : 60;
       const minVisibleWidth = relaxed ? 50 : manual ? 60 : 80;
       if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
-        console.debug("[MangaTranslator][Filter] KakaoPage visible rect too small", {
+        debugTargetFilter("KakaoPage visible rect too small", {
           src: (target.currentSrc || target.src || '').slice(0, 60),
           visibleRect: `${Math.round(visibleRect.width)}x${Math.round(visibleRect.height)}`,
           min: `${minVisibleWidth}x${minVisibleHeight}`
@@ -5941,7 +6849,7 @@
         // Accept thin strips (down to 8px, ratio ≥ 0.01) so they
         // get their own translation with stitching context.
         if (naturalHeight < KAKAO_THIN_STRIP_MIN_HEIGHT || naturalRatio < 0.01) {
-          console.debug("[MangaTranslator][Filter] KakaoPage natural size too thin", {
+          debugTargetFilter("KakaoPage natural size too thin", {
             src: (target.currentSrc || target.src || '').slice(0, 60),
             natural: `${naturalWidth}x${naturalHeight}`
           });
@@ -6552,13 +7460,15 @@
         "mt_aggressive_preload",
         "mt_capture_mode",
         "mt_render_mode",
-        "mt_pretranslate_mode"
+        "mt_pretranslate_mode",
+        "mt_local_ocr_debug"
       ]);
       state.enabled = result.mt_enabled !== false;
       state.showFloatingBall = result.mt_show_ball !== false;
       state.captureMode = normalizeCaptureMode(result.mt_capture_mode);
       state.renderMode = normalizeRenderMode(result.mt_render_mode);
       state.pretranslateMode = normalizePretranslateMode(result.mt_pretranslate_mode);
+      ENABLE_PIPELINE_TRACE = result.mt_local_ocr_debug === true;
       // 自动翻译是否开启属于当前页面会话，不能由全局设置激活其他标签页。
       state.autoTranslatePageEnabled = false;
       if (typeof result.mt_aggressive_preload === "boolean") {
@@ -6572,6 +7482,7 @@
       state.captureMode = CAPTURE_MODE_DIRECT;
       state.renderMode = RENDER_MODE_OVERLAY;
       state.pretranslateMode = "manual";
+      ENABLE_PIPELINE_TRACE = false;
       state.autoTranslatePageEnabled = false;
       state.aggressivePreload = IS_CMOA_SPEED_READER;
     }

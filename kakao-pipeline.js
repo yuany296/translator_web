@@ -66,9 +66,11 @@
   });
 
   const KAKAO_EDGE_WAIT_TIMEOUT_MS = 8000;
-  const KAKAO_SEAM_HEIGHT_WIDTH_RATIO = 0.15;
-  const KAKAO_SEAM_HEIGHT_MIN_PX = 160;
-  const KAKAO_SEAM_HEIGHT_MAX_PX = 420;
+  const KAKAO_CLEANED_ARTIFACT_RETRY_COOLDOWN_MS = 5000;
+  const KAKAO_CLEANED_ARTIFACT_AUTO_RETRY_LIMIT = 1;
+  const KAKAO_SEAM_HEIGHT_WIDTH_RATIO = 0.35;
+  const KAKAO_SEAM_HEIGHT_MIN_PX = 240;
+  const KAKAO_SEAM_HEIGHT_MAX_PX = 480;
   const KAKAO_CANONICAL_TARGET_LANGUAGE = "zh-CN";
 
   /* =================================================================
@@ -1913,7 +1915,7 @@
 
       markSeamState(pairKey, state) {
         const key = String(pairKey || "");
-        const frozen = Object.freeze({ ...(state || {}), pairKey: key });
+        const frozen = freezeCanonicalValue({ ...(state || {}), pairKey: key });
         seamStates.set(key, frozen);
         return frozen;
       },
@@ -2059,6 +2061,7 @@
         for (const item of Array.isArray(items) ? items : []) {
           const key = canonicalRevisionKey(item && item.id, item && item.revision);
           pendingTranslationKeys.delete(key);
+          attemptedTranslationKeys.delete(key);
           const waiter = pendingTranslationWaiters.get(key);
           pendingTranslationWaiters.delete(key);
           translationErrorsByCanonicalRevision.set(key, Object.freeze({
@@ -2074,6 +2077,7 @@
         for (const item of Array.isArray(items) ? items : []) {
           const key = canonicalRevisionKey(item && item.id, item && item.revision);
           pendingTranslationKeys.delete(key);
+          attemptedTranslationKeys.delete(key);
           const waiter = pendingTranslationWaiters.get(key);
           pendingTranslationWaiters.delete(key);
           if (waiter) waiter.resolve(false);
@@ -3223,7 +3227,14 @@
             overlap: overlapRisk
           });
           if (!seamPayload) throw new Error("Seam payload unavailable");
-          const response = await requestOcrForPayload(seamPayload, buildOcrMeta("seam", [pageA, pageB], pairKey));
+          const payloadGeometry = captureSeamPayloadGeometry(seamPayload, [pageA, pageB]);
+          const response = await requestOcrForPayload(
+            seamPayload,
+            buildOcrMeta("seam", [pageA, pageB], pairKey, {
+              requireCleanedImage: true,
+              forceCleanedImageArtifact: true
+            })
+          );
           if (!response || !response.ok) throw new Error(response && response.error || "Seam OCR failed");
           if (!pageRevisionsStillMatch([pageA, pageB])) {
             return store.markSeamState(pairKey, {
@@ -3240,7 +3251,19 @@
             pageIds: [pageA.pageId, pageB.pageId],
             imageRevisionByPage: revisionsForPages([pageA, pageB]),
             reasons: evidenceDecision.reasons,
-            observationIds: seamEvidence.observations.map((item) => item.id)
+            observationIds: seamEvidence.observations.map((item) => item.id),
+            observations: seamEvidence.observations,
+            filteredObservations: seamEvidence.filteredObservations,
+            coordinateSpace: payloadGeometry.coordinateSpace,
+            canvasWidth: payloadGeometry.canvasWidth,
+            canvasHeight: payloadGeometry.canvasHeight,
+            pageSpans: payloadGeometry.pageSpans,
+            segments: payloadGeometry.segments,
+            seam: payloadGeometry.seam,
+            payloadGeometry,
+            cleanedImage: seamEvidence.cleanedImage || null,
+            cleanedImageToken: seamEvidence.cleanedImageToken || "",
+            debug: seamEvidence.debug || null
           });
           trace("seam-complete", pageA.target, { pairKey, observations: seamEvidence.observations.length });
           publishCompletedSeamEvidence(terminal);
@@ -3389,6 +3412,14 @@
       });
       if (!reconciliation || !guardAllows()) return { aborted: true };
 
+      // OCR debug 是识别阶段的诊断结果，不应等待外部翻译接口成功后才出现。
+      // 此处只渲染 debug，不把暂时的空 projection 结算为无文字。
+      await renderAllCanonicalPages(`${reason}:ocr-debug`, guardAllows, {
+        debugOnly: true,
+        focusPageIds
+      });
+      if (!guardAllows()) return { aborted: true };
+
       const eligible = reconciliation.canonicals.filter((canonical) =>
         canonical.status !== "filtered" && !canonicalWaitsForEdge(canonical)
       );
@@ -3402,10 +3433,19 @@
         // 错误继续向上抛给重试调度，页面则不会在此期间变成空白。
         if (guardAllows()) {
           try {
-            const fallbackProjections = buildCanonicalProjections(store);
+            const fallbackSurfaces = buildSeamRenderSurfaceIndex(store, { isPageAvailable });
+            const ordinaryFallbackProjections = buildCanonicalProjections(store);
+            const fallbackProjections = buildCanonicalProjections(store, fallbackSurfaces.handledCanonicalIds);
             store.setProjections(fallbackProjections);
             await refreshRequiredCleanedArtifacts(fallbackProjections);
-            if (guardAllows()) await renderAllCanonicalPages(`${reason}:translation-fallback`, guardAllows);
+            if (guardAllows()) {
+              // 每页是否完整由当前 canonical revision 和 provisional projection 独立判断。
+              // 不能用一个失败项把全章其他已完成页面也降级成 pending。
+              await renderAllCanonicalPages(`${reason}:translation-fallback`, guardAllows, {
+                seamSurfaceIndex: fallbackSurfaces,
+                fallbackProjectionsByPage: ordinaryFallbackProjections
+              });
+            }
           } catch (fallbackError) {
             trace("translation-fallback-render-error", null, { error: getErrorMessage(fallbackError) });
           }
@@ -3416,13 +3456,18 @@
 
       trace("project", null, { reason });
       for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.PROJECTING);
-      const projections = buildCanonicalProjections(store);
+      const seamSurfaceIndex = buildSeamRenderSurfaceIndex(store, { isPageAvailable });
+      const ordinaryFallbackProjections = buildCanonicalProjections(store);
+      const projections = buildCanonicalProjections(store, seamSurfaceIndex.handledCanonicalIds);
       store.setProjections(projections);
       await refreshRequiredCleanedArtifacts(projections);
       if (!guardAllows()) return { aborted: true };
       trace("render", null, { reason });
       for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.RENDERING);
-      await renderAllCanonicalPages(reason, guardAllows);
+      await renderAllCanonicalPages(reason, guardAllows, {
+        seamSurfaceIndex,
+        fallbackProjectionsByPage: ordinaryFallbackProjections
+      });
       if (!guardAllows()) return { aborted: true };
       for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.RENDERED);
       return reconciliation;
@@ -3471,8 +3516,9 @@
         return false;
       }
 
+      let response;
       try {
-        const response = await requestCanonicalTranslations(items, {
+        response = await requestCanonicalTranslations(items, {
           sourceLanguage: adapters.sourceLanguage || "auto",
           targetLanguage: adapters.targetLanguage || KAKAO_CANONICAL_TARGET_LANGUAGE,
           reason
@@ -3480,40 +3526,53 @@
         if (!response || response.ok === false) {
           throw new CanonicalTranslationError(response && response.error || "Canonical translation request failed");
         }
-        const translations = response && response.result && Array.isArray(response.result.translations)
-          ? response.result.translations
-          : response && Array.isArray(response.translations) ? response.translations : [];
-        const mayRender = guardAllows();
-        const byKey = new Map(translations.map((translation) => [
-          canonicalRevisionKey(translation && translation.id, translation && translation.revision),
-          translation
-        ]));
-        for (const item of items) {
-          const translation = byKey.get(canonicalRevisionKey(item.id, item.revision));
-          if (translation && String(translation.translated_text || "").trim()) {
-            store.settleTranslation(item, translation);
-          } else {
-            store.releaseTranslationClaims([item]);
-            trace("translation-partial", null, { id: item.id, revision: item.revision });
-          }
-        }
-        // 翻译事实按 canonical revision 保存；旧作业不能继续 project/render。
-        // 若同 URL 重载后的摘要相同，新作业可以复用这次唯一的外部请求结果。
-        return mayRender;
       } catch (error) {
         store.failTranslationClaims(items, error);
         if (!guardAllows()) return false;
         trace("translation-error", null, { error: getErrorMessage(error), count: items.length });
         throw error;
       }
+
+      const translations = response && response.result && Array.isArray(response.result.translations)
+        ? response.result.translations
+        : response && Array.isArray(response.translations) ? response.translations : [];
+      const mayRender = guardAllows();
+      const byKey = new Map(translations.map((translation) => [
+        canonicalRevisionKey(translation && translation.id, translation && translation.revision),
+        translation
+      ]));
+      const missing = [];
+      for (const item of items) {
+        const translation = byKey.get(canonicalRevisionKey(item.id, item.revision));
+        if (translation && String(translation.translated_text || "").trim()) {
+          store.settleTranslation(item, translation);
+        } else {
+          missing.push(item);
+          trace("translation-partial", null, { id: item.id, revision: item.revision });
+        }
+      }
+      if (missing.length > 0) {
+        const error = new CanonicalTranslationError(`Translation response omitted ${missing.length} canonical item(s)`);
+        store.failTranslationClaims(missing, error);
+        trace("translation-error", null, { error: getErrorMessage(error), count: missing.length });
+        throw error;
+      }
+      // 翻译事实按 canonical revision 保存；旧作业不能继续 project/render。
+      // 若同 URL 重载后的摘要相同，新作业可以复用这次唯一的外部请求结果。
+      return mayRender;
     }
 
-    function buildCanonicalProjections(activeStore) {
+    function buildCanonicalProjections(activeStore, handledCanonicalIds = new Set()) {
       const reconciler = getCanonicalReconciler();
       const pages = activeStore.getPageHandles().map(canonicalPageDescriptor);
       const previousProjections = activeStore.getAllProjections();
       const translations = new Map();
-      const currentCanonicals = activeStore.getCanonicalSnapshot();
+      const handledIds = handledCanonicalIds instanceof Set
+        ? handledCanonicalIds
+        : new Set(Array.from(handledCanonicalIds || [], String));
+      const currentCanonicals = activeStore.getCanonicalSnapshot().filter((canonical) =>
+        !handledIds.has(String(canonical && canonical.id || ""))
+      );
       const canonicals = currentCanonicals.filter((canonical) => {
         const translation = activeStore.getTranslation(canonical.id, canonical.revision);
         if (!translation || !String(translation.translated_text || translation.translatedText || "").trim()) return false;
@@ -3571,33 +3630,110 @@
         activeStore,
         isPageAvailable
       });
+      for (const [pageId, items] of grouped) {
+        grouped.set(pageId, items.filter((projection) =>
+          !handledIds.has(String(projection && projection.canonicalId || "")) &&
+          !handledIds.has(String(projection && projection.pendingCanonicalId || ""))
+        ));
+      }
       return grouped;
     }
 
     function isPageAvailable(pageId) {
       const handle = store.getPageHandle(pageId);
       const target = getTargetForPageId ? getTargetForPageId(pageId) : handle && handle.target;
-      return targetIsUsable(target || handle && handle.target);
+      return targetIsUsable(target);
     }
 
     async function refreshRequiredCleanedArtifacts(projectionsByPage) {
       const tasks = [];
+      const crossPageCanonicalIds = collectCrossPageCanonicalIds(
+        projectionsByPage,
+        store.getCanonicalSnapshot()
+      );
       for (const [pageId, projections] of projectionsByPage instanceof Map ? projectionsByPage.entries() : []) {
         if (!projectionsRequireCleanedImage(projections)) continue;
         const handle = store.getPageHandle(pageId);
         if (!handle || !handle.payload) continue;
-        if (handle.cleanedImageRevision === handle.imageRevision && isDataUrlValue(handle.cleanedImage)) continue;
-        if (handle.artifactRefreshAttemptedRevision === handle.imageRevision) continue;
-        store.registerPageHandle({ ...handle, artifactRefreshAttemptedRevision: handle.imageRevision });
+        const cleanedMasks = buildCanonicalCleanMasks(projections, crossPageCanonicalIds);
+        const artifactKey = buildCleanedArtifactKey(handle.imageRevision, cleanedMasks);
+        if (handle.cleanedImageArtifactKey === artifactKey && isDataUrlValue(handle.cleanedImage)) continue;
+        if (handle.artifactRefreshAttemptedKey === artifactKey) continue;
+        if (
+          handle.artifactRefreshRetryKey === artifactKey &&
+          Number(handle.artifactRefreshRetryAfter || 0) > now()
+        ) continue;
+        if (handle.artifactRefreshRetryTimer && typeof clearTimer === "function") {
+          clearTimer(handle.artifactRefreshRetryTimer);
+        }
+        store.registerPageHandle({
+          ...handle,
+          artifactRefreshAttemptedRevision: handle.imageRevision,
+          artifactRefreshAttemptedKey: artifactKey,
+          artifactRefreshRetryKey: "",
+          artifactRefreshRetryAfter: 0,
+          artifactRefreshRetryTimer: null
+        });
+        const releaseArtifactAttempt = () => {
+          const current = store.getPageHandle(handle.pageId);
+          if (
+            current &&
+            current.imageRevision === handle.imageRevision &&
+            current.artifactRefreshAttemptedKey === artifactKey
+          ) {
+            const failureCount = current.artifactRefreshFailureKey === artifactKey
+              ? Number(current.artifactRefreshFailureCount || 0) + 1
+              : 1;
+            const shouldSchedule = failureCount <= KAKAO_CLEANED_ARTIFACT_AUTO_RETRY_LIMIT &&
+              typeof setTimer === "function";
+            let retryTimer = null;
+            if (shouldSchedule) {
+              retryTimer = setTimer(() => {
+                const latest = store.getPageHandle(handle.pageId);
+                if (
+                  !latest ||
+                  latest.imageRevision !== handle.imageRevision ||
+                  latest.artifactRefreshRetryKey !== artifactKey ||
+                  latest.artifactRefreshRetryTimer !== retryTimer
+                ) return;
+                store.registerPageHandle({
+                  ...latest,
+                  artifactRefreshRetryAfter: 0,
+                  artifactRefreshRetryTimer: null
+                });
+                if (!isPageAvailable(handle.pageId)) return;
+                void refreshCanonicalState({
+                  reason: "cleaned-artifact-retry",
+                  focusPageIds: [handle.pageId]
+                }).catch((error) => {
+                  trace("cleaned-artifact-retry-error", handle.target, {
+                    pageId: handle.pageId,
+                    error: getErrorMessage(error)
+                  });
+                });
+              }, KAKAO_CLEANED_ARTIFACT_RETRY_COOLDOWN_MS);
+            }
+            store.registerPageHandle({
+              ...current,
+              artifactRefreshAttemptedKey: "",
+              artifactRefreshRetryKey: artifactKey,
+              artifactRefreshRetryAfter: now() + KAKAO_CLEANED_ARTIFACT_RETRY_COOLDOWN_MS,
+              artifactRefreshRetryTimer: retryTimer,
+              artifactRefreshFailureKey: artifactKey,
+              artifactRefreshFailureCount: failureCount
+            });
+          }
+        };
         tasks.push(store.getOrCreateInflightJob(
-          `canonical-cleaned-artifact:${handle.pageId}:${handle.imageRevision}`,
+          `canonical-cleaned-artifact:${handle.pageId}:${artifactKey}`,
           async () => {
             try {
               const response = await requestOcrForPayload(
                 handle.payload,
                 buildOcrMeta("page", [handle], "", {
                   requireCleanedImage: true,
-                  forceCleanedImageArtifact: true
+                  forceCleanedImageArtifact: true,
+                  cleanedMasks
                 })
               );
               if (!response || !response.ok) {
@@ -3605,19 +3741,39 @@
                   pageId: handle.pageId,
                   error: response && response.error || "artifact refresh failed"
                 });
+                releaseArtifactAttempt();
                 return;
               }
               const cleanedImage = response.result && (response.result.cleanedImage || response.result.cleaned_image);
+              if (!isDataUrlValue(cleanedImage)) {
+                trace("cleaned-artifact-error", handle.target, {
+                  pageId: handle.pageId,
+                  error: "artifact refresh returned no cleaned image"
+                });
+                releaseArtifactAttempt();
+                return;
+              }
               const current = store.getPageHandle(handle.pageId);
-              if (!current || current.imageRevision !== handle.imageRevision) return;
+              if (
+                !current ||
+                current.imageRevision !== handle.imageRevision ||
+                current.artifactRefreshAttemptedKey !== artifactKey
+              ) return;
               store.registerPageHandle({
                 ...current,
-                cleanedImage: isDataUrlValue(cleanedImage) ? cleanedImage : current.cleanedImage || null,
-                cleanedImageRevision: isDataUrlValue(cleanedImage) ? current.imageRevision : current.cleanedImageRevision || "",
+                cleanedImage,
+                cleanedImageRevision: current.imageRevision,
+                cleanedImageArtifactKey: artifactKey,
+                artifactRefreshRetryKey: "",
+                artifactRefreshRetryAfter: 0,
+                artifactRefreshRetryTimer: null,
+                artifactRefreshFailureKey: "",
+                artifactRefreshFailureCount: 0,
                 ocrDebug: response.result && response.result.debug || current.ocrDebug || null
               });
             } catch (error) {
               trace("cleaned-artifact-error", handle.target, { pageId: handle.pageId, error: getErrorMessage(error) });
+              releaseArtifactAttempt();
             }
           }
         ));
@@ -3625,35 +3781,157 @@
       await Promise.all(tasks);
     }
 
-    async function renderAllCanonicalPages(reason, guardAllows = () => true) {
+    function getCanonicalPageTranslationStatus(pageId, projections = []) {
+      const normalizedPageId = String(pageId || "");
+      const observationById = new Map(store.getObservations().map((item) => [String(item.id || ""), item]));
+      const relevant = store.getCanonicalSnapshot().filter((canonical) => {
+        if (!canonical || canonical.status === "filtered") return false;
+        if (canonical.geometryByPage && canonical.geometryByPage[normalizedPageId]) return true;
+        return (Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : [])
+          .some((id) => {
+            const observation = observationById.get(String(id || ""));
+            return observation && Array.isArray(observation.pageIds) && observation.pageIds.includes(normalizedPageId);
+          });
+      });
+      const provisional = (Array.isArray(projections) ? projections : []).some((projection) =>
+        projection && (projection.provisional === true || projection.pendingCanonicalId)
+      );
+      const complete = !provisional && relevant.every((canonical) =>
+        !canonicalWaitsForEdge(canonical) && !!store.getTranslation(canonical.id, canonical.revision)
+      );
+      return { relevantCount: relevant.length, complete };
+    }
+
+    async function renderAllCanonicalPages(reason, guardAllows = () => true, options = {}) {
+      const focusPageIds = new Set((Array.isArray(options.focusPageIds) ? options.focusPageIds : []).map(String));
+      const seamSurfaceIndex = options.seamSurfaceIndex || buildSeamRenderSurfaceIndex(store, { isPageAvailable });
+      const fallbackProjectionMap = options.fallbackProjectionsByPage instanceof Map
+        ? options.fallbackProjectionsByPage
+        : new Map();
+      const descriptors = [];
       for (const handle of store.getPageHandles()) {
         if (!guardAllows()) return;
-        const target = getTargetForPageId ? getTargetForPageId(handle.pageId) || handle.target : handle.target;
+        // 全局 reconcile 会遍历已经登记的所有页面，其中可能包含仍在 OCR 的并发页面。
+        // 这类页面的空 projections 只是“尚未产出”，不能交给渲染层结算为无文字。
+        if (!isReadyPageRecord(handle)) continue;
+        const seamSurfaces = seamSurfaceIndex.byPage.get(String(handle.pageId)) || Object.freeze([]);
+        const handledCanonicalIds = new Set(seamSurfaces.flatMap((surface) => surface.handledCanonicalIds || []));
+        if (options.debugOnly === true && !handle.ocrDebug && !seamSurfaces.some((surface) => surface.debug)) continue;
+        if (
+          options.debugOnly === true &&
+          focusPageIds.size > 0 &&
+          !focusPageIds.has(String(handle.pageId)) &&
+          seamSurfaces.length === 0
+        ) continue;
+        const target = getTargetForPageId ? getTargetForPageId(handle.pageId) : handle.target;
         if (!targetIsUsable(target)) continue;
-        const projections = store.getProjections(handle.pageId);
+        const storedProjections = store.getProjections(handle.pageId).filter((projection) =>
+          !handledCanonicalIds.has(String(projection && projection.canonicalId || "")) &&
+          !handledCanonicalIds.has(String(projection && projection.pendingCanonicalId || ""))
+        );
+        if (
+          options.debugOnly === true &&
+          seamSurfaces.length === 0 &&
+          storedProjections.some((item) => item.activeText && item.translated_text)
+        ) {
+          continue;
+        }
+        const projections = options.debugOnly === true ? [] : storedProjections;
+        const terminal = store.getPageTerminal(handle.pageId);
+        const observationCount = Number(terminal && terminal.details && terminal.details.observationCount);
+        const translationStatus = getCanonicalPageTranslationStatus(handle.pageId, projections);
+        const authoritativeEmpty = options.debugOnly !== true &&
+          seamSurfaces.length === 0 &&
+          Number.isFinite(observationCount) &&
+          (observationCount === 0 || translationStatus.relevantCount === 0);
+        const translationComplete = options.debugOnly !== true &&
+          options.translationComplete !== false &&
+          translationStatus.complete;
         const activeBubbles = projections.filter((item) => item.activeText && item.translated_text).map(projectionToBubble);
-        await renderCanonicalProjections({
+        descriptors.push({
+          handle,
           target,
           pageId: handle.pageId,
-          targetKey: handle.targetKey,
-          scopedTargetKey: handle.scopedTargetKey,
           projections,
-          result: {
-            bubbles: activeBubbles,
-            cleanedImage: handle.cleanedImage || null,
-            debug: handle.ocrDebug || null
-          },
-          payload: handle.payload,
-          cleanedImage: handle.cleanedImage || null,
-          debug: handle.ocrDebug || null,
-          reason
+          fallbackProjections: fallbackProjectionMap.get(String(handle.pageId)) || projections,
+          seamSurfaces,
+          activeBubbles,
+          translationComplete,
+          authoritativeEmpty
+        });
+      }
+
+      const descriptorByPage = new Map(descriptors.map((descriptor) => [String(descriptor.pageId), descriptor]));
+      const uniqueSurfaces = new Map();
+      for (const descriptor of descriptors) {
+        for (const surface of descriptor.seamSurfaces) {
+          uniqueSurfaces.set(String(surface.renderKey || surface.pairKey || ""), surface);
+        }
+      }
+      const batchSurfaces = [...uniqueSurfaces.values()].filter((surface) =>
+        (surface.pageIds || []).every((pageId) => descriptorByPage.has(String(pageId)))
+      );
+      const batchPageIds = new Set(batchSurfaces.flatMap((surface) => surface.pageIds || []).map(String));
+      const renderDescriptor = async (descriptor, extra = {}) => renderCanonicalProjections({
+        target: descriptor.target,
+        pageId: descriptor.pageId,
+        targetKey: descriptor.handle.targetKey,
+        scopedTargetKey: descriptor.handle.scopedTargetKey,
+        projections: descriptor.projections,
+        seamSurfaces: extra.seamSurfaces || descriptor.seamSurfaces,
+        result: {
+          bubbles: descriptor.activeBubbles,
+          cleanedImage: descriptor.handle.cleanedImage || null,
+          debug: descriptor.handle.ocrDebug || null
+        },
+        payload: descriptor.handle.payload,
+        cleanedImage: descriptor.handle.cleanedImage || null,
+        debug: descriptor.handle.ocrDebug || null,
+        debugOnly: options.debugOnly === true,
+        translationComplete: descriptor.translationComplete,
+        authoritativeEmpty: descriptor.authoritativeEmpty,
+        reason,
+        ...extra
+      });
+
+      if (batchPageIds.size > 0) {
+        const batchDescriptors = [...batchPageIds].map((pageId) => descriptorByPage.get(pageId)).filter(Boolean);
+        const first = batchDescriptors[0];
+        const mapByPage = (selector) => new Map(batchDescriptors.map((descriptor) => [
+          String(descriptor.pageId),
+          selector(descriptor)
+        ]));
+        // 两个裁剪视窗携带各自完整的普通 projection/debug/payload，在同一次调用里原子安装。
+        await renderDescriptor(first, {
+          seamSurfaces: batchSurfaces,
+          projectionsByPage: mapByPage((descriptor) => descriptor.projections),
+          fallbackProjectionsByPage: mapByPage((descriptor) => descriptor.fallbackProjections),
+          payloadByPage: mapByPage((descriptor) => descriptor.handle.payload),
+          cleanedImageByPage: mapByPage((descriptor) => descriptor.handle.cleanedImage || null),
+          debugByPage: mapByPage((descriptor) => descriptor.handle.ocrDebug || null),
+          translationCompleteByPage: mapByPage((descriptor) => descriptor.translationComplete),
+          authoritativeEmptyByPage: mapByPage((descriptor) => descriptor.authoritativeEmpty)
+        });
+      }
+
+      for (const descriptor of descriptors) {
+        if (!guardAllows()) return;
+        if (batchPageIds.has(String(descriptor.pageId))) continue;
+        await renderDescriptor(descriptor, {
+          seamSurfaces: [],
+          fallbackProjectionsByPage: new Map([[
+            String(descriptor.pageId),
+            descriptor.fallbackProjections
+          ]])
         });
       }
     }
 
     async function runCached(target, _cachedResult, options = {}) {
       const handle = store.getPageHandleForTarget(target);
-      if (!handle) return run(target, { ...options, reason: options.reason || "store-cache-miss" });
+      if (!handle || !isReadyPageRecord(handle)) {
+        return run(target, { ...options, reason: options.reason || "store-cache-miss" });
+      }
       await refreshCanonicalState({ reason: "store-cache", focusPageIds: [handle.pageId] });
       return {
         ok: true,
@@ -3841,6 +4119,7 @@
       },
       requireCleanedImage: options.requireCleanedImage === true,
       forceCleanedImageArtifact: options.forceCleanedImageArtifact === true,
+      cleanedMasks: freezeCanonicalValue(Array.isArray(options.cleanedMasks) ? options.cleanedMasks : []),
       requestKey: sourceType === "page"
         ? `page:${pageIds[0]}:${records[0].imageRevision}`
         : `seam:${pairKey}`
@@ -3924,8 +4203,418 @@
       filteredObservations: normalizeItems(payload.filteredObservations || payload.filtered_observations, true),
       edgeSignals: payload.edgeSignals || payload.edge_signals || null,
       cleanedImage: payload.cleanedImage || payload.cleaned_image || null,
+      cleanedImageToken: String(payload.cleanedImageToken || payload.cleaned_image_token || ""),
       debug: payload.debug || null
     });
+  }
+
+  function normalizeSeamGeometryRect(value) {
+    if (!value || typeof value !== "object") return null;
+    const x = Number(value.x ?? value.left);
+    const y = Number(value.y ?? value.top);
+    const w = Number(value.w ?? value.width);
+    const h = Number(value.h ?? value.height);
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+    return { x, y, w, h };
+  }
+
+  function captureSeamPayloadGeometry(payload, records = []) {
+    const source = payload && typeof payload === "object" ? payload : {};
+    const rawSeam = source.seam && typeof source.seam === "object" ? source.seam : {};
+    const canvasWidth = Number(rawSeam.canvasWidth ?? source.width ?? source.sourceWidth) || 0;
+    const canvasHeight = Number(rawSeam.canvasHeight ?? source.height ?? source.sourceHeight) || 0;
+    const fallbackByPage = new Map((Array.isArray(records) ? records : []).map((record) => [String(record.pageId || ""), record]));
+    const segments = (Array.isArray(rawSeam.segments) ? rawSeam.segments : Array.isArray(source.segments) ? source.segments : [])
+      .map((segment) => {
+        const pageId = String(segment && segment.pageId || "");
+        const fallback = fallbackByPage.get(pageId) || {};
+        const drawRect = normalizeSeamGeometryRect(segment && segment.drawRect);
+        const sourceCrop = normalizeSeamGeometryRect(segment && segment.sourceCrop);
+        if (!pageId || !drawRect || !sourceCrop) return null;
+        return {
+          pageId,
+          drawRect,
+          sourceCrop,
+          naturalWidth: Number(segment && segment.naturalWidth) || Number(fallback.width) || 0,
+          naturalHeight: Number(segment && segment.naturalHeight) || Number(fallback.height) || 0
+        };
+      })
+      .filter(Boolean);
+    return freezeCanonicalValue({
+      coordinateSpace: String(source.coordinateSpace || "kakao-seam-v1"),
+      canvasWidth,
+      canvasHeight,
+      pageSpans: Array.isArray(source.pageSpans) ? source.pageSpans : [],
+      segments,
+      seam: { ...rawSeam, canvasWidth, canvasHeight, segments }
+    });
+  }
+
+  function normalizeSeamPercentBox(value) {
+    if (!value || typeof value !== "object") return null;
+    let x = Number(value.x ?? value.left);
+    let y = Number(value.y ?? value.top);
+    let w = Number(value.w ?? value.width);
+    let h = Number(value.h ?? value.height);
+    const coordinateSpace = String(value.coordinateSpace || value.coordinate_space || "").toLowerCase();
+    if (coordinateSpace === "normalized" || coordinateSpace === "ratio") {
+      x *= 100;
+      y *= 100;
+      w *= 100;
+      h *= 100;
+    }
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+    const left = clamp(x, 0, 100);
+    const top = clamp(y, 0, 100);
+    const right = clamp(x + w, 0, 100);
+    const bottom = clamp(y + h, 0, 100);
+    if (right <= left || bottom <= top) return null;
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  }
+
+  function seamPercentPolygonBounds(value) {
+    const points = (Array.isArray(value) ? value : [])
+      .map((point) => ({
+        x: Number(Array.isArray(point) ? point[0] : point && point.x),
+        y: Number(Array.isArray(point) ? point[1] : point && point.y)
+      }))
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    if (points.length < 3) return null;
+    return normalizeSeamPercentBox({
+      x: Math.min(...points.map((point) => point.x)),
+      y: Math.min(...points.map((point) => point.y)),
+      w: Math.max(...points.map((point) => point.x)) - Math.min(...points.map((point) => point.x)),
+      h: Math.max(...points.map((point) => point.y)) - Math.min(...points.map((point) => point.y))
+    });
+  }
+
+  function rawSeamBoxToPercent(value, canvasWidth, canvasHeight) {
+    const rect = normalizeSeamGeometryRect(value);
+    if (!rect || !(canvasWidth > 0) || !(canvasHeight > 0)) return null;
+    return normalizeSeamPercentBox({
+      x: rect.x / canvasWidth * 100,
+      y: rect.y / canvasHeight * 100,
+      w: rect.w / canvasWidth * 100,
+      h: rect.h / canvasHeight * 100
+    });
+  }
+
+  function unionSeamPercentBoxes(boxes) {
+    const valid = (Array.isArray(boxes) ? boxes : []).filter(Boolean);
+    if (!valid.length) return null;
+    const left = Math.min(...valid.map((box) => box.x));
+    const top = Math.min(...valid.map((box) => box.y));
+    const right = Math.max(...valid.map((box) => box.x + box.w));
+    const bottom = Math.max(...valid.map((box) => box.y + box.h));
+    return normalizeSeamPercentBox({ x: left, y: top, w: right - left, h: bottom - top });
+  }
+
+  function observationHasTrueSeamContribution(observation, pageIds) {
+    if (!observation || observation.sourceType !== "seam") return false;
+    const spans = Array.isArray(observation.pageSpans) ? observation.pageSpans : [];
+    const acceptedPageIds = new Set((Array.isArray(pageIds) ? pageIds : []).map(String));
+    return spans.some((span) => {
+      if (!acceptedPageIds.has(String(span && span.pageId || ""))) return false;
+      if (!normalizeSeamPercentBox(span && span.box)) return false;
+      return span.overlapRatio == null || Number(span.overlapRatio) > 0;
+    });
+  }
+
+  function seamObservationsCoverPair(observations, pageIds) {
+    const covered = new Set();
+    for (const observation of Array.isArray(observations) ? observations : []) {
+      for (const span of Array.isArray(observation && observation.pageSpans) ? observation.pageSpans : []) {
+        const pageId = String(span && span.pageId || "");
+        if (
+          pageIds.includes(pageId) &&
+          normalizeSeamPercentBox(span && span.box) &&
+          (span.overlapRatio == null || Number(span.overlapRatio) > 0)
+        ) {
+          covered.add(pageId);
+        }
+      }
+    }
+    return pageIds.every((pageId) => covered.has(pageId));
+  }
+
+  function isValidSeamSurfaceSegment(segment) {
+    return !!segment &&
+      !!String(segment.pageId || "") &&
+      !!normalizeSeamGeometryRect(segment.drawRect) &&
+      !!normalizeSeamGeometryRect(segment.sourceCrop) &&
+      Number(segment.naturalWidth) > 0 &&
+      Number(segment.naturalHeight) > 0;
+  }
+
+  function hasRenderableSeamDebug(debug) {
+    if (!debug || typeof debug !== "object") return false;
+    return [debug.rawItems, debug.duplicateItems, debug.dedupedItems, debug.finalBubbles]
+      .some((items) => Array.isArray(items) && items.length > 0);
+  }
+
+  function seamObservationCaptureBox(observation, canvasWidth, canvasHeight) {
+    const visual = observation && observation.visual && typeof observation.visual === "object"
+      ? observation.visual
+      : {};
+    const bgType = String(visual.bgType || visual.bg_type || "none").trim().toLowerCase();
+    const regionBounds = seamPercentPolygonBounds(visual.regionPolygon || visual.region_polygon);
+    const fillBox = normalizeSeamPercentBox(visual.fillBox || visual.fill_box);
+    // 纯色 caption/speech panel 的区域多边形才是单页最终呈现使用的完整清理边界；
+    // OCR 文字 union 只覆盖字形，会在跨缝处留下用户看到的半截原文。
+    return (bgType === "solid" ? regionBounds || fillBox : fillBox || regionBounds)
+      || normalizeSeamPercentBox(visual.box)
+      || seamPercentPolygonBounds(visual.polygon)
+      || rawSeamBoxToPercent(visual.rawBox || visual.raw_box, canvasWidth, canvasHeight);
+  }
+
+  function selectSeamVisualObservation(observations) {
+    return [...(Array.isArray(observations) ? observations : [])].sort((left, right) => {
+      const leftBg = Number(left && left.visual && (left.visual.bgConfidence ?? left.visual.bg_confidence)) || 0;
+      const rightBg = Number(right && right.visual && (right.visual.bgConfidence ?? right.visual.bg_confidence)) || 0;
+      return rightBg - leftBg
+        || (Number(right && right.confidence) || 0) - (Number(left && left.confidence) || 0)
+        || Array.from(String(right && right.originalText || "")).length - Array.from(String(left && left.originalText || "")).length
+        || String(left && left.id || "").localeCompare(String(right && right.id || ""));
+    })[0] || null;
+  }
+
+  function buildSeamSurfaceBubble(canonical, translation, observations, canvasWidth, canvasHeight) {
+    const linked = (Array.isArray(observations) ? observations : [])
+      .filter((observation) => seamObservationCaptureBox(observation, canvasWidth, canvasHeight));
+    if (!linked.length) return null;
+    const box = unionSeamPercentBoxes(linked.map((observation) =>
+      seamObservationCaptureBox(observation, canvasWidth, canvasHeight)
+    ));
+    if (!box) return null;
+    const selected = selectSeamVisualObservation(linked);
+    const rawVisual = selected && selected.visual && typeof selected.visual === "object" ? selected.visual : {};
+    const translatedText = String(translation && (translation.translated_text || translation.translatedText) || "").trim();
+    if (!translatedText) return null;
+    const bgType = String(rawVisual.bgType || rawVisual.bg_type || "none");
+    const bgColor = String(rawVisual.bgColor || rawVisual.bg_color || "");
+    const bgConfidence = Number(rawVisual.bgConfidence ?? rawVisual.bg_confidence) || 0;
+    const regionId = String(rawVisual.regionId || rawVisual.region_id || "");
+    const regionType = String(rawVisual.regionType || rawVisual.region_type || "plain_text");
+    const regionPolygon = rawVisual.regionPolygon || rawVisual.region_polygon || null;
+    const polygon = bgType.trim().toLowerCase() === "solid"
+      ? regionPolygon || null
+      : rawVisual.polygon || null;
+    const textColor = String(rawVisual.textColor || rawVisual.text_color || "");
+    const strokeColor = String(rawVisual.strokeColor || rawVisual.stroke_color || "");
+    const rotationDeg = Number(rawVisual.rotationDeg ?? rawVisual.rotation_deg) || 0;
+    const sourceLineCount = Math.max(
+      linked.length,
+      Number(rawVisual.sourceLineCount ?? rawVisual.source_line_count) || 1
+    );
+    const visual = freezeCanonicalValue({
+      ...rawVisual,
+      fillBox: box,
+      fill_box: box,
+      bgType,
+      bg_type: bgType,
+      bgColor,
+      bg_color: bgColor,
+      bgConfidence,
+      bg_confidence: bgConfidence,
+      regionId,
+      region_id: regionId,
+      regionType,
+      region_type: regionType,
+      textColor,
+      text_color: textColor,
+      strokeColor,
+      stroke_color: strokeColor,
+      rotationDeg,
+      rotation_deg: rotationDeg,
+      sourceLineCount,
+      source_line_count: sourceLineCount
+    });
+    return freezeCanonicalValue({
+      id: `${canonical.id}:seam`,
+      block_id: `${canonical.id}:seam`,
+      canonicalId: String(canonical.id),
+      canonical_id: String(canonical.id),
+      canonicalRevision: Math.max(1, Number(canonical.revision) || 1),
+      canonical_revision: Math.max(1, Number(canonical.revision) || 1),
+      coordinateSpace: "percent",
+      coordinate_space: "percent",
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+      originalText: String(canonical.originalText || canonical.original_text || ""),
+      original_text: String(canonical.originalText || canonical.original_text || ""),
+      translatedText,
+      translated_text: translatedText,
+      visual,
+      fill_box: box,
+      bg_type: bgType,
+      bg_color: bgColor,
+      bg_confidence: bgConfidence,
+      region_id: regionId,
+      region_type: regionType,
+      region_polygon: regionPolygon,
+      polygon,
+      text_color: textColor,
+      stroke_color: strokeColor,
+      rotation_deg: rotationDeg,
+      source_line_count: sourceLineCount
+    });
+  }
+
+  function seamBubbleRequiresCleanedImage(bubble) {
+    const bgType = String(bubble && (bubble.bg_type || bubble.visual && (bubble.visual.bgType || bubble.visual.bg_type)) || "none")
+      .trim()
+      .toLowerCase();
+    return bgType !== "solid";
+  }
+
+  function buildSeamRenderSurfaceIndex(activeStore, options = {}) {
+    const byPage = new Map();
+    const surfaces = [];
+    const handledCanonicalIds = new Set();
+    if (!activeStore) return { byPage, surfaces: Object.freeze([]), handledCanonicalIds };
+    const canonicals = activeStore.getCanonicalSnapshot();
+    const observationsById = new Map(activeStore.getObservations().map((item) => [String(item.id || ""), item]));
+    const isAvailable = typeof options.isPageAvailable === "function" ? options.isPageAvailable : null;
+
+    for (const state of activeStore.getSeamStates()) {
+      if (!state || state.status !== "completed") continue;
+      const pageIds = (Array.isArray(state.pageIds) ? state.pageIds : []).map(String);
+      if (pageIds.length !== 2 || new Set(pageIds).size !== 2) continue;
+      const currentRecords = pageIds.map((pageId) => activeStore.getPageHandle(pageId));
+      if (currentRecords.some((record, index) => !record ||
+        String(record.imageRevision || "") !== String(state.imageRevisionByPage && state.imageRevisionByPage[pageIds[index]] || ""))) {
+        continue;
+      }
+      if (currentRecords.some((record) => {
+        const terminal = activeStore.getPageTerminal(record.pageId);
+        return !terminal || terminal.state !== "ready" || (
+          terminal.details && terminal.details.imageRevision &&
+          String(terminal.details.imageRevision) !== String(record.imageRevision || "")
+        );
+      })) continue;
+      if (isAvailable && pageIds.some((pageId) => !isAvailable(pageId))) continue;
+
+      const canvasWidth = Number(state.canvasWidth || state.payloadGeometry && state.payloadGeometry.canvasWidth) || 0;
+      const canvasHeight = Number(state.canvasHeight || state.payloadGeometry && state.payloadGeometry.canvasHeight) || 0;
+      const segments = Array.isArray(state.segments) ? state.segments : [];
+      if (!(canvasWidth > 0 && canvasHeight > 0) ||
+        pageIds.some((pageId) => !segments.some((segment) =>
+          String(segment && segment.pageId || "") === pageId && isValidSeamSurfaceSegment(segment)
+        ))) {
+        continue;
+      }
+
+      const stateObservationIds = new Set((Array.isArray(state.observationIds) ? state.observationIds : []).map(String));
+      const stateObservationsById = new Map((Array.isArray(state.observations) ? state.observations : [])
+        .map((item) => [String(item && item.id || ""), item]));
+      const candidates = [];
+      for (const canonical of canonicals) {
+        if (!canonical || handledCanonicalIds.has(String(canonical.id || ""))) continue;
+        const canonicalPageIds = Object.entries(canonical.geometryByPage || {})
+          .filter(([, geometries]) => Array.isArray(geometries) ? geometries.length > 0 : !!geometries)
+          .map(([pageId]) => String(pageId))
+          .sort();
+        if (
+          canonicalPageIds.length !== pageIds.length ||
+          pageIds.some((pageId) => !canonicalPageIds.includes(pageId))
+        ) continue;
+        const linked = (Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : [])
+          .filter((id) => stateObservationIds.has(String(id)))
+          .map((id) => stateObservationsById.get(String(id)) || observationsById.get(String(id)))
+          .filter((observation) => observationHasTrueSeamContribution(observation, pageIds));
+        if (!linked.length || !seamObservationsCoverPair(linked, pageIds)) continue;
+        const translation = activeStore.getTranslation(canonical.id, canonical.revision);
+        const bubble = buildSeamSurfaceBubble(canonical, translation, linked, canvasWidth, canvasHeight);
+        if (!bubble) continue;
+        candidates.push({ canonical, translation, bubble });
+      }
+      const hasDebug = hasRenderableSeamDebug(state.debug);
+      if (!candidates.length && !hasDebug) continue;
+
+      const cleanedImage = isDataUrlValue(state.cleanedImage) ? state.cleanedImage : null;
+      const renderable = candidates.filter((candidate) =>
+        !seamBubbleRequiresCleanedImage(candidate.bubble) || !!cleanedImage
+      );
+      if (!renderable.length && !hasDebug) continue;
+      renderable.sort((left, right) => left.bubble.y - right.bubble.y
+        || left.bubble.x - right.bubble.x
+        || String(left.canonical.id).localeCompare(String(right.canonical.id)));
+      const bubbles = Object.freeze(renderable.map((candidate) => candidate.bubble));
+      const handledIds = Object.freeze(renderable.map((candidate) => String(candidate.canonical.id)).sort());
+      const cleanedImageToken = String(state.cleanedImageToken || (
+        cleanedImage ? `derived-${hashFnv1a(cleanedImage)}` : ""
+      ));
+      const canonicalRevisionById = Object.fromEntries(renderable.map((candidate) => [
+        String(candidate.canonical.id),
+        Math.max(1, Number(candidate.canonical.revision) || 1)
+      ]));
+      const translationFingerprintByCanonicalId = Object.fromEntries(renderable.map((candidate) => [
+        String(candidate.canonical.id),
+        String(
+          candidate.translation && (
+            candidate.translation.translationFingerprint ||
+            candidate.translation.translation_fingerprint
+          ) || hashFnv1a(candidate.bubble.translated_text)
+        )
+      ]));
+      const layoutFingerprint = JSON.stringify({
+        pairKey: state.pairKey,
+        canvasWidth,
+        canvasHeight,
+        bubbles: renderable.map((candidate) => ({
+          id: candidate.canonical.id,
+          revision: candidate.canonical.revision,
+          translationFingerprint: String(
+            candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) ||
+            hashFnv1a(candidate.bubble.translated_text)
+          ),
+          box: [candidate.bubble.x, candidate.bubble.y, candidate.bubble.w, candidate.bubble.h]
+        }))
+      });
+      const layoutKey = `seam-layout-v1:${hashFnv1a(layoutFingerprint)}`;
+      const renderKey = `seam-render-v1:${hashFnv1a(JSON.stringify({
+        pairKey: state.pairKey,
+        imageRevisionByPage: pageIds.map((pageId) => [pageId, state.imageRevisionByPage[pageId]]),
+        layoutKey,
+        cleanedImageToken,
+        handledIds
+      }))}`;
+      const surface = freezeCanonicalValue({
+        renderKey,
+        layoutKey,
+        pairKey: String(state.pairKey || ""),
+        coordinateSpace: "kakao-seam-v1",
+        canvasWidth,
+        canvasHeight,
+        pageIds,
+        imageRevisionByPage: state.imageRevisionByPage || {},
+        canonicalRevisionById,
+        translationFingerprintByCanonicalId,
+        artifactFingerprint: cleanedImageToken,
+        segments,
+        cleanedImage: renderable.length > 0 ? cleanedImage : null,
+        cleanedImageToken,
+        bubbles,
+        debug: state.debug || null,
+        handledCanonicalIds: handledIds
+      });
+      surfaces.push(surface);
+      for (const canonicalId of handledIds) handledCanonicalIds.add(canonicalId);
+      for (const pageId of pageIds) {
+        if (!byPage.has(pageId)) byPage.set(pageId, []);
+        byPage.get(pageId).push(surface);
+      }
+    }
+    for (const [pageId, pageSurfaces] of byPage) {
+      byPage.set(pageId, Object.freeze([...pageSurfaces].sort((left, right) => left.pairKey.localeCompare(right.pairKey))));
+    }
+    return {
+      byPage,
+      surfaces: Object.freeze([...surfaces]),
+      handledCanonicalIds
+    };
   }
 
   function buildFallbackObservationId(value) {
@@ -4280,16 +4969,124 @@
   }
 
   function projectionsRequireCleanedImage(projections) {
-    return (Array.isArray(projections) ? projections : []).some((projection) => {
-      if (!projection || projection.active === false) return false;
-      if (projection.role !== "cover" && projection.activeText !== true) return false;
-      const bgType = String(
-        projection.visual && (projection.visual.bgType || projection.visual.bg_type) ||
-        projection.bubble && (projection.bubble.bg_type || projection.bubble.bgType) ||
-        projection.bgType || projection.bg_type || ""
-      ).trim().toLowerCase();
-      return bgType === "none";
-    });
+    return (Array.isArray(projections) ? projections : []).some(projectionRequiresCleanedImage);
+  }
+
+  function projectionRequiresCleanedImage(projection) {
+    if (!projection || projection.active === false) return false;
+    const role = String(projection.role || "");
+    const cover = role === "cover" || role === "cover_only" || projection.coverOnly === true;
+    if (!cover && projection.activeText !== true) return false;
+    const bgType = String(
+      projection.visual && (projection.visual.bgType || projection.visual.bg_type) ||
+      projection.bubble && (projection.bubble.bg_type || projection.bubble.bgType) ||
+      projection.bgType || projection.bg_type || ""
+    ).trim().toLowerCase();
+    return bgType === "none";
+  }
+
+  function quantizeCleanMaskNumber(value) {
+    return Math.round(clamp(Number(value) || 0, 0, 100) * 100) / 100;
+  }
+
+  function normalizeCanonicalCleanMaskGeometry(geometry) {
+    const inputs = Array.isArray(geometry) ? geometry : [geometry];
+    const bounds = [];
+    for (const input of inputs) {
+      if (!input || typeof input !== "object") continue;
+      const box = input.box || input.geometry || input;
+      const x = Number(box && (box.x ?? box.left));
+      const y = Number(box && (box.y ?? box.top));
+      const w = Number(box && (box.w ?? box.width));
+      const h = Number(box && (box.h ?? box.height));
+      if ([x, y, w, h].every(Number.isFinite) && w > 0 && h > 0) {
+        bounds.push({ left: x, top: y, right: x + w, bottom: y + h });
+        continue;
+      }
+      const points = (Array.isArray(input.polygon) ? input.polygon : [])
+        .map((point) => ({
+          x: Number(Array.isArray(point) ? point[0] : point && point.x),
+          y: Number(Array.isArray(point) ? point[1] : point && point.y)
+        }))
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+      if (points.length >= 3) {
+        bounds.push({
+          left: Math.min(...points.map((point) => point.x)),
+          top: Math.min(...points.map((point) => point.y)),
+          right: Math.max(...points.map((point) => point.x)),
+          bottom: Math.max(...points.map((point) => point.y))
+        });
+      }
+    }
+    if (!bounds.length) return null;
+    const left = quantizeCleanMaskNumber(Math.min(...bounds.map((box) => box.left)));
+    const top = quantizeCleanMaskNumber(Math.min(...bounds.map((box) => box.top)));
+    const right = quantizeCleanMaskNumber(Math.max(...bounds.map((box) => box.right)));
+    const bottom = quantizeCleanMaskNumber(Math.max(...bounds.map((box) => box.bottom)));
+    if (right <= left || bottom <= top) return null;
+    return {
+      coordinateSpace: "percent",
+      box: {
+        x: left,
+        y: top,
+        w: quantizeCleanMaskNumber(right - left),
+        h: quantizeCleanMaskNumber(bottom - top)
+      }
+    };
+  }
+
+  function buildCanonicalCleanMasks(projections, crossPageCanonicalIds = new Set()) {
+    const crossPageIds = crossPageCanonicalIds instanceof Set
+      ? crossPageCanonicalIds
+      : new Set(Array.from(crossPageCanonicalIds || [], String));
+    const byKey = new Map();
+    for (const projection of Array.isArray(projections) ? projections : []) {
+      const canonicalId = String(projection && projection.canonicalId || "");
+      if (!canonicalId || !crossPageIds.has(canonicalId) || !projectionRequiresCleanedImage(projection)) continue;
+      // 跨页漏字往往恰好落在单页 OCR 多边形之外；清理范围必须采用渲染蓝框
+      // 对应的 canonical union，而不能退回某一行文字或某个 seam 字框。
+      const mask = normalizeCanonicalCleanMaskGeometry(projection.geometry || projection.box);
+      if (mask) byKey.set(JSON.stringify(mask), mask);
+    }
+    return [...byKey.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, mask]) => mask);
+  }
+
+  function buildCleanedMaskFingerprint(masks) {
+    const text = JSON.stringify(Array.isArray(masks) ? masks : []);
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function buildCleanedArtifactKey(imageRevision, masks) {
+    return `${String(imageRevision || "")}:canonical-mask-v1:${buildCleanedMaskFingerprint(masks)}`;
+  }
+
+  function collectCrossPageCanonicalIds(projectionsByPage, canonicals = []) {
+    const pageIdsByCanonical = new Map();
+    for (const [fallbackPageId, projections] of projectionsByPage instanceof Map ? projectionsByPage.entries() : []) {
+      for (const projection of Array.isArray(projections) ? projections : []) {
+        const canonicalId = String(projection && projection.canonicalId || "");
+        const pageId = String(projection && projection.pageId || fallbackPageId || "");
+        if (!canonicalId || !pageId) continue;
+        if (!pageIdsByCanonical.has(canonicalId)) pageIdsByCanonical.set(canonicalId, new Set());
+        pageIdsByCanonical.get(canonicalId).add(pageId);
+      }
+    }
+    const result = new Set([...pageIdsByCanonical.entries()]
+      .filter(([, pageIds]) => pageIds.size > 1)
+      .map(([canonicalId]) => canonicalId));
+    for (const canonical of Array.isArray(canonicals) ? canonicals : []) {
+      if (canonical && Object.keys(canonical.geometryByPage || {}).length > 1) {
+        result.add(String(canonical.id || ""));
+      }
+    }
+    result.delete("");
+    return result;
   }
 
   function isDataUrlValue(value) {
@@ -4687,6 +5484,8 @@
     buildConfirmedAdjacentPagePairs,
     buildStandbyCoverProjections,
     projectionsRequireCleanedImage,
+    buildCanonicalCleanMasks,
+    buildCleanedArtifactKey,
     assertCoverageInvariant,
 
     // 纯函数

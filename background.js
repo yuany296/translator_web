@@ -98,7 +98,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v13:";
+const CACHE_PREFIX = "mt_cache_v14:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -1687,7 +1687,8 @@ function buildLocalPaddleParagraphGroups(lines) {
 }
 
 function shouldMergeLocalPaddleParagraphLines(left, right) {
-  if (!left || !right || rotationDistance(left.rotation, right.rotation) > 18) {
+  const rotationDelta = left && right ? rotationDistance(left.rotation, right.rotation) : Infinity;
+  if (!left || !right || rotationDelta > 18) {
     return false;
   }
   if (!areLocalPaddleLineRegionsCompatible(left, right) || !areLocalPaddleScriptsCompatible(left.text, right.text)) {
@@ -1704,7 +1705,19 @@ function shouldMergeLocalPaddleParagraphLines(left, right) {
   }
   const overlapX = Math.max(0, Math.min(left.box.right, right.box.right) - Math.max(left.box.left, right.box.left));
   const overlapRatio = overlapX / Math.max(1, Math.min(left.box.width, right.box.width));
-  const centerClose = Math.abs(left.box.centerX - right.box.centerX) <= Math.max(left.box.width, right.box.width) * 0.35;
+  const centerOffset = Math.abs(left.box.centerX - right.box.centerX);
+  // 气泡边缘常有斜体手写补充语。只有角度、视觉行高、中心位置和局部重叠同时突变时才拆分，
+  // 避免把普通短句、缩进行或整段轻微倾斜误判为独立文字。
+  const hasEdgeLetteringStyleBreak = (
+    rotationDelta >= 5 &&
+    heightRatio < 0.82 &&
+    centerOffset > avgHeight * 1.5 &&
+    overlapRatio < 0.7
+  );
+  if (hasEdgeLetteringStyleBreak) {
+    return false;
+  }
+  const centerClose = centerOffset <= Math.max(left.box.width, right.box.width) * 0.35;
   if (!centerClose && overlapRatio <= 0.35) {
     return false;
   }

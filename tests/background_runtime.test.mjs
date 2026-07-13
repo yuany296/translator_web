@@ -31,7 +31,7 @@ test("translation cache cleanup recognizes old cache versions and quota errors",
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v4:def"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_api_key"), false);
-  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v13:/);
+  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v14:/);
   assert.equal(
     context.__backgroundTest.isStorageQuotaError(new Error("Resource::kQuotaBytes quota exceeded")),
     true
@@ -327,6 +327,54 @@ test("paragraph merge rejects large whitespace, title/body scale, remote columns
   assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("작은 본문", 110, 148, 285, 20)), false);
   assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("오른쪽 글", 500, 148, 220, 40)), false);
   assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(first, line("中文覆盖层", 110, 148, 285, 40)), false);
+  assert.equal(context.__backgroundTest.shouldMergeLocalPaddleParagraphLines(
+    first,
+    { ...line("가운데 기울임", 165, 148, 170, 55), rotation: -7 }
+  ), true);
+});
+
+test("slanted edge lettering stays separate from aligned dialog text in the same detected region", async () => {
+  const region = {
+    region_id: "region-dialog",
+    region_type: "caption_panel",
+    region_box: { left: 130, top: 230, width: 505, height: 335 },
+    region_polygon: [[130, 230], [635, 230], [635, 565], [130, 565]],
+    bg_color: "#ffffff",
+    text_color: "#0c0c0c",
+    stroke_color: "#ffffff",
+    region_confidence: 0.98,
+    score: 0.98,
+    det_score: 0.91
+  };
+  const item = (text, left, top, width, height, rotation_deg = 0) => ({
+    ...region,
+    text,
+    rotation_deg,
+    box: { left, top, width, height }
+  });
+  const payload = {
+    imageWidth: 760,
+    imageHeight: 1700,
+    items: [
+      item("그래도", 300, 285, 100, 51),
+      item("아직타이틀곡", 256, 338, 186, 48),
+      item("무대는 남았으니까", 223, 390, 250, 47),
+      item("같이보자", 404, 448, 138, 65, -6.96)
+    ]
+  };
+
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    payload,
+    { width: 760, height: 1700 },
+    "",
+    false
+  );
+
+  assert.equal(result.length, 2, JSON.stringify(result.map((entry) => entry.words)));
+  assert.deepEqual(JSON.parse(JSON.stringify(result.map((entry) => entry.sourceLineCount))), [3, 1]);
+  assert.match(result[0].words, /무대는 남았으니까/);
+  assert.doesNotMatch(result[0].words, /같이보자/);
+  assert.match(result[1].words, /같이보자/);
 });
 
 test("Kakao comment panel keeps every long standalone OCR row", async () => {

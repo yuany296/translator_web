@@ -98,7 +98,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v14:";
+const CACHE_PREFIX = "mt_cache_v17:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -1706,13 +1706,12 @@ function shouldMergeLocalPaddleParagraphLines(left, right) {
   const overlapX = Math.max(0, Math.min(left.box.right, right.box.right) - Math.max(left.box.left, right.box.left));
   const overlapRatio = overlapX / Math.max(1, Math.min(left.box.width, right.box.width));
   const centerOffset = Math.abs(left.box.centerX - right.box.centerX);
-  // 气泡边缘常有斜体手写补充语。只有角度、视觉行高、中心位置和局部重叠同时突变时才拆分，
-  // 避免把普通短句、缩进行或整段轻微倾斜误判为独立文字。
+  // 气泡边缘常有斜体手写补充语。只有方向变化、超过两个行高的中心偏移和局部重叠同时出现时才拆分，
+  // 这些比例在同一区域的 owner / 相邻页 OCR 中保持稳定，也能避免把普通短句或整段倾斜误拆。
   const hasEdgeLetteringStyleBreak = (
-    rotationDelta >= 5 &&
-    heightRatio < 0.82 &&
-    centerOffset > avgHeight * 1.5 &&
-    overlapRatio < 0.7
+    rotationDelta >= 3.5 &&
+    centerOffset > avgHeight * 2 &&
+    overlapRatio < 0.65
   );
   if (hasEdgeLetteringStyleBreak) {
     return false;
@@ -2118,6 +2117,15 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis) {
   const representativeContainer = representative.container || null;
   const containerIds = new Set(cluster.map((entry) => entry.container && entry.container.id).filter(Boolean));
   const hasSingleCompleteContainer = containerIds.size === 1 && cluster.every((entry) => entry.container);
+  const displayBox = buildLocalPaddleDisplayBox(
+    cluster,
+    hasSingleCompleteContainer ? representativeContainer.box : null,
+    imageSize
+  );
+  if (displayBox) {
+    merged.location = displayBox;
+    merged.rawBox = displayBox;
+  }
   merged.localOcrClusterKind = representativeContainer ? "bubbleText" : representative.kind;
   merged.localOcrContainerId = hasSingleCompleteContainer ? representativeContainer.id : "";
   merged.localOcrRegionType = representativeContainer ? representativeContainer.type : "effect_text";
@@ -2133,6 +2141,34 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis) {
       }
     : { type: "outline", color: "", confidence: 0 };
   return merged;
+}
+
+function buildLocalPaddleDisplayBox(cluster, regionBox, imageSize) {
+  const boxes = (Array.isArray(cluster) ? cluster : []).map((entry) => entry && entry.box).filter(Boolean);
+  if (boxes.length === 0) {
+    return null;
+  }
+  const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  const union = boxes.reduce(unionLocalPaddleBoxes);
+  const avgHeight = Math.max(1, boxes.reduce((sum, box) => sum + box.height, 0) / boxes.length);
+  // 文字排版框只保留少量呼吸空间；擦除原文所需的更大范围由 fill_box 单独负责。
+  const marginX = Math.max(2, Math.min(union.width * 0.035, avgHeight * 0.25));
+  const marginY = Math.max(2, Math.min(union.height * 0.04, avgHeight * 0.15));
+  let left = Math.max(0, union.left - marginX);
+  let top = Math.max(0, union.top - marginY);
+  let right = Math.min(imageWidth, union.right + marginX);
+  let bottom = Math.min(imageHeight, union.bottom + marginY);
+
+  if (regionBox) {
+    left = Math.max(left, Number(regionBox.left) || 0);
+    top = Math.max(top, Number(regionBox.top) || 0);
+    right = Math.min(right, (Number(regionBox.left) || 0) + Math.max(0, Number(regionBox.width) || 0));
+    bottom = Math.min(bottom, (Number(regionBox.top) || 0) + Math.max(0, Number(regionBox.height) || 0));
+  }
+  return right > left && bottom > top
+    ? { left, top, width: right - left, height: bottom - top }
+    : null;
 }
 
 function buildRotatedClusterGeometry(cluster, imageSize) {
@@ -4060,7 +4096,9 @@ function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
   const leftRegionId = String(leftGroup[0] && leftGroup[0].region_id || "");
   const rightRegionId = String(rightGroup[0] && rightGroup[0].region_id || "");
   if (leftRegionId || rightRegionId) {
-    return Boolean(leftRegionId && leftRegionId === rightRegionId);
+    // 带区域标识的本地 OCR 候选已经完成了行与段落聚类；此处再次按相同 region_id 合并，
+    // 会把刻意拆开的气泡边缘补充语、异体字或不同段落重新粘回正文。
+    return false;
   }
   if (leftBgType !== rightBgType) {
     return false;

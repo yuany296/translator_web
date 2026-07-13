@@ -22,7 +22,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta };`,
+  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta };`,
   context,
   { filename: "background.js" }
 );
@@ -31,7 +31,7 @@ test("translation cache cleanup recognizes old cache versions and quota errors",
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v4:def"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_api_key"), false);
-  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v14:/);
+  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v17:/);
   assert.equal(
     context.__backgroundTest.isStorageQuotaError(new Error("Resource::kQuotaBytes quota exceeded")),
     true
@@ -333,7 +333,7 @@ test("paragraph merge rejects large whitespace, title/body scale, remote columns
   ), true);
 });
 
-test("slanted edge lettering stays separate from aligned dialog text in the same detected region", async () => {
+test("slanted edge lettering stays separate across owner and adjacent-page OCR variants", async () => {
   const region = {
     region_id: "region-dialog",
     region_type: "caption_panel",
@@ -352,29 +352,96 @@ test("slanted edge lettering stays separate from aligned dialog text in the same
     rotation_deg,
     box: { left, top, width, height }
   });
-  const payload = {
-    imageWidth: 760,
-    imageHeight: 1700,
-    items: [
+  const variants = [
+    [
       item("그래도", 300, 285, 100, 51),
       item("아직타이틀곡", 256, 338, 186, 48),
       item("무대는 남았으니까", 223, 390, 250, 47),
       item("같이보자", 404, 448, 138, 65, -6.96)
+    ],
+    [
+      item("그래도", 301, 1289, 97, 44),
+      item("아직타이틀곡", 258, 1342, 182, 43),
+      item("무대는 남았으니까", 225, 1390, 246, 48),
+      item("같이보자", 408, 1455, 132, 55, -4.47)
     ]
-  };
+  ];
 
+  for (const items of variants) {
+    const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+      { imageWidth: 760, imageHeight: 1700, items },
+      { width: 760, height: 1700 },
+      "",
+      false
+    );
+
+    assert.equal(result.length, 2, JSON.stringify(result.map((entry) => entry.words)));
+    assert.deepEqual(JSON.parse(JSON.stringify(result.map((entry) => entry.sourceLineCount))), [3, 1]);
+    assert.match(result[0].words, /무대는 남았으니까/);
+    assert.doesNotMatch(result[0].words, /같이보자/);
+    assert.match(result[1].words, /같이보자/);
+
+    const finalCandidates = context.__backgroundTest.coalesceOverlappingOcrCandidates(
+      result.map((entry, index) => context.__backgroundTest.normalizeBaiduOcrItem(
+        entry,
+        index,
+        { width: 760, height: 1700 }
+      ))
+    );
+    assert.equal(finalCandidates.length, 2, JSON.stringify(finalCandidates.map((entry) => entry.original_text)));
+    assert.doesNotMatch(finalCandidates[0].original_text, /같이보자/);
+    assert.match(finalCandidates[1].original_text, /같이보자/);
+  }
+});
+
+test("local paragraph display box stays tight while solid paint keeps separate coverage", async () => {
+  const region = {
+    region_id: "region-panel",
+    region_type: "caption_panel",
+    region_box: { left: 150, top: 100, width: 500, height: 320 },
+    region_polygon: [[150, 100], [650, 100], [650, 420], [150, 420]],
+    bg_color: "#303030",
+    text_color: "#ffffff",
+    stroke_color: "#000000",
+    region_confidence: 0.96,
+    score: 0.98,
+    det_score: 0.92,
+    rotation_deg: 0
+  };
+  const item = (text, left, top, width, height) => ({
+    ...region,
+    text,
+    box: { left, top, width, height }
+  });
   const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
-    payload,
-    { width: 760, height: 1700 },
+    {
+      imageWidth: 760,
+      imageHeight: 900,
+      items: [
+        item("조심해", 280, 150, 120, 50),
+        item("빨리 도망치지 않으면", 200, 210, 360, 52),
+        item("죽을 거야", 300, 272, 160, 48)
+      ]
+    },
+    { width: 760, height: 900 },
     "",
     false
   );
 
-  assert.equal(result.length, 2, JSON.stringify(result.map((entry) => entry.words)));
-  assert.deepEqual(JSON.parse(JSON.stringify(result.map((entry) => entry.sourceLineCount))), [3, 1]);
-  assert.match(result[0].words, /무대는 남았으니까/);
-  assert.doesNotMatch(result[0].words, /같이보자/);
-  assert.match(result[1].words, /같이보자/);
+  assert.equal(result.length, 1);
+  const block = result[0];
+  assert.ok(block.location.width <= 360 * 1.08, JSON.stringify(block.location));
+  assert.ok(block.location.height <= 170 * 1.09, JSON.stringify(block.location));
+  assert.ok(block.location.left >= 187 && block.location.top >= 143, JSON.stringify(block.location));
+
+  const candidate = context.__backgroundTest.normalizeBaiduOcrItem(block, 0, { width: 760, height: 900 });
+  const fillLeft = (candidate.fill_box.x / 100) * 760;
+  const fillTop = (candidate.fill_box.y / 100) * 900;
+  const fillRight = fillLeft + (candidate.fill_box.w / 100) * 760;
+  const fillBottom = fillTop + (candidate.fill_box.h / 100) * 900;
+  assert.ok(fillLeft < block.location.left && fillTop < block.location.top);
+  assert.ok(fillRight > block.location.left + block.location.width);
+  assert.ok(fillBottom > block.location.top + block.location.height);
 });
 
 test("Kakao comment panel keeps every long standalone OCR row", async () => {

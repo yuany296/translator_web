@@ -1223,6 +1223,11 @@
         cached: result.cached === true || result.reused === true,
         pipeline: "kakao-canonical-v1"
       });
+      // Canonical pipeline 的 run/runCached 通过 refreshCanonicalState →
+      // renderCanonicalProjections 渲染结果，但某些路径可能不会清理
+      // loading overlay（如 getTargetForKakaoPageId 返回 null，或缓存命中
+      // 时 projections 为空），导致 overlay 永久残留。此处显式清理。
+      clearKakaoLoadingOverlay(target);
     }
     return result;
   }

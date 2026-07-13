@@ -2868,6 +2868,9 @@
         }
         store.cancelPageJob(identity.jobKey, identity);
       }
+      if (typeof adapters.clearLoadingOverlay === "function") {
+        try { adapters.clearLoadingOverlay(target); } catch { /* 清理只是 UI 恢复 */ }
+      }
       trace("cancelled", target, { runId: identity.runId, pageId, reason });
       return { ok: false, skipped: true, reason: `cancelled:${reason}` };
     }
@@ -3104,6 +3107,12 @@
         return { ok: false, error: reason, pageId: pageRecord && pageRecord.pageId || "" };
       } finally {
         store.finishPageJob(identity.jobKey, identity);
+        // 安全网：确保任何 exit 路径都清理 loading overlay。正常路径中
+        // refreshCanonicalState → renderCanonicalProjections → renderOverlay
+        // 已经替换了 loading overlay，此处再次清理是幂等的。
+        if (typeof adapters.clearLoadingOverlay === "function") {
+          try { adapters.clearLoadingOverlay(target); } catch { /* 安全网清理 */ }
+        }
         trace("pipeline-finally", target, { runId: identity.runId, pageId: pageRecord && pageRecord.pageId || "" });
       }
     }

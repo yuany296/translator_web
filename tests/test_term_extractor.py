@@ -29,7 +29,9 @@ class FakeKiwi:
     def tokenize(self, text: str) -> list[FakeToken]:
         fixtures = {
             "김성현": [FakeToken("김성현", "NNP", 0, 3)],
+            "김솔음": [FakeToken("김", "NNP", 0, 1), FakeToken("솔", "NNG", 1, 1), FakeToken("음", "EF", 2, 1)],
             "서호윤": [FakeToken("서호윤", "NNP", 0, 3)],
+            "오리엔테": [FakeToken("오리엔테", "NNG", 0, 4)],
             "샤이닝 스타": [FakeToken("샤이닝", "NNP", 0, 3), FakeToken("스타", "NNG", 4, 2)],
             "연습 시간": [FakeToken("연습", "NNG", 0, 2), FakeToken("시간", "NNG", 3, 2)],
             "평범한 말입니다": [
@@ -67,6 +69,18 @@ def test_balanced_extractor_rejects_ordinary_sentence_and_keeps_reviewable_noun_
     assert [item["source"] for item in result] == ["연습 시간"]
 
 
+def test_person_structure_keeps_the_full_name_and_rejects_four_syllable_loanword() -> None:
+    result = extract_term_candidates(
+        [
+            {"id": "name", "text": "김솔음"},
+            {"id": "loanword", "text": "오리엔테"},
+        ],
+        analyzer=FakeKiwi(),
+    )
+
+    assert result == [{"source": "김솔음", "kind": "person", "score": 0.94, "evidenceIds": ["name"]}]
+
+
 def test_extractor_merges_repeated_evidence_without_losing_full_and_short_names() -> None:
     blocks = [
         {"id": "full", "text": "김성현"},
@@ -89,10 +103,12 @@ def test_real_kiwi_learns_short_name_from_full_name_without_accepting_common_nou
             {"id": "full", "text": "김성현"},
             {"id": "occupation", "text": "마법사"},
             {"id": "school", "text": "학교"},
+            {"id": "split-name", "text": "김솔음"},
+            {"id": "loanword", "text": "오리엔테"},
         ]
     )
 
-    assert {item["source"] for item in result} == {"김성현", "성현"}
+    assert {item["source"] for item in result} == {"김성현", "성현", "김솔음"}
 
 
 def test_extract_endpoint_returns_503_when_kiwi_cannot_load(monkeypatch: pytest.MonkeyPatch) -> None:

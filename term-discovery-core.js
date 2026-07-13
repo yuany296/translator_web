@@ -311,6 +311,21 @@
     );
   }
 
+  function getSuggestedTargetForSource(sourceValue, contextsValue) {
+    const sourceKey = getSourceKey(sourceValue);
+    if (!sourceKey) {
+      return "";
+    }
+    const targets = uniqueStrings(
+      (Array.isArray(contextsValue) ? contextsValue : [])
+        .filter((context) => getSourceKey(context && context.originalText) === sourceKey)
+        .map((context) => String(context && context.translatedText || "").trim())
+        .filter((target) => target && getSourceKey(target) !== sourceKey),
+      5
+    );
+    return targets.length === 1 ? targets[0].slice(0, 120) : "";
+  }
+
   function uniqueStrings(value, limit) {
     const result = [];
     const seen = new Set();
@@ -359,6 +374,7 @@
     removeSourcesFromPending,
     ignoreCandidate,
     restoreIgnoredSource,
-    getPendingCount
+    getPendingCount,
+    getSuggestedTargetForSource
   });
 })(globalThis);

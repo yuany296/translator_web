@@ -80,6 +80,8 @@ test("glossary and popup expose pending-term confirmation controls", () => {
   assert.match(glossaryScript, /CONFIRM_TERM_CANDIDATES/);
   assert.match(glossaryScript, /IGNORE_TERM_CANDIDATE/);
   assert.match(glossaryScript, /RESTORE_IGNORED_TERM/);
+  assert.match(glossaryScript, /candidate-source-input/);
+  assert.match(glossaryScript, /candidateSource/);
   assert.match(popup, /id="termDiscoverySwitch"/);
   assert.match(popup, /id="termDiscoveryStatus"/);
 });

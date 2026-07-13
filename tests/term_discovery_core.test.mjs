@@ -68,6 +68,20 @@ test("repeated evidence is deduped and conflicting exact-block translations are 
   assert.equal(candidate.suggestedTarget, "");
 });
 
+test("editing a partial candidate to the full context source reveals its unique translation", () => {
+  const contexts = [
+    { evidenceId: "a", originalText: "김솔음", translatedText: "金索音" },
+    { evidenceId: "b", originalText: "다른 문장", translatedText: "其他句子" }
+  ];
+
+  assert.equal(core.getSuggestedTargetForSource("김솔", contexts), "");
+  assert.equal(core.getSuggestedTargetForSource(" 김솔음 ", contexts), "金索音");
+  assert.equal(
+    core.getSuggestedTargetForSource("김솔음", [...contexts, { evidenceId: "c", originalText: "김솔음", translatedText: "金率音" }]),
+    ""
+  );
+});
+
 test("chapter and global ignore scopes remove candidates and global ignore can be restored", () => {
   const discovered = core.mergeDiscoveryResult({
     pageUrl: "https://example.com/chapter/3",

@@ -75,6 +75,40 @@ test("confirming a pending candidate writes the formal glossary and removes ever
   assert.equal(stored.mt_glossary_pending_v1.chapters.every((chapter) => chapter.candidates.length === 0), true);
 });
 
+test("confirming an edited source stores the correction and removes the original partial candidate", async () => {
+  const stored = {
+    mt_glossary_v1: { entries: [] },
+    mt_glossary_pending_v1: {
+      chapters: [
+        {
+          key: "https://example.test/chapter/name-fix",
+          url: "https://example.test/chapter/name-fix",
+          candidates: [
+            { source: "김솔", kind: "proper_noun", score: 0.9 },
+            { source: "김솔음", kind: "person", score: 0.8 }
+          ]
+        }
+      ]
+    }
+  };
+  context.chrome.storage.local.get = (keys, callback) => {
+    callback(Object.fromEntries(keys.map((key) => [key, stored[key]])));
+  };
+  context.chrome.storage.local.set = (value, callback) => {
+    Object.assign(stored, JSON.parse(JSON.stringify(value)));
+    callback();
+  };
+
+  const response = await context.__backgroundTest.handleConfirmTermCandidates({
+    entries: [{ candidateSource: "김솔", source: "김솔음", target: "金索音" }]
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(stored.mt_glossary_v1.entries[0].source, "김솔음");
+  assert.equal(stored.mt_glossary_v1.entries[0].target, "金索音");
+  assert.equal(stored.mt_glossary_pending_v1.chapters.length, 0);
+});
+
 test("offline term discovery cools down without surfacing a translation failure", async () => {
   const stored = {
     mt_term_discovery_enabled: true,

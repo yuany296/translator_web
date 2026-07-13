@@ -339,6 +339,9 @@ async function handleConfirmTermCandidates(message) {
     const requestedEntries = (Array.isArray(message.entries) ? message.entries : [])
       .map((entry) => ({
         source: termDiscoveryCore.normalizeSource(entry && entry.source),
+        candidateSource: termDiscoveryCore.normalizeSource(
+          entry && (entry.candidateSource || entry.source)
+        ),
         target: String(entry && entry.target || "").trim().slice(0, glossaryCore.MAX_TARGET_LENGTH),
         note: String(entry && entry.note || "").trim().slice(0, glossaryCore.MAX_NOTE_LENGTH)
       }))
@@ -352,6 +355,7 @@ async function handleConfirmTermCandidates(message) {
     const entries = [...glossary.entries];
     const indexBySource = new Map(entries.map((entry, index) => [termDiscoveryCore.getSourceKey(entry.source), index]));
     const confirmedSources = [];
+    const pendingSourcesToRemove = [];
     for (const requested of requestedEntries) {
       const sourceKey = termDiscoveryCore.getSourceKey(requested.source);
       const entry = glossaryCore.normalizeGlossaryEntry({
@@ -373,6 +377,7 @@ async function handleConfirmTermCandidates(message) {
         return { ok: false, error: `术语库最多保存 ${glossaryCore.MAX_ENTRIES} 条` };
       }
       confirmedSources.push(entry.source);
+      pendingSourcesToRemove.push(requested.candidateSource, entry.source);
     }
     if (confirmedSources.length === 0) {
       return { ok: false, error: "没有可加入的候选术语" };
@@ -386,7 +391,7 @@ async function handleConfirmTermCandidates(message) {
     });
     const nextPending = termDiscoveryCore.removeSourcesFromPending(
       stored[STORAGE_KEYS.glossaryPending],
-      confirmedSources
+      pendingSourcesToRemove
     );
     await storageSet({
       [STORAGE_KEYS.glossary]: nextGlossary,

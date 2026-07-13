@@ -19,6 +19,7 @@ NOUN_TAGS = {"NNP", "NNG"}
 COMMON_KOREAN_SURNAMES = set(
     "김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예봉사부가복"
 )
+COMPOUND_KOREAN_SURNAMES = {"남궁", "독고", "동방", "망절", "사공", "서문", "선우", "제갈", "황보"}
 LATIN_STOP_TERMS = {
     "AD",
     "CEO",
@@ -162,6 +163,12 @@ def normalize_tokens(tokens: Iterable[Any], text: str) -> list[dict[str, Any]]:
 
 def extract_korean_candidates(text: str, tokens: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
+    stripped_text = normalize_candidate(text)
+    compact_text = re.sub(r"\s+", "", stripped_text)
+    # Kiwi 偶尔会把姓名末字误判成语尾，例如“김솔음”中的“음/EF”。
+    # 对恰好占满 OCR 块且满足姓名结构的文本，先用完整 token 序列恢复全名，避免只留下“김솔”。
+    if is_korean_person_name(compact_text, tokens):
+        return [{"source": stripped_text, "kind": "person", "score": 0.94}]
     groups: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
 
@@ -178,7 +185,6 @@ def extract_korean_candidates(text: str, tokens: list[dict[str, Any]]) -> list[d
     if current:
         groups.append(current)
 
-    stripped_text = normalize_candidate(text)
     for group in groups:
         start = group[0]["start"]
         end = group[-1]["end"]
@@ -232,10 +238,11 @@ def can_join_noun_tokens(text: str, previous: dict[str, Any], current: dict[str,
 
 
 def is_korean_person_name(value: str, tokens: list[dict[str, Any]] | None = None) -> bool:
+    has_single_surname_shape = len(value) == 3 and value[:1] in COMMON_KOREAN_SURNAMES
+    has_compound_surname_shape = len(value) == 4 and value[:2] in COMPOUND_KOREAN_SURNAMES
     if not (
-        3 <= len(value) <= 4
-        and all("가" <= char <= "힣" for char in value)
-        and value[0] in COMMON_KOREAN_SURNAMES
+        all("가" <= char <= "힣" for char in value)
+        and (has_single_surname_shape or has_compound_surname_shape)
     ):
         return False
     if not tokens:
@@ -257,7 +264,8 @@ def register_confirmed_person_aliases(kiwi: Any, terms: Iterable[str]) -> None:
         tokens = normalize_tokens(kiwi.tokenize(term), term)
         if not is_korean_person_name(term, tokens):
             continue
-        alias = term[1:]
+        surname_length = 2 if term[:2] in COMPOUND_KOREAN_SURNAMES else 1
+        alias = term[surname_length:]
         if 2 <= len(alias) <= 3 and alias not in aliases:
             aliases.append(alias)
     with _kiwi_user_word_lock:

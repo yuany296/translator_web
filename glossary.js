@@ -177,9 +177,25 @@ function createCandidateCard(chapter, candidate) {
   const grid = document.createElement("div");
   grid.className = "candidate-grid";
   grid.append(
+    createCandidateField("原文术语（可修改）", "candidate-source-input", candidate.source, 120),
     createCandidateField("固定译文", "candidate-target", candidate.suggestedTarget, 120),
     createCandidateField("备注（可选）", "candidate-note", "", 240)
   );
+  const sourceInput = grid.querySelector(".candidate-source-input");
+  const targetInput = grid.querySelector(".candidate-target");
+  targetInput.dataset.autoSuggestion = candidate.suggestedTarget || "";
+  targetInput.addEventListener("input", () => {
+    targetInput.dataset.userEdited = "true";
+  });
+  sourceInput.addEventListener("input", () => {
+    source.textContent = sourceInput.value.trim() || candidate.source;
+    const suggestion = termDiscoveryCore.getSuggestedTargetForSource(sourceInput.value, candidate.contexts);
+    if (targetInput.dataset.userEdited !== "true" || !targetInput.value.trim()) {
+      targetInput.value = suggestion;
+      targetInput.dataset.autoSuggestion = suggestion;
+      targetInput.dataset.userEdited = "false";
+    }
+  });
 
   const contexts = document.createElement("div");
   contexts.className = "contexts";
@@ -259,34 +275,41 @@ async function handlePendingCandidateClick(event) {
   if (!button || !card) {
     return;
   }
-  const source = card.dataset.source;
+  const candidateSource = card.dataset.source;
   const chapterKey = card.dataset.chapterKey;
   if (button.dataset.action === "confirm") {
+    const source = card.querySelector(".candidate-source-input").value.trim();
     const target = card.querySelector(".candidate-target").value.trim();
     const note = card.querySelector(".candidate-note").value.trim();
+    if (!source) {
+      setPendingStatus("原文术语不能为空", true);
+      card.querySelector(".candidate-source-input").focus();
+      return;
+    }
     if (!target) {
       setPendingStatus(`请先填写“${source}”的固定译文`, true);
       card.querySelector(".candidate-target").focus();
       return;
     }
-    await confirmPendingEntries([{ source, target, note }]);
+    await confirmPendingEntries([{ candidateSource, source, target, note }]);
     return;
   }
   const scope = button.dataset.action === "ignore-global" ? "global" : "chapter";
   await runPendingAction(
-    { type: "IGNORE_TERM_CANDIDATE", chapterKey, source, scope },
-    scope === "global" ? `已永久忽略“${source}”` : `本话已忽略“${source}”`
+    { type: "IGNORE_TERM_CANDIDATE", chapterKey, source: candidateSource, scope },
+    scope === "global" ? `已永久忽略“${candidateSource}”` : `本话已忽略“${candidateSource}”`
   );
 }
 
 async function confirmAllFilledCandidates() {
   const entries = Array.from(pendingChapters.querySelectorAll(".candidate-card"))
     .map((card) => ({
-      source: card.dataset.source,
+      candidateSource: card.dataset.source,
+      source: card.querySelector(".candidate-source-input").value.trim(),
       target: card.querySelector(".candidate-target").value.trim(),
       note: card.querySelector(".candidate-note").value.trim()
     }))
-    .filter((entry) => entry.target);
+    .filter((entry) => entry.source && entry.target);
   if (entries.length === 0) {
     setPendingStatus("没有已填写译名的候选术语", true);
     return;

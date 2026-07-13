@@ -35,6 +35,8 @@ test.py
 *.jpg
 *.jpeg
 !tests/fixtures/visual/*.png
+!tests/fixtures/kakao-canonical/
+!tests/fixtures/kakao-canonical/*.png
 
 # === Local OCR service temp files ===
 local-ocr-service/__pycache__/

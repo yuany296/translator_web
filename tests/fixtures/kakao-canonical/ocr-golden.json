@@ -1,0 +1,394 @@
+{
+  "schemaVersion": "kakao-canonical-fixture-v1",
+  "synthetic": true,
+  "chapterId": "fixture-chapter-canonical",
+  "description": "完全合成的匿名相邻页：两条页内对白、一条跨页对白和一条过滤噪声。",
+  "pages": [
+    {
+      "pageId": "fixture-page-a",
+      "image": "page-a.png",
+      "width": 720,
+      "height": 1080,
+      "imageRevision": "c682aa50a3404d97426363544868fa4a32adac717c00dab12fa8be55ffdbc980",
+      "shortPage": false
+    },
+    {
+      "pageId": "fixture-page-b",
+      "image": "page-b.png",
+      "width": 720,
+      "height": 1080,
+      "imageRevision": "6b8d9ba60a8ab36f16c8d1f5ce09bb9a017d34218bdb72d0a62341ac83557641",
+      "shortPage": false
+    }
+  ],
+  "seam": {
+    "pairId": "fixture-page-a--fixture-page-b",
+    "bandHeight": 160,
+    "pageIds": [
+      "fixture-page-a",
+      "fixture-page-b"
+    ],
+    "imageRevisionByPage": {
+      "fixture-page-a": "c682aa50a3404d97426363544868fa4a32adac717c00dab12fa8be55ffdbc980",
+      "fixture-page-b": "6b8d9ba60a8ab36f16c8d1f5ce09bb9a017d34218bdb72d0a62341ac83557641"
+    }
+  },
+  "ocr": {
+    "page": [
+      {
+        "pageId": "fixture-page-a",
+        "observations": [
+          {
+            "id": "obs-page-a-interior",
+            "sourceType": "page",
+            "pageIds": [
+              "fixture-page-a"
+            ],
+            "imageRevisionByPage": {
+              "fixture-page-a": "c682aa50a3404d97426363544868fa4a32adac717c00dab12fa8be55ffdbc980"
+            },
+            "pageSpans": [
+              {
+                "pageId": "fixture-page-a",
+                "box": {
+                  "x": 18.0,
+                  "y": 39.5,
+                  "w": 64.0,
+                  "h": 14.5
+                },
+                "polygon": null,
+                "overlapRatio": 1.0
+              }
+            ],
+            "originalText": "독립 대사입니다.",
+            "confidence": 0.99,
+            "visual": {
+              "bgType": "solid",
+              "bgColor": "#fffffc",
+              "bgConfidence": 0.99,
+              "regionId": "region-page-a-interior",
+              "regionType": "speech_bubble",
+              "polygon": null,
+              "regionPolygon": null,
+              "rotationDeg": 0,
+              "sourceLineCount": 1
+            },
+            "providerBlockId": "block-page-a-interior"
+          },
+          {
+            "id": "obs-page-a-bottom-half",
+            "sourceType": "page",
+            "pageIds": [
+              "fixture-page-a"
+            ],
+            "imageRevisionByPage": {
+              "fixture-page-a": "c682aa50a3404d97426363544868fa4a32adac717c00dab12fa8be55ffdbc980"
+            },
+            "pageSpans": [
+              {
+                "pageId": "fixture-page-a",
+                "box": {
+                  "x": 18.5,
+                  "y": 89.5,
+                  "w": 63.0,
+                  "h": 9.0
+                },
+                "polygon": null,
+                "overlapRatio": 1.0
+              }
+            ],
+            "originalText": "오늘은 반드시",
+            "confidence": 0.96,
+            "visual": {
+              "bgType": "solid",
+              "bgColor": "#fffffc",
+              "bgConfidence": 0.99,
+              "regionId": "region-boundary-dialogue",
+              "regionType": "speech_bubble",
+              "polygon": null,
+              "regionPolygon": null,
+              "rotationDeg": 0,
+              "sourceLineCount": 1
+            },
+            "providerBlockId": "block-page-a-bottom-half"
+          }
+        ],
+        "filteredObservations": [
+          {
+            "id": "obs-page-a-filtered-noise",
+            "sourceType": "page",
+            "pageIds": [
+              "fixture-page-a"
+            ],
+            "imageRevisionByPage": {
+              "fixture-page-a": "c682aa50a3404d97426363544868fa4a32adac717c00dab12fa8be55ffdbc980"
+            },
+            "pageSpans": [
+              {
+                "pageId": "fixture-page-a",
+                "box": {
+                  "x": 92.7,
+                  "y": 94.0,
+                  "w": 1.1,
+                  "h": 1.4
+                },
+                "polygon": null,
+                "overlapRatio": 1.0
+              }
+            ],
+            "originalText": "A",
+            "confidence": 0.18,
+            "visual": {
+              "bgType": "solid",
+              "bgColor": "#fffffc",
+              "bgConfidence": 0.99,
+              "regionId": "",
+              "regionType": "speech_bubble",
+              "polygon": null,
+              "regionPolygon": null,
+              "rotationDeg": 0,
+              "sourceLineCount": 1
+            },
+            "providerBlockId": "block-page-a-filtered-noise",
+            "filterReason": "meaningless-alphabetic-final"
+          }
+        ],
+        "edgeSignals": {
+          "bandHeight": 160,
+          "top": {
+            "detected": false,
+            "retainedObservationIds": [],
+            "filteredObservationIds": [],
+            "visualDetected": false
+          },
+          "bottom": {
+            "detected": true,
+            "retainedObservationIds": [
+              "obs-page-a-bottom-half"
+            ],
+            "filteredObservationIds": [
+              "obs-page-a-filtered-noise"
+            ],
+            "visualDetected": true
+          },
+          "hasAny": true
+        }
+      },
+      {
+        "pageId": "fixture-page-b",
+        "observations": [
+          {
+            "id": "obs-page-b-top-half",
+            "sourceType": "page",
+            "pageIds": [
+              "fixture-page-b"
+            ],
+            "imageRevisionByPage": {
+              "fixture-page-b": "6b8d9ba60a8ab36f16c8d1f5ce09bb9a017d34218bdb72d0a62341ac83557641"
+            },
+            "pageSpans": [
+              {
+                "pageId": "fixture-page-b",
+                "box": {
+                  "x": 18.5,
+                  "y": 0.5,
+                  "w": 63.0,
+                  "h": 10.0
+                },
+                "polygon": null,
+                "overlapRatio": 1.0
+              }
+            ],
+            "originalText": "끝까지 가자!",
+            "confidence": 0.97,
+            "visual": {
+              "bgType": "solid",
+              "bgColor": "#fffffc",
+              "bgConfidence": 0.99,
+              "regionId": "region-boundary-dialogue",
+              "regionType": "speech_bubble",
+              "polygon": null,
+              "regionPolygon": null,
+              "rotationDeg": 0,
+              "sourceLineCount": 1
+            },
+            "providerBlockId": "block-page-b-top-half"
+          },
+          {
+            "id": "obs-page-b-interior",
+            "sourceType": "page",
+            "pageIds": [
+              "fixture-page-b"
+            ],
+            "imageRevisionByPage": {
+              "fixture-page-b": "6b8d9ba60a8ab36f16c8d1f5ce09bb9a017d34218bdb72d0a62341ac83557641"
+            },
+            "pageSpans": [
+              {
+                "pageId": "fixture-page-b",
+                "box": {
+                  "x": 17.0,
+                  "y": 42.5,
+                  "w": 66.0,
+                  "h": 15.0
+                },
+                "polygon": null,
+                "overlapRatio": 1.0
+              }
+            ],
+            "originalText": "두 번째 독립 대사.",
+            "confidence": 0.99,
+            "visual": {
+              "bgType": "solid",
+              "bgColor": "#fffffc",
+              "bgConfidence": 0.99,
+              "regionId": "region-page-b-interior",
+              "regionType": "speech_bubble",
+              "polygon": null,
+              "regionPolygon": null,
+              "rotationDeg": 0,
+              "sourceLineCount": 1
+            },
+            "providerBlockId": "block-page-b-interior"
+          }
+        ],
+        "filteredObservations": [],
+        "edgeSignals": {
+          "bandHeight": 160,
+          "top": {
+            "detected": true,
+            "retainedObservationIds": [
+              "obs-page-b-top-half"
+            ],
+            "filteredObservationIds": [],
+            "visualDetected": true
+          },
+          "bottom": {
+            "detected": false,
+            "retainedObservationIds": [],
+            "filteredObservationIds": [],
+            "visualDetected": false
+          },
+          "hasAny": true
+        }
+      }
+    ],
+    "seam": {
+      "observations": [
+        {
+          "id": "obs-seam-complete",
+          "sourceType": "seam",
+          "pageIds": [
+            "fixture-page-a",
+            "fixture-page-b"
+          ],
+          "imageRevisionByPage": {
+            "fixture-page-a": "c682aa50a3404d97426363544868fa4a32adac717c00dab12fa8be55ffdbc980",
+            "fixture-page-b": "6b8d9ba60a8ab36f16c8d1f5ce09bb9a017d34218bdb72d0a62341ac83557641"
+          },
+          "pageSpans": [
+            {
+              "pageId": "fixture-page-a",
+              "box": {
+                "x": 18.5,
+                "y": 89.5,
+                "w": 63.0,
+                "h": 10.5
+              },
+              "polygon": null,
+              "overlapRatio": 0.48
+            },
+            {
+              "pageId": "fixture-page-b",
+              "box": {
+                "x": 18.5,
+                "y": 0.0,
+                "w": 63.0,
+                "h": 11.0
+              },
+              "polygon": null,
+              "overlapRatio": 0.52
+            }
+          ],
+          "originalText": "오늘은 반드시 끝까지 가자!",
+          "confidence": 0.995,
+          "visual": {
+            "bgType": "solid",
+            "bgColor": "#fffffc",
+            "bgConfidence": 0.99,
+            "regionId": "region-boundary-dialogue",
+            "regionType": "speech_bubble",
+            "polygon": null,
+            "regionPolygon": null,
+            "rotationDeg": 0,
+            "sourceLineCount": 1
+          },
+          "providerBlockId": "block-seam-complete"
+        }
+      ],
+      "filteredObservations": []
+    }
+  },
+  "expected": {
+    "canonicalBubbles": [
+      {
+        "id": "canonical-page-a-interior",
+        "revision": 1,
+        "supersedesId": null,
+        "memberObservationIds": [
+          "obs-page-a-interior"
+        ],
+        "originalText": "독립 대사입니다.",
+        "status": "ready"
+      },
+      {
+        "id": "canonical-page-a-bottom-half",
+        "revision": 1,
+        "supersedesId": null,
+        "memberObservationIds": [
+          "obs-page-a-bottom-half",
+          "obs-page-b-top-half",
+          "obs-seam-complete"
+        ],
+        "originalText": "오늘은 반드시 끝까지 가자!",
+        "status": "ready"
+      },
+      {
+        "id": "canonical-page-b-interior",
+        "revision": 1,
+        "supersedesId": null,
+        "memberObservationIds": [
+          "obs-page-b-interior"
+        ],
+        "originalText": "두 번째 독립 대사.",
+        "status": "ready"
+      }
+    ],
+    "ledger": {
+      "obs-page-a-interior": {
+        "resolution": "standalone",
+        "canonicalId": "canonical-page-a-interior"
+      },
+      "obs-page-a-bottom-half": {
+        "resolution": "consumed",
+        "canonicalId": "canonical-page-a-bottom-half"
+      },
+      "obs-page-b-top-half": {
+        "resolution": "consumed",
+        "canonicalId": "canonical-page-a-bottom-half"
+      },
+      "obs-seam-complete": {
+        "resolution": "consumed",
+        "canonicalId": "canonical-page-a-bottom-half"
+      },
+      "obs-page-b-interior": {
+        "resolution": "standalone",
+        "canonicalId": "canonical-page-b-interior"
+      },
+      "obs-page-a-filtered-noise": {
+        "resolution": "filtered",
+        "filterReason": "meaningless-alphabetic-final"
+      }
+    }
+  }
+}

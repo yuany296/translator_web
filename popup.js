@@ -47,7 +47,7 @@ const DEFAULTS = {
   enabled: true
 };
 
-const CONTENT_SCRIPT_FILES = Object.freeze(["kakao-pipeline.js", "content.js"]);
+const CONTENT_SCRIPT_FILES = Object.freeze(["kakao-reconciler.js", "kakao-pipeline.js", "content.js"]);
 
 const providerMeta = {
   baidu_deepseek: {

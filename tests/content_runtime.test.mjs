@@ -5,14 +5,301 @@ import test from "node:test";
 
 const contentSource = fs.readFileSync(path.resolve(import.meta.dirname, "..", "content.js"), "utf8");
 
-globalThis.location = { hostname: "page.kakao.com", pathname: "/content/1" };
-globalThis.window = { scrollX: 0, scrollY: 0, innerHeight: 800 };
+globalThis.location = {
+  hostname: "page.kakao.com",
+  pathname: "/content/1",
+  search: "?episode=7",
+  href: "https://page.kakao.com/content/1?episode=7#page-2",
+  origin: "https://page.kakao.com"
+};
+globalThis.window = { scrollX: 0, scrollY: 0, innerWidth: 1200, innerHeight: 800 };
 globalThis.HTMLImageElement = class HTMLImageElement {};
 
+await import("../kakao-reconciler.js");
 await import("../kakao-pipeline.js");
 await import("../content.js");
 
 const runtime = globalThis.__MANGA_TRANSLATOR_V3__;
+
+test("Kakao page identity ignores CDN signing changes but tracks actual image bytes", async () => {
+  const target = new globalThis.HTMLImageElement();
+  target.currentSrc = "https://cdn.example.test/page.jpg?episode=7&signature=first&expires=100";
+  target.naturalWidth = 760;
+  target.naturalHeight = 1200;
+  target.width = 760;
+  target.height = 1200;
+  target.isConnected = true;
+  target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+  target.getBoundingClientRect = () => ({ top: 100, width: 760, height: 1200 });
+
+  const first = await runtime.__test.buildKakaoPageIdentity(target, {
+    dataUrl: "data:image/png;base64,AQID",
+    imageUrl: target.currentSrc,
+    width: 760,
+    height: 1200
+  });
+  target.currentSrc = "https://cdn.example.test/page.jpg?expires=999&signature=second&episode=7";
+  const resigned = await runtime.__test.buildKakaoPageIdentity(target, {
+    dataUrl: "data:image/png;base64,AQID",
+    imageUrl: target.currentSrc,
+    width: 760,
+    height: 1200
+  });
+  const revised = await runtime.__test.buildKakaoPageIdentity(target, {
+    dataUrl: "data:image/png;base64,AQIE",
+    imageUrl: target.currentSrc,
+    width: 760,
+    height: 1200
+  });
+
+  assert.equal(first.chapterId, resigned.chapterId);
+  assert.equal(first.pageId, resigned.pageId);
+  assert.equal(first.imageRevision, resigned.imageRevision);
+  assert.equal(first.pageId, revised.pageId);
+  assert.notEqual(first.imageRevision, revised.imageRevision);
+  assert.match(first.stableSource, /episode=7/);
+  assert.doesNotMatch(first.stableSource, /signature|expires/i);
+});
+
+test("Kakao page identity does not collide for equal-size inline or blob pages", async () => {
+  const createTarget = (currentSrc, top) => {
+    const target = new globalThis.HTMLImageElement();
+    target.currentSrc = currentSrc;
+    target.naturalWidth = 760;
+    target.naturalHeight = 1200;
+    target.width = 760;
+    target.height = 1200;
+    target.isConnected = true;
+    target.getBoundingClientRect = () => ({ top, width: 760, height: 1200 });
+    return target;
+  };
+
+  const inlineA = await runtime.__test.buildKakaoPageIdentity(
+    createTarget("data:image/png;base64,AQID", 100),
+    { dataUrl: "data:image/png;base64,AQID", imageUrl: "data:image/png;base64,AQID", width: 760, height: 1200 }
+  );
+  const inlineB = await runtime.__test.buildKakaoPageIdentity(
+    createTarget("data:image/png;base64,AQIE", 1400),
+    { dataUrl: "data:image/png;base64,AQIE", imageUrl: "data:image/png;base64,AQIE", width: 760, height: 1200 }
+  );
+  assert.notEqual(inlineA.pageId, inlineB.pageId);
+  assert.match(inlineA.stableSource, /^inline:/);
+
+  const blobA = await runtime.__test.buildKakaoPageIdentity(
+    createTarget("blob:https://page.kakao.com/page-a", 2700),
+    { dataUrl: "data:image/png;base64,AQIF", imageUrl: "blob:https://page.kakao.com/page-a#preview", width: 760, height: 1200 }
+  );
+  const blobB = await runtime.__test.buildKakaoPageIdentity(
+    createTarget("blob:https://page.kakao.com/page-b", 4000),
+    { dataUrl: "data:image/png;base64,AQIF", imageUrl: "blob:https://page.kakao.com/page-b", width: 760, height: 1200 }
+  );
+  assert.notEqual(blobA.pageId, blobB.pageId);
+  assert.equal(blobA.stableSource, "blob:https://page.kakao.com/page-a");
+});
+
+test("Kakao same-URL image reload invalidates the old generation and produces a new revision", async () => {
+  const target = new globalThis.HTMLImageElement();
+  target.dataset = {};
+  target.currentSrc = "https://cdn.example.test/reload-in-place.jpg";
+  target.naturalWidth = 760;
+  target.naturalHeight = 1200;
+  target.width = 760;
+  target.height = 1200;
+  target.isConnected = true;
+  target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+  target.getBoundingClientRect = () => ({ top: 100, bottom: 1300, left: 0, right: 760, width: 760, height: 1200 });
+  const first = await runtime.__test.buildKakaoPageIdentity(target, {
+    dataUrl: "data:image/png;base64,AQIJ",
+    imageUrl: target.currentSrc,
+    width: 760,
+    height: 1200
+  });
+  const snapshot = runtime.__test.captureTargetSnapshot(target);
+  const generation = runtime.__test.prepareKakaoTargetRevisionCheck(target, "test-reload");
+  const second = await runtime.__test.buildKakaoPageIdentity(target, {
+    dataUrl: "data:image/png;base64,AQIK",
+    imageUrl: target.currentSrc,
+    width: 760,
+    height: 1200
+  });
+
+  assert.equal(generation, 1);
+  assert.equal(runtime.__test.isTargetSnapshotStillValid(target, snapshot), false);
+  assert.equal(first.pageId, second.pageId);
+  assert.notEqual(first.imageRevision, second.imageRevision);
+});
+
+test("deferred Kakao identity hashing does not bind a DOM target before pipeline commit", async () => {
+  const target = new globalThis.HTMLImageElement();
+  target.dataset = {};
+  target.currentSrc = "https://cdn.example.test/deferred-bind.jpg";
+  target.naturalWidth = 760;
+  target.naturalHeight = 1200;
+  target.width = 760;
+  target.height = 1200;
+  target.isConnected = true;
+  target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+  target.getBoundingClientRect = () => ({ top: 100, bottom: 1300, left: 0, right: 760, width: 760, height: 1200 });
+  const payload = {
+    dataUrl: "data:image/png;base64,AQIL",
+    imageUrl: target.currentSrc,
+    width: 760,
+    height: 1200
+  };
+
+  const deferred = await runtime.__test.buildKakaoPageIdentity(target, payload, { deferBind: true });
+  assert.equal(runtime.__test.getTargetForKakaoPageId(deferred.pageId), null);
+
+  const committed = await runtime.__test.buildKakaoPageIdentity(target, payload);
+  assert.equal(committed.pageId, deferred.pageId);
+  assert.equal(runtime.__test.getTargetForKakaoPageId(committed.pageId), target);
+});
+
+test("Kakao DOM source reuse detaches the old handle and schedules standby refresh immediately", async () => {
+  const target = new globalThis.HTMLImageElement();
+  target.dataset = {};
+  target.currentSrc = "https://cdn.example.test/reused-old.jpg";
+  target.naturalWidth = 760;
+  target.naturalHeight = 1200;
+  target.width = 760;
+  target.height = 1200;
+  target.isConnected = true;
+  target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+  target.getBoundingClientRect = () => ({ top: 100, width: 760, height: 1200 });
+  const identity = await runtime.__test.buildKakaoPageIdentity(target, {
+    dataUrl: "data:image/png;base64,AQIH",
+    imageUrl: target.currentSrc,
+    width: 760,
+    height: 1200
+  });
+  runtime.__test.kakaoStore.registerPageHandle({ ...identity, target });
+
+  const scheduled = [];
+  const detachedPageId = runtime.__test.detachKakaoTargetForSourceChange(
+    target,
+    (pageIds, reason) => scheduled.push({ pageIds, reason })
+  );
+
+  assert.equal(detachedPageId, identity.pageId);
+  assert.equal(runtime.__test.kakaoStore.getPageHandleForTarget(target), null);
+  assert.equal(runtime.__test.kakaoStore.getPageHandle(identity.pageId).pageId, identity.pageId);
+  assert.deepEqual(scheduled, [{ pageIds: [identity.pageId], reason: "page-handle-source-changed" }]);
+});
+
+test("Kakao rendering prefers the Store current handle over an older connected clone", async () => {
+  const createClone = (top) => {
+    const target = new globalThis.HTMLImageElement();
+    target.dataset = {};
+    target.currentSrc = "https://cdn.example.test/same-page-clone.jpg";
+    target.naturalWidth = 760;
+    target.naturalHeight = 1200;
+    target.width = 760;
+    target.height = 1200;
+    target.isConnected = true;
+    target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+    target.getBoundingClientRect = () => ({ top, bottom: top + 1200, left: 0, right: 760, width: 760, height: 1200 });
+    return target;
+  };
+  const oldClone = createClone(2400);
+  const newClone = createClone(100);
+  const payload = {
+    dataUrl: "data:image/png;base64,AQII",
+    imageUrl: oldClone.currentSrc,
+    width: 760,
+    height: 1200
+  };
+  const oldIdentity = await runtime.__test.buildKakaoPageIdentity(oldClone, payload);
+  const newIdentity = await runtime.__test.buildKakaoPageIdentity(newClone, payload);
+  assert.equal(oldIdentity.pageId, newIdentity.pageId);
+  runtime.__test.kakaoStore.registerPageHandle({ ...oldIdentity, target: oldClone });
+  runtime.__test.kakaoStore.registerPageHandle({ ...newIdentity, target: newClone });
+  // Simulate the offscreen clone finishing its fetch/hash after the visible clone.
+  runtime.__test.kakaoStore.registerPageHandle({ ...oldIdentity, target: oldClone });
+
+  assert.equal(runtime.__test.getTargetForKakaoPageId(oldIdentity.pageId), newClone);
+  newClone.isConnected = false;
+  assert.equal(runtime.__test.getTargetForKakaoPageId(oldIdentity.pageId), oldClone);
+});
+
+test("an older image revision clone cannot render the current page revision", async () => {
+  const createClone = (top) => {
+    const target = new globalThis.HTMLImageElement();
+    target.dataset = {};
+    target.currentSrc = "https://cdn.example.test/revision-clone.jpg";
+    target.naturalWidth = 760;
+    target.naturalHeight = 1200;
+    target.width = 760;
+    target.height = 1200;
+    target.isConnected = true;
+    target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+    target.getBoundingClientRect = () => ({ top, bottom: top + 1200, left: 0, right: 760, width: 760, height: 1200 });
+    return target;
+  };
+  const oldClone = createClone(100);
+  const newClone = createClone(2600);
+  const oldIdentity = await runtime.__test.buildKakaoPageIdentity(oldClone, {
+    dataUrl: "data:image/png;base64,AQIM",
+    imageUrl: oldClone.currentSrc,
+    width: 760,
+    height: 1200
+  });
+  const newIdentity = await runtime.__test.buildKakaoPageIdentity(newClone, {
+    dataUrl: "data:image/png;base64,AQIN",
+    imageUrl: newClone.currentSrc,
+    width: 760,
+    height: 1200
+  });
+  assert.equal(oldIdentity.pageId, newIdentity.pageId);
+  assert.notEqual(oldIdentity.imageRevision, newIdentity.imageRevision);
+  runtime.__test.kakaoStore.registerPageHandle({ ...oldIdentity, target: oldClone });
+  runtime.__test.kakaoStore.registerPageHandle({ ...newIdentity, target: newClone });
+
+  assert.equal(runtime.__test.kakaoStore.getPageHandleForTarget(oldClone), null);
+  assert.equal(runtime.__test.getTargetForKakaoPageId(newIdentity.pageId), newClone);
+});
+
+test("OCR observation normalization preserves filtered evidence and strips translation fields from semantics", () => {
+  const normalized = runtime.__test.normalizeOcrObservationResult({
+    observations: [{ id: "o1", original_text: "  Hello?!  ", translated_text: "ignored" }],
+    filteredObservations: [{ id: "o2", originalText: "…", filterReason: "symbol_only" }]
+  }, {
+    sourceType: "page",
+    pageIds: ["page-a"],
+    imageRevisionByPage: { "page-a": "rev-a" }
+  });
+
+  assert.equal(normalized.observations[0].originalText, "Hello?!");
+  assert.equal("translated_text" in normalized.observations[0], false);
+  assert.deepEqual(normalized.observations[0].pageIds, ["page-a"]);
+  assert.equal(normalized.filteredObservations[0].filterReason, "symbol_only");
+  assert.equal(normalized.counts.eligible, 1);
+  assert.equal(normalized.counts.filtered, 1);
+});
+
+test("canonical projections adapt to renderer bubbles without turning cover projections into text", () => {
+  const primary = runtime.__test.projectionToRendererBubble({
+    projectionId: "p-text",
+    canonicalId: "c1",
+    canonicalRevision: 2,
+    role: "text_primary",
+    geometry: { x: 10, y: 20, w: 30, h: 15 },
+    originalText: "안녕",
+    translatedText: "你好"
+  });
+  const cover = runtime.__test.projectionToRendererBubble({
+    projectionId: "p-cover",
+    canonicalId: "c1",
+    role: "cover_only",
+    geometry: { x: 5, y: 2, w: 20, h: 8 },
+    originalText: "안녕",
+    translatedText: "不应显示"
+  });
+
+  assert.equal(primary.translated_text, "你好");
+  assert.equal(primary.canonical_revision, 2);
+  assert.equal(cover.translated_text, "");
+  assert.equal(cover.projection_role, "cover_only");
+});
 
 test("rendered OCR bubbles produce an asynchronous term-discovery payload", () => {
   const message = runtime.__test.buildTermDiscoveryMessage(
@@ -248,6 +535,20 @@ test("dw-img large images are not rejected by page-edge fragmented admission", (
   });
 
   assert.equal(rejection, "");
+});
+
+test("canonical seam evidence detects a medium page-edge fragment structure", () => {
+  assert.equal(runtime.__test.hasKakaoFragmentStructureRisk({
+    stableSource: "https://page-edge.kakao.com/sdownload/resource?kid=fragment",
+    width: 760,
+    height: 700,
+    payload: { dataUrl: "data:image/png;base64,AQID" }
+  }), true);
+  assert.equal(runtime.__test.hasKakaoFragmentStructureRisk({
+    stableSource: "https://dw-img-page.kakao.com/sdownload/resource?kid=full",
+    width: 760,
+    height: 1200
+  }), false);
 });
 
 test("OCR request key includes source token, mode, and fallback reason", () => {
@@ -1210,41 +1511,35 @@ test("stitched OCR still drops ordinary full-neighbor page text", () => {
 });
 
 test("inflightByTarget prevents re-queue for same sourceToken on same DOM node", () => {
-  const target = new globalThis.HTMLImageElement();
-  target.isConnected = true;
-  target.dataset = {};
-  target.currentSrc = "https://example.com/img.jpg";
-  target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
-  const sourceToken = runtime.__test.getPipelineTrace ? "test" : "fallback";
-
-  // Clear any inflight state
-  delete target.dataset.inflightSourceToken;
-  target.dataset.mtSourceToken = sourceToken;
-
-  // The first translateTarget call sets inflightSourceToken and returns a promise.
-  // Subsequent calls with the same sourceToken should NOT create a new inflight.
-  // We verify this by checking that inflightSourceToken is set correctly when
-  // translateTarget starts.
-  assert.equal(target.dataset.inflightSourceToken, undefined);
+  assert.equal(runtime.__test.shouldReuseTargetInflight(
+    "https://example.com/img.jpg|generation:3",
+    "https://example.com/img.jpg|generation:3"
+  ), true);
 });
 
 test("inflightByTarget allows re-queue when sourceToken changed (DOM reuse)", () => {
-  const target = new globalThis.HTMLImageElement();
-  target.isConnected = true;
-  target.dataset = {};
-  target.currentSrc = "https://example.com/old.jpg";
-  target.getAttribute = (name) => (name === "src" ? target.currentSrc : "");
+  assert.equal(runtime.__test.shouldReuseTargetInflight(
+    "https://example.com/old.jpg|generation:0",
+    "https://example.com/new.jpg|generation:0"
+  ), false);
+  assert.equal(runtime.__test.shouldReuseTargetInflight(
+    "https://example.com/same.jpg|generation:0",
+    "https://example.com/same.jpg|generation:1"
+  ), false);
+});
 
-  // Simulate a stale inflight from previous image
-  target.dataset.inflightSourceToken = "old-source-token";
-  target.dataset.mtSourceToken = "new-source-token";
+test("a queued revision check upgrades the pending request to force fresh OCR", () => {
+  const target = {};
+  const queue = [{ target, options: { manual: true, force: false, reason: "page-auto" } }];
+  const upgraded = runtime.__test.upgradeQueuedTranslationRequest(queue, target, {
+    manual: true,
+    force: true,
+    reason: "kakao-image-revision-check"
+  });
 
-  // When sourceToken changes, inflight check should not block
-  // because inflightSourceToken !== currentSourceToken
-  assert.notEqual(
-    target.dataset.inflightSourceToken,
-    target.dataset.mtSourceToken
-  );
+  assert.equal(upgraded, true);
+  assert.equal(queue[0].options.force, true);
+  assert.equal(queue[0].options.reason, "kakao-image-revision-check");
 });
 
 test("mtKakaoAttachedToKey blocks independent queue entry until timeout", () => {

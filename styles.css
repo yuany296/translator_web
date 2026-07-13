@@ -112,6 +112,14 @@
   animation-delay: var(--mt-stream-delay, 0ms);
 }
 
+.mt-bubble.mt-cover-only {
+  color: transparent !important;
+  pointer-events: none;
+  cursor: default;
+  -webkit-text-stroke: 0 transparent !important;
+  text-shadow: none !important;
+}
+
 .mt-measure-probe {
   position: fixed !important;
   left: -200vw !important;

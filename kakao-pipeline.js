@@ -45,6 +45,32 @@
   const KAKAO_GEOMETRY_DUPLICATE_MIN_INTERSECTION = 0.72;
   const KAKAO_GEOMETRY_DUPLICATE_MIN_AREA_RATIO = 0.35;
 
+  /**
+   * Canonical 链路只描述真实处理阶段。旧 PagePhase 继续供非目标链路兼容，
+   * Kakao direct-overlay 不再进入 stitch / destructive-dedupe 阶段。
+   */
+  const CanonicalPhase = Object.freeze({
+    WAITING: "waiting",
+    FETCHING: "fetching",
+    PAGE_OCR: "page_ocr",
+    OBSERVING: "observing",
+    SEAM_OCR: "seam_ocr",
+    RECONCILING: "reconciling",
+    TRANSLATING: "translating",
+    PROJECTING: "projecting",
+    RENDERING: "rendering",
+    RENDERED: "rendered",
+    RETRY_WAIT: "retry_wait",
+    CANCELLED: "cancelled",
+    FAILED: "failed"
+  });
+
+  const KAKAO_EDGE_WAIT_TIMEOUT_MS = 8000;
+  const KAKAO_SEAM_HEIGHT_WIDTH_RATIO = 0.15;
+  const KAKAO_SEAM_HEIGHT_MIN_PX = 160;
+  const KAKAO_SEAM_HEIGHT_MAX_PX = 420;
+  const KAKAO_CANONICAL_TARGET_LANGUAGE = "zh-CN";
+
   /* =================================================================
    * PagePhase — 有限状态机状态定义
    * ================================================================= */
@@ -372,16 +398,20 @@
       scaledRatio <= KAKAO_SHORT_PAGE_ATTACH_HEIGHT_RATIO;
   }
 
-  function shouldRejectKakaoPageEdgeStitch({ owner, ownerHeight, canonicalWidth, previous, next, previousHeight, nextHeight } = {}) {
+  function isKakaoPageEdgeFragment({ owner, ownerHeight, canonicalWidth } = {}) {
     if (!owner || !isKakaoPageEdgeSource(owner.sourceKey)) {
-      return "";
+      return false;
     }
     const width = Math.max(1, Number(canonicalWidth) || Number(owner.width) || 1);
     const height = Math.max(1, Number(ownerHeight) || 0);
-    const isFragment = height < Math.max(760, width * 1.05);
-    if (!isFragment) {
+    return height < Math.max(760, width * 1.05);
+  }
+
+  function shouldRejectKakaoPageEdgeStitch({ owner, ownerHeight, canonicalWidth, previous, next, previousHeight, nextHeight } = {}) {
+    if (!isKakaoPageEdgeFragment({ owner, ownerHeight, canonicalWidth })) {
       return "";
     }
+    const height = Math.max(1, Number(ownerHeight) || 0);
     const neighborHeights = [
       previous ? Number(previousHeight || 0) : 0,
       next ? Number(nextHeight || 0) : 0
@@ -1511,6 +1541,29 @@
     /** 串行化去重锁 */
     let dedupeLock = Promise.resolve();
 
+    /* Canonical pipeline semantic state. DOM handles are only bindings. */
+    const pageHandles = new Map();
+    let pageHandleByTarget = new WeakMap();
+    const canonicalPagePhases = new Map();
+    const pageTerminalStates = new Map();
+    const observations = new Map();
+    const observationIdsByPage = new Map();
+    const filteredObservations = new Map();
+    const seamStates = new Map();
+    const canonicalSnapshots = new Map();
+    const retiredCanonicalSnapshots = new Map();
+    let reconcileDiagnostics = Object.freeze({});
+    const coverageLedger = new Map();
+    const projectionsByPage = new Map();
+    const translationsByCanonicalRevision = new Map();
+    const translationErrorsByCanonicalRevision = new Map();
+    const pendingTranslationKeys = new Set();
+    const pendingTranslationWaiters = new Map();
+    const attemptedTranslationKeys = new Set();
+    const edgeWaitStates = new Map();
+    let reconcileTxnSeq = 0;
+    let reconcileLock = Promise.resolve();
+
     const entrySource = Symbol("kakaoStoreEntrySource");
     const snapshotEntry = (entry) => {
       const snapshot = {
@@ -1651,12 +1704,16 @@
         return true;
       },
 
-      cancelPageJob(targetKey) {
+      cancelPageJob(targetKey, identity = null) {
+        if (identity && !this.isCurrentPageJob(targetKey, identity)) {
+          return false;
+        }
         currentJobs.delete(targetKey);
         const phase = this.getPagePhase(targetKey);
         if (canTransition(phase, PagePhase.CANCELLED)) {
           pageJobPhase.set(targetKey, PagePhase.CANCELLED);
         }
+        return true;
       },
 
       getShortPageAttachment(target) {
@@ -1719,6 +1776,327 @@
       /* ---- 请求合并 ---- */
 
       /** 合并重复的 inflight 请求 */
+      registerPageHandle(record) {
+        if (!record || !record.pageId) throw new Error("KakaoPipeline: page handle requires pageId");
+        const pageId = String(record.pageId);
+        const previous = pageHandles.get(pageId) || null;
+        const next = Object.freeze({ ...(previous || {}), ...record, pageId, imageRevision: String(record.imageRevision || "") });
+        pageHandles.set(pageId, next);
+        if (record.target && (typeof record.target === "object" || typeof record.target === "function")) {
+          pageHandleByTarget.set(record.target, Object.freeze({
+            pageId,
+            imageRevision: String(record.imageRevision || "")
+          }));
+        }
+        return next;
+      },
+
+      getPageHandle(pageId) {
+        return pageHandles.get(String(pageId || "")) || null;
+      },
+
+      getPageRecord(pageId) {
+        return pageHandles.get(String(pageId || "")) || null;
+      },
+
+      getPageHandleForTarget(target) {
+        const binding = target && pageHandleByTarget.get(target);
+        if (!binding) return null;
+        const current = pageHandles.get(binding.pageId) || null;
+        if (!current || String(current.imageRevision || "") !== String(binding.imageRevision || "")) return null;
+        return current;
+      },
+
+      getPageBindingForTarget(target) {
+        const binding = target && pageHandleByTarget.get(target);
+        return binding ? { ...binding } : null;
+      },
+
+      getPageHandles() {
+        return [...pageHandles.values()].sort(comparePageRecords);
+      },
+
+      unbindPageTarget(target) {
+        if (!target) return false;
+        const binding = pageHandleByTarget.get(target);
+        pageHandleByTarget.delete(target);
+        if (!binding) return false;
+        const current = pageHandles.get(binding.pageId);
+        if (current && current.target === target) pageHandles.set(binding.pageId, Object.freeze({ ...current, target: null }));
+        return true;
+      },
+
+      setCanonicalPagePhase(pageId, phase, options = {}) {
+        const key = String(pageId || "");
+        const next = String(phase || CanonicalPhase.WAITING);
+        const current = canonicalPagePhases.get(key) || CanonicalPhase.WAITING;
+        // 已完成的同 revision clone 不得把共享页面状态倒退到中间阶段。
+        if (current === CanonicalPhase.RENDERED && next !== CanonicalPhase.RENDERED && options.force !== true) {
+          return false;
+        }
+        canonicalPagePhases.set(key, next);
+        return true;
+      },
+
+      getCanonicalPagePhase(pageId) {
+        return canonicalPagePhases.get(String(pageId || "")) || CanonicalPhase.WAITING;
+      },
+
+      markPageTerminal(pageId, state, details = null) {
+        pageTerminalStates.set(String(pageId || ""), Object.freeze({ state: String(state || "ready"), details: details || null }));
+      },
+
+      getPageTerminal(pageId) {
+        return pageTerminalStates.get(String(pageId || "")) || null;
+      },
+
+      upsertObservations(items, options = {}) {
+        const ids = [];
+        for (const item of Array.isArray(items) ? items : []) {
+          if (!item || !item.id) continue;
+          const frozen = freezeObservation(item);
+          observations.set(frozen.id, frozen);
+          ids.push(frozen.id);
+          for (const pageId of frozen.pageIds) {
+            if (!observationIdsByPage.has(pageId)) observationIdsByPage.set(pageId, new Set());
+            observationIdsByPage.get(pageId).add(frozen.id);
+          }
+          if (options.filtered === true) filteredObservations.set(frozen.id, frozen);
+          else filteredObservations.delete(frozen.id);
+        }
+        return ids;
+      },
+
+      replacePageRevisionObservations(pageId, imageRevision, items, filteredItems = []) {
+        const stablePageId = String(pageId || "");
+        const stableRevision = String(imageRevision || "");
+        const indexedIds = [...(observationIdsByPage.get(stablePageId) || [])];
+        for (const observationId of indexedIds) {
+          const existing = observations.get(observationId);
+          if (
+            !existing ||
+            existing.sourceType !== "page" ||
+            existing.pageIds.length !== 1 ||
+            existing.pageIds[0] !== stablePageId ||
+            String(existing.imageRevisionByPage[stablePageId] || "") !== stableRevision
+          ) {
+            continue;
+          }
+          observations.delete(observationId);
+          filteredObservations.delete(observationId);
+          observationIdsByPage.get(stablePageId)?.delete(observationId);
+        }
+        if (observationIdsByPage.get(stablePageId)?.size === 0) {
+          observationIdsByPage.delete(stablePageId);
+        }
+        const activeIds = this.upsertObservations(items);
+        const filteredIds = this.upsertObservations(filteredItems, { filtered: true });
+        return { activeIds, filteredIds };
+      },
+
+      getObservations() {
+        return [...observations.values()].sort(compareStableIds);
+      },
+
+      getObservationsForPage(pageId, options = {}) {
+        const ids = observationIdsByPage.get(String(pageId || ""));
+        if (!ids) return [];
+        const includeFiltered = options.includeFiltered !== false;
+        return [...ids].map((id) => observations.get(id))
+          .filter((item) => item && (includeFiltered || !filteredObservations.has(item.id)))
+          .sort(compareStableIds);
+      },
+
+      getFilteredObservations() {
+        return [...filteredObservations.values()].sort(compareStableIds);
+      },
+
+      markSeamState(pairKey, state) {
+        const key = String(pairKey || "");
+        const frozen = Object.freeze({ ...(state || {}), pairKey: key });
+        seamStates.set(key, frozen);
+        return frozen;
+      },
+
+      getSeamState(pairKey) {
+        return seamStates.get(String(pairKey || "")) || null;
+      },
+
+      getSeamStates() {
+        return [...seamStates.values()].sort((a, b) => String(a.pairKey).localeCompare(String(b.pairKey)));
+      },
+
+      async runSerializedReconcile(fn) {
+        reconcileTxnSeq += 1;
+        const seq = reconcileTxnSeq;
+        const operation = reconcileLock.catch(() => undefined).then(() => fn({ seq, store: this }));
+        reconcileLock = operation.then(() => undefined, () => undefined);
+        return operation;
+      },
+
+      setCanonicalSnapshot(snapshot) {
+        canonicalSnapshots.clear();
+        retiredCanonicalSnapshots.clear();
+        const canonicals = Array.isArray(snapshot) ? snapshot : Array.isArray(snapshot && snapshot.canonicals) ? snapshot.canonicals : [];
+        for (const canonical of canonicals) {
+          if (canonical && canonical.id) canonicalSnapshots.set(String(canonical.id), freezeCanonical(canonical));
+        }
+        const retired = Array.isArray(snapshot && snapshot.retiredCanonicals) ? snapshot.retiredCanonicals : [];
+        for (const canonical of retired) {
+          if (canonical && canonical.id) retiredCanonicalSnapshots.set(String(canonical.id), freezeCanonical(canonical));
+        }
+      },
+
+      getCanonicalSnapshot() {
+        return [...canonicalSnapshots.values()].sort(compareCanonicalRecords);
+      },
+
+      getRetiredCanonicals() {
+        return [...retiredCanonicalSnapshots.values()].sort(compareCanonicalRecords);
+      },
+
+      setReconcileDiagnostics(value) {
+        reconcileDiagnostics = freezeCanonicalValue(value || {});
+      },
+
+      getReconcileDiagnostics() {
+        return reconcileDiagnostics;
+      },
+
+      setCoverageLedger(ledger) {
+        coverageLedger.clear();
+        const entries = ledger instanceof Map ? [...ledger.entries()]
+          : Array.isArray(ledger) ? ledger.map((item) => [item && (item.observationId || item.id), item])
+            : Object.entries(ledger || {});
+        for (const [observationId, value] of entries) {
+          if (observationId && value) coverageLedger.set(String(observationId), Object.freeze({ ...value, observationId: String(observationId) }));
+        }
+      },
+
+      getCoverageLedger() {
+        return new Map([...coverageLedger.entries()].sort(([a], [b]) => a.localeCompare(b)));
+      },
+
+      setProjections(projections) {
+        projectionsByPage.clear();
+        const entries = projections instanceof Map ? [...projections.entries()] : Object.entries(projections || {});
+        for (const [pageId, items] of entries) {
+          projectionsByPage.set(String(pageId), Object.freeze((Array.isArray(items) ? items : []).map((item) => Object.freeze({ ...item }))));
+        }
+      },
+
+      getProjections(pageId) {
+        return [...(projectionsByPage.get(String(pageId || "")) || [])];
+      },
+
+      getAllProjections() {
+        return new Map([...projectionsByPage.entries()].map(([pageId, items]) => [pageId, [...items]]));
+      },
+
+      getTranslation(canonicalId, revision) {
+        return translationsByCanonicalRevision.get(canonicalRevisionKey(canonicalId, revision)) || null;
+      },
+
+      getTranslationFailures(items) {
+        const failures = [];
+        for (const item of Array.isArray(items) ? items : []) {
+          const failure = translationErrorsByCanonicalRevision.get(
+            canonicalRevisionKey(item && item.id, item && item.revision)
+          );
+          if (failure) failures.push(failure);
+        }
+        return failures;
+      },
+
+      claimTranslations(items) {
+        const claimed = [];
+        for (const item of Array.isArray(items) ? items : []) {
+          const key = canonicalRevisionKey(item && item.id, item && item.revision);
+          if (!item || !item.id || translationsByCanonicalRevision.has(key) || pendingTranslationKeys.has(key) || attemptedTranslationKeys.has(key)) continue;
+          pendingTranslationKeys.add(key);
+          attemptedTranslationKeys.add(key);
+          if (!pendingTranslationWaiters.has(key)) {
+            let resolveWaiter;
+            const promise = new Promise((resolve) => { resolveWaiter = resolve; });
+            pendingTranslationWaiters.set(key, { promise, resolve: resolveWaiter });
+          }
+          claimed.push(item);
+        }
+        return claimed;
+      },
+
+      async waitForPendingTranslations(items) {
+        const waits = [];
+        for (const item of Array.isArray(items) ? items : []) {
+          const waiter = pendingTranslationWaiters.get(canonicalRevisionKey(item && item.id, item && item.revision));
+          if (waiter) waits.push(waiter.promise);
+        }
+        if (waits.length > 0) await Promise.all(waits);
+      },
+
+      settleTranslation(item, translation) {
+        const key = canonicalRevisionKey(item && item.id, item && item.revision);
+        pendingTranslationKeys.delete(key);
+        const waiter = pendingTranslationWaiters.get(key);
+        pendingTranslationWaiters.delete(key);
+        if (!item || !item.id || !translation) {
+          if (waiter) waiter.resolve(false);
+          return false;
+        }
+        const current = canonicalSnapshots.get(String(item.id));
+        if (!current || Number(current.revision) !== Number(item.revision)) {
+          if (waiter) waiter.resolve(false);
+          return false;
+        }
+        translationsByCanonicalRevision.set(key, Object.freeze({ ...translation, id: String(item.id), revision: Number(item.revision) || 1 }));
+        translationErrorsByCanonicalRevision.delete(key);
+        if (waiter) waiter.resolve(true);
+        return true;
+      },
+
+      failTranslationClaims(items, error) {
+        const message = getErrorMessage(error) || "Canonical translation failed";
+        for (const item of Array.isArray(items) ? items : []) {
+          const key = canonicalRevisionKey(item && item.id, item && item.revision);
+          pendingTranslationKeys.delete(key);
+          const waiter = pendingTranslationWaiters.get(key);
+          pendingTranslationWaiters.delete(key);
+          translationErrorsByCanonicalRevision.set(key, Object.freeze({
+            id: String(item && item.id || ""),
+            revision: Math.max(1, Number(item && item.revision) || 1),
+            error: message
+          }));
+          if (waiter) waiter.resolve(false);
+        }
+      },
+
+      releaseTranslationClaims(items) {
+        for (const item of Array.isArray(items) ? items : []) {
+          const key = canonicalRevisionKey(item && item.id, item && item.revision);
+          pendingTranslationKeys.delete(key);
+          const waiter = pendingTranslationWaiters.get(key);
+          pendingTranslationWaiters.delete(key);
+          if (waiter) waiter.resolve(false);
+        }
+      },
+
+      setEdgeWait(pageId, value) {
+        edgeWaitStates.set(String(pageId || ""), { ...(value || {}) });
+      },
+
+      getEdgeWait(pageId) {
+        const value = edgeWaitStates.get(String(pageId || ""));
+        return value ? { ...value } : null;
+      },
+
+      clearEdgeWait(pageId, clearTimer) {
+        const key = String(pageId || "");
+        const value = edgeWaitStates.get(key) || null;
+        edgeWaitStates.delete(key);
+        if (value && value.timer && typeof clearTimer === "function") clearTimer(value.timer);
+        return value ? { ...value } : null;
+      },
+
       getOrCreateInflightJob(jobKey, factory) {
         const existing = inflightJobs.get(jobKey);
         if (existing) return existing;
@@ -1742,6 +2120,28 @@
         shortPageAttachments = new WeakMap();
         retryStates.clear();
         dedupeLock = Promise.resolve();
+        pageHandles.clear();
+        pageHandleByTarget = new WeakMap();
+        canonicalPagePhases.clear();
+        pageTerminalStates.clear();
+        observations.clear();
+        observationIdsByPage.clear();
+        filteredObservations.clear();
+        seamStates.clear();
+        canonicalSnapshots.clear();
+        retiredCanonicalSnapshots.clear();
+        reconcileDiagnostics = Object.freeze({});
+        coverageLedger.clear();
+        projectionsByPage.clear();
+        translationsByCanonicalRevision.clear();
+        translationErrorsByCanonicalRevision.clear();
+        pendingTranslationKeys.clear();
+        for (const waiter of pendingTranslationWaiters.values()) waiter.resolve(false);
+        pendingTranslationWaiters.clear();
+        attemptedTranslationKeys.clear();
+        edgeWaitStates.clear();
+        reconcileTxnSeq = 0;
+        reconcileLock = Promise.resolve();
       }
     };
   }
@@ -2300,6 +2700,7 @@
       isVerifiedKakaoStitchNeighbor,
       buildKakaoStitchWindowPlan,
       isAttachableKakaoShortPage,
+      isKakaoPageEdgeFragment,
       shouldRejectKakaoPageEdgeStitch,
       shouldFallbackFromKakaoStitch,
       mapKakaoStitchedResult,
@@ -2335,6 +2736,1611 @@
       canTransition,
       isActivePhase
     };
+  }
+
+  /* =================================================================
+   * Kakao authoritative-page canonical pipeline
+   * ================================================================= */
+
+  function createCanonicalPipeline(adapters) {
+    if (!adapters) throw new Error("KakaoCanonicalPipeline: adapters required");
+
+    const extractTargetPayload = requireCanonicalAdapter(adapters, "extractTargetPayload");
+    const buildPageIdentity = requireCanonicalAdapter(adapters, "buildPageIdentity", "buildKakaoPageIdentity");
+    const commitPageIdentity = typeof adapters.commitPageIdentity === "function"
+      ? adapters.commitPageIdentity
+      : null;
+    const requestOcrForPayload = requireCanonicalAdapter(adapters, "requestOcrForPayload");
+    const requestCanonicalTranslations = requireCanonicalAdapter(adapters, "requestCanonicalTranslations");
+    const renderCanonicalProjections = requireCanonicalAdapter(adapters, "renderCanonicalProjections");
+    const findAdjacentTargets = adapters.findAdjacentPageTargets || adapters.findAdjacentKakaoPageTargets || (() => ({}));
+    const buildSeamPayload = adapters.buildSeamPayload || adapters.buildKakaoSeamPayload || null;
+    const detectPixelRisk = adapters.detectAdjacentPixelRisk || adapters.detectAdjacentKakaoPixelRisk || null;
+    const getTargetForPageId = adapters.getTargetForPageId || adapters.getTargetForKakaoPageId || null;
+    const isAuthoritativePagePayload = typeof adapters.isAuthoritativePagePayload === "function"
+      ? adapters.isAuthoritativePagePayload
+      : defaultIsAuthoritativePagePayload;
+    const setTimer = adapters.setTimer || globalThis.setTimeout;
+    const clearTimer = adapters.clearTimer || globalThis.clearTimeout;
+    const now = typeof adapters.now === "function" ? adapters.now : () => Date.now();
+    const getTargetGeneration = typeof adapters.getTargetGeneration === "function"
+      ? adapters.getTargetGeneration
+      : () => 0;
+    const edgeWaitTimeoutMs = Math.max(0, Number(adapters.edgeWaitTimeoutMs ?? KAKAO_EDGE_WAIT_TIMEOUT_MS));
+    const store = adapters.store || createStore();
+    let runSeq = 0;
+    let targetHandleSeq = 0;
+    const targetHandleIds = new WeakMap();
+
+    function getTargetHandleId(target) {
+      if (!target || (typeof target !== "object" && typeof target !== "function")) return "no-target";
+      let id = targetHandleIds.get(target);
+      if (!id) {
+        id = `handle-${++targetHandleSeq}`;
+        targetHandleIds.set(target, id);
+      }
+      return id;
+    }
+
+    function trace(event, target, details = {}) {
+      if (typeof adapters.tracePipeline === "function") {
+        adapters.tracePipeline(`canonical:${event}`, target, details);
+      }
+    }
+
+    function loading(target, targetKey, label) {
+      if (typeof adapters.renderLoadingOverlay === "function") {
+        adapters.renderLoadingOverlay(target, targetKey, label);
+      }
+    }
+
+    function targetIsUsable(target) {
+      return !!target && target.isConnected !== false;
+    }
+
+    function buildJobIdentity(target) {
+      const targetKey = adapters.computeTargetKey(target);
+      const sourceToken = adapters.getQuickSourceToken(target);
+      const sourceGeneration = String(getTargetGeneration(target));
+      const targetHandleId = getTargetHandleId(target);
+      const scopedTargetKey = adapters.buildTargetSourceCacheKey(targetKey, sourceToken);
+      const runSequence = ++runSeq;
+      return {
+        targetKey,
+        sourceToken,
+        sourceGeneration,
+        targetHandleId,
+        scopedTargetKey,
+        jobKey: `canonical-job:${scopedTargetKey}:${targetHandleId}`,
+        runSequence,
+        runId: `canonical-run-${runSequence}`
+      };
+    }
+
+    function isCurrentJob(target, identity) {
+      if (!targetIsUsable(target) || !store.isCurrentPageJob(identity.jobKey, identity)) return false;
+      const sourceToken = adapters.getQuickSourceToken(target);
+      if (String(sourceToken) !== String(identity.sourceToken)) return false;
+      if (String(getTargetGeneration(target)) !== String(identity.sourceGeneration)) return false;
+      const targetKey = adapters.computeTargetKey(target);
+      return adapters.buildTargetSourceCacheKey(targetKey, sourceToken) === identity.scopedTargetKey;
+    }
+
+    function isReadyPageRecord(record) {
+      if (!record || record.pageOcrState !== "ready") return false;
+      const terminal = store.getPageTerminal(record.pageId);
+      if (!terminal || terminal.state !== "ready") return false;
+      const terminalRevision = String(terminal.details?.imageRevision || "");
+      return !terminalRevision || terminalRevision === String(record.imageRevision || "");
+    }
+
+    function isCurrentPageRevision(record) {
+      if (!record || !record.pageId) return false;
+      const current = store.getPageHandle(record.pageId);
+      return !!current && String(current.imageRevision || "") === String(record.imageRevision || "");
+    }
+
+    function canCommitPageRevision(target, identity, pageIdentity) {
+      const current = store.getPageHandle(pageIdentity.pageId);
+      if (!current || String(current.imageRevision || "") === String(pageIdentity.imageRevision || "")) return true;
+      const binding = typeof store.getPageBindingForTarget === "function"
+        ? store.getPageBindingForTarget(target)
+        : null;
+      if (
+        binding && binding.pageId === pageIdentity.pageId &&
+        String(binding.imageRevision || "") === String(pageIdentity.imageRevision || "") &&
+        String(binding.imageRevision || "") !== String(current.imageRevision || "")
+      ) {
+        return false;
+      }
+      return Number(current.runSequence || 0) <= Number(identity.runSequence || 0);
+    }
+
+    function cancelJob(target, identity, pageId, reason) {
+      const ownsCurrentJob = store.isCurrentPageJob(identity.jobKey, identity);
+      if (ownsCurrentJob) {
+        const currentHandle = pageId ? store.getPageHandle(pageId) : null;
+        if (
+          pageId && currentHandle && currentHandle.target === target &&
+          !isReadyPageRecord(currentHandle)
+        ) {
+          store.setCanonicalPagePhase(pageId, CanonicalPhase.CANCELLED);
+        }
+        store.cancelPageJob(identity.jobKey, identity);
+      }
+      trace("cancelled", target, { runId: identity.runId, pageId, reason });
+      return { ok: false, skipped: true, reason: `cancelled:${reason}` };
+    }
+
+    function run(target, options = {}) {
+      const identity = buildJobIdentity(target);
+      return store.getOrCreateInflightJob(
+        `canonical-target:${identity.scopedTargetKey}:${identity.sourceGeneration}:${identity.targetHandleId}`,
+        async () => {
+          store.beginPageJob(identity.jobKey, identity);
+          return execute(target, identity, options);
+        }
+      );
+    }
+
+    async function execute(target, identity, options) {
+      let pageRecord = null;
+      let preserveReadyPhase = false;
+      let pageOcrReady = false;
+      trace("pipeline-start", target, { runId: identity.runId, reason: options.reason || "" });
+      try {
+        trace("fetch", target, { runId: identity.runId });
+        loading(target, identity.targetKey, "提取单页图片...");
+        if (!isCurrentJob(target, identity)) return cancelJob(target, identity, "", "sourceChanged before fetch");
+
+        const snapshot = typeof adapters.captureTargetSnapshot === "function"
+          ? adapters.captureTargetSnapshot(target)
+          : null;
+        const payload = await extractTargetPayload(target, identity.scopedTargetKey);
+        if (!isCurrentJob(target, identity)) return cancelJob(target, identity, "", "sourceChanged after fetch");
+        const authoritativePayload = await isAuthoritativePagePayload(payload, target);
+        if (!isCurrentJob(target, identity)) {
+          return cancelJob(target, identity, "", "sourceChanged during payload admission");
+        }
+        if (!authoritativePayload) {
+          trace("legacy-fallback", target, { runId: identity.runId, source: String(payload && payload.source || "") });
+          return {
+            ok: false,
+            skipped: true,
+            fallbackLegacy: true,
+            reason: "non-authoritative-page-payload",
+            payload
+          };
+        }
+
+        const pageIdentity = await buildPageIdentity(target, payload, { ...identity, deferBind: true });
+        if (!isCurrentJob(target, identity)) {
+          return cancelJob(target, identity, "", "sourceChanged while hashing page bytes");
+        }
+        validatePageIdentity(pageIdentity);
+        if (!canCommitPageRevision(target, identity, pageIdentity)) {
+          return cancelJob(target, identity, pageIdentity.pageId, "page revision superseded before commit");
+        }
+        if (commitPageIdentity && commitPageIdentity(target, pageIdentity) === false) {
+          return cancelJob(target, identity, pageIdentity.pageId, "page identity commit rejected");
+        }
+        const previousPageHandle = store.getPageHandle(pageIdentity.pageId);
+        const previousPageTerminal = store.getPageTerminal(pageIdentity.pageId);
+        preserveReadyPhase = !!previousPageHandle &&
+          previousPageHandle.imageRevision === pageIdentity.imageRevision &&
+          previousPageTerminal && previousPageTerminal.state === "ready" &&
+          isReadyPageRecord(previousPageHandle);
+        pageOcrReady = preserveReadyPhase;
+        pageRecord = store.registerPageHandle({
+          ...(preserveReadyPhase ? previousPageHandle : {}),
+          ...pageIdentity,
+          identity: Object.freeze({ ...pageIdentity }),
+          target,
+          targetKey: identity.targetKey,
+          scopedTargetKey: identity.scopedTargetKey,
+          sourceToken: identity.sourceToken,
+          runSequence: identity.runSequence,
+          payload,
+          snapshot,
+          edgeSignals: preserveReadyPhase ? previousPageHandle.edgeSignals : null,
+          edgeSides: preserveReadyPhase ? previousPageHandle.edgeSides : Object.freeze([]),
+          adjacentTargets: preserveReadyPhase ? previousPageHandle.adjacentTargets : Object.freeze([]),
+          pageOcrState: preserveReadyPhase ? "ready" : "running"
+        });
+        if (!preserveReadyPhase) store.setCanonicalPagePhase(pageRecord.pageId, CanonicalPhase.PAGE_OCR, { force: true });
+        trace("page-ocr", target, { pageId: pageRecord.pageId });
+        loading(target, identity.targetKey, "识别当前页...");
+
+        const response = await store.getOrCreateInflightJob(
+          `canonical-page-ocr:${pageRecord.pageId}:${pageRecord.imageRevision}`,
+          () => requestOcrForPayload(payload, buildOcrMeta("page", [pageRecord]))
+        );
+        if (!response || !response.ok) {
+          throw new CanonicalPageOcrError(response && response.error ? response.error : "Page OCR failed");
+        }
+        if (!isCurrentJob(target, identity)) {
+          return cancelJob(target, identity, pageRecord.pageId, "sourceChanged during page OCR");
+        }
+        if (!isCurrentPageRevision(pageRecord)) {
+          return cancelJob(target, identity, pageRecord.pageId, "page revision superseded during page OCR");
+        }
+
+        const evidence = normalizeOcrEvidence(response.result, [pageRecord], "page");
+        if (!preserveReadyPhase) store.setCanonicalPagePhase(pageRecord.pageId, CanonicalPhase.OBSERVING);
+        trace("observe", target, { pageId: pageRecord.pageId });
+        // 同一页面 revision 的一次重新捕获是原子替换，而不是追加。这样 OCR
+        // provider/参数变化或非确定性重识别不会把同一几何实体永久翻译两遍；
+        // 不同 imageRevision 的旧证据仍保留并由 ledger 标记 stale_revision。
+        store.replacePageRevisionObservations(
+          pageRecord.pageId,
+          pageRecord.imageRevision,
+          evidence.observations,
+          evidence.filteredObservations
+        );
+
+        const edgeSides = collectPageEdgeSides(pageRecord, evidence.observations, evidence.filteredObservations, evidence.edgeSignals);
+        let adjacentTargets = normalizeAdjacentTargets(
+          preserveReadyPhase ? pageRecord.adjacentTargets : []
+        );
+        try {
+          adjacentTargets = normalizeAdjacentTargets(await findAdjacentTargets(target, pageRecord));
+        } catch (error) {
+          // 邻页发现只决定可选 seam，不得让成功的单页 OCR 失败。
+          trace("neighbor-discovery-error", target, {
+            pageId: pageRecord.pageId,
+            error: getErrorMessage(error)
+          });
+        }
+        if (!isCurrentJob(target, identity) || !isCurrentPageRevision(pageRecord)) {
+          return cancelJob(target, identity, pageRecord.pageId, "sourceChanged during neighbor discovery");
+        }
+        const retainedCleanedImage = evidence.cleanedImage || (
+          pageRecord.cleanedImageRevision === pageRecord.imageRevision ? pageRecord.cleanedImage : null
+        );
+        pageRecord = store.registerPageHandle({
+          ...pageRecord,
+          target,
+          payload,
+          edgeSignals: evidence.edgeSignals,
+          edgeSides: Object.freeze(edgeSides),
+          adjacentTargets: Object.freeze(adjacentTargets),
+          pageOcrState: "ready",
+          ocrDebug: evidence.debug || null,
+          cleanedImage: retainedCleanedImage || null,
+          cleanedImageRevision: retainedCleanedImage ? pageRecord.imageRevision : "",
+          artifactRefreshAttemptedRevision: retainedCleanedImage ? pageRecord.imageRevision : (
+            pageRecord.artifactRefreshAttemptedRevision === pageRecord.imageRevision
+              ? pageRecord.artifactRefreshAttemptedRevision
+              : ""
+          )
+        });
+        pageRecord = bindReadyAdjacentPageIds(pageRecord);
+        store.markPageTerminal(pageRecord.pageId, "ready", {
+          observationCount: evidence.observations.length,
+          imageRevision: pageRecord.imageRevision
+        });
+        pageOcrReady = true;
+
+        // Interior canonical bubbles are translated before any seam work completes.
+        ensureEdgeWait(pageRecord);
+        const pageRefresh = await refreshCanonicalState({
+          reason: "page-ocr",
+          focusPageIds: [pageRecord.pageId],
+          guard: () => isCurrentJob(target, identity) && isCurrentPageRevision(pageRecord)
+        });
+        if (pageRefresh && pageRefresh.aborted || !isCurrentJob(target, identity) || !isCurrentPageRevision(pageRecord)) {
+          return cancelJob(target, identity, pageRecord.pageId, "sourceChanged during page refresh");
+        }
+
+        // A seam is an optional evidence request. It can never replace or clear page OCR.
+        const pairResult = await processAdjacentPairs(
+          pageRecord,
+          () => isCurrentJob(target, identity) && isCurrentPageRevision(pageRecord)
+        );
+        if (pairResult.aborted || !isCurrentJob(target, identity) || !isCurrentPageRevision(pageRecord)) {
+          return cancelJob(target, identity, pageRecord.pageId, "sourceChanged during seam processing");
+        }
+        const pairPageIds = pairResult.pageIds;
+        releaseCompletedEdgeWaits();
+        const pairRefresh = await refreshCanonicalState({
+          reason: "pair-terminal",
+          focusPageIds: Array.from(new Set([pageRecord.pageId, ...pairPageIds])),
+          guard: () => isCurrentJob(target, identity) && isCurrentPageRevision(pageRecord)
+        });
+        if (pairRefresh && pairRefresh.aborted || !isCurrentJob(target, identity) || !isCurrentPageRevision(pageRecord)) {
+          return cancelJob(target, identity, pageRecord.pageId, "sourceChanged during pair refresh");
+        }
+
+        if (
+          snapshot &&
+          typeof adapters.isTargetSnapshotStillValid === "function" &&
+          !adapters.isTargetSnapshotStillValid(target, snapshot)
+        ) {
+          return cancelJob(target, identity, pageRecord.pageId, "target changed before render commit");
+        }
+
+        store.setCanonicalPagePhase(pageRecord.pageId, CanonicalPhase.RENDERED);
+        const pageProjections = store.getProjections(pageRecord.pageId);
+        trace("pipeline-end", target, {
+          runId: identity.runId,
+          pageId: pageRecord.pageId,
+          observationCount: evidence.observations.length,
+          projectionCount: pageProjections.length
+        });
+        return {
+          ok: true,
+          pageId: pageRecord.pageId,
+          observations: evidence.observations.length,
+          bubbles: pageProjections.filter((item) => item.activeText).length,
+          pendingEdge: !!store.getEdgeWait(pageRecord.pageId),
+          cached: !!response.cached
+        };
+      } catch (error) {
+        const reason = getErrorMessage(error);
+        if (!isCurrentJob(target, identity)) {
+          return cancelJob(target, identity, pageRecord && pageRecord.pageId || "", `stale error: ${reason}`);
+        }
+        if (pageRecord && !isCurrentPageRevision(pageRecord)) {
+          return cancelJob(target, identity, pageRecord.pageId, `superseded page revision error: ${reason}`);
+        }
+        const currentPageReady = pageRecord ? isReadyPageRecord(store.getPageHandle(pageRecord.pageId)) : false;
+        if (pageRecord && !pageOcrReady && !currentPageReady) {
+          store.markPageTerminal(pageRecord.pageId, "failed", {
+            reason,
+            imageRevision: pageRecord.imageRevision
+          });
+        }
+        if (pageRecord) {
+          store.setCanonicalPagePhase(pageRecord.pageId, CanonicalPhase.RETRY_WAIT);
+        }
+        // A page failure is local. Existing canonical facts/projections remain intact.
+        if (typeof adapters.scheduleAutoTranslateRetry === "function") {
+          adapters.scheduleAutoTranslateRetry(target);
+        }
+        if (typeof adapters.reportPipelineError === "function") {
+          await adapters.reportPipelineError(error, target, options);
+        }
+        trace("page-error", target, { runId: identity.runId, pageId: pageRecord && pageRecord.pageId, error: reason });
+        return { ok: false, error: reason, pageId: pageRecord && pageRecord.pageId || "" };
+      } finally {
+        store.finishPageJob(identity.jobKey, identity);
+        trace("pipeline-finally", target, { runId: identity.runId, pageId: pageRecord && pageRecord.pageId || "" });
+      }
+    }
+
+    async function processAdjacentPairs(record, guardAllows = () => true) {
+      const current = store.getPageHandle(record.pageId) || record;
+      const affectedPageIds = [];
+      for (const relation of current.adjacentTargets || []) {
+        if (!guardAllows()) return { pageIds: affectedPageIds, aborted: true };
+        const neighbor = store.getPageHandleForTarget(relation.target);
+        if (!neighbor || !neighbor.payload || !isReadyPageRecord(neighbor)) continue;
+        if (neighbor.chapterId && current.chapterId && neighbor.chapterId !== current.chapterId) continue;
+        const ordered = relation.side === "previous" ? [neighbor, current] : [current, neighbor];
+        try {
+          await processSeamPair(ordered[0], ordered[1]);
+        } catch (error) {
+          // Seam 的任何前处理/决策异常都必须隔离为 pair failure。
+          const pairKey = buildCanonicalPairKey(ordered[0], ordered[1]);
+          store.markSeamState(pairKey, {
+            status: "failed",
+            pageIds: [ordered[0].pageId, ordered[1].pageId],
+            imageRevisionByPage: revisionsForPages(ordered),
+            error: getErrorMessage(error)
+          });
+          trace("seam-error", ordered[0].target, { pairKey, error: getErrorMessage(error) });
+        }
+        affectedPageIds.push(neighbor.pageId);
+        if (!guardAllows()) return { pageIds: affectedPageIds, aborted: true };
+      }
+      if (!guardAllows()) return { pageIds: affectedPageIds, aborted: true };
+      ensureEdgeWait(current);
+      return { pageIds: affectedPageIds, aborted: false };
+    }
+
+    function bindReadyAdjacentPageIds(record) {
+      const patch = {};
+      const adjacentPageIds = new Set(Array.isArray(record.adjacentPageIds) ? record.adjacentPageIds : []);
+      for (const relation of record.adjacentTargets || []) {
+        const neighbor = store.getPageHandleForTarget(relation.target);
+        if (!neighbor || (neighbor.chapterId && record.chapterId && neighbor.chapterId !== record.chapterId)) continue;
+        adjacentPageIds.add(neighbor.pageId);
+        if (relation.side === "previous") patch.previousPageId = neighbor.pageId;
+        else patch.nextPageId = neighbor.pageId;
+        const neighborAdjacent = new Set(Array.isArray(neighbor.adjacentPageIds) ? neighbor.adjacentPageIds : []);
+        neighborAdjacent.add(record.pageId);
+        const reciprocalSide = relation.side === "previous" ? "next" : "previous";
+        const reciprocalTargets = mergeAdjacentTargetRelation(
+          neighbor.adjacentTargets,
+          { side: reciprocalSide, target: record.target }
+        );
+        store.registerPageHandle({
+          ...neighbor,
+          ...(relation.side === "previous" ? { nextPageId: record.pageId } : { previousPageId: record.pageId }),
+          adjacentPageIds: Object.freeze([...neighborAdjacent].sort()),
+          adjacentTargets: Object.freeze(reciprocalTargets)
+        });
+      }
+      return store.registerPageHandle({
+        ...record,
+        ...patch,
+        adjacentPageIds: Object.freeze([...adjacentPageIds].sort())
+      });
+    }
+
+    async function processSeamPair(pageA, pageB) {
+      const pairKey = buildCanonicalPairKey(pageA, pageB);
+      const existingState = store.getSeamState(pairKey);
+      if (existingState && existingState.status !== "running") return existingState;
+
+      return store.getOrCreateInflightJob(`canonical-seam:${pairKey}`, async () => {
+        const currentState = store.getSeamState(pairKey);
+        if (currentState && currentState.status !== "running") return currentState;
+        let overlapRisk = null;
+        try {
+          overlapRisk = detectPixelRisk ? await detectPixelRisk(pageA, pageB) : null;
+        } catch (error) {
+          trace("pixel-risk-error", pageA.target, { pairKey, error: getErrorMessage(error) });
+        }
+
+        const evidenceDecision = evaluateSeamEvidence(pageA, pageB, overlapRisk, store);
+        if (!evidenceDecision.shouldRun || !buildSeamPayload) {
+          return store.markSeamState(pairKey, {
+            status: "skipped",
+            pageIds: [pageA.pageId, pageB.pageId],
+            imageRevisionByPage: revisionsForPages([pageA, pageB]),
+            reasons: evidenceDecision.reasons
+          });
+        }
+
+        store.markSeamState(pairKey, {
+          status: "running",
+          pageIds: [pageA.pageId, pageB.pageId],
+          imageRevisionByPage: revisionsForPages([pageA, pageB]),
+          reasons: evidenceDecision.reasons
+        });
+        store.setCanonicalPagePhase(pageA.pageId, CanonicalPhase.SEAM_OCR);
+        store.setCanonicalPagePhase(pageB.pageId, CanonicalPhase.SEAM_OCR);
+        trace("seam-ocr", pageA.target, { pairKey });
+
+        try {
+          const seamPayload = await buildSeamPayload(pageA, pageB, {
+            height: evidenceDecision.bandHeight,
+            bandHeight: evidenceDecision.bandHeight,
+            overlap: overlapRisk
+          });
+          if (!seamPayload) throw new Error("Seam payload unavailable");
+          const response = await requestOcrForPayload(seamPayload, buildOcrMeta("seam", [pageA, pageB], pairKey));
+          if (!response || !response.ok) throw new Error(response && response.error || "Seam OCR failed");
+          if (!pageRevisionsStillMatch([pageA, pageB])) {
+            return store.markSeamState(pairKey, {
+              status: "stale",
+              pageIds: [pageA.pageId, pageB.pageId],
+              imageRevisionByPage: revisionsForPages([pageA, pageB])
+            });
+          }
+          const seamEvidence = normalizeOcrEvidence(response.result, [pageA, pageB], "seam");
+          store.upsertObservations(seamEvidence.observations);
+          store.upsertObservations(seamEvidence.filteredObservations, { filtered: true });
+          const terminal = store.markSeamState(pairKey, {
+            status: "completed",
+            pageIds: [pageA.pageId, pageB.pageId],
+            imageRevisionByPage: revisionsForPages([pageA, pageB]),
+            reasons: evidenceDecision.reasons,
+            observationIds: seamEvidence.observations.map((item) => item.id)
+          });
+          trace("seam-complete", pageA.target, { pairKey, observations: seamEvidence.observations.length });
+          publishCompletedSeamEvidence(terminal);
+          return terminal;
+        } catch (error) {
+          // Explicit isolation: page observations remain authoritative and are reconciled normally.
+          const terminal = store.markSeamState(pairKey, {
+            status: "failed",
+            pageIds: [pageA.pageId, pageB.pageId],
+            imageRevisionByPage: revisionsForPages([pageA, pageB]),
+            reasons: evidenceDecision.reasons,
+            error: getErrorMessage(error)
+          });
+          trace("seam-error", pageA.target, { pairKey, error: terminal.error });
+          return terminal;
+        }
+      });
+    }
+
+    function publishCompletedSeamEvidence(terminal) {
+      if (!terminal || terminal.status !== "completed") return;
+      const pageIds = Array.isArray(terminal.pageIds) ? terminal.pageIds.filter(Boolean) : [];
+      releaseCompletedEdgeWaits();
+      // Seam 是独立的增量证据生产者。即使发起它的 DOM job 随后失效，
+      // revision 仍匹配的完成证据也必须触发新的 canonical snapshot。
+      Promise.resolve().then(() => refreshCanonicalState({
+        reason: "seam-evidence-complete",
+        focusPageIds: pageIds
+      })).catch((error) => {
+        trace("seam-refresh-error", null, { error: getErrorMessage(error), pageIds });
+      });
+    }
+
+    function evaluateSeamEvidence(pageA, pageB, overlapRisk, activeStore) {
+      const reconciler = getCanonicalReconciler();
+      const records = [pageA, pageB];
+      const observations = dedupeObservationsById(
+        activeStore.getObservationsForPage(pageA.pageId, { includeFiltered: false })
+          .concat(activeStore.getObservationsForPage(pageB.pageId, { includeFiltered: false }))
+      ).filter((item) => observationMatchesPageRevisions(item, records));
+      const filtered = activeStore.getFilteredObservations().filter((item) =>
+        item.pageIds.some((pageId) => pageId === pageA.pageId || pageId === pageB.pageId) &&
+        observationMatchesPageRevisions(item, records)
+      );
+      if (reconciler && typeof reconciler.evaluateSeamEvidence === "function") {
+        return reconciler.evaluateSeamEvidence({
+          pageA: canonicalPageDescriptor(pageA),
+          pageB: canonicalPageDescriptor(pageB),
+          observations,
+          filteredObservations: filtered,
+          edgeSignals: { [pageA.pageId]: pageA.edgeSignals, [pageB.pageId]: pageB.edgeSignals },
+          overlapRisk: overlapRisk ? {
+            ...overlapRisk,
+            detected: overlapRisk.detected === true || overlapRisk.accepted === true || overlapRisk.risk === true,
+            ratio: Number(overlapRisk.ratio ?? overlapRisk.overlapRatio) || 0
+          } : null
+        });
+      }
+      const reasons = [];
+      if ((pageA.edgeSides || []).includes("bottom") || (pageB.edgeSides || []).includes("top")) reasons.push("edge_observation");
+      if (isCanonicalShortPage(pageA) || isCanonicalShortPage(pageB)) reasons.push("short_page");
+      if (overlapRisk) reasons.push("pixel_overlap");
+      return {
+        shouldRun: reasons.length > 0,
+        reasons,
+        pairKey: buildCanonicalPairKey(pageA, pageB),
+        bandHeight: calculateCanonicalSeamHeight(pageA.width, pageB.width)
+      };
+    }
+
+    function ensureEdgeWait(record) {
+      if (!record || !(record.edgeSides || []).length) return;
+      const relevant = relevantAdjacentRelations(record);
+      if (relevant.length > 0 && relevant.every((relation) => relationIsTerminal(record, relation))) {
+        store.clearEdgeWait(record.pageId, clearTimer);
+        return;
+      }
+      const existingWait = store.getEdgeWait(record.pageId);
+      if (existingWait && existingWait.imageRevision === record.imageRevision) return;
+      if (existingWait) store.clearEdgeWait(record.pageId, clearTimer);
+      const deadline = now() + edgeWaitTimeoutMs;
+      const waitState = { deadline, timedOut: false, timer: null, imageRevision: record.imageRevision };
+      if (typeof setTimer === "function") {
+        waitState.timer = setTimer(() => {
+          const current = store.getEdgeWait(record.pageId);
+          const currentRecord = store.getPageHandle(record.pageId);
+          if (
+            !current || !currentRecord ||
+            current.imageRevision !== record.imageRevision ||
+            current.imageRevision !== currentRecord.imageRevision
+          ) return;
+          store.setEdgeWait(record.pageId, { ...current, timer: null, timedOut: true });
+          trace("edge-timeout", record.target, { pageId: record.pageId });
+          void refreshCanonicalState({ reason: "edge-timeout", focusPageIds: [record.pageId] });
+        }, edgeWaitTimeoutMs);
+      }
+      store.setEdgeWait(record.pageId, waitState);
+    }
+
+    function releaseCompletedEdgeWaits() {
+      for (const record of store.getPageHandles()) {
+        const wait = store.getEdgeWait(record.pageId);
+        if (!wait || wait.timedOut) continue;
+        const relevant = relevantAdjacentRelations(record);
+        if (relevant.length > 0 && relevant.every((relation) => relationIsTerminal(record, relation))) {
+          store.clearEdgeWait(record.pageId, clearTimer);
+        }
+      }
+    }
+
+    function relevantAdjacentRelations(record) {
+      return (record.adjacentTargets || []).filter((relation) =>
+        (relation.side === "previous" && (record.edgeSides || []).includes("top")) ||
+        (relation.side === "next" && (record.edgeSides || []).includes("bottom"))
+      );
+    }
+
+    function relationIsTerminal(record, relation) {
+      const neighbor = store.getPageHandleForTarget(relation.target);
+      if (!neighbor) return false;
+      const pair = relation.side === "previous" ? [neighbor, record] : [record, neighbor];
+      const state = store.getSeamState(buildCanonicalPairKey(pair[0], pair[1]));
+      return !!state && ["completed", "failed", "skipped", "stale"].includes(state.status);
+    }
+
+    async function refreshCanonicalState({ reason, focusPageIds = [], guard = null } = {}) {
+      const guardAllows = () => {
+        if (typeof guard !== "function") return true;
+        try {
+          return guard() !== false;
+        } catch {
+          return false;
+        }
+      };
+      if (!guardAllows()) return { aborted: true };
+      trace("reconcile", null, { reason, pageIds: focusPageIds });
+      const reconciliation = await store.runSerializedReconcile(() => {
+        if (!guardAllows()) return null;
+        for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.RECONCILING);
+        const result = reconcileCanonicalEvidence(store);
+        store.setCanonicalSnapshot(result);
+        store.setCoverageLedger(result.ledger);
+        store.setReconcileDiagnostics(result.diagnostics || {});
+        assertCoverageInvariant(store);
+        return result;
+      });
+      if (!reconciliation || !guardAllows()) return { aborted: true };
+
+      const eligible = reconciliation.canonicals.filter((canonical) =>
+        canonical.status !== "filtered" && !canonicalWaitsForEdge(canonical)
+      );
+      trace("translate", null, { reason, count: eligible.length });
+      for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.TRANSLATING);
+      let translated;
+      try {
+        translated = await translateCanonicals(eligible, reason, guardAllows);
+      } catch (error) {
+        // 新 revision 翻译失败时仍要把上一版唯一可见译文标成 provisional；
+        // 错误继续向上抛给重试调度，页面则不会在此期间变成空白。
+        if (guardAllows()) {
+          try {
+            const fallbackProjections = buildCanonicalProjections(store);
+            store.setProjections(fallbackProjections);
+            await refreshRequiredCleanedArtifacts(fallbackProjections);
+            if (guardAllows()) await renderAllCanonicalPages(`${reason}:translation-fallback`, guardAllows);
+          } catch (fallbackError) {
+            trace("translation-fallback-render-error", null, { error: getErrorMessage(fallbackError) });
+          }
+        }
+        throw error;
+      }
+      if (translated === false || !guardAllows()) return { aborted: true };
+
+      trace("project", null, { reason });
+      for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.PROJECTING);
+      const projections = buildCanonicalProjections(store);
+      store.setProjections(projections);
+      await refreshRequiredCleanedArtifacts(projections);
+      if (!guardAllows()) return { aborted: true };
+      trace("render", null, { reason });
+      for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.RENDERING);
+      await renderAllCanonicalPages(reason, guardAllows);
+      if (!guardAllows()) return { aborted: true };
+      for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.RENDERED);
+      return reconciliation;
+    }
+
+    function canonicalWaitsForEdge(canonical) {
+      const memberIds = Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : [];
+      for (const observationId of memberIds) {
+        const observation = store.getObservations().find((item) => item.id === observationId);
+        if (!observation || observation.sourceType === "seam") continue;
+        for (const pageId of observation.pageIds) {
+          const record = store.getPageHandle(pageId);
+          if (!record || getObservationEdgeSides(observation, record).length === 0) continue;
+          const pairPending = relevantAdjacentRelations(record).some((relation) => {
+            const neighbor = store.getPageHandleForTarget(relation.target);
+            if (!neighbor || !isReadyPageRecord(neighbor)) return false;
+            const pair = relation.side === "previous" ? [neighbor, record] : [record, neighbor];
+            const seam = store.getSeamState(buildCanonicalPairKey(pair[0], pair[1]));
+            return !seam || !["completed", "failed", "skipped", "stale"].includes(seam.status);
+          });
+          if (pairPending) return true;
+          const wait = store.getEdgeWait(pageId);
+          if (wait && !wait.timedOut) return true;
+        }
+      }
+      return false;
+    }
+
+    async function translateCanonicals(canonicals, reason, guardAllows = () => true) {
+      const candidates = canonicals.map((canonical) => ({
+        id: canonical.id,
+        revision: Number(canonical.revision) || 1,
+        original_text: String(canonical.originalText || canonical.original_text || "")
+      })).filter((item) => item.original_text);
+      const items = store.claimTranslations(candidates);
+      if (items.length === 0) {
+        await store.waitForPendingTranslations(candidates);
+        const failures = store.getTranslationFailures(candidates);
+        if (failures.length > 0) {
+          throw new CanonicalTranslationError(failures.map((failure) => failure.error).filter(Boolean).join("; "));
+        }
+        return guardAllows();
+      }
+      if (!guardAllows()) {
+        store.releaseTranslationClaims(items);
+        return false;
+      }
+
+      try {
+        const response = await requestCanonicalTranslations(items, {
+          sourceLanguage: adapters.sourceLanguage || "auto",
+          targetLanguage: adapters.targetLanguage || KAKAO_CANONICAL_TARGET_LANGUAGE,
+          reason
+        });
+        if (!response || response.ok === false) {
+          throw new CanonicalTranslationError(response && response.error || "Canonical translation request failed");
+        }
+        const translations = response && response.result && Array.isArray(response.result.translations)
+          ? response.result.translations
+          : response && Array.isArray(response.translations) ? response.translations : [];
+        const mayRender = guardAllows();
+        const byKey = new Map(translations.map((translation) => [
+          canonicalRevisionKey(translation && translation.id, translation && translation.revision),
+          translation
+        ]));
+        for (const item of items) {
+          const translation = byKey.get(canonicalRevisionKey(item.id, item.revision));
+          if (translation && String(translation.translated_text || "").trim()) {
+            store.settleTranslation(item, translation);
+          } else {
+            store.releaseTranslationClaims([item]);
+            trace("translation-partial", null, { id: item.id, revision: item.revision });
+          }
+        }
+        // 翻译事实按 canonical revision 保存；旧作业不能继续 project/render。
+        // 若同 URL 重载后的摘要相同，新作业可以复用这次唯一的外部请求结果。
+        return mayRender;
+      } catch (error) {
+        store.failTranslationClaims(items, error);
+        if (!guardAllows()) return false;
+        trace("translation-error", null, { error: getErrorMessage(error), count: items.length });
+        throw error;
+      }
+    }
+
+    function buildCanonicalProjections(activeStore) {
+      const reconciler = getCanonicalReconciler();
+      const pages = activeStore.getPageHandles().map(canonicalPageDescriptor);
+      const previousProjections = activeStore.getAllProjections();
+      const translations = new Map();
+      const currentCanonicals = activeStore.getCanonicalSnapshot();
+      const canonicals = currentCanonicals.filter((canonical) => {
+        const translation = activeStore.getTranslation(canonical.id, canonical.revision);
+        if (!translation || !String(translation.translated_text || translation.translatedText || "").trim()) return false;
+        translations.set(canonicalRevisionKey(canonical.id, canonical.revision), translation);
+        return true;
+      });
+      const availablePageIds = pages.filter((page) => isPageAvailable(page.pageId)).map((page) => page.pageId);
+      let flat = null;
+      if (reconciler && typeof reconciler.buildRenderProjections === "function") {
+        flat = reconciler.buildRenderProjections({ pages, canonicals, availablePageIds, translations });
+      }
+      if (!Array.isArray(flat)) {
+        flat = fallbackBuildRenderProjections({
+          pages,
+          canonicals: canonicals.map((canonical) => ({
+            ...canonical,
+            translation: translations.get(canonicalRevisionKey(canonical.id, canonical.revision))
+          })),
+          availablePageIds
+        });
+      }
+      const grouped = new Map();
+      const existingCoverKeys = new Set(flat
+        .filter((projection) => projection && projection.role === "cover")
+        .map((projection) => `${String(projection.canonicalId || "")}|${String(projection.pageId || "")}`));
+      for (const projection of flat) {
+        if (!projection || !projection.pageId) continue;
+        if (!grouped.has(projection.pageId)) grouped.set(projection.pageId, []);
+        const normalized = Object.freeze({
+          ...projection,
+          cover: projection.cover !== false,
+          translated_text: String(
+            projection.translated_text ||
+            projection.translatedText ||
+            projection.bubble && projection.bubble.translated_text ||
+            projection.translation && projection.translation.translated_text ||
+            ""
+          )
+        });
+        grouped.get(projection.pageId).push(normalized);
+        // A standby keeps takeover metadata, while a distinct cover projection
+        // hides the duplicate source text on the non-primary page.
+        const coverKey = `${String(normalized.canonicalId || "")}|${String(normalized.pageId || "")}`;
+        if (!existingCoverKeys.has(coverKey)) {
+          for (const coverProjection of buildStandbyCoverProjections(normalized)) {
+            grouped.get(projection.pageId).push(coverProjection);
+          }
+        }
+      }
+      for (const items of grouped.values()) items.sort(compareProjectionRecords);
+      appendProvisionalProjectionFallbacks({
+        grouped,
+        previousProjections,
+        currentCanonicals,
+        activeStore,
+        isPageAvailable
+      });
+      return grouped;
+    }
+
+    function isPageAvailable(pageId) {
+      const handle = store.getPageHandle(pageId);
+      const target = getTargetForPageId ? getTargetForPageId(pageId) : handle && handle.target;
+      return targetIsUsable(target || handle && handle.target);
+    }
+
+    async function refreshRequiredCleanedArtifacts(projectionsByPage) {
+      const tasks = [];
+      for (const [pageId, projections] of projectionsByPage instanceof Map ? projectionsByPage.entries() : []) {
+        if (!projectionsRequireCleanedImage(projections)) continue;
+        const handle = store.getPageHandle(pageId);
+        if (!handle || !handle.payload) continue;
+        if (handle.cleanedImageRevision === handle.imageRevision && isDataUrlValue(handle.cleanedImage)) continue;
+        if (handle.artifactRefreshAttemptedRevision === handle.imageRevision) continue;
+        store.registerPageHandle({ ...handle, artifactRefreshAttemptedRevision: handle.imageRevision });
+        tasks.push(store.getOrCreateInflightJob(
+          `canonical-cleaned-artifact:${handle.pageId}:${handle.imageRevision}`,
+          async () => {
+            try {
+              const response = await requestOcrForPayload(
+                handle.payload,
+                buildOcrMeta("page", [handle], "", {
+                  requireCleanedImage: true,
+                  forceCleanedImageArtifact: true
+                })
+              );
+              if (!response || !response.ok) {
+                trace("cleaned-artifact-error", handle.target, {
+                  pageId: handle.pageId,
+                  error: response && response.error || "artifact refresh failed"
+                });
+                return;
+              }
+              const cleanedImage = response.result && (response.result.cleanedImage || response.result.cleaned_image);
+              const current = store.getPageHandle(handle.pageId);
+              if (!current || current.imageRevision !== handle.imageRevision) return;
+              store.registerPageHandle({
+                ...current,
+                cleanedImage: isDataUrlValue(cleanedImage) ? cleanedImage : current.cleanedImage || null,
+                cleanedImageRevision: isDataUrlValue(cleanedImage) ? current.imageRevision : current.cleanedImageRevision || "",
+                ocrDebug: response.result && response.result.debug || current.ocrDebug || null
+              });
+            } catch (error) {
+              trace("cleaned-artifact-error", handle.target, { pageId: handle.pageId, error: getErrorMessage(error) });
+            }
+          }
+        ));
+      }
+      await Promise.all(tasks);
+    }
+
+    async function renderAllCanonicalPages(reason, guardAllows = () => true) {
+      for (const handle of store.getPageHandles()) {
+        if (!guardAllows()) return;
+        const target = getTargetForPageId ? getTargetForPageId(handle.pageId) || handle.target : handle.target;
+        if (!targetIsUsable(target)) continue;
+        const projections = store.getProjections(handle.pageId);
+        const activeBubbles = projections.filter((item) => item.activeText && item.translated_text).map(projectionToBubble);
+        await renderCanonicalProjections({
+          target,
+          pageId: handle.pageId,
+          targetKey: handle.targetKey,
+          scopedTargetKey: handle.scopedTargetKey,
+          projections,
+          result: {
+            bubbles: activeBubbles,
+            cleanedImage: handle.cleanedImage || null,
+            debug: handle.ocrDebug || null
+          },
+          payload: handle.payload,
+          cleanedImage: handle.cleanedImage || null,
+          debug: handle.ocrDebug || null,
+          reason
+        });
+      }
+    }
+
+    async function runCached(target, _cachedResult, options = {}) {
+      const handle = store.getPageHandleForTarget(target);
+      if (!handle) return run(target, { ...options, reason: options.reason || "store-cache-miss" });
+      await refreshCanonicalState({ reason: "store-cache", focusPageIds: [handle.pageId] });
+      return {
+        ok: true,
+        reused: true,
+        pageId: handle.pageId,
+        bubbles: store.getProjections(handle.pageId).filter((item) => item.activeText).length
+      };
+    }
+
+    function pageRevisionsStillMatch(records) {
+      return records.every((record) => {
+        const current = store.getPageHandle(record.pageId);
+        return current && current.imageRevision === record.imageRevision;
+      });
+    }
+
+    async function onAdjacentTargetAvailable(previousTarget, nextTarget) {
+      let previous = store.getPageHandleForTarget(previousTarget);
+      let next = store.getPageHandleForTarget(nextTarget);
+      if (!previous || !next) return { ok: false, skipped: true, reason: "page-not-observed" };
+      if (!previous.chapterId || previous.chapterId !== next.chapterId) {
+        return { ok: false, skipped: true, reason: "chapter-mismatch" };
+      }
+      previous = store.registerPageHandle({
+        ...previous,
+        nextPageId: next.pageId,
+        adjacentPageIds: Object.freeze(Array.from(new Set([...(previous.adjacentPageIds || []), next.pageId])).sort()),
+        adjacentTargets: Object.freeze(mergeAdjacentTargetRelation(previous.adjacentTargets, { side: "next", target: nextTarget }))
+      });
+      next = store.registerPageHandle({
+        ...next,
+        previousPageId: previous.pageId,
+        adjacentPageIds: Object.freeze(Array.from(new Set([...(next.adjacentPageIds || []), previous.pageId])).sort()),
+        adjacentTargets: Object.freeze(mergeAdjacentTargetRelation(next.adjacentTargets, { side: "previous", target: previousTarget }))
+      });
+      if (!isReadyPageRecord(previous) || !isReadyPageRecord(next)) {
+        return { ok: false, skipped: true, reason: "page-ocr-pending" };
+      }
+      await processSeamPair(previous, next);
+      releaseCompletedEdgeWaits();
+      await refreshCanonicalState({
+        reason: "adjacent-target-available",
+        focusPageIds: [previous.pageId, next.pageId]
+      });
+      return { ok: true, pageIds: [previous.pageId, next.pageId] };
+    }
+
+    return Object.freeze({
+      store,
+      run,
+      runCached,
+      refresh: refreshCanonicalState,
+      processAdjacentPairs,
+      processSeamPair,
+      onAdjacentTargetAvailable,
+      CanonicalPhase
+    });
+  }
+
+  function requireCanonicalAdapter(adapters, ...names) {
+    for (const name of names) {
+      if (typeof adapters[name] === "function") return adapters[name];
+    }
+    throw new Error(`KakaoCanonicalPipeline: missing adapter "${names.join(" or ")}"`);
+  }
+
+  function defaultIsAuthoritativePagePayload(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    const source = String(payload.source || "").trim().toLowerCase();
+    const mode = String(payload.captureMode || payload.capture_mode || "").trim().toLowerCase();
+    return source !== "visible-tab-crop" && source !== "screenshot" && mode !== "screenshot";
+  }
+
+  class CanonicalPageOcrError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "CanonicalPageOcrError";
+    }
+  }
+
+  class CanonicalTranslationError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "CanonicalTranslationError";
+    }
+  }
+
+  function canonicalRevisionKey(id, revision) {
+    return `${String(id || "")}@${Math.max(1, Number(revision) || 1)}`;
+  }
+
+  function compareStableIds(left, right) {
+    return String(left && left.id || left || "").localeCompare(String(right && right.id || right || ""));
+  }
+
+  function comparePageRecords(left, right) {
+    const leftOrder = Number(left && left.readingOrder);
+    const rightOrder = Number(right && right.readingOrder);
+    if (Number.isFinite(leftOrder) && Number.isFinite(rightOrder) && leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return String(left && left.pageId || "").localeCompare(String(right && right.pageId || ""));
+  }
+
+  function compareCanonicalRecords(left, right) {
+    const leftPages = Object.keys(left && left.geometryByPage || {});
+    const rightPages = Object.keys(right && right.geometryByPage || {});
+    const pageCompare = String(leftPages[0] || "").localeCompare(String(rightPages[0] || ""));
+    return pageCompare || compareStableIds(left, right);
+  }
+
+  function compareProjectionRecords(left, right) {
+    const roleOrder = { primary: 0, standby: 1, cover: 2 };
+    const roleCompare = (roleOrder[left && left.role] ?? 9) - (roleOrder[right && right.role] ?? 9);
+    return roleCompare || String(left && left.canonicalId || "").localeCompare(String(right && right.canonicalId || ""));
+  }
+
+  function freezeCanonicalValue(value) {
+    if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+    if (Array.isArray(value)) return Object.freeze(value.map(freezeCanonicalValue));
+    const copy = {};
+    for (const [key, item] of Object.entries(value)) copy[key] = freezeCanonicalValue(item);
+    return Object.freeze(copy);
+  }
+
+  function freezeObservation(observation) {
+    const pageIds = Object.freeze((Array.isArray(observation.pageIds) ? observation.pageIds : []).map(String));
+    const imageRevisionByPage = Object.freeze({ ...(observation.imageRevisionByPage || {}) });
+    const pageSpans = Object.freeze((Array.isArray(observation.pageSpans) ? observation.pageSpans : []).map((span) => Object.freeze({
+      ...span,
+      pageId: String(span && span.pageId || ""),
+      box: span && span.box ? Object.freeze({ ...span.box }) : null,
+      polygon: Array.isArray(span && span.polygon)
+        ? Object.freeze(span.polygon.map((point) => Object.freeze(Array.isArray(point) ? [...point] : { ...point })))
+        : span && span.polygon || null
+    })));
+    return Object.freeze({
+      ...observation,
+      id: String(observation.id),
+      sourceType: observation.sourceType === "seam" ? "seam" : "page",
+      pageIds,
+      imageRevisionByPage,
+      pageSpans,
+      originalText: String(observation.originalText || observation.original_text || ""),
+      visual: freezeCanonicalValue(observation.visual || {})
+    });
+  }
+
+  function freezeCanonical(canonical) {
+    const geometryByPage = {};
+    for (const [pageId, geometry] of Object.entries(canonical.geometryByPage || {})) {
+      geometryByPage[pageId] = freezeCanonicalValue(geometry);
+    }
+    return Object.freeze({
+      ...canonical,
+      id: String(canonical.id),
+      revision: Math.max(1, Number(canonical.revision) || 1),
+      memberObservationIds: Object.freeze((Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : []).map(String).sort()),
+      originalText: String(canonical.originalText || canonical.original_text || ""),
+      geometryByPage: Object.freeze(geometryByPage),
+      status: String(canonical.status || "ready")
+    });
+  }
+
+  function validatePageIdentity(identity) {
+    if (!identity || !identity.pageId) throw new Error("KakaoCanonicalPipeline: pageId missing");
+    if (!identity.imageRevision) throw new Error("KakaoCanonicalPipeline: imageRevision missing");
+    if (!(Number(identity.width) > 0) || !(Number(identity.height) > 0)) {
+      throw new Error("KakaoCanonicalPipeline: natural page dimensions missing");
+    }
+  }
+
+  function revisionsForPages(records) {
+    return Object.fromEntries(records.map((record) => [record.pageId, record.imageRevision]));
+  }
+
+  function buildOcrMeta(sourceType, records, pairKey = "", options = {}) {
+    const pageIds = records.map((record) => record.pageId);
+    return Object.freeze({
+      sourceType,
+      pageIds,
+      imageRevision: records.length === 1 ? records[0].imageRevision : "",
+      imageRevisionByPage: Object.freeze(revisionsForPages(records)),
+      imageMeta: records.length === 1 ? records[0].imageMeta || records[0].identity && records[0].identity.imageMeta || null : {
+        pairKey,
+        pages: records.map((record) => ({ pageId: record.pageId, width: record.width, height: record.height }))
+      },
+      requireCleanedImage: options.requireCleanedImage === true,
+      forceCleanedImageArtifact: options.forceCleanedImageArtifact === true,
+      requestKey: sourceType === "page"
+        ? `page:${pageIds[0]}:${records[0].imageRevision}`
+        : `seam:${pairKey}`
+    });
+  }
+
+  function getCanonicalReconciler() {
+    return globalThis.MangaTranslatorKakaoReconciler || null;
+  }
+
+  function canonicalPageDescriptor(record) {
+    return Object.freeze({
+      chapterId: String(record && record.chapterId || ""),
+      pageId: String(record && record.pageId || ""),
+      imageRevision: String(record && record.imageRevision || ""),
+      width: Number(record && record.width) || 1,
+      height: Number(record && record.height) || 1,
+      readingOrder: Number.isFinite(Number(record && record.readingOrder)) ? Number(record.readingOrder) : undefined,
+      shortPage: isCanonicalShortPage(record),
+      edgeSignals: record && record.edgeSignals || null,
+      previousPageId: String(record && record.previousPageId || ""),
+      nextPageId: String(record && record.nextPageId || ""),
+      adjacentPageIds: Object.freeze((Array.isArray(record && record.adjacentPageIds) ? record.adjacentPageIds : []).map(String).sort())
+    });
+  }
+
+  function normalizeOcrEvidence(result, records, sourceType) {
+    const payload = result && typeof result === "object" ? result : {};
+    const normalizeItems = (items, filtered) => (Array.isArray(items) ? items : []).map((item) => {
+      const pageIds = Array.isArray(item && item.pageIds) && item.pageIds.length
+        ? item.pageIds.map(String)
+        : records.map((record) => record.pageId);
+      const imageRevisionByPage = {
+        ...revisionsForPages(records),
+        ...(item && item.imageRevisionByPage || {})
+      };
+      let pageSpans = Array.isArray(item && item.pageSpans) ? item.pageSpans : [];
+      if (pageSpans.length === 0 && records.length === 1 && item && (item.box || item.bbox || item.polygon)) {
+        pageSpans = [{
+          pageId: records[0].pageId,
+          box: item.box || item.bbox || null,
+          polygon: item.polygon || null,
+          overlapRatio: 1
+        }];
+      }
+      const providerBlockId = String(item && (item.providerBlockId || item.provider_block_id || item.id) || "");
+      const originalText = String(item && (item.originalText || item.original_text || item.text) || "");
+      const id = String(item && item.id || buildFallbackObservationId({
+        providerBlockId,
+        sourceType,
+        pageIds,
+        imageRevisionByPage,
+        originalText,
+        pageSpans
+      }));
+      const candidate = {
+        ...(item || {}),
+        id,
+        sourceType,
+        pageIds,
+        imageRevisionByPage,
+        pageSpans,
+        originalText,
+        confidence: Number(item && (item.confidence ?? item.score)) || 0,
+        visual: item && item.visual || null,
+        providerBlockId,
+        ...(filtered ? { filterReason: String(item && (item.filterReason || item.filter_reason) || "provider_filtered") } : {})
+      };
+      const reconciler = getCanonicalReconciler();
+      if (reconciler && typeof reconciler.createObservation === "function") {
+        try {
+          return reconciler.createObservation(candidate);
+        } catch (_error) {
+          // Keep provider-neutral evidence available even when optional validation rejects extras.
+        }
+      }
+      return freezeObservation(candidate);
+    });
+    return Object.freeze({
+      observations: normalizeItems(payload.observations, false),
+      filteredObservations: normalizeItems(payload.filteredObservations || payload.filtered_observations, true),
+      edgeSignals: payload.edgeSignals || payload.edge_signals || null,
+      cleanedImage: payload.cleanedImage || payload.cleaned_image || null,
+      debug: payload.debug || null
+    });
+  }
+
+  function buildFallbackObservationId(value) {
+    const stable = JSON.stringify({
+      providerBlockId: value.providerBlockId,
+      sourceType: value.sourceType,
+      pageIds: [...value.pageIds].sort(),
+      imageRevisionByPage: Object.fromEntries(Object.entries(value.imageRevisionByPage).sort(([a], [b]) => a.localeCompare(b))),
+      originalText: String(value.originalText || "").normalize("NFKC"),
+      pageSpans: value.pageSpans
+    });
+    return `obs:${hashFnv1a(stable)}`;
+  }
+
+  function dedupeObservationsById(items) {
+    return [...new Map((Array.isArray(items) ? items : [])
+      .filter((item) => item && item.id)
+      .map((item) => [item.id, item])).values()].sort(compareStableIds);
+  }
+
+  function observationMatchesPageRevisions(observation, records) {
+    const current = new Map((Array.isArray(records) ? records : []).map((record) => [record.pageId, record.imageRevision]));
+    for (const pageId of observation && observation.pageIds || []) {
+      if (!current.has(pageId)) continue;
+      if (String(observation.imageRevisionByPage && observation.imageRevisionByPage[pageId] || "") !== String(current.get(pageId) || "")) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function calculateCanonicalSeamHeight(widthA, widthB) {
+    const reconciler = getCanonicalReconciler();
+    if (reconciler && typeof reconciler.calculateSeamBandHeight === "function") {
+      return reconciler.calculateSeamBandHeight(widthA, widthB);
+    }
+    const width = Math.max(1, Math.min(Number(widthA) || 1, Number(widthB) || 1));
+    return clamp(Math.round(width * KAKAO_SEAM_HEIGHT_WIDTH_RATIO), KAKAO_SEAM_HEIGHT_MIN_PX, KAKAO_SEAM_HEIGHT_MAX_PX);
+  }
+
+  function buildCanonicalPairKey(pageA, pageB) {
+    const reconciler = getCanonicalReconciler();
+    if (reconciler && typeof reconciler.buildSeamPairKey === "function") {
+      return reconciler.buildSeamPairKey(canonicalPageDescriptor(pageA), canonicalPageDescriptor(pageB));
+    }
+    return `${pageA.pageId}>${pageB.pageId}@${pageA.imageRevision}>${pageB.imageRevision}`;
+  }
+
+  function isCanonicalShortPage(record) {
+    if (record && typeof record.shortPage === "boolean") return record.shortPage;
+    const width = Math.max(1, Number(record && record.width) || 1);
+    const height = Math.max(1, Number(record && record.height) || 1);
+    return height <= Math.max(KAKAO_SHORT_PAGE_ATTACH_CSS_HEIGHT, width * KAKAO_SHORT_PAGE_ATTACH_HEIGHT_RATIO);
+  }
+
+  function normalizeAdjacentTargets(value) {
+    const output = [];
+    if (value && value.previous) output.push(Object.freeze({ side: "previous", target: value.previous }));
+    if (value && value.next) output.push(Object.freeze({ side: "next", target: value.next }));
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (!item) continue;
+        if (item.target) output.push(Object.freeze({ side: item.side === "previous" ? "previous" : "next", target: item.target }));
+        else output.push(Object.freeze({ side: "next", target: item }));
+      }
+    }
+    return output;
+  }
+
+  function mergeAdjacentTargetRelation(existing, addition) {
+    const output = [];
+    for (const relation of [...(Array.isArray(existing) ? existing : []), addition]) {
+      if (!relation || !relation.target) continue;
+      const side = relation.side === "previous" ? "previous" : "next";
+      if (output.some((item) => item.side === side && item.target === relation.target)) continue;
+      output.push(Object.freeze({ side, target: relation.target }));
+    }
+    return output;
+  }
+
+  function collectPageEdgeSides(record, observations, filteredObservations, edgeSignals) {
+    const sides = new Set();
+    for (const observation of [...observations, ...filteredObservations]) {
+      for (const side of getObservationEdgeSides(observation, record)) sides.add(side);
+    }
+    const signal = edgeSignals || {};
+    if (isCanonicalEdgeSignalDetected(signal.top) || signal.intersectsTop === true || signal.hasTop === true || signal.topCount > 0) sides.add("top");
+    if (isCanonicalEdgeSignalDetected(signal.bottom) || signal.intersectsBottom === true || signal.hasBottom === true || signal.bottomCount > 0) sides.add("bottom");
+    if (Array.isArray(signal.sides)) for (const side of signal.sides) if (side === "top" || side === "bottom") sides.add(side);
+    return [...sides].sort();
+  }
+
+  function isCanonicalEdgeSignalDetected(value) {
+    if (value === true) return true;
+    if (!value || typeof value !== "object") return false;
+    if (Object.prototype.hasOwnProperty.call(value, "detected")) return value.detected === true;
+    if (Object.prototype.hasOwnProperty.call(value, "visualDetected")) return value.visualDetected === true;
+    if (Object.prototype.hasOwnProperty.call(value, "visual_detected")) return value.visual_detected === true;
+    return [
+      value.retainedObservationIds,
+      value.filteredObservationIds,
+      value.ids,
+      value.regionIds,
+      value.polygons
+    ].some((items) => Array.isArray(items) && items.length > 0);
+  }
+
+  function getObservationEdgeSides(observation, record) {
+    const sides = new Set();
+    const band = Math.min(Number(record.height) || 1, calculateCanonicalSeamHeight(record.width, record.width));
+    for (const span of observation && observation.pageSpans || []) {
+      if (String(span && span.pageId || "") !== String(record.pageId)) continue;
+      const box = normalizeSpanBoxPixels(span.box, record);
+      if (box && box.top < band && box.top + box.height > 0) sides.add("top");
+      if (box && box.top < record.height && box.top + box.height > record.height - band) sides.add("bottom");
+      if (!box && Array.isArray(span.polygon) && span.polygon.length) {
+        const points = span.polygon.map((point) => Array.isArray(point) ? point : [point.x, point.y]);
+        const ys = points.map((point) => Number(point[1])).filter(Number.isFinite);
+        if (ys.length) {
+          const percent = Math.max(...ys.map(Math.abs)) <= 100;
+          const minY = Math.min(...ys) * (percent ? record.height / 100 : 1);
+          const maxY = Math.max(...ys) * (percent ? record.height / 100 : 1);
+          if (minY < band) sides.add("top");
+          if (maxY > record.height - band) sides.add("bottom");
+        }
+      }
+    }
+    return [...sides].sort();
+  }
+
+  function normalizeSpanBoxPixels(box, record) {
+    if (!box || typeof box !== "object") return null;
+    const left = Number(box.left ?? box.x);
+    const top = Number(box.top ?? box.y);
+    const width = Number(box.width ?? box.w);
+    const height = Number(box.height ?? box.h);
+    if (![left, top, width, height].every(Number.isFinite)) return null;
+    const coordinateModel = String(box.coordinateModel || box.coordinate_model || "").toLowerCase();
+    const isPercent = coordinateModel.includes("percent") || (
+      Math.max(Math.abs(left), Math.abs(top), Math.abs(width), Math.abs(height)) <= 100 &&
+      (Number(record.width) > 100 || Number(record.height) > 100)
+    );
+    return {
+      left: left * (isPercent ? Number(record.width) / 100 : 1),
+      top: top * (isPercent ? Number(record.height) / 100 : 1),
+      width: width * (isPercent ? Number(record.width) / 100 : 1),
+      height: height * (isPercent ? Number(record.height) / 100 : 1)
+    };
+  }
+
+  function reconcileCanonicalEvidence(store) {
+    const pages = store.getPageHandles().map(canonicalPageDescriptor);
+    const adjacentPagePairs = buildConfirmedAdjacentPagePairs(store.getPageHandles());
+    const observations = store.getObservations().filter((item) => !store.getFilteredObservations().some((filtered) => filtered.id === item.id));
+    const filteredObservations = store.getFilteredObservations();
+    const previousCanonicals = store.getCanonicalSnapshot();
+    const reconciler = getCanonicalReconciler();
+    if (reconciler && typeof reconciler.reconcileObservations === "function") {
+      const result = reconciler.reconcileObservations({
+        pages,
+        observations,
+        filteredObservations,
+        previousCanonicals,
+        adjacentPagePairs
+      });
+      return normalizeReconciliationResult(result, observations, filteredObservations, previousCanonicals);
+    }
+    return fallbackReconcileObservations({ pages, observations, filteredObservations, previousCanonicals });
+  }
+
+  function buildConfirmedAdjacentPagePairs(records) {
+    const pageById = new Map((Array.isArray(records) ? records : []).map((record) => [record.pageId, record]));
+    const pairs = new Map();
+    for (const record of pageById.values()) {
+      const candidates = new Set([
+        String(record.previousPageId || ""),
+        String(record.nextPageId || ""),
+        ...(Array.isArray(record.adjacentPageIds) ? record.adjacentPageIds.map(String) : [])
+      ]);
+      for (const adjacentPageId of candidates) {
+        const adjacent = pageById.get(adjacentPageId);
+        if (!adjacent || adjacent.pageId === record.pageId) continue;
+        const ordered = [record, adjacent].sort(comparePageRecords);
+        const key = `${ordered[0].pageId}|${ordered[1].pageId}`;
+        pairs.set(key, Object.freeze({
+          pageIds: Object.freeze(ordered.map((page) => page.pageId)),
+          pageAId: ordered[0].pageId,
+          pageBId: ordered[1].pageId,
+          imageRevisionByPage: Object.freeze(revisionsForPages(ordered))
+        }));
+      }
+    }
+    return [...pairs.values()].sort((left, right) => left.pageIds.join("|").localeCompare(right.pageIds.join("|")));
+  }
+
+  function normalizeReconciliationResult(result, observations, filteredObservations, previousCanonicals) {
+    if (!result || !Array.isArray(result.canonicals)) {
+      return fallbackReconcileObservations({ observations, filteredObservations, previousCanonicals });
+    }
+    return {
+      ...result,
+      canonicals: result.canonicals.map(freezeCanonical).sort(compareCanonicalRecords),
+      ledger: result.ledger || result.coverageLedger || {},
+      diagnostics: result.diagnostics || []
+    };
+  }
+
+  function fallbackReconcileObservations({ observations = [], filteredObservations = [], previousCanonicals = [] }) {
+    const previousById = new Map(previousCanonicals.map((canonical) => [canonical.id, canonical]));
+    const canonicals = [];
+    const ledger = {};
+    for (const observation of [...observations].sort(compareStableIds)) {
+      const id = `canonical:${observation.id}`;
+      const geometryByPage = {};
+      for (const span of observation.pageSpans || []) {
+        if (!geometryByPage[span.pageId]) geometryByPage[span.pageId] = [];
+        geometryByPage[span.pageId].push(span.box || { polygon: span.polygon });
+      }
+      const previous = previousById.get(id);
+      const stableValue = JSON.stringify({ memberObservationIds: [observation.id], originalText: observation.originalText, geometryByPage });
+      const previousValue = previous && JSON.stringify({
+        memberObservationIds: previous.memberObservationIds,
+        originalText: previous.originalText,
+        geometryByPage: previous.geometryByPage
+      });
+      canonicals.push(freezeCanonical({
+        id,
+        revision: previous ? (stableValue === previousValue ? previous.revision : Number(previous.revision) + 1) : 1,
+        supersedesId: null,
+        memberObservationIds: [observation.id],
+        originalText: observation.originalText,
+        geometryByPage,
+        status: "ready",
+        translationFingerprint: ""
+      }));
+      ledger[observation.id] = { observationId: observation.id, resolution: "standalone", canonicalId: id };
+    }
+    for (const observation of filteredObservations) {
+      ledger[observation.id] = {
+        observationId: observation.id,
+        resolution: "filtered",
+        filterReason: observation.filterReason || "provider_filtered"
+      };
+    }
+    return { canonicals: canonicals.sort(compareCanonicalRecords), ledger, diagnostics: [] };
+  }
+
+  function assertCoverageInvariant(store) {
+    const ledger = store.getCoverageLedger();
+    const observations = store.getObservations();
+    const activeMembership = new Map();
+    for (const canonical of store.getCanonicalSnapshot()) {
+      for (const observationId of canonical.memberObservationIds) {
+        if (activeMembership.has(observationId)) {
+          throw new Error(`Canonical invariant violated: observation ${observationId} belongs to multiple canonicals`);
+        }
+        activeMembership.set(observationId, canonical.id);
+      }
+    }
+    for (const observation of observations) {
+      const resolution = ledger.get(observation.id);
+      if (!resolution || !["standalone", "consumed", "filtered"].includes(String(resolution.resolution || resolution.status))) {
+        throw new Error(`Canonical invariant violated: unresolved observation ${observation.id}`);
+      }
+    }
+  }
+
+  function fallbackBuildRenderProjections({ pages, canonicals, availablePageIds }) {
+    const pageById = new Map(pages.map((page) => [page.pageId, page]));
+    const available = new Set(availablePageIds || []);
+    const projections = [];
+    for (const canonical of canonicals) {
+      const translation = canonical.translation || null;
+      if (!translation || !String(translation.translated_text || "").trim()) continue;
+      const geometries = Object.entries(canonical.geometryByPage || {}).map(([pageId, geometry]) => ({
+        pageId,
+        geometry,
+        area: geometryArea(geometry),
+        page: pageById.get(pageId) || { pageId }
+      })).sort((left, right) => right.area - left.area || comparePageRecords(left.page, right.page));
+      if (geometries.length === 0) continue;
+      const desiredPrimary = geometries[0].pageId;
+      const activePrimary = available.has(desiredPrimary)
+        ? desiredPrimary
+        : (geometries.find((item) => available.has(item.pageId)) || geometries[0]).pageId;
+      for (const item of geometries) {
+        const role = item.pageId === activePrimary ? "primary" : "standby";
+        projections.push({
+          canonicalId: canonical.id,
+          revision: canonical.revision,
+          pageId: item.pageId,
+          role,
+          activeText: role === "primary",
+          geometry: item.geometry,
+          original_text: canonical.originalText,
+          translated_text: translation.translated_text,
+          translation
+        });
+      }
+    }
+    return projections.sort((left, right) => String(left.pageId).localeCompare(String(right.pageId)) || compareProjectionRecords(left, right));
+  }
+
+  function geometryArea(geometry) {
+    const items = Array.isArray(geometry) ? geometry : [geometry];
+    return items.reduce((total, item) => {
+      if (!item) return total;
+      const width = Math.max(0, Number(item.width ?? item.w) || 0);
+      const height = Math.max(0, Number(item.height ?? item.h) || 0);
+      return total + width * height;
+    }, 0);
+  }
+
+  function projectionToBubble(projection) {
+    if (projection && projection.bubble) {
+      return { ...projection.bubble, original_text: projection.original_text, translated_text: projection.translated_text };
+    }
+    const geometry = Array.isArray(projection.geometry) ? projection.geometry[0] : projection.geometry || {};
+    return {
+      id: projection.canonicalId,
+      revision: projection.revision,
+      x: Number(geometry.x ?? geometry.left) || 0,
+      y: Number(geometry.y ?? geometry.top) || 0,
+      w: Number(geometry.w ?? geometry.width) || 0,
+      h: Number(geometry.h ?? geometry.height) || 0,
+      original_text: projection.original_text,
+      translated_text: projection.translated_text,
+      canonical_id: projection.canonicalId,
+      canonical_revision: projection.revision
+    };
+  }
+
+  function buildStandbyCoverProjections(projection) {
+    if (!projection || projection.role !== "standby") return [];
+    return [Object.freeze({
+      ...projection,
+      id: `${String(projection.id || projection.canonicalId || "projection")}:cover`,
+      projectionId: `${String(projection.projectionId || projection.id || projection.canonicalId || "projection")}:cover`,
+      role: "cover",
+      active: true,
+      activeText: false,
+      coverOnly: true,
+      translated_text: "",
+      translatedText: "",
+      bubble: projection.bubble ? Object.freeze({
+        ...projection.bubble,
+        translated_text: "",
+        projection_role: "cover_only",
+        cover_only: true
+      }) : projection.bubble
+    })];
+  }
+
+  function projectionsRequireCleanedImage(projections) {
+    return (Array.isArray(projections) ? projections : []).some((projection) => {
+      if (!projection || projection.active === false) return false;
+      if (projection.role !== "cover" && projection.activeText !== true) return false;
+      const bgType = String(
+        projection.visual && (projection.visual.bgType || projection.visual.bg_type) ||
+        projection.bubble && (projection.bubble.bg_type || projection.bubble.bgType) ||
+        projection.bgType || projection.bg_type || ""
+      ).trim().toLowerCase();
+      return bgType === "none";
+    });
+  }
+
+  function isDataUrlValue(value) {
+    return /^data:[^,]+,/i.test(String(value || ""));
+  }
+
+  function appendProvisionalProjectionFallbacks({
+    grouped,
+    previousProjections,
+    currentCanonicals,
+    activeStore,
+    isPageAvailable
+  }) {
+    const previous = [...(previousProjections instanceof Map ? previousProjections.values() : [])].flat();
+    const claimedPreviousCanonicalIds = new Set();
+    for (const canonical of [...(currentCanonicals || [])].sort(compareCanonicalRecords)) {
+      if (activeStore.getTranslation(canonical.id, canonical.revision)) continue;
+      const lineageIds = [canonical.id, canonical.supersedesId].filter(Boolean).map(String);
+      const previousId = lineageIds.find((id) =>
+        !claimedPreviousCanonicalIds.has(id) && previous.some((projection) => String(projection.canonicalId || "") === id)
+      );
+      if (!previousId) continue;
+      const candidates = previous.filter((projection) => String(projection.canonicalId || "") === previousId);
+      const translationText = String(
+        candidates.find((projection) => String(projection.translated_text || projection.translatedText || "").trim())?.translated_text ||
+        candidates.find((projection) => String(projection.translatedText || "").trim())?.translatedText ||
+        ""
+      );
+      if (!translationText) continue;
+      claimedPreviousCanonicalIds.add(previousId);
+
+      const textCandidates = candidates.filter((projection) => projection.role !== "cover" && projection.coverOnly !== true);
+      const preferredPageId = String(
+        textCandidates[0] && textCandidates[0].preferredPrimaryPageId ||
+        textCandidates.find((projection) => projection.activeText)?.pageId ||
+        ""
+      );
+      const activePageId = preferredPageId && isPageAvailable(preferredPageId)
+        ? preferredPageId
+        : String(textCandidates.find((projection) => isPageAvailable(projection.pageId))?.pageId || "");
+
+      for (const projection of candidates) {
+        const isCover = projection.role === "cover" || projection.coverOnly === true;
+        const activeText = !isCover && !!activePageId && String(projection.pageId) === activePageId;
+        const clone = Object.freeze({
+          ...projection,
+          provisional: true,
+          pendingCanonicalId: canonical.id,
+          pendingCanonicalRevision: canonical.revision,
+          active: isCover ? projection.active !== false : activeText,
+          activeText,
+          translated_text: activeText ? translationText : "",
+          translatedText: activeText ? translationText : "",
+          bubble: projection.bubble ? Object.freeze({
+            ...projection.bubble,
+            translated_text: activeText ? translationText : "",
+            projection_active: isCover ? projection.active !== false : activeText
+          }) : projection.bubble
+        });
+        if (!grouped.has(clone.pageId)) grouped.set(clone.pageId, []);
+        grouped.get(clone.pageId).push(clone);
+      }
+    }
+    for (const items of grouped.values()) items.sort(compareProjectionRecords);
   }
 
   /* =================================================================
@@ -2637,9 +4643,11 @@
     KAKAO_OVERLAP_MIN_UNIQUE_RATIO,
     KAKAO_THIN_STRIP_MIN_HEIGHT,
     KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS,
+    KAKAO_EDGE_WAIT_TIMEOUT_MS,
 
     // FSM
     PagePhase,
+    CanonicalPhase,
     canTransition,
     isActivePhase,
     isRetryablePhase,
@@ -2653,6 +4661,20 @@
 
     // Pipeline
     createPipeline,
+    createCanonicalPipeline,
+
+    // Canonical helpers
+    calculateCanonicalSeamHeight,
+    buildCanonicalPairKey,
+    normalizeOcrEvidence,
+    collectPageEdgeSides,
+    getObservationEdgeSides,
+    fallbackReconcileObservations,
+    fallbackBuildRenderProjections,
+    buildConfirmedAdjacentPagePairs,
+    buildStandbyCoverProjections,
+    projectionsRequireCleanedImage,
+    assertCoverageInvariant,
 
     // 纯函数
     normalizeOcrSimilarityText,
@@ -2671,6 +4693,7 @@
     isVerifiedKakaoStitchNeighbor,
     buildKakaoStitchWindowPlan,
     isAttachableKakaoShortPage,
+    isKakaoPageEdgeFragment,
     shouldRejectKakaoPageEdgeStitch,
     isKakaoStitchCandidatePastNeighborWindow,
     findKakaoStitchNeighborTarget,

@@ -107,6 +107,10 @@ const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
 const CACHE_PREFIX = "mt_cache_v21:";
+const OCR_CACHE_PREFIX = "mt_cache_v22:ocr:";
+const CANONICAL_TRANSLATION_CACHE_PREFIX = "mt_cache_v22:translation:";
+const OCR_COORDINATE_MODEL_VERSION = "page-percent-v1";
+const CANONICAL_TRANSLATION_PROMPT_VERSION = "canonical-zh-cn-v1";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -130,6 +134,9 @@ const TERM_EXTRACTOR_HEALTH_CACHE_MS = 30 * 1000;
 const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
 const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
 const inflightTranslateByCacheKey = new Map();
+const inflightOcrByCacheKey = new Map();
+const inflightTranslationByFingerprint = new Map();
+let backgroundTestHooks = null;
 const ocrLinesBySourceImageId = new Map();
 const visibleTabCaptureCacheByWindow = new Map();
 let baiduAccessTokenCache = null;
@@ -186,6 +193,8 @@ async function handleMessage(message, sender) {
       return handleCaptureVisibleTargetDataUrl(message, sender);
     case "TRANSLATE_DATA_URL":
       return handleTranslateDataUrl(message, sender);
+    case "OCR_DATA_URL":
+      return handleOcrDataUrl(message);
     case "TRANSLATE_TEXT_BLOCKS":
       return handleTranslateTextBlocks(message);
     case "GET_CACHE_STATS":
@@ -497,40 +506,748 @@ async function requestTermExtractorJson(url, options) {
   }
 }
 
+async function handleOcrDataUrl(message) {
+  const dataUrl = String(message && message.dataUrl || "").trim();
+  if (!isDataUrl(dataUrl)) {
+    return { ok: false, error: "Invalid or empty image data URL" };
+  }
+
+  const sourceType = normalizeObservationSourceType(message && message.sourceType);
+  const pageIds = normalizeObservationPageIds(message && message.pageIds);
+  if (pageIds.length === 0) {
+    return { ok: false, error: "OCR_DATA_URL requires at least one stable pageId" };
+  }
+  if (sourceType === "page" && pageIds.length !== 1) {
+    return { ok: false, error: "Page OCR must reference exactly one pageId" };
+  }
+  if (sourceType === "seam" && pageIds.length < 2) {
+    return { ok: false, error: "Seam OCR must reference both adjacent pageIds" };
+  }
+
+  const settings = await loadSettings();
+  const validationError = validateOcrOnlySettings(settings);
+  if (validationError) {
+    return { ok: false, error: validationError };
+  }
+
+  const imageDigest = await digestDataUrlSha256(dataUrl);
+  const imageRevisionByPage = normalizeImageRevisionByPage(
+    pageIds,
+    message && (message.imageRevisionByPage || message.imageRevision),
+    imageDigest
+  );
+  if (sourceType === "page") {
+    imageRevisionByPage[pageIds[0]] = imageDigest;
+  }
+  const normalizedMeta = normalizeImageMeta(message && message.imageMeta) || {};
+  const imageMeta = {
+    ...normalizedMeta,
+    pageSpans: normalizeObservationPageSpanMeta(message && message.imageMeta && message.imageMeta.pageSpans)
+  };
+  const request = {
+    dataUrl,
+    sourceType,
+    pageIds,
+    imageRevisionByPage,
+    imageDigest,
+    imageMeta,
+    targetKey: String(message && message.targetKey || "").trim(),
+    requireCleanedImage: message && message.requireCleanedImage === true,
+    // 该标志只控制易失的渲染图像产物，不参与 OCR 语义缓存指纹。
+    forceCleanedImageArtifact: message && message.forceCleanedImageArtifact === true
+  };
+  const cacheKey = buildOcrCacheKey({ request, settings });
+
+  let cached = settings.localOcrDebug ? null : await getCache(cacheKey);
+  const shouldRefreshCleanedImage = Boolean(
+    cached &&
+    request.requireCleanedImage &&
+    settings.provider === PROVIDERS.localPaddleDeepSeek &&
+    (cached.requiresCleanedImage === true || request.forceCleanedImageArtifact) &&
+    !isDataUrl(cached.cleanedImage)
+  );
+  if (cached && !shouldRefreshCleanedImage) {
+    return { ok: true, result: deepFreezeObservationResult(cached), cached: true };
+  }
+
+  if (inflightOcrByCacheKey.has(cacheKey)) {
+    return inflightOcrByCacheKey.get(cacheKey);
+  }
+
+  const task = (async () => {
+    try {
+      const refreshed = await requestProviderNeutralOcr({ request, settings });
+      // 持久 OCR 缓存中的 Observation 是权威语义结果。暖缓存仅因渲染需要
+      // cleaned image 而刷新时，只取新的图像产物，避免一次非确定性 OCR
+      // 重新改写 canonical 证据并触发不必要的翻译。
+      const result = shouldRefreshCleanedImage
+        ? deepFreezeObservationResult({
+          ...cached,
+          ...(isDataUrl(refreshed && refreshed.cleanedImage)
+            ? { cleanedImage: refreshed.cleanedImage }
+            : {})
+        })
+        : refreshed;
+      await setCache(cacheKey, result);
+      return { ok: true, result, cached: false };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `OCR failed (${settings.provider}): ${getErrorMessage(error) || "Unknown OCR error"}`
+      };
+    } finally {
+      inflightOcrByCacheKey.delete(cacheKey);
+    }
+  })();
+  inflightOcrByCacheKey.set(cacheKey, task);
+  return task;
+}
+
 async function handleTranslateTextBlocks(message) {
-  const items = (Array.isArray(message.items) ? message.items : [])
-    .map((item, index) => ({
-      ...item,
-      id: String(item && item.id || `boundary-${index}`),
-      original_text: String(item && item.original_text || "").trim()
+  const rawItems = Array.isArray(message && message.items) ? message.items : [];
+  if (rawItems.some((item) => !String(item && item.id || "").trim())) {
+    return { ok: false, error: "TRANSLATE_TEXT_BLOCKS requires a stable canonical id for every item" };
+  }
+  const items = rawItems
+    .map((item) => ({
+      id: String(item && item.id || "").trim(),
+      revision: normalizeCanonicalRevision(item && item.revision),
+      original_text: normalizeTranslationSourceText(item && item.original_text)
     }))
     .filter((item) => item.original_text);
   if (items.length === 0) {
-    return { ok: true, translations: [] };
+    return { ok: true, partial: false, translations: [], errors: [] };
   }
   const settings = await loadSettings();
   if (![PROVIDERS.baiduDeepSeek, PROVIDERS.localPaddleDeepSeek].includes(settings.provider)) {
-    return { ok: false, error: "Current provider does not support text-only boundary translation" };
+    return { ok: false, error: "Current provider does not support text-only canonical translation" };
   }
   if (!settings.apiKey) {
     return { ok: false, error: "Translation API Key is missing. Please configure it in popup." };
   }
-  const translated = await requestOpenAICompatibleTextTranslations({
+
+  const sourceLanguage = normalizeLanguageTag(message && message.sourceLanguage, "auto");
+  const targetLanguage = normalizeLanguageTag(message && message.targetLanguage, "zh-CN");
+  const outcome = await requestCanonicalTextTranslations({
     items,
     apiKey: settings.apiKey,
     baseUrl: settings.baseUrl || DEFAULT_TRANSLATION_BASE_URL,
     model: settings.model || DEFAULT_MODELS[settings.provider],
-    sourceImageId: String(message.sourceImageId || "boundary-trim"),
+    sourceLanguage,
+    targetLanguage,
+    promptVersion: String(message && message.promptVersion || CANONICAL_TRANSLATION_PROMPT_VERSION),
+    translationOptions: message && message.translationOptions,
     glossary: settings.glossary,
     glossaryFingerprint: settings.glossaryFingerprint
   });
-  return {
-    ok: true,
-    translations: items.map((item) => ({
+
+  const translations = [];
+  const errors = [];
+  items.forEach((item) => {
+    const row = outcome.get(canonicalTranslationItemKey(item));
+    if (!row || !row.translatedText) {
+      errors.push({
+        id: item.id,
+        revision: item.revision,
+        translationFingerprint: row && row.translationFingerprint || "",
+        error: row && row.error || "model_missing_translation"
+      });
+      return;
+    }
+    translations.push({
       id: item.id,
-      translated_text: cleanDecorativeSymbols(translated.get(item.id) || item.original_text)
-    }))
+      revision: item.revision,
+      translated_text: cleanDecorativeSymbols(row.translatedText),
+      translationFingerprint: row.translationFingerprint,
+      cached: row.cached === true
+    });
+  });
+
+  return {
+    ok: errors.length === 0 || translations.length > 0,
+    partial: errors.length > 0,
+    translations,
+    errors,
+    ...(errors.length > 0 ? { error: `Translation response omitted ${errors.length} item(s)` } : {})
   };
+}
+
+function setBackgroundTestHooks(value) {
+  backgroundTestHooks = value && typeof value === "object" ? value : null;
+}
+
+function normalizeObservationSourceType(value) {
+  return String(value || "").trim().toLowerCase() === "seam" ? "seam" : "page";
+}
+
+function normalizeObservationPageIds(value) {
+  const seen = new Set();
+  return (Array.isArray(value) ? value : [])
+    .map((entry) => String(entry || "").trim())
+    .filter((entry) => entry && !seen.has(entry) && seen.add(entry));
+}
+
+function normalizeImageRevisionByPage(pageIds, value, fallbackDigest) {
+  const provided = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const scalar = provided ? "" : String(value || "").trim();
+  return Object.fromEntries(pageIds.map((pageId) => [
+    pageId,
+    String(provided && provided[pageId] || scalar || fallbackDigest || "").trim()
+  ]));
+}
+
+function normalizeObservationPageSpanMeta(value) {
+  return (Array.isArray(value) ? value : []).map((entry) => {
+    const canvasBox = normalizeObservationPixelBox(entry && (entry.canvasBox || entry.canvas || entry.drawRect));
+    const pageBox = normalizeObservationPixelBox(entry && (entry.pageBox || entry.sourceBox || entry.cropRect));
+    return {
+      pageId: String(entry && entry.pageId || "").trim(),
+      canvasBox,
+      pageBox,
+      pageWidth: Math.max(0, Number(entry && (entry.pageWidth || entry.sourceWidth)) || 0),
+      pageHeight: Math.max(0, Number(entry && (entry.pageHeight || entry.sourceHeight)) || 0)
+    };
+  }).filter((entry) => entry.pageId && entry.canvasBox && entry.pageBox && entry.pageWidth > 0 && entry.pageHeight > 0);
+}
+
+function normalizeObservationPixelBox(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const left = Number(value.left ?? value.x);
+  const top = Number(value.top ?? value.y);
+  const width = Number(value.width ?? value.w);
+  const height = Number(value.height ?? value.h);
+  if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return { left, top, width, height };
+}
+
+function validateOcrOnlySettings(settings) {
+  if (settings.provider === PROVIDERS.baiduDeepSeek) {
+    return settings.baiduApiKey && settings.baiduSecretKey
+      ? ""
+      : "Baidu OCR AK/SK is missing. Please configure it in popup.";
+  }
+  if (settings.provider === PROVIDERS.localPaddleDeepSeek) {
+    if (!settings.localOcrBaseUrl) {
+      return "Local OCR service URL is missing. Please configure it in popup.";
+    }
+    if (settings.visionOcrEnabled && !settings.visionOcrApiKey) {
+      return "Vision OCR API Key is missing. Please configure it in popup.";
+    }
+    return "";
+  }
+  return `Unsupported OCR provider: ${settings.provider}`;
+}
+
+async function digestDataUrlSha256(dataUrl) {
+  const parsed = parseDataUrl(dataUrl);
+  const binary = typeof atob === "function" ? atob(parsed.base64Data) : "";
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  if (globalThis.crypto && globalThis.crypto.subtle && bytes.length > 0) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+  // Chrome Service Worker 始终提供 WebCrypto；仅测试壳缺失该能力时使用完整载荷的确定性回退。
+  return `fallback-${hashString(parsed.base64Data)}-${parsed.base64Data.length}`;
+}
+
+function buildOcrCacheKey({ request, settings }) {
+  const source = stableSerialize({
+    imageDigest: request && request.imageDigest || "",
+    provider: settings && settings.provider || "",
+    sourceType: request && request.sourceType || "page",
+    pageIds: request && request.pageIds || [],
+    imageRevisionByPage: request && request.imageRevisionByPage || {},
+    coordinateModelVersion: OCR_COORDINATE_MODEL_VERSION,
+    imageMeta: {
+      width: Number(request && request.imageMeta && request.imageMeta.width) || 0,
+      height: Number(request && request.imageMeta && request.imageMeta.height) || 0,
+      pageSpans: request && request.imageMeta && request.imageMeta.pageSpans || []
+    },
+    ocr: {
+      ignoreSimplifiedChinese: settings && settings.ignoreSimplifiedChinese === true,
+      localOcrBaseUrl: settings && settings.localOcrBaseUrl || "",
+      localOcrLang: settings && settings.localOcrLang || "",
+      localOcrMode: settings && settings.localOcrMode || "",
+      localOcrDetThresh: settings && settings.localOcrDetThresh || "",
+      localOcrDetBoxThresh: settings && settings.localOcrDetBoxThresh || "",
+      localOcrDetUnclipRatio: settings && settings.localOcrDetUnclipRatio || "",
+      tuning: settings ? {
+        confidenceThreshold: settings.ocrConfidenceThreshold,
+        minBoxArea: settings.ocrMinBoxArea,
+        maxBoxArea: settings.ocrMaxBoxArea,
+        minBoxWidth: settings.ocrMinBoxWidth,
+        minBoxHeight: settings.ocrMinBoxHeight,
+        maxAspectRatio: settings.ocrMaxAspectRatio,
+        mergeLineGap: settings.ocrMergeLineGap
+      } : {},
+      visionOcrEnabled: settings && settings.visionOcrEnabled === true,
+      visionOcrBaseUrl: settings && settings.visionOcrBaseUrl || "",
+      visionOcrModel: settings && settings.visionOcrModel || ""
+    }
+  });
+  return `${OCR_CACHE_PREFIX}${String(request && request.imageDigest || "no-digest")}:${stableHash128(source)}`;
+}
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableSerialize).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+async function requestProviderNeutralOcr({ request, settings }) {
+  if (backgroundTestHooks && typeof backgroundTestHooks.requestProviderNeutralOcr === "function") {
+    return backgroundTestHooks.requestProviderNeutralOcr({ request, settings });
+  }
+  if (settings.provider === PROVIDERS.baiduDeepSeek) {
+    return requestBaiduOcrObservations({ request, settings });
+  }
+  if (settings.provider === PROVIDERS.localPaddleDeepSeek) {
+    return requestLocalPaddleOcrObservations({ request, settings });
+  }
+  throw new Error(`Unsupported OCR provider: ${settings.provider}`);
+}
+
+async function requestBaiduOcrObservations({ request, settings }) {
+  const imageSize = await decodeObservationImageSize(request.dataUrl, request.imageMeta);
+  const ocrPayload = await requestBaiduAccurateOcr({
+    dataUrl: request.dataUrl,
+    apiKey: settings.baiduApiKey,
+    secretKey: settings.baiduSecretKey
+  });
+  const ocrTuning = getOcrTuning(settings);
+  const ocrDebug = createOcrDebugSession("baidu", imageSize, ocrTuning, {
+    rawItems: Array.isArray(ocrPayload && ocrPayload.words_result) ? ocrPayload.words_result : []
+  });
+  const normalized = buildBaiduBubbleItems(ocrPayload, imageSize, ocrTuning, ocrDebug)
+    .map((item, index) => normalizeBaiduOcrItem(item, index, imageSize))
+    .filter(Boolean);
+  return buildProviderNeutralObservationResult({
+    provider: "baidu",
+    request,
+    imageSize,
+    normalized,
+    ocrTuning,
+    ocrDebug,
+    ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese,
+    serviceCounts: ocrPayload && ocrPayload.counts,
+    debug: settings.localOcrDebug === true
+  });
+}
+
+async function requestLocalPaddleOcrObservations({ request, settings }) {
+  const imageSize = await decodeObservationImageSize(request.dataUrl, request.imageMeta);
+  let mode = settings.localOcrMode || DEFAULT_LOCAL_OCR_MODE;
+  if (mode === "enhanced" && imageSize.width * imageSize.height > 4000000) {
+    mode = "fast";
+  }
+  let ocrPayload = await requestLocalPaddleOcr({
+    dataUrl: request.dataUrl,
+    baseUrl: settings.localOcrBaseUrl || DEFAULT_LOCAL_OCR_BASE_URL,
+    lang: settings.localOcrLang || DEFAULT_LOCAL_OCR_LANG,
+    mode,
+    params: getLocalOcrParams(settings),
+    debug: settings.localOcrDebug === true,
+    debugId: buildLocalOcrDebugId(request.targetKey || request.pageIds.join("-"), request.imageMeta)
+  });
+  ocrPayload = collectSourceImageOcrPayload(ocrPayload, imageSize, request.imageMeta);
+  const coordinateImageSize = {
+    width: Number(ocrPayload && ocrPayload.imageWidth) || imageSize.width,
+    height: Number(ocrPayload && ocrPayload.imageHeight) || imageSize.height
+  };
+  const ocrTuning = getOcrTuning(settings);
+  const ocrDebug = createOcrDebugSession("local_paddle", coordinateImageSize, ocrTuning, {
+    rawItems: getLocalOcrPayloadItems(ocrPayload, true)
+  });
+  const items = await buildLocalPaddleBubbleItems(
+    ocrPayload,
+    coordinateImageSize,
+    request.imageMeta && request.imageMeta.coordinateSpace === "source-image-v1" ? "" : request.dataUrl,
+    settings.localOcrDebug === true,
+    {
+      apiKey: settings.visionOcrEnabled ? settings.visionOcrApiKey : "",
+      baseUrl: settings.visionOcrEnabled ? settings.visionOcrBaseUrl || DEFAULT_QWEN_BASE_URL : "",
+      model: settings.visionOcrEnabled ? settings.visionOcrModel || DEFAULT_VISION_OCR_MODEL : ""
+    },
+    ocrTuning,
+    ocrDebug,
+    request.imageMeta
+  );
+  const normalized = items.map((item, index) => normalizeBaiduOcrItem(item, index, coordinateImageSize)).filter(Boolean);
+  return buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request,
+    imageSize: coordinateImageSize,
+    normalized,
+    ocrTuning,
+    ocrDebug,
+    ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese,
+    serviceCounts: ocrPayload && ocrPayload.counts,
+    cleanedImage: ocrPayload && ocrPayload.cleanedImage,
+    debug: settings.localOcrDebug === true
+  });
+}
+
+async function decodeObservationImageSize(dataUrl, imageMeta) {
+  if (backgroundTestHooks && typeof backgroundTestHooks.decodeImageSize === "function") {
+    return backgroundTestHooks.decodeImageSize(dataUrl, imageMeta);
+  }
+  return decodeDataUrlImageSize(dataUrl);
+}
+
+function buildProviderNeutralObservationResult({
+  provider,
+  request,
+  imageSize,
+  normalized,
+  ocrTuning,
+  ocrDebug,
+  ignoreSimplifiedChinese,
+  serviceCounts,
+  cleanedImage,
+  debug
+}) {
+  const retained = [];
+  const filteredRows = [];
+  (Array.isArray(normalized) ? normalized : []).forEach((candidate) => {
+    let reason = getFinalCandidateDropReason(candidate, imageSize, ocrTuning, provider);
+    if (!reason && shouldDropSymbolOnlyBubble(candidate)) {
+      reason = "symbol-only-final";
+    }
+    if (!reason && shouldDropMeaninglessAlphabeticBubble(candidate)) {
+      reason = "meaningless-alphabetic-final";
+    }
+    if (!reason && ignoreSimplifiedChinese && isConfidentSimplifiedChinese(candidate.original_text)) {
+      reason = "ignored-simplified-chinese";
+    }
+    if (reason) {
+      filteredRows.push({ candidate, reason });
+    } else {
+      retained.push(candidate);
+    }
+  });
+
+  collectDebugFilteredObservationRows(ocrDebug, imageSize).forEach((row) => {
+    const key = buildCandidateGeometryKey(row.candidate);
+    const exists = filteredRows.some((entry) => buildCandidateGeometryKey(entry.candidate) === key);
+    if (!exists) {
+      filteredRows.push(row);
+    }
+  });
+
+  const coalesced = coalesceOverlappingOcrCandidates(retained);
+  coalesced.slice(MAX_BUBBLES).forEach((candidate) => {
+    filteredRows.push({ candidate, reason: "max_bubbles" });
+  });
+  const observations = coalesced
+    .slice(0, MAX_BUBBLES)
+    .map((candidate) => buildProviderNeutralObservation(provider, request, candidate, imageSize));
+  const filteredObservations = filteredRows
+    .map(({ candidate, reason }) => ({
+      ...buildProviderNeutralObservation(provider, request, candidate, imageSize),
+      filterReason: String(reason || "filtered")
+    }));
+  const sortedObservations = sortProviderNeutralObservations(observations);
+  const sortedFiltered = sortProviderNeutralObservations(filteredObservations);
+  const edgeSignals = buildObservationEdgeSignals(sortedObservations, sortedFiltered, imageSize);
+  const result = {
+    provider,
+    sourceType: request.sourceType,
+    pageIds: [...request.pageIds],
+    imageRevisionByPage: { ...request.imageRevisionByPage },
+    imageDigest: request.imageDigest,
+    coordinateModelVersion: OCR_COORDINATE_MODEL_VERSION,
+    observations: sortedObservations,
+    filteredObservations: sortedFiltered,
+    edgeSignals,
+    counts: {
+      retained: sortedObservations.length,
+      filtered: sortedFiltered.length,
+      ...(serviceCounts && typeof serviceCounts === "object" ? serviceCounts : {})
+    },
+    ...(isDataUrl(cleanedImage) ? { cleanedImage } : {}),
+    ...(debug ? { debug: buildUnifiedOcrDebugPayload(ocrDebug, retained, { provider, sourceType: request.sourceType }) } : {})
+  };
+  return deepFreezeObservationResult(result);
+}
+
+function collectDebugFilteredObservationRows(ocrDebug, imageSize) {
+  return (ocrDebug && Array.isArray(ocrDebug.filterReasons) ? ocrDebug.filterReasons : []).map((entry) => {
+    const item = entry && entry.item;
+    const percent = item && item.percent;
+    const rawBox = item && item.rawBox;
+    const text = normalizeTranslationSourceText(item && item.text);
+    if (!text || !percent || !rawBox) {
+      return null;
+    }
+    return {
+      reason: String(entry.reason || "filtered"),
+      candidate: {
+        id: "",
+        x: Number(percent.x) || 0,
+        y: Number(percent.y) || 0,
+        w: Math.max(0.1, Number(percent.w) || 0.1),
+        h: Math.max(0.1, Number(percent.h) || 0.1),
+        original_text: text,
+        confidence: Number(item.confidence) || 0,
+        rawBox: normalizeObservationPixelBox(rawBox) || {
+          left: (Number(percent.x) || 0) / 100 * imageSize.width,
+          top: (Number(percent.y) || 0) / 100 * imageSize.height,
+          width: Math.max(1, (Number(percent.w) || 0.1) / 100 * imageSize.width),
+          height: Math.max(1, (Number(percent.h) || 0.1) / 100 * imageSize.height)
+        }
+      }
+    };
+  }).filter(Boolean);
+}
+
+function buildProviderNeutralObservation(provider, request, candidate, imageSize) {
+  const pageSpans = buildObservationPageSpans(request, candidate, imageSize);
+  const originalText = normalizeTranslationSourceText(candidate && candidate.original_text);
+  const captureIdentity = [
+    provider,
+    request.sourceType,
+    request.pageIds.join(","),
+    stableSerialize(request.imageRevisionByPage)
+  ].join("|");
+  const providerBlockId = buildOcrBlockId(captureIdentity, candidate);
+  const geometryFingerprint = pageSpans.map((span) => [
+    span.pageId,
+    span.box.x,
+    span.box.y,
+    span.box.w,
+    span.box.h,
+    span.overlapRatio
+  ].join(",")).join(";");
+  const id = `obs-v1-${stableHash128([
+    captureIdentity,
+    normalizeTranslationSourceText(originalText),
+    geometryFingerprint
+  ].join("|"))}`;
+  const visual = {
+    box: quantizePercentBox(candidate),
+    rawBox: normalizeObservationPixelBox(candidate && candidate.rawBox),
+    fillBox: quantizePercentBox(candidate && candidate.fill_box),
+    bgType: String(candidate && candidate.bg_type || "solid"),
+    bgColor: String(candidate && candidate.bg_color || ""),
+    bgConfidence: quantizeObservationNumber(candidate && candidate.bg_confidence, 0.001),
+    regionId: String(candidate && candidate.region_id || ""),
+    regionType: String(candidate && candidate.region_type || ""),
+    regionPolygon: quantizeObservationPolygon(candidate && candidate.region_polygon),
+    textColor: String(candidate && candidate.text_color || ""),
+    strokeColor: String(candidate && candidate.stroke_color || ""),
+    polygon: quantizeObservationPolygon(candidate && candidate.polygon),
+    rotationDeg: quantizeObservationNumber(candidate && candidate.rotation_deg, 0.1),
+    sourceLineCount: Math.max(1, Number(candidate && candidate.source_line_count) || 1)
+  };
+  return {
+    id,
+    provider,
+    captureId: captureIdentity,
+    sourceType: request.sourceType,
+    pageIds: [...request.pageIds],
+    imageRevisionByPage: { ...request.imageRevisionByPage },
+    pageSpans,
+    originalText,
+    confidence: quantizeObservationNumber(candidate && candidate.confidence, 0.001),
+    visual,
+    providerBlockId
+  };
+}
+
+function buildObservationPageSpans(request, candidate, imageSize) {
+  const rawBox = normalizeObservationPixelBox(candidate && candidate.rawBox) || {
+    left: Number(candidate && candidate.x || 0) / 100 * imageSize.width,
+    top: Number(candidate && candidate.y || 0) / 100 * imageSize.height,
+    width: Number(candidate && candidate.w || 0) / 100 * imageSize.width,
+    height: Number(candidate && candidate.h || 0) / 100 * imageSize.height
+  };
+  const configured = request && request.imageMeta && Array.isArray(request.imageMeta.pageSpans)
+    ? request.imageMeta.pageSpans
+    : [];
+  if (configured.length === 0) {
+    return request.pageIds.map((pageId) => ({
+      pageId,
+      box: quantizePercentBox(candidate),
+      polygon: quantizeObservationPolygon(candidate && candidate.polygon),
+      overlapRatio: quantizeObservationNumber(1 / request.pageIds.length, 0.001)
+    }));
+  }
+  const spans = [];
+  configured.forEach((entry) => {
+    const intersection = intersectObservationBoxes(rawBox, entry.canvasBox);
+    if (!intersection) {
+      return;
+    }
+    const scaleX = entry.pageBox.width / entry.canvasBox.width;
+    const scaleY = entry.pageBox.height / entry.canvasBox.height;
+    const pageLeft = entry.pageBox.left + (intersection.left - entry.canvasBox.left) * scaleX;
+    const pageTop = entry.pageBox.top + (intersection.top - entry.canvasBox.top) * scaleY;
+    spans.push({
+      pageId: entry.pageId,
+      box: {
+        x: quantizeObservationNumber(pageLeft / entry.pageWidth * 100, 0.01),
+        y: quantizeObservationNumber(pageTop / entry.pageHeight * 100, 0.01),
+        w: quantizeObservationNumber(intersection.width * scaleX / entry.pageWidth * 100, 0.01),
+        h: quantizeObservationNumber(intersection.height * scaleY / entry.pageHeight * 100, 0.01)
+      },
+      polygon: null,
+      overlapRatio: quantizeObservationNumber(
+        intersection.width * intersection.height / Math.max(1, rawBox.width * rawBox.height),
+        0.001
+      )
+    });
+  });
+  return spans.length > 0 ? spans : request.pageIds.map((pageId) => ({
+    pageId,
+    box: quantizePercentBox(candidate),
+    polygon: null,
+    overlapRatio: 0
+  }));
+}
+
+function intersectObservationBoxes(left, right) {
+  if (!left || !right) {
+    return null;
+  }
+  const x1 = Math.max(left.left, right.left);
+  const y1 = Math.max(left.top, right.top);
+  const x2 = Math.min(left.left + left.width, right.left + right.width);
+  const y2 = Math.min(left.top + left.height, right.top + right.height);
+  return x2 > x1 && y2 > y1 ? { left: x1, top: y1, width: x2 - x1, height: y2 - y1 } : null;
+}
+
+function quantizePercentBox(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const x = Number(value.x ?? value.left);
+  const y = Number(value.y ?? value.top);
+  const w = Number(value.w ?? value.width);
+  const h = Number(value.h ?? value.height);
+  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
+    return null;
+  }
+  return {
+    x: quantizeObservationNumber(x, 0.01),
+    y: quantizeObservationNumber(y, 0.01),
+    w: quantizeObservationNumber(w, 0.01),
+    h: quantizeObservationNumber(h, 0.01)
+  };
+}
+
+function quantizeObservationPolygon(value) {
+  return Array.isArray(value) ? value.map((point) => ({
+    x: quantizeObservationNumber(Array.isArray(point) ? point[0] : point && point.x, 0.01),
+    y: quantizeObservationNumber(Array.isArray(point) ? point[1] : point && point.y, 0.01)
+  })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y)) : null;
+}
+
+function quantizeObservationNumber(value, quantum) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number / quantum) * quantum : 0;
+}
+
+function buildCandidateGeometryKey(candidate) {
+  return [
+    normalizeTranslationSourceText(candidate && candidate.original_text),
+    quantizeObservationNumber(candidate && candidate.x, 0.1),
+    quantizeObservationNumber(candidate && candidate.y, 0.1),
+    quantizeObservationNumber(candidate && candidate.w, 0.1),
+    quantizeObservationNumber(candidate && candidate.h, 0.1)
+  ].join("|");
+}
+
+function sortProviderNeutralObservations(value) {
+  return [...value].sort((left, right) => {
+    const leftSpan = left.pageSpans && left.pageSpans[0];
+    const rightSpan = right.pageSpans && right.pageSpans[0];
+    return String(leftSpan && leftSpan.pageId || "").localeCompare(String(rightSpan && rightSpan.pageId || "")) ||
+      Number(leftSpan && leftSpan.box && leftSpan.box.y || 0) - Number(rightSpan && rightSpan.box && rightSpan.box.y || 0) ||
+      Number(leftSpan && leftSpan.box && leftSpan.box.x || 0) - Number(rightSpan && rightSpan.box && rightSpan.box.x || 0) ||
+      String(left.id).localeCompare(String(right.id));
+  });
+}
+
+function buildObservationEdgeSignals(observations, filteredObservations, imageSize) {
+  const bandHeight = Math.min(
+    Math.max(1, Number(imageSize && imageSize.height) || 1),
+    clamp(Math.round(Math.max(1, Number(imageSize && imageSize.width) || 1) * 0.15), 160, 420)
+  );
+  const bandPercent = bandHeight / Math.max(1, Number(imageSize && imageSize.height) || 1) * 100;
+  const buildSide = (side) => {
+    const retainedIds = observations.filter((item) => observationTouchesEdge(item, side, bandPercent)).map((item) => item.id);
+    const filteredIds = filteredObservations.filter((item) => observationTouchesEdge(item, side, bandPercent)).map((item) => item.id);
+    const visualDetected = [...observations, ...filteredObservations].some((item) => observationVisualTouchesEdge(item, side, bandPercent));
+    return {
+      detected: retainedIds.length > 0 || filteredIds.length > 0 || visualDetected,
+      retainedObservationIds: retainedIds,
+      filteredObservationIds: filteredIds,
+      visualDetected
+    };
+  };
+  const top = buildSide("top");
+  const bottom = buildSide("bottom");
+  return { bandHeight, top, bottom, hasAny: top.detected || bottom.detected };
+}
+
+function observationTouchesEdge(observation, side, bandPercent) {
+  return (observation && observation.pageSpans || []).some((span) => {
+    const box = span && span.box;
+    return box && (side === "top" ? box.y <= bandPercent : box.y + box.h >= 100 - bandPercent);
+  });
+}
+
+function observationVisualTouchesEdge(observation, side, bandPercent) {
+  const visual = observation && observation.visual || {};
+  const polygons = [visual.polygon, visual.regionPolygon, visual.region_polygon]
+    .filter((value) => Array.isArray(value) && value.length > 0);
+  const polygonTouches = polygons.some((polygon) => {
+    const values = polygon.map((point) => Number(point && point.y)).filter(Number.isFinite);
+    return values.length > 0 && (side === "top" ? Math.min(...values) <= bandPercent : Math.max(...values) >= 100 - bandPercent);
+  });
+  if (polygonTouches) return true;
+  return [visual.fillBox, visual.fill_box, visual.regionBox, visual.region_box, visual.box]
+    .filter((box) => box && typeof box === "object")
+    .some((box) => {
+      const y = Number(box.y ?? box.top);
+      const height = Number(box.h ?? box.height);
+      return Number.isFinite(y) && Number.isFinite(height) && height > 0 && (
+        side === "top" ? y <= bandPercent : y + height >= 100 - bandPercent
+      );
+    });
+}
+
+function deepFreezeObservationResult(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  Object.values(value).forEach(deepFreezeObservationResult);
+  return Object.freeze(value);
+}
+
+function normalizeCanonicalRevision(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 1 ? Math.floor(number) : 1;
+}
+
+function normalizeLanguageTag(value, fallback) {
+  const text = String(value || "").trim();
+  return text || fallback;
+}
+
+function normalizeTranslationSourceText(value) {
+  return String(value || "").normalize("NFKC").replace(/\s+/g, " ").trim();
 }
 
 async function handleFetchImageDataUrl(message) {
@@ -1039,6 +1756,115 @@ async function requestOpenAICompatibleVision({ model, apiKey, baseUrl, dataUrl, 
   }
 }
 
+function settingsFromOcrTuning(value) {
+  const tuning = value || getDefaultOcrTuning();
+  return {
+    ocrConfidenceThreshold: tuning.confidenceThreshold,
+    ocrMinBoxArea: tuning.minBoxArea,
+    ocrMaxBoxArea: tuning.maxBoxArea,
+    ocrMinBoxWidth: tuning.minBoxWidth,
+    ocrMinBoxHeight: tuning.minBoxHeight,
+    ocrMaxAspectRatio: tuning.maxAspectRatio,
+    ocrMergeLineGap: tuning.mergeLineGap,
+    localOcrDebug: tuning.debugEnabled === true
+  };
+}
+
+async function requestLegacyTranslatedResultFromOcr({
+  provider,
+  dataUrl,
+  imageMeta,
+  targetKey,
+  ocrSettings,
+  translatorApiKey,
+  translatorBaseUrl,
+  translatorModel,
+  glossary,
+  glossaryFingerprint
+}) {
+  const imageDigest = await digestDataUrlSha256(dataUrl);
+  const pageId = `legacy-${imageDigest}`;
+  const request = {
+    dataUrl,
+    sourceType: "page",
+    pageIds: [pageId],
+    imageRevisionByPage: { [pageId]: imageDigest },
+    imageDigest,
+    imageMeta: imageMeta || {},
+    targetKey: String(targetKey || ""),
+    requireCleanedImage: true
+  };
+  const settings = { ...DEFAULT_SETTINGS, ...(ocrSettings || {}), provider };
+  const ocrResult = await requestProviderNeutralOcr({ request, settings });
+  if (!Array.isArray(ocrResult.observations) || ocrResult.observations.length === 0) {
+    return {
+      bubbles: [],
+      ...(isDataUrl(ocrResult.cleanedImage) ? { cleanedImage: ocrResult.cleanedImage } : {}),
+      ...(ocrResult.debug ? { debug: ocrResult.debug } : {})
+    };
+  }
+
+  const translated = await requestCanonicalTextTranslations({
+    items: ocrResult.observations.map((observation) => ({
+      id: observation.id,
+      revision: 1,
+      original_text: observation.originalText
+    })),
+    apiKey: translatorApiKey,
+    baseUrl: translatorBaseUrl,
+    model: translatorModel,
+    sourceLanguage: "auto",
+    targetLanguage: "zh-CN",
+    promptVersion: CANONICAL_TRANSLATION_PROMPT_VERSION,
+    translationOptions: { legacyWireShape: true },
+    glossary,
+    glossaryFingerprint
+  });
+  const missingObservationIds = ocrResult.observations
+    .filter((observation) => {
+      const row = translated.get(canonicalTranslationItemKey({ id: observation.id, revision: 1 }));
+      return !row || !row.translatedText;
+    })
+    .map((observation) => observation.id);
+  if (missingObservationIds.length > 0) {
+    throw new Error(`Translation response omitted ${missingObservationIds.length} OCR block(s)`);
+  }
+  const bubbles = ocrResult.observations.map((observation) => {
+    const visual = observation.visual || {};
+    const span = observation.pageSpans && observation.pageSpans[0];
+    const box = span && span.box || visual.box || { x: 0, y: 0, w: 0.1, h: 0.1 };
+    const row = translated.get(canonicalTranslationItemKey({ id: observation.id, revision: 1 }));
+    return {
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+      fill_box: visual.fillBox || null,
+      bg_type: visual.bgType || "solid",
+      bg_color: visual.bgColor || "",
+      bg_confidence: Number(visual.bgConfidence || 0),
+      region_id: visual.regionId || "",
+      region_type: visual.regionType || "plain_text",
+      region_polygon: visual.regionPolygon || null,
+      text_color: visual.textColor || "",
+      stroke_color: visual.strokeColor || "",
+      polygon: visual.polygon || null,
+      rotation_deg: Number(visual.rotationDeg || 0),
+      source_line_count: Math.max(1, Number(visual.sourceLineCount) || 1),
+      block_id: observation.providerBlockId,
+      original_text: observation.originalText,
+      translated_text: cleanDecorativeSymbols(row.translatedText)
+    };
+  });
+  return {
+    bubbles: provider === PROVIDERS.localPaddleDeepSeek
+      ? collapseDuplicateLocalPaddleTranslations(bubbles)
+      : bubbles,
+    ...(isDataUrl(ocrResult.cleanedImage) ? { cleanedImage: ocrResult.cleanedImage } : {}),
+    ...(ocrResult.debug ? { debug: ocrResult.debug } : {})
+  };
+}
+
 async function requestBaiduOcrAndOpenAICompatibleTranslate({
   dataUrl,
   baiduApiKey,
@@ -1052,88 +1878,24 @@ async function requestBaiduOcrAndOpenAICompatibleTranslate({
   glossary,
   glossaryFingerprint
 }) {
-  const imageSize = await decodeDataUrlImageSize(dataUrl);
-  const ocrPayload = await requestBaiduAccurateOcr({
+  return requestLegacyTranslatedResultFromOcr({
+    provider: PROVIDERS.baiduDeepSeek,
     dataUrl,
-    apiKey: baiduApiKey,
-    secretKey: baiduSecretKey
-  });
-  const ocrDebug = createOcrDebugSession("baidu", imageSize, ocrTuning, {
-    rawItems: Array.isArray(ocrPayload && ocrPayload.words_result) ? ocrPayload.words_result : []
-  });
-  const debugEnabled = Boolean(ocrTuning && ocrTuning.debugEnabled);
-  const ocrItems = buildBaiduBubbleItems(ocrPayload, imageSize, ocrTuning, ocrDebug);
-
-  const candidates = coalesceOverlappingOcrCandidates(ocrItems
-    .map((item, index) => normalizeBaiduOcrItem(item, index, imageSize))
-    .filter((item) => item && item.original_text)
-    .filter((item) => keepOrTraceFinalCandidate(item, imageSize, ocrTuning, ocrDebug, "baidu"))
-    .filter((item) => debugEnabled || !shouldDropSymbolOnlyBubble(item))
-    .filter((item) => debugEnabled || !shouldDropMeaninglessAlphabeticBubble(item))
-    .filter((item) => {
-      if (!ignoreSimplifiedChinese) {
-        return true;
-      }
-      return !isConfidentSimplifiedChinese(item.original_text);
-    })
-    .slice(0, MAX_BUBBLES));
-
-  if (localOcrDebug) {
-    console.info("[MangaTranslator][OCR chain]", {
-      frontendReceivedItems:
-        ocrPayload && Array.isArray(ocrPayload.items)
-          ? ocrPayload.items.length
-          : ocrPayload && Array.isArray(ocrPayload.results)
-            ? ocrPayload.results.length
-            : 0,
-      frontendMergedBlocks: ocrItems.length,
-      frontendTranslatedBlocks: candidates.length,
-      serviceCounts: ocrPayload && ocrPayload.counts ? ocrPayload.counts : null
-    });
-  }
-
-  if (candidates.length === 0) {
-    return { bubbles: [] };
-  }
-
-  const translated = await requestOpenAICompatibleTextTranslations({
-    items: candidates,
-    apiKey: translatorApiKey,
-    baseUrl: translatorBaseUrl,
-    model: translatorModel,
+    imageMeta: null,
+    targetKey: "legacy-baidu",
+    ocrSettings: {
+      provider: PROVIDERS.baiduDeepSeek,
+      baiduApiKey,
+      baiduSecretKey,
+      ignoreSimplifiedChinese,
+      ...settingsFromOcrTuning(ocrTuning)
+    },
+    translatorApiKey,
+    translatorBaseUrl,
+    translatorModel,
     glossary,
     glossaryFingerprint
   });
-
-  if (localOcrDebug) {
-    console.info("[MangaTranslator][OCR chain] translation", {
-      frontendTranslatedBlocks: candidates.length,
-      translatedMapSize: translated.size
-    });
-  }
-
-  return {
-    bubbles: candidates.map((item) => {
-      const translatedText = translated.get(item.id) || item.original_text;
-      return {
-        x: item.x,
-        y: item.y,
-        w: item.w,
-        h: item.h,
-        bg_type: "solid",
-        original_text: item.original_text,
-        translated_text: cleanDecorativeSymbols(translatedText)
-      };
-    }),
-    ...(debugEnabled
-      ? {
-          debug: buildUnifiedOcrDebugPayload(ocrDebug, candidates, {
-            provider: "baidu_deepseek",
-            localOcr: ocrPayload && ocrPayload.debug ? ocrPayload.debug : {}
-          })
-        }
-      : {})
-  };
 }
 
 async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
@@ -1154,130 +1916,34 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
   glossary,
   glossaryFingerprint
 }) {
-  const imageSize = await decodeDataUrlImageSize(dataUrl);
-  let effectiveOcrMode = localOcrMode;
-  if (effectiveOcrMode === "enhanced" && imageSize.width * imageSize.height > 4000000) {
-    console.info(
-      "[MangaTranslator] Large image detected (%dx%d), downgrading OCR from enhanced to fast to avoid timeout",
-      imageSize.width,
-      imageSize.height
-    );
-    effectiveOcrMode = "fast";
-  }
-  const debugId = buildLocalOcrDebugId(targetKey, imageMeta);
-  let ocrPayload = await requestLocalPaddleOcr({
+  return requestLegacyTranslatedResultFromOcr({
+    provider: PROVIDERS.localPaddleDeepSeek,
     dataUrl,
-    baseUrl: localOcrBaseUrl,
-    lang: localOcrLang,
-    mode: effectiveOcrMode,
-    params: localOcrParams,
-    debug: localOcrDebug,
-    debugId
-  });
-  ocrPayload = collectSourceImageOcrPayload(ocrPayload, imageSize, imageMeta);
-  const coordinateImageSize = {
-    width: Number(ocrPayload && ocrPayload.imageWidth) || imageSize.width,
-    height: Number(ocrPayload && ocrPayload.imageHeight) || imageSize.height
-  };
-  const ocrDebug = createOcrDebugSession("local_paddle", coordinateImageSize, ocrTuning, {
-    rawItems: getLocalOcrPayloadItems(ocrPayload, true)
-  });
-  let ocrItems = await buildLocalPaddleBubbleItems(ocrPayload, coordinateImageSize, imageMeta && imageMeta.coordinateSpace === "source-image-v1" ? "" : dataUrl, localOcrDebug, {
-    apiKey: visionOcrOptions && visionOcrOptions.enabled ? visionOcrOptions.apiKey : "",
-    baseUrl: visionOcrOptions && visionOcrOptions.enabled ? visionOcrOptions.baseUrl : "",
-    model: visionOcrOptions && visionOcrOptions.enabled ? visionOcrOptions.model : ""
-  }, ocrTuning, ocrDebug, imageMeta);
-
-  console.debug("[MangaTranslator][localPaddle] ocrItems count:", ocrItems.length, "ocrPayload items:", (ocrPayload && ocrPayload.items ? ocrPayload.items.length : 0), "boxes:", (ocrPayload && Array.isArray(ocrPayload.boxes) ? ocrPayload.boxes.length : 0));
-
-  if (ocrItems.length === 0) {
-    console.warn("[MangaTranslator][localPaddle] ocrItems is EMPTY! clustered returned nothing from buildLocalPaddleBubbleItems");
-  }
-
-  let stepA = ocrItems.map((item, index) => normalizeBaiduOcrItem(item, index, coordinateImageSize));
-  let nonNullA = stepA.filter(Boolean).length;
-  let stepB = stepA.filter((item) => item && item.original_text);
-  let stepC = stepB.filter((item) => keepOrTraceFinalCandidate(item, coordinateImageSize, ocrTuning, ocrDebug, "local_paddle"));
-  let stepD = stepC.filter((item) => !shouldDropSymbolOnlyBubble(item));
-  let stepE = stepD.filter((item) => !shouldDropMeaninglessAlphabeticBubble(item));
-  let stepF = stepE.filter((item) => {
-    if (!ignoreSimplifiedChinese) {
-      return true;
-    }
-    return !isConfidentSimplifiedChinese(item.original_text);
-  });
-  let stepG = stepF.slice(0, MAX_BUBBLES);
-  console.debug("[MangaTranslator][localPaddle] filter chain: raw:", ocrItems.length, "mapped:", stepA.length, "nonNull:", nonNullA, "hasText:", stepB.length, "keepFinal:", stepC.length, "!symbol:", stepD.length, "!meaningless:", stepE.length, "!ignoredZh:", stepF.length, "sliced:", stepG.length);
-
-  const sourceImageId = String(imageMeta && imageMeta.sourceImageId || targetKey || "image");
-  const candidates = coalesceOverlappingOcrCandidates(stepG).map((item) => ({
-    ...item,
-    block_id: buildOcrBlockId(sourceImageId, item)
-  }));
-
-  if (candidates.length === 0) {
-    console.warn("[MangaTranslator][localPaddle] No candidates after filtering, returning empty bubbles", {stepA: stepA.length, stepB: stepB.length, stepC: stepC.length, stepD: stepD.length, stepE: stepE.length, stepF: stepF.length, stepG: stepG.length});
-    return { bubbles: [] };
-  }
-
-  console.debug("[MangaTranslator][localPaddle] Sending", candidates.length, "items for translation:", candidates.map((c) => ({ id: c.id, text: c.original_text?.slice(0, 30) })));
-
-  const translated = await requestOpenAICompatibleTextTranslations({
-    items: candidates,
-    apiKey: translatorApiKey,
-    baseUrl: translatorBaseUrl,
-    model: translatorModel,
-    sourceImageId,
+    imageMeta,
+    targetKey,
+    ocrSettings: {
+      provider: PROVIDERS.localPaddleDeepSeek,
+      localOcrBaseUrl,
+      localOcrLang,
+      localOcrMode,
+      localOcrDebug,
+      localOcrDetThresh: localOcrParams && localOcrParams.text_det_thresh,
+      localOcrDetBoxThresh: localOcrParams && localOcrParams.text_det_box_thresh,
+      localOcrDetUnclipRatio: localOcrParams && localOcrParams.text_det_unclip_ratio,
+      visionOcrEnabled: Boolean(visionOcrOptions && visionOcrOptions.enabled),
+      visionOcrApiKey: visionOcrOptions && visionOcrOptions.apiKey,
+      visionOcrBaseUrl: visionOcrOptions && visionOcrOptions.baseUrl,
+      visionOcrModel: visionOcrOptions && visionOcrOptions.model,
+      ignoreSimplifiedChinese,
+      ...settingsFromOcrTuning(ocrTuning)
+    },
+    translatorApiKey,
+    translatorBaseUrl,
+    translatorModel,
     glossary,
     glossaryFingerprint
   });
-
-  console.debug("[MangaTranslator][localPaddle] Translation result map size:", translated.size, "keys:", [...translated.keys()]);
-
-  candidates.forEach((item) => {
-    item.translated_text = cleanDecorativeSymbols(translated.get(item.id) || item.original_text);
-  });
-
-  const bubbles = candidates.map((item) => {
-    const translatedText = translated.get(item.id) || item.original_text;
-    return {
-      x: item.x,
-      y: item.y,
-      w: item.w,
-      h: item.h,
-      fill_box: item.fill_box || null,
-      bg_type: item.bg_type,
-      bg_color: item.bg_color || "",
-      bg_confidence: Number(item.bg_confidence || 0),
-      region_id: String(item.region_id || ""),
-      region_type: String(item.region_type || "plain_text"),
-      region_polygon: item.region_polygon || null,
-      text_color: String(item.text_color || ""),
-      stroke_color: String(item.stroke_color || ""),
-      polygon: item.polygon || null,
-      rotation_deg: normalizeRotationDegrees(item.rotation_deg),
-      source_line_count: Math.max(1, Number(item.source_line_count) || 1),
-      block_id: item.block_id,
-      original_text: item.original_text,
-      translated_text: cleanDecorativeSymbols(translatedText)
-    };
-  });
-
-  return {
-    bubbles: collapseDuplicateLocalPaddleTranslations(bubbles),
-    ...(localOcrDebug
-      ? {
-          debug: buildUnifiedOcrDebugPayload(ocrDebug, candidates, {
-            localOcr: ocrPayload.debug || {},
-            imageMeta,
-            ocrImageWidth: Number(ocrPayload.imageWidth || imageSize.width || 0),
-            ocrImageHeight: Number(ocrPayload.imageHeight || imageSize.height || 0)
-          })
-        }
-      : {})
-  };
 }
-
 function collectSourceImageOcrPayload(payload, cropImageSize, imageMeta) {
   if (
     !payload || !imageMeta || imageMeta.stitch || imageMeta.coordinateSpace !== "source-image-v1" ||
@@ -3800,6 +4466,201 @@ function normalizePercentPolygon(value, imageSize) {
   });
 }
 
+async function requestCanonicalTextTranslations({
+  items,
+  apiKey,
+  baseUrl,
+  model,
+  sourceLanguage,
+  targetLanguage,
+  promptVersion,
+  translationOptions,
+  glossary,
+  glossaryFingerprint
+}) {
+  const outcome = new Map();
+  const pending = [];
+  const newRequests = [];
+  const configuredModel = model || DEFAULT_MODELS[PROVIDERS.baiduDeepSeek];
+  const configuredBaseUrl = baseUrl || DEFAULT_TRANSLATION_BASE_URL;
+
+  for (const item of items) {
+    const translationFingerprint = buildCanonicalTranslationFingerprint({
+      originalText: item.original_text,
+      sourceLanguage,
+      targetLanguage,
+      model: configuredModel,
+      baseUrl: configuredBaseUrl,
+      promptVersion,
+      glossaryFingerprint,
+      translationOptions
+    });
+    const cacheKey = `${CANONICAL_TRANSLATION_CACHE_PREFIX}${translationFingerprint}`;
+    const cached = await getCache(cacheKey);
+    if (cached && typeof cached.translatedText === "string" && cached.translatedText.trim()) {
+      outcome.set(canonicalTranslationItemKey(item), {
+        translatedText: cached.translatedText.trim(),
+        translationFingerprint,
+        cached: true
+      });
+      continue;
+    }
+
+    let inflight = inflightTranslationByFingerprint.get(translationFingerprint);
+    if (!inflight) {
+      let resolveRequest;
+      let rejectRequest;
+      inflight = new Promise((resolve, reject) => {
+        resolveRequest = resolve;
+        rejectRequest = reject;
+      });
+      inflightTranslationByFingerprint.set(translationFingerprint, inflight);
+      newRequests.push({
+        item,
+        translationFingerprint,
+        cacheKey,
+        resolve: resolveRequest,
+        reject: rejectRequest
+      });
+    }
+    pending.push({ item, translationFingerprint, promise: inflight });
+  }
+
+  if (newRequests.length > 0) {
+    const batchTask = (async () => {
+      const requestItems = newRequests.map((entry, index) => ({
+        id: `canonical-request-${index}`,
+        original_text: entry.item.original_text
+      }));
+      try {
+        const rows = await requestCanonicalTranslationBatch({
+          items: requestItems,
+          apiKey,
+          baseUrl: configuredBaseUrl,
+          model: configuredModel,
+          sourceLanguage,
+          targetLanguage,
+          promptVersion,
+          translationOptions,
+          glossary
+        });
+        const rowById = new Map((Array.isArray(rows) ? rows : []).map((row) => [String(row && row.id || ""), row]));
+        for (let index = 0; index < newRequests.length; index += 1) {
+          const entry = newRequests[index];
+          const row = rowById.get(requestItems[index].id);
+          const translatedText = normalizeTranslationSourceText(row && row.translated_text);
+          if (!translatedText) {
+            entry.resolve({
+              translatedText: "",
+              translationFingerprint: entry.translationFingerprint,
+              cached: false,
+              error: "model_missing_translation"
+            });
+            continue;
+          }
+          await setCache(entry.cacheKey, {
+            translatedText,
+            translationFingerprint: entry.translationFingerprint
+          });
+          entry.resolve({
+            translatedText,
+            translationFingerprint: entry.translationFingerprint,
+            cached: false
+          });
+        }
+      } catch (error) {
+        newRequests.forEach((entry) => entry.reject(error));
+      } finally {
+        newRequests.forEach((entry) => inflightTranslationByFingerprint.delete(entry.translationFingerprint));
+      }
+    })();
+    await batchTask;
+  }
+
+  for (const entry of pending) {
+    outcome.set(canonicalTranslationItemKey(entry.item), await entry.promise);
+  }
+  return outcome;
+}
+
+function canonicalTranslationItemKey(item) {
+  return `${String(item && item.id || "")}@${normalizeCanonicalRevision(item && item.revision)}`;
+}
+
+function buildCanonicalTranslationFingerprint({
+  originalText,
+  sourceLanguage,
+  targetLanguage,
+  model,
+  baseUrl,
+  promptVersion,
+  glossaryFingerprint,
+  translationOptions
+}) {
+  const source = stableSerialize({
+    text: normalizeTranslationSourceText(originalText),
+    sourceLanguage: normalizeLanguageTag(sourceLanguage, "auto").toLowerCase(),
+    targetLanguage: normalizeLanguageTag(targetLanguage, "zh-CN").toLowerCase(),
+    model: String(model || ""),
+    baseUrl: String(baseUrl || "").replace(/\/+$/, ""),
+    promptVersion: String(promptVersion || CANONICAL_TRANSLATION_PROMPT_VERSION),
+    glossaryFingerprint: String(glossaryFingerprint || ""),
+    translationOptions: translationOptions && typeof translationOptions === "object" ? translationOptions : {}
+  });
+  return stableHash128(source);
+}
+
+async function requestCanonicalTranslationBatch({
+  items,
+  apiKey,
+  baseUrl,
+  model,
+  sourceLanguage,
+  targetLanguage,
+  promptVersion,
+  translationOptions,
+  glossary
+}) {
+  if (backgroundTestHooks && typeof backgroundTestHooks.requestCanonicalTranslationBatch === "function") {
+    return backgroundTestHooks.requestCanonicalTranslationBatch({
+      items,
+      sourceLanguage,
+      targetLanguage,
+      promptVersion,
+      translationOptions,
+      glossary
+    });
+  }
+  const endpoint = buildOpenAICompatibleEndpoint(baseUrl || DEFAULT_TRANSLATION_BASE_URL);
+  const body = {
+    model: model || DEFAULT_MODELS[PROVIDERS.baiduDeepSeek],
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content: `You are a manga dialogue translator. Translate from ${sourceLanguage || "auto-detected source"} to ${targetLanguage || "zh-CN"}. Return JSON only and preserve every supplied id.`
+      },
+      {
+        role: "user",
+        content: [
+          `Prompt version: ${promptVersion || CANONICAL_TRANSLATION_PROMPT_VERSION}`,
+          `Translation options: ${stableSerialize(translationOptions && typeof translationOptions === "object" ? translationOptions : {})}`,
+          buildOpenAICompatibleTranslationPrompt(items, glossary)
+        ].join("\n")
+      }
+    ],
+    response_format: { type: "json_object" }
+  };
+  let payload = await sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body);
+  if (!payload) {
+    const fallbackBody = { ...body };
+    delete fallbackBody.response_format;
+    payload = await sendOpenAICompatibleTranslationRequest(endpoint, apiKey, fallbackBody);
+  }
+  const parsed = parseModelJson(extractOpenAIMessageText(payload).trim());
+  return parsed && Array.isArray(parsed.translations) ? parsed.translations : [];
+}
+
 async function requestOpenAICompatibleTextTranslations({
   items,
   apiKey,
@@ -4290,8 +5151,7 @@ function coalesceOverlappingOcrCandidates(candidates) {
 
   return groups
     .map((group, index) => mergeOcrCandidateGroup(group, index))
-    .sort((left, right) => left.y - right.y || left.x - right.x)
-    .slice(0, MAX_BUBBLES);
+    .sort((left, right) => left.y - right.y || left.x - right.x);
 }
 
 function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
@@ -4959,7 +5819,9 @@ async function setCache(cacheKey, value) {
   const entry = {
     [cacheKey]: {
       timestamp: Date.now(),
-      value: buildCacheSafeTranslationResult(value)
+      value: String(cacheKey || "").startsWith(OCR_CACHE_PREFIX)
+        ? buildCacheSafeOcrResult(value)
+        : buildCacheSafeTranslationResult(value)
     }
   };
 
@@ -5266,6 +6128,21 @@ async function loadSettings() {
   };
 }
 
+function buildCacheSafeOcrResult(value) {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const { cleanedImage: _cleanedImage, debug: _debug, ...cacheSafeValue } = value;
+  const requiresCleanedImage = Boolean(
+    Array.isArray(value.observations) &&
+    value.observations.some((observation) => observation && observation.visual && observation.visual.bgType === "none")
+  );
+  return {
+    ...cacheSafeValue,
+    ...(requiresCleanedImage ? { requiresCleanedImage: true } : {})
+  };
+}
+
 function normalizeProvider(provider) {
   const text = String(provider || "").trim().toLowerCase();
   if (
@@ -5334,6 +6211,29 @@ function hashString(input) {
     hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
   }
   return (hash >>> 0).toString(16);
+}
+
+// Stable synchronous 128-bit digest for semantic IDs and v22 cache fingerprints.
+// Image bytes continue to use SHA-256; this avoids 32-bit birthday collisions in large chapters.
+function stableHash128(input) {
+  const text = String(input || "");
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  let h3 = 0x85ebca6b;
+  let h4 = 0xc2b2ae35;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    h1 = Math.imul(h1 ^ code, 0x01000193);
+    h2 = Math.imul(h2 ^ code, 0x5bd1e995);
+    h3 = Math.imul(h3 ^ code, 0x27d4eb2d);
+    h4 = Math.imul(h4 ^ code, 0x165667b1);
+    h2 ^= h1 >>> 13;
+    h3 ^= h2 >>> 15;
+    h4 ^= h3 >>> 16;
+  }
+  return [h1, h2, h3, h4]
+    .map((part) => (part >>> 0).toString(16).padStart(8, "0"))
+    .join("");
 }
 
 function isDataUrl(value) {

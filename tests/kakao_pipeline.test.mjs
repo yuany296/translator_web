@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-// Load pipeline module (relative import, Node resolves against file location)
+// Mirror manifest ordering so canonical integration uses the real pure reconciler.
+await import("../kakao-reconciler.js");
 await import("../kakao-pipeline.js");
 
 const P = globalThis.MangaTranslatorKakaoPipeline;
@@ -12,10 +13,11 @@ test("manifest loads the Kakao module before content.js", () => {
   const root = path.resolve(import.meta.dirname, "..");
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
   assert.deepEqual(
-    manifest.content_scripts[0].js.slice(0, 2),
-    ["kakao-pipeline.js", "content.js"]
+    manifest.content_scripts[0].js.slice(0, 3),
+    ["kakao-reconciler.js", "kakao-pipeline.js", "content.js"]
   );
   const buildSource = fs.readFileSync(path.join(root, "scripts", "build-extension.mjs"), "utf8");
+  assert.match(buildSource, /"kakao-reconciler\.js"/);
   assert.match(buildSource, /"kakao-pipeline\.js"/);
 
   const popupSource = fs.readFileSync(path.join(root, "popup.js"), "utf8");
@@ -119,7 +121,14 @@ test("createStore returns a store object with required methods", () => {
     "finishPageJob", "cancelPageJob", "getShortPageAttachment",
     "attachShortPage", "releaseShortPage", "clearShortPage",
     "getRetryState", "setRetryState", "clearRetryState",
-    "clearRetryStates", "reset"
+    "clearRetryStates", "registerPageHandle", "getPageHandle",
+    "getPageHandleForTarget", "unbindPageTarget", "upsertObservations",
+    "getObservations", "markPageTerminal", "getPageTerminal",
+    "runSerializedReconcile", "setCanonicalSnapshot", "getCanonicalSnapshot",
+    "getRetiredCanonicals", "setReconcileDiagnostics", "getReconcileDiagnostics",
+    "setCoverageLedger", "getCoverageLedger", "setProjections",
+    "getProjections", "claimTranslations", "settleTranslation",
+    "setEdgeWait", "getEdgeWait", "clearEdgeWait", "reset"
   ];
   for (const m of methods) {
     assert.equal(typeof store[m], "function", `Store missing method: ${m}`);
@@ -1180,4 +1189,1492 @@ test("pipeline failure moves the page to failed without leaking an inflight job"
   harness.adapters.requestTranslationForPayload = async () => ({ ok: true, result: { bubbles: [] } });
   const retried = await harness.pipeline.run(harness.target, { reason: "retry" });
   assert.equal(retried.ok, true);
+});
+
+/* =================================================================
+ * Authoritative page OCR + canonical pipeline
+ * ================================================================= */
+
+function makeCanonicalObservation(pageId, revision, id, y = 40, text = id) {
+  return {
+    id,
+    sourceType: "page",
+    pageIds: [pageId],
+    imageRevisionByPage: { [pageId]: revision },
+    pageSpans: [{ pageId, box: { x: 20, y, w: 20, h: 6 }, overlapRatio: 1 }],
+    originalText: text,
+    confidence: 0.95,
+    visual: { regionType: "speech", bgType: "solid" },
+    providerBlockId: id
+  };
+}
+
+function createCanonicalHarness(options = {}) {
+  const calls = [];
+  const traces = [];
+  const timers = [];
+  const ocrMetas = [];
+  const targets = {
+    a: { name: "a", sourceToken: "source-a", generation: 0, isConnected: true },
+    b: { name: "b", sourceToken: "source-b", generation: 0, isConnected: true }
+  };
+  const identities = {
+    a: { chapterId: "chapter", pageId: "page-a", imageRevision: "rev-a", width: 800, height: 2000, readingOrder: 1 },
+    b: { chapterId: "chapter", pageId: "page-b", imageRevision: "rev-b", width: 800, height: 2000, readingOrder: 2 }
+  };
+  const pageObservations = options.pageObservations || {
+    a: [makeCanonicalObservation("page-a", "rev-a", "obs-a", 40, "inside A")],
+    b: [makeCanonicalObservation("page-b", "rev-b", "obs-b", 40, "inside B")]
+  };
+  const store = P.createStore();
+  const adapters = {
+    store,
+    computeTargetKey: (target) => `target-${target.name}`,
+    getQuickSourceToken: (target) => target.sourceToken,
+    getTargetGeneration: (target) => target.generation,
+    buildTargetSourceCacheKey: (targetKey, sourceToken) => `${targetKey}|${sourceToken}`,
+    extractTargetPayload: async (target) => {
+      calls.push(`fetch:${target.name}`);
+      return { dataUrl: `data:image/png;base64,${target.name}`, width: 800, height: 2000 };
+    },
+    buildPageIdentity: async (target) => ({ ...identities[target.name] }),
+    requestOcrForPayload: async (_payload, meta) => {
+      ocrMetas.push({ ...meta });
+      calls.push(`ocr:${meta.sourceType}:${meta.pageIds.join("+")}`);
+      if (meta.sourceType === "seam") {
+        if (options.seamFailure) throw new Error("seam unavailable");
+        return {
+          ok: true,
+          result: {
+            observations: options.seamObservations || [],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+      const targetName = meta.pageIds[0] === "page-a" ? "a" : "b";
+      if (options.pageFailure === targetName) throw new Error(`page ${targetName} failed`);
+      return {
+        ok: true,
+        result: {
+          observations: pageObservations[targetName] || [],
+          filteredObservations: options.filteredObservations && options.filteredObservations[targetName] || [],
+          edgeSignals: options.edgeSignals && options.edgeSignals[targetName] || {},
+          ...(meta.forceCleanedImageArtifact && options.artifactCleanedImage
+            ? { cleanedImage: options.artifactCleanedImage, debug: { artifact: true } }
+            : {})
+        }
+      };
+    },
+    requestCanonicalTranslations: async (items) => {
+      calls.push(`translate:${items.map((item) => `${item.id}@${item.revision}:${item.original_text}`).join(",")}`);
+      if (options.translateDeferred) return options.translateDeferred(items);
+      return {
+        ok: true,
+        result: {
+          translations: items.map((item) => ({
+            id: item.id,
+            revision: item.revision,
+            translated_text: `ZH:${item.original_text}`,
+            translationFingerprint: `fp:${item.original_text}`,
+            cached: false
+          }))
+        }
+      };
+    },
+    renderCanonicalProjections: async ({ pageId, projections }) => {
+      calls.push(`render:${pageId}:${projections.filter((item) => item.activeText).length}`);
+    },
+    findAdjacentKakaoPageTargets: (target) => target.name === "a"
+      ? { next: targets.b }
+      : { previous: targets.a },
+    buildKakaoSeamPayload: async (_pageA, _pageB, plan) => {
+      calls.push(`seam-payload:${plan.bandHeight}`);
+      return { dataUrl: "data:image/png;base64,seam", width: 800, height: plan.bandHeight * 2 };
+    },
+    detectAdjacentKakaoPixelRisk: async () => options.pixelRisk || null,
+    getTargetForKakaoPageId: (pageId) => pageId === "page-a" ? targets.a : pageId === "page-b" ? targets.b : null,
+    captureTargetSnapshot: (target) => ({ sourceToken: target.sourceToken }),
+    isTargetSnapshotStillValid: (target, snapshot) => target.sourceToken === snapshot.sourceToken,
+    renderLoadingOverlay: () => {},
+    tracePipeline: (event, _target, details) => traces.push({ event, details }),
+    scheduleAutoTranslateRetry: () => calls.push("retry"),
+    setTimer: (callback, delay) => {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => { timer.cleared = true; },
+    now: () => 1000,
+    edgeWaitTimeoutMs: options.edgeWaitTimeoutMs ?? 8000,
+    ...options.adapterOverrides
+  };
+  return {
+    pipeline: P.createCanonicalPipeline(adapters),
+    adapters,
+    store,
+    targets,
+    calls,
+    traces,
+    timers,
+    ocrMetas,
+    identities
+  };
+}
+
+test("canonical pipeline uses page OCR stages and never calls legacy stitch/dedupe hooks", async () => {
+  let legacyCalls = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      shouldUseKakaoStitchedOcr: () => { legacyCalls += 1; return true; },
+      buildKakaoStitchedPayload: () => { legacyCalls += 1; },
+      dedupeResult: () => { legacyCalls += 1; }
+    }
+  });
+
+  const result = await harness.pipeline.run(harness.targets.a, { reason: "canonical" });
+  assert.equal(result.ok, true);
+  assert.equal(legacyCalls, 0);
+  assert.equal(harness.calls.filter((call) => call === "ocr:page:page-a").length, 1);
+  const stages = harness.traces.map((item) => item.event);
+  for (const stage of [
+    "canonical:fetch", "canonical:page-ocr", "canonical:observe",
+    "canonical:reconcile", "canonical:translate", "canonical:project", "canonical:render"
+  ]) {
+    assert.ok(stages.includes(stage), `missing stage ${stage}`);
+  }
+  assert.equal(harness.store.getCanonicalPagePhase("page-a"), P.CanonicalPhase.RENDERED);
+});
+
+test("same-URL generation change starts fresh OCR and cancels the late prior revision", async () => {
+  let releaseFirstOcr;
+  let releaseSecondOcr;
+  let markFirstStarted;
+  let markSecondStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  const secondStarted = new Promise((resolve) => { markSecondStarted = resolve; });
+  const firstGate = new Promise((resolve) => { releaseFirstOcr = resolve; });
+  const secondGate = new Promise((resolve) => { releaseSecondOcr = resolve; });
+  let pageOcrCalls = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      buildPageIdentity: async (target) => ({
+        chapterId: "chapter",
+        pageId: `page-${target.name}`,
+        imageRevision: `rev-${target.generation}`,
+        width: 800,
+        height: 2000,
+        readingOrder: target.name === "a" ? 1 : 2
+      }),
+      requestOcrForPayload: async (_payload, meta) => {
+        if (meta.sourceType !== "page") {
+          return { ok: true, result: { observations: [], filteredObservations: [], edgeSignals: {} } };
+        }
+        pageOcrCalls += 1;
+        if (pageOcrCalls === 1) {
+          markFirstStarted();
+          await firstGate;
+        } else if (pageOcrCalls === 2) {
+          markSecondStarted();
+          await secondGate;
+        }
+        const pageId = meta.pageIds[0];
+        const revision = meta.imageRevisionByPage[pageId];
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation(pageId, revision, `obs-${revision}`, 40, `text-${revision}`)],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  const firstRun = harness.pipeline.run(harness.targets.a);
+  await firstStarted;
+  harness.targets.a.generation = 1;
+  const secondRun = harness.pipeline.run(harness.targets.a);
+  await secondStarted;
+  releaseFirstOcr();
+  const firstResult = await firstRun;
+  releaseSecondOcr();
+  const secondResult = await secondRun;
+
+  assert.equal(secondResult.ok, true);
+  assert.equal(firstResult.skipped, true);
+  assert.match(firstResult.reason, /cancelled/);
+  assert.equal(pageOcrCalls, 2);
+  assert.deepEqual(harness.store.getObservationsForPage("page-a").map((item) => item.id), ["obs-rev-1"]);
+});
+
+test("a stale identity hash cannot commit after a newer generation", async () => {
+  let releaseOldIdentity;
+  let markOldIdentityStarted;
+  const oldIdentityStarted = new Promise((resolve) => { markOldIdentityStarted = resolve; });
+  const oldIdentityGate = new Promise((resolve) => { releaseOldIdentity = resolve; });
+  let identityCalls = 0;
+  const committedRevisions = [];
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      buildPageIdentity: async (target) => {
+        const generation = target.generation;
+        identityCalls += 1;
+        if (identityCalls === 1) {
+          markOldIdentityStarted();
+          await oldIdentityGate;
+        }
+        return {
+          chapterId: "chapter",
+          pageId: "page-a",
+          imageRevision: `rev-${generation}`,
+          width: 800,
+          height: 2000,
+          readingOrder: 1
+        };
+      },
+      commitPageIdentity: (_target, identity) => committedRevisions.push(identity.imageRevision),
+      requestOcrForPayload: async (_payload, meta) => {
+        const revision = meta.imageRevisionByPage["page-a"];
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation("page-a", revision, `obs-${revision}`, 40, `text-${revision}`)],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  const oldRun = harness.pipeline.run(harness.targets.a);
+  await oldIdentityStarted;
+  harness.targets.a.generation = 1;
+  const newResult = await harness.pipeline.run(harness.targets.a);
+  releaseOldIdentity();
+  const oldResult = await oldRun;
+
+  assert.equal(newResult.ok, true);
+  assert.equal(oldResult.skipped, true);
+  assert.deepEqual(committedRevisions, ["rev-1"]);
+  assert.equal(harness.store.getPageHandle("page-a").imageRevision, "rev-1");
+});
+
+test("a late older-revision clone cannot overwrite a newer page commit", async () => {
+  let releaseOldIdentity;
+  let markOldIdentity;
+  const oldIdentityStarted = new Promise((resolve) => { markOldIdentity = resolve; });
+  const oldIdentityGate = new Promise((resolve) => { releaseOldIdentity = resolve; });
+  const oldClone = { name: "a", sourceToken: "clone-old", generation: 0, revision: "rev-old", isConnected: true };
+  const newClone = { name: "a", sourceToken: "clone-new", generation: 0, revision: "rev-new", isConnected: true };
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      getTargetForKakaoPageId: () => newClone,
+      buildPageIdentity: async (target) => {
+        if (target === oldClone) {
+          markOldIdentity();
+          await oldIdentityGate;
+        }
+        return {
+          chapterId: "chapter",
+          pageId: "page-a",
+          imageRevision: target.revision,
+          width: 800,
+          height: 2000,
+          readingOrder: 1
+        };
+      },
+      requestOcrForPayload: async (_payload, meta) => {
+        const revision = meta.imageRevisionByPage["page-a"];
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation("page-a", revision, `obs-${revision}`, 40, revision)],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  const oldRun = harness.pipeline.run(oldClone);
+  await oldIdentityStarted;
+  const newResult = await harness.pipeline.run(newClone);
+  releaseOldIdentity();
+  const oldResult = await oldRun;
+
+  assert.equal(newResult.ok, true);
+  assert.equal(oldResult.skipped, true);
+  assert.match(oldResult.reason, /superseded/);
+  assert.equal(harness.store.getPageHandle("page-a").imageRevision, "rev-new");
+  assert.deepEqual(harness.store.getObservationsForPage("page-a").map((item) => item.id), ["obs-rev-new"]);
+});
+
+test("a previously bound stale clone is rejected even when retried later", async () => {
+  const oldClone = { name: "a", sourceToken: "clone-old", generation: 0, revision: "rev-old", isConnected: true };
+  const newClone = { name: "a", sourceToken: "clone-new", generation: 0, revision: "rev-new", isConnected: true };
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      getTargetForKakaoPageId: () => newClone,
+      buildPageIdentity: async (target) => ({
+        chapterId: "chapter",
+        pageId: "page-a",
+        imageRevision: target.revision,
+        width: 800,
+        height: 2000,
+        readingOrder: 1
+      }),
+      requestOcrForPayload: async (_payload, meta) => {
+        const revision = meta.imageRevisionByPage["page-a"];
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation("page-a", revision, `obs-${revision}`, 40, revision)],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  assert.equal((await harness.pipeline.run(oldClone)).ok, true);
+  assert.equal((await harness.pipeline.run(newClone)).ok, true);
+  const retry = await harness.pipeline.run(oldClone);
+
+  assert.equal(retry.skipped, true);
+  assert.match(retry.reason, /superseded/);
+  assert.equal(harness.store.getPageHandle("page-a").imageRevision, "rev-new");
+});
+
+test("same-digest reload reuses one late translation and lets the current generation render it", async () => {
+  let releaseTranslation;
+  let markTranslationStarted;
+  let markSecondOcr;
+  const translationStarted = new Promise((resolve) => { markTranslationStarted = resolve; });
+  const secondOcrStarted = new Promise((resolve) => { markSecondOcr = resolve; });
+  const translationGate = new Promise((resolve) => { releaseTranslation = resolve; });
+  let translationCalls = 0;
+  let pageOcrCalls = 0;
+  const harness = createCanonicalHarness({
+    translateDeferred: async (items) => {
+      translationCalls += 1;
+      markTranslationStarted();
+      await translationGate;
+      return {
+        ok: true,
+        result: {
+          translations: items.map((item) => ({
+            id: item.id,
+            revision: item.revision,
+            translated_text: `ZH:${item.original_text}`,
+            translationFingerprint: `fp:${item.original_text}`
+          }))
+        }
+      };
+    },
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      requestOcrForPayload: async (_payload, meta) => {
+        if (meta.sourceType === "page") {
+          pageOcrCalls += 1;
+          if (pageOcrCalls === 2) markSecondOcr();
+        }
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation("page-a", "rev-a", "obs-a", 40, "same bytes")],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  const oldRun = harness.pipeline.run(harness.targets.a);
+  await translationStarted;
+  harness.targets.a.generation = 1;
+  const currentRun = harness.pipeline.run(harness.targets.a);
+  await secondOcrStarted;
+  releaseTranslation();
+  const [oldResult, currentResult] = await Promise.all([oldRun, currentRun]);
+
+  assert.equal(oldResult.skipped, true);
+  assert.equal(currentResult.ok, true);
+  assert.equal(translationCalls, 1);
+  const [canonical] = harness.store.getCanonicalSnapshot();
+  assert.ok(harness.store.getTranslation(canonical.id, canonical.revision));
+  assert.ok(harness.store.getProjections("page-a").some((item) => item.activeText && item.translated_text));
+});
+
+test("a slow disconnected clone cannot regress a rendered same-revision page", async () => {
+  let releaseOldNeighborScan;
+  let markOldNeighborScan;
+  const oldNeighborScanStarted = new Promise((resolve) => { markOldNeighborScan = resolve; });
+  const oldNeighborGate = new Promise((resolve) => { releaseOldNeighborScan = resolve; });
+  const oldClone = { name: "a", sourceToken: "source-a", generation: 0, isConnected: true };
+  const newClone = { name: "a", sourceToken: "source-a", generation: 0, isConnected: true };
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: async (target) => {
+        if (target === oldClone) {
+          markOldNeighborScan();
+          await oldNeighborGate;
+        }
+        return { previous: null, next: null };
+      },
+      getTargetForKakaoPageId: () => newClone
+    }
+  });
+
+  const oldRun = harness.pipeline.run(oldClone);
+  await oldNeighborScanStarted;
+  const newResult = await harness.pipeline.run(newClone);
+  assert.equal(newResult.ok, true);
+  assert.equal(harness.store.getCanonicalPagePhase("page-a"), P.CanonicalPhase.RENDERED);
+
+  oldClone.isConnected = false;
+  releaseOldNeighborScan();
+  const oldResult = await oldRun;
+  assert.equal(oldResult.skipped, true);
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  assert.equal(harness.store.getCanonicalPagePhase("page-a"), P.CanonicalPhase.RENDERED);
+});
+
+test("a stale OCR rejection cannot fail or retry the current generation", async () => {
+  let rejectOldOcr;
+  let releaseNewOcr;
+  let markOldOcr;
+  let markNewOcr;
+  const oldOcrStarted = new Promise((resolve) => { markOldOcr = resolve; });
+  const newOcrStarted = new Promise((resolve) => { markNewOcr = resolve; });
+  const oldOcrGate = new Promise((_resolve, reject) => { rejectOldOcr = reject; });
+  const newOcrGate = new Promise((resolve) => { releaseNewOcr = resolve; });
+  let ocrCalls = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      buildPageIdentity: async (target) => ({
+        chapterId: "chapter",
+        pageId: "page-a",
+        imageRevision: `rev-${target.generation}`,
+        width: 800,
+        height: 2000,
+        readingOrder: 1
+      }),
+      requestOcrForPayload: async (_payload, meta) => {
+        ocrCalls += 1;
+        if (ocrCalls === 1) {
+          markOldOcr();
+          await oldOcrGate;
+        } else {
+          markNewOcr();
+          await newOcrGate;
+        }
+        const revision = meta.imageRevisionByPage["page-a"];
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation("page-a", revision, `obs-${revision}`, 40, revision)],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  const oldRun = harness.pipeline.run(harness.targets.a);
+  await oldOcrStarted;
+  harness.targets.a.generation = 1;
+  const newRun = harness.pipeline.run(harness.targets.a);
+  await newOcrStarted;
+  rejectOldOcr(new Error("late old failure"));
+  const oldResult = await oldRun;
+  assert.equal(oldResult.skipped, true);
+  assert.equal(harness.calls.includes("retry"), false);
+
+  releaseNewOcr();
+  const newResult = await newRun;
+  assert.equal(newResult.ok, true);
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  assert.equal(harness.calls.includes("retry"), false);
+});
+
+test("an older clone OCR failure cannot overwrite a newer revision terminal", async () => {
+  let rejectOldOcr;
+  let markOldOcr;
+  const oldOcrStarted = new Promise((resolve) => { markOldOcr = resolve; });
+  const oldOcrGate = new Promise((_resolve, reject) => { rejectOldOcr = reject; });
+  const oldClone = { name: "a", sourceToken: "clone-old", generation: 0, revision: "rev-old", isConnected: true };
+  const newClone = { name: "a", sourceToken: "clone-new", generation: 0, revision: "rev-new", isConnected: true };
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      getTargetForKakaoPageId: () => newClone,
+      buildPageIdentity: async (target) => ({
+        chapterId: "chapter",
+        pageId: "page-a",
+        imageRevision: target.revision,
+        width: 800,
+        height: 2000,
+        readingOrder: 1
+      }),
+      requestOcrForPayload: async (_payload, meta) => {
+        const revision = meta.imageRevisionByPage["page-a"];
+        if (revision === "rev-old") {
+          markOldOcr();
+          await oldOcrGate;
+        }
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation("page-a", revision, `obs-${revision}`, 40, revision)],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  const oldRun = harness.pipeline.run(oldClone);
+  await oldOcrStarted;
+  const newResult = await harness.pipeline.run(newClone);
+  rejectOldOcr(new Error("old clone failed late"));
+  const oldResult = await oldRun;
+
+  assert.equal(newResult.ok, true);
+  assert.equal(oldResult.skipped, true);
+  assert.equal(harness.store.getPageHandle("page-a").imageRevision, "rev-new");
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  assert.equal(harness.store.getPageTerminal("page-a").details.imageRevision, "rev-new");
+  assert.equal(harness.calls.includes("retry"), false);
+});
+
+test("an old ready terminal cannot make a new running revision seam-ready", async () => {
+  let releaseNewRevisionOcr;
+  let markNewRevisionOcr;
+  const newRevisionOcrStarted = new Promise((resolve) => { markNewRevisionOcr = resolve; });
+  const newRevisionGate = new Promise((resolve) => { releaseNewRevisionOcr = resolve; });
+  let pageAOcrCalls = 0;
+  let seamCalls = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      buildPageIdentity: async (target) => ({
+        chapterId: "chapter",
+        pageId: `page-${target.name}`,
+        imageRevision: `rev-${target.name}-${target.generation}`,
+        width: 800,
+        height: 2000,
+        readingOrder: target.name === "a" ? 1 : 2
+      }),
+      requestOcrForPayload: async (_payload, meta) => {
+        if (meta.sourceType === "seam") {
+          seamCalls += 1;
+          return { ok: true, result: { observations: [], filteredObservations: [], edgeSignals: {} } };
+        }
+        const pageId = meta.pageIds[0];
+        const revision = meta.imageRevisionByPage[pageId];
+        if (pageId === "page-a") {
+          pageAOcrCalls += 1;
+          if (pageAOcrCalls === 2) {
+            markNewRevisionOcr();
+            await newRevisionGate;
+          }
+        }
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation(
+              pageId,
+              revision,
+              `obs-${revision}`,
+              pageId === "page-a" ? 94 : 0,
+              pageId === "page-a" ? "upper" : "lower"
+            )],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+
+  await harness.pipeline.run(harness.targets.a);
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  harness.targets.a.generation = 1;
+  const newRevisionRun = harness.pipeline.run(harness.targets.a);
+  await newRevisionOcrStarted;
+
+  const neighborResult = await harness.pipeline.run(harness.targets.b);
+  assert.equal(neighborResult.ok, true);
+  assert.equal(seamCalls, 0, "the neighbor must wait for the current page revision OCR");
+
+  releaseNewRevisionOcr();
+  const newRevisionResult = await newRevisionRun;
+  assert.equal(newRevisionResult.ok, true);
+  assert.equal(seamCalls, 1);
+});
+
+test("same-page same-revision OCR recapture atomically replaces the prior capture", async () => {
+  const pageObservations = {
+    a: [makeCanonicalObservation("page-a", "rev-a", "capture-old", 40, "old OCR text")],
+    b: []
+  };
+  const harness = createCanonicalHarness({ pageObservations });
+  await harness.pipeline.run(harness.targets.a, { reason: "first-capture" });
+
+  pageObservations.a = [makeCanonicalObservation("page-a", "rev-a", "capture-new", 40, "corrected OCR text")];
+  await harness.pipeline.run(harness.targets.a, { reason: "recapture" });
+
+  const observations = harness.store.getObservationsForPage("page-a", { includeFiltered: true });
+  const canonicals = harness.store.getCanonicalSnapshot();
+  assert.deepEqual(observations.map((item) => item.id), ["capture-new"]);
+  assert.equal(canonicals.length, 1);
+  assert.equal(canonicals[0].originalText, "corrected OCR text");
+  assert.deepEqual(canonicals[0].memberObservationIds, ["capture-new"]);
+  assert.equal(harness.store.getCoverageLedger().has("capture-old"), false);
+});
+
+test("a failed same-revision recapture preserves the prior ready page facts", async () => {
+  let pageOcrCalls = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      requestOcrForPayload: async (_payload, meta) => {
+        if (meta.sourceType !== "page") {
+          return { ok: true, result: { observations: [], filteredObservations: [], edgeSignals: {} } };
+        }
+        pageOcrCalls += 1;
+        if (pageOcrCalls > 1) throw new Error("recapture unavailable");
+        return {
+          ok: true,
+          result: {
+            observations: [makeCanonicalObservation("page-a", "rev-a", "stable-observation", 40, "stable text")],
+            filteredObservations: [],
+            edgeSignals: {}
+          }
+        };
+      }
+    }
+  });
+  const first = await harness.pipeline.run(harness.targets.a);
+  const observationsBefore = harness.store.getObservationsForPage("page-a");
+  const projectionsBefore = harness.store.getProjections("page-a");
+  const second = await harness.pipeline.run(harness.targets.a, { reason: "failed-recapture" });
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, false);
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  assert.equal(harness.store.getCanonicalPagePhase("page-a"), P.CanonicalPhase.RENDERED);
+  assert.deepEqual(harness.store.getObservationsForPage("page-a"), observationsBefore);
+  assert.deepEqual(harness.store.getProjections("page-a"), projectionsBefore);
+});
+
+test("neighbor discovery failure is isolated after authoritative page OCR", async () => {
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: async () => {
+        throw new Error("DOM scan unavailable");
+      }
+    }
+  });
+
+  const result = await harness.pipeline.run(harness.targets.a);
+  assert.equal(result.ok, true);
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  assert.ok(harness.store.getProjections("page-a").some((item) => item.activeText));
+  assert.ok(harness.traces.some((entry) => entry.event === "canonical:neighbor-discovery-error"));
+  assert.equal(harness.calls.includes("retry"), false);
+});
+
+test("canonical pipeline delegates a visible-tab screenshot payload without running OCR", async () => {
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      extractTargetPayload: async (target) => {
+        harness.calls.push(`fetch:${target.name}`);
+        return { source: "visible-tab-crop", dataUrl: "data:image/png;base64,crop", width: 800, height: 600 };
+      }
+    }
+  });
+  const result = await harness.pipeline.run(harness.targets.a);
+
+  assert.equal(result.fallbackLegacy, true);
+  assert.equal(result.reason, "non-authoritative-page-payload");
+  assert.equal(harness.calls.some((call) => call.startsWith("ocr:")), false);
+  assert.equal(harness.calls.includes("retry"), false);
+  assert.equal(harness.store.getPageHandles().length, 0);
+});
+
+test("solid projections keep PAGE_OCR artifact refresh at zero", async () => {
+  const harness = createCanonicalHarness();
+  await harness.pipeline.run(harness.targets.a);
+
+  const pageRequests = harness.ocrMetas.filter((meta) => meta.sourceType === "page");
+  assert.equal(pageRequests.length, 1);
+  assert.equal(pageRequests[0].requireCleanedImage, false);
+  assert.equal(pageRequests[0].forceCleanedImageArtifact, false);
+});
+
+test("an active bgType none projection refreshes only the cleaned page artifact", async () => {
+  const observation = makeCanonicalObservation("page-a", "rev-a", "complex-page", 40, "complex");
+  observation.visual = { ...observation.visual, bgType: "none" };
+  const harness = createCanonicalHarness({
+    pageObservations: { a: [observation], b: [] },
+    artifactCleanedImage: "data:image/png;base64,Y2xlYW4="
+  });
+  await harness.pipeline.run(harness.targets.a);
+
+  const pageRequests = harness.ocrMetas.filter((meta) => meta.sourceType === "page");
+  assert.equal(pageRequests.length, 2);
+  assert.equal(pageRequests[0].requireCleanedImage, false);
+  assert.equal(pageRequests[1].requireCleanedImage, true);
+  assert.equal(pageRequests[1].forceCleanedImageArtifact, true);
+  assert.equal(harness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+  assert.equal(harness.calls.filter((call) => call.startsWith("translate:")).length, 1);
+});
+
+test("seam-only complex evidence can request page artifacts after warm page OCR", async () => {
+  const seamObservation = {
+    id: "seam-only-complex",
+    sourceType: "seam",
+    pageIds: ["page-a", "page-b"],
+    imageRevisionByPage: { "page-a": "rev-a", "page-b": "rev-b" },
+    pageSpans: [
+      { pageId: "page-a", box: { x: 20, y: 94, w: 20, h: 6 }, overlapRatio: 1 },
+      { pageId: "page-b", box: { x: 20, y: 0, w: 20, h: 6 }, overlapRatio: 1 }
+    ],
+    originalText: "seam complex",
+    confidence: 0.99,
+    visual: { regionType: "plain_text", bgType: "none" },
+    providerBlockId: "seam-only-complex"
+  };
+  const harness = createCanonicalHarness({
+    pageObservations: { a: [], b: [] },
+    seamObservations: [seamObservation],
+    pixelRisk: { accepted: true, overlapRatio: 0.3 },
+    artifactCleanedImage: "data:image/png;base64,Y2xlYW4="
+  });
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+
+  const artifactRequests = harness.ocrMetas.filter((meta) => meta.forceCleanedImageArtifact === true);
+  assert.deepEqual(artifactRequests.map((meta) => meta.pageIds[0]).sort(), ["page-a", "page-b"]);
+  assert.equal(harness.calls.filter((call) => call.startsWith("translate:")).length, 1);
+  assert.equal(harness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+  assert.equal(harness.store.getPageHandle("page-b").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+});
+
+test("canonical pipeline translates interior observations while edge candidates wait", async () => {
+  const harness = createCanonicalHarness({
+    pageObservations: {
+      a: [
+        makeCanonicalObservation("page-a", "rev-a", "inside", 40, "interior"),
+        makeCanonicalObservation("page-a", "rev-a", "edge", 96, "edge")
+      ],
+      b: []
+    }
+  });
+  const result = await harness.pipeline.run(harness.targets.a);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.pendingEdge, true);
+  const translateCalls = harness.calls.filter((call) => call.startsWith("translate:"));
+  assert.equal(translateCalls.length, 1);
+  assert.match(translateCalls[0], /:interior/);
+  assert.doesNotMatch(translateCalls[0], /:edge(?:,|$)/);
+  assert.equal(harness.timers[0].delay, 8000);
+});
+
+test("edge timeout releases authoritative page observation without seam evidence", async () => {
+  const harness = createCanonicalHarness({
+    pageObservations: {
+      a: [makeCanonicalObservation("page-a", "rev-a", "edge-timeout", 96, "late edge")],
+      b: []
+    }
+  });
+  await harness.pipeline.run(harness.targets.a);
+  assert.equal(harness.calls.some((call) => call.startsWith("translate:")), false);
+
+  harness.timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(harness.calls.some((call) => call.includes(":late edge")));
+  assert.equal(harness.store.getEdgeWait("page-a").timedOut, true);
+});
+
+test("seam OCR failure is isolated and both page observations still translate", async () => {
+  const harness = createCanonicalHarness({
+    seamFailure: true,
+    pageObservations: {
+      a: [makeCanonicalObservation("page-a", "rev-a", "edge-a", 96, "A tail")],
+      b: [makeCanonicalObservation("page-b", "rev-b", "edge-b", 0, "B head")]
+    }
+  });
+  const first = await harness.pipeline.run(harness.targets.a);
+  const second = await harness.pipeline.run(harness.targets.b);
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(harness.calls.filter((call) => call.startsWith("ocr:page:")).length, 2);
+  assert.equal(harness.calls.filter((call) => call.startsWith("ocr:seam:")).length, 1);
+  assert.equal(harness.store.getObservations().filter((item) => item.sourceType === "page").length, 2);
+  assert.ok(harness.store.getCanonicalSnapshot().length >= 2);
+  assert.ok(harness.calls.some((call) => call.includes(":A tail")));
+  assert.ok(harness.calls.some((call) => call.includes(":B head")));
+  const seamState = harness.store.getSeamStates()[0];
+  assert.equal(seamState.status, "failed");
+});
+
+test("seam evidence decision failure cannot fail either authoritative page", async () => {
+  const harness = createCanonicalHarness({
+    pageObservations: {
+      a: [makeCanonicalObservation("page-a", "rev-a", "edge-a", 94, "upper")],
+      b: [makeCanonicalObservation("page-b", "rev-b", "edge-b", 0, "lower")]
+    }
+  });
+
+  const first = await harness.pipeline.run(harness.targets.a);
+  const originalGetObservationsForPage = harness.store.getObservationsForPage.bind(harness.store);
+  let throwOnce = true;
+  harness.store.getObservationsForPage = (...args) => {
+    if (throwOnce) {
+      throwOnce = false;
+      throw new Error("seam decision unavailable");
+    }
+    return originalGetObservationsForPage(...args);
+  };
+  const second = await harness.pipeline.run(harness.targets.b);
+  const seamState = harness.store.getSeamStates().find((item) => item.pageIds.includes("page-a"));
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(seamState.status, "failed");
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  assert.equal(harness.store.getPageTerminal("page-b").state, "ready");
+  assert.equal(harness.calls.includes("retry"), false);
+});
+
+test("a concurrent seam caller joins the running revisioned pair", async () => {
+  let releaseSeamPayload;
+  let markSeamPayload;
+  const seamPayloadStarted = new Promise((resolve) => { markSeamPayload = resolve; });
+  const seamPayloadGate = new Promise((resolve) => { releaseSeamPayload = resolve; });
+  let payloadCalls = 0;
+  const harness = createCanonicalHarness({
+    pixelRisk: { accepted: true, overlapRatio: 0.3 },
+    adapterOverrides: {
+      buildKakaoSeamPayload: async () => {
+        payloadCalls += 1;
+        markSeamPayload();
+        await seamPayloadGate;
+        return { dataUrl: "data:image/png;base64,seam", width: 800, height: 320 };
+      }
+    }
+  });
+  const pageA = harness.store.registerPageHandle({
+    ...harness.identities.a,
+    target: harness.targets.a,
+    payload: { dataUrl: "data:image/png;base64,a" },
+    pageOcrState: "ready",
+    edgeSides: Object.freeze([]),
+    adjacentTargets: Object.freeze([])
+  });
+  const pageB = harness.store.registerPageHandle({
+    ...harness.identities.b,
+    target: harness.targets.b,
+    payload: { dataUrl: "data:image/png;base64,b" },
+    pageOcrState: "ready",
+    edgeSides: Object.freeze([]),
+    adjacentTargets: Object.freeze([])
+  });
+
+  const first = harness.pipeline.processSeamPair(pageA, pageB);
+  await seamPayloadStarted;
+  let secondResolved = false;
+  const second = harness.pipeline.processSeamPair(pageA, pageB).then((value) => {
+    secondResolved = true;
+    return value;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(secondResolved, false, "running seam state must join the inflight promise");
+
+  releaseSeamPayload();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult.status, "completed");
+  assert.equal(secondResult.status, "completed");
+  assert.equal(payloadCalls, 1);
+  assert.equal(harness.calls.filter((call) => call.startsWith("ocr:seam:")).length, 1);
+});
+
+test("completed seam evidence publishes a canonical refresh without its initiating page job", async () => {
+  const pageAObservation = {
+    ...makeCanonicalObservation("page-a", "rev-a", "orphan-a", 94, "A tail"),
+    visual: { regionType: "speech", regionHash: "same", bgType: "solid" }
+  };
+  const pageBObservation = {
+    ...makeCanonicalObservation("page-b", "rev-b", "orphan-b", 0, "B head"),
+    visual: { regionType: "speech", regionHash: "same", bgType: "solid" }
+  };
+  const seamObservation = {
+    id: "orphan-seam",
+    sourceType: "seam",
+    pageIds: ["page-a", "page-b"],
+    imageRevisionByPage: { "page-a": "rev-a", "page-b": "rev-b" },
+    pageSpans: [
+      { pageId: "page-a", box: { x: 20, y: 94, w: 20, h: 6 }, overlapRatio: 0.5 },
+      { pageId: "page-b", box: { x: 20, y: 0, w: 20, h: 6 }, overlapRatio: 0.5 }
+    ],
+    originalText: "A tail B head",
+    confidence: 0.99,
+    visual: { regionType: "speech", regionHash: "same", bgType: "solid" },
+    providerBlockId: "orphan-seam"
+  };
+  const harness = createCanonicalHarness({
+    pixelRisk: { accepted: true, overlapRatio: 0.3 },
+    seamObservations: [seamObservation]
+  });
+  const pageA = harness.store.registerPageHandle({
+    ...harness.identities.a,
+    target: harness.targets.a,
+    payload: { dataUrl: "data:image/png;base64,a" },
+    pageOcrState: "ready",
+    edgeSides: Object.freeze([]),
+    adjacentTargets: Object.freeze([])
+  });
+  const pageB = harness.store.registerPageHandle({
+    ...harness.identities.b,
+    target: harness.targets.b,
+    payload: { dataUrl: "data:image/png;base64,b" },
+    pageOcrState: "ready",
+    edgeSides: Object.freeze([]),
+    adjacentTargets: Object.freeze([])
+  });
+  harness.store.markPageTerminal("page-a", "ready", { imageRevision: "rev-a" });
+  harness.store.markPageTerminal("page-b", "ready", { imageRevision: "rev-b" });
+  harness.store.upsertObservations([pageAObservation, pageBObservation]);
+
+  const terminal = await harness.pipeline.processSeamPair(pageA, pageB);
+  assert.equal(terminal.status, "completed");
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const merged = harness.store.getCanonicalSnapshot().find((canonical) =>
+    canonical.memberObservationIds.includes("orphan-a") &&
+    canonical.memberObservationIds.includes("orphan-b") &&
+    canonical.memberObservationIds.includes("orphan-seam")
+  );
+  assert.ok(merged, "seam terminal must independently publish its new semantic evidence");
+  assert.ok(harness.store.getTranslation(merged.id, merged.revision));
+});
+
+test("seam OCR is evidence-triggered and skipped for ordinary interior pages", async () => {
+  const harness = createCanonicalHarness();
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+
+  assert.equal(harness.calls.some((call) => call.startsWith("seam-payload:")), false);
+  assert.equal(harness.calls.some((call) => call.startsWith("ocr:seam:")), false);
+  assert.equal(harness.store.getSeamStates()[0].status, "skipped");
+});
+
+test("accepted pixel-overlap risk triggers seam OCR even without edge text", async () => {
+  const harness = createCanonicalHarness({
+    pixelRisk: { accepted: true, overlapRatio: 0.3, rows: 40, currentRows: 200 }
+  });
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+
+  assert.equal(harness.calls.filter((call) => call.startsWith("ocr:seam:")).length, 1);
+  assert.equal(harness.store.getSeamStates()[0].status, "completed");
+});
+
+test("fragmented page structure triggers seam OCR without edge text or pixel overlap", async () => {
+  const harness = createCanonicalHarness({
+    pixelRisk: { risk: true, fragmentRisk: true }
+  });
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+
+  assert.equal(harness.calls.filter((call) => call.startsWith("ocr:seam:")).length, 1);
+  assert.deepEqual(harness.store.getSeamStates()[0].reasons, ["fragment_structure"]);
+});
+
+test("structured negative edge signals do not create a false edge wait", () => {
+  const record = { pageId: "page-a", imageRevision: "rev-a", width: 800, height: 2000 };
+  const interior = makeCanonicalObservation("page-a", "rev-a", "interior-negative", 40, "inside");
+  const sides = P.collectPageEdgeSides(record, [interior], [], {
+    top: { detected: false, retainedObservationIds: [], filteredObservationIds: [], visualDetected: false },
+    bottom: { detected: false, retainedObservationIds: [], filteredObservationIds: [], visualDetected: false },
+    hasAny: false
+  });
+  assert.deepEqual(sides, []);
+});
+
+test("an old revision edge timer cannot release a newer page revision", async () => {
+  const pageObservations = {
+    a: [makeCanonicalObservation("page-a", "rev-a", "edge-rev-a", 96, "old edge")],
+    b: []
+  };
+  const harness = createCanonicalHarness({ pageObservations });
+  await harness.pipeline.run(harness.targets.a);
+  const oldTimer = harness.timers[0];
+
+  harness.identities.a.imageRevision = "rev-a-2";
+  pageObservations.a = [makeCanonicalObservation("page-a", "rev-a-2", "edge-rev-a-2", 96, "new edge")];
+  await harness.pipeline.run(harness.targets.a);
+  assert.equal(oldTimer.cleared, true);
+  assert.equal(harness.store.getEdgeWait("page-a").imageRevision, "rev-a-2");
+
+  oldTimer.callback();
+  assert.equal(harness.store.getEdgeWait("page-a").timedOut, false);
+});
+
+test("a stale edge observation cannot trigger seam OCR for an interior-only new revision", async () => {
+  const pageObservations = {
+    a: [makeCanonicalObservation("page-a", "rev-a", "stale-edge", 96, "old edge")],
+    b: [makeCanonicalObservation("page-b", "rev-b", "stable-interior", 40, "inside B")]
+  };
+  const harness = createCanonicalHarness({ pageObservations });
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+  assert.equal(harness.calls.filter((call) => call.startsWith("ocr:seam:")).length, 1);
+
+  harness.identities.a.imageRevision = "rev-a-2";
+  pageObservations.a = [makeCanonicalObservation("page-a", "rev-a-2", "fresh-interior", 40, "inside A")];
+  await harness.pipeline.run(harness.targets.a);
+
+  assert.equal(harness.calls.filter((call) => call.startsWith("ocr:seam:")).length, 1);
+  const states = harness.store.getSeamStates();
+  assert.equal(states.some((state) => state.status === "skipped" && state.imageRevisionByPage["page-a"] === "rev-a-2"), true);
+});
+
+test("an edge waits for a late DOM neighbor discovered within the 8 second window", async () => {
+  let neighborVisible = false;
+  const harness = createCanonicalHarness({
+    seamFailure: true,
+    pageObservations: {
+      a: [makeCanonicalObservation("page-a", "rev-a", "late-neighbor-a", 96, "A waits")],
+      b: [makeCanonicalObservation("page-b", "rev-b", "late-neighbor-b", 0, "B arrives")]
+    },
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: (target) => {
+        if (!neighborVisible) return { previous: null, next: null };
+        return target.name === "a" ? { next: harness.targets.b } : { previous: harness.targets.a };
+      }
+    }
+  });
+
+  await harness.pipeline.run(harness.targets.a);
+  assert.equal(harness.store.getEdgeWait("page-a").timedOut, false);
+  assert.equal(harness.calls.some((call) => call.includes(":A waits")), false);
+
+  neighborVisible = true;
+  await harness.pipeline.run(harness.targets.b);
+  assert.equal(harness.store.getEdgeWait("page-a"), null);
+  assert.ok(harness.calls.some((call) => call.includes(":A waits")));
+  assert.ok(harness.calls.some((call) => call.includes(":B arrives")));
+});
+
+test("onAdjacent records confirmed revisioned adjacency even when seam OCR returns zero observations", async () => {
+  const harness = createCanonicalHarness({
+    pageObservations: { a: [], b: [] },
+    seamObservations: [],
+    pixelRisk: { accepted: true, overlapRatio: 0.25 },
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null })
+    }
+  });
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+  const result = await harness.pipeline.onAdjacentTargetAvailable(harness.targets.a, harness.targets.b);
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.store.getPageHandle("page-a").nextPageId, "page-b");
+  assert.equal(harness.store.getPageHandle("page-b").previousPageId, "page-a");
+  const pairs = P.buildConfirmedAdjacentPagePairs(harness.store.getPageHandles());
+  assert.equal(pairs.length, 1);
+  assert.deepEqual(pairs[0].imageRevisionByPage, { "page-a": "rev-a", "page-b": "rev-b" });
+  assert.equal(harness.store.getSeamStates()[0].status, "completed");
+  assert.deepEqual(harness.store.getCanonicalSnapshot(), []);
+});
+
+test("onAdjacent rejects retained SPA pages from another chapter before recording adjacency", async () => {
+  const harness = createCanonicalHarness({
+    pixelRisk: { accepted: true, overlapRatio: 0.25 },
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null })
+    }
+  });
+  harness.identities.b.chapterId = "another-chapter";
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+  const result = await harness.pipeline.onAdjacentTargetAvailable(harness.targets.a, harness.targets.b);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "chapter-mismatch");
+  assert.equal(harness.store.getPageHandle("page-a").nextPageId || "", "");
+  assert.equal(harness.store.getPageHandle("page-b").previousPageId || "", "");
+  assert.equal(harness.store.getSeamStates().length, 0);
+});
+
+test("canonical store serializes reconciliation and keeps semantic facts after DOM unbind", async () => {
+  const store = P.createStore();
+  const target = { isConnected: true };
+  store.registerPageHandle({ pageId: "p", imageRevision: "r", target, width: 800, height: 1000 });
+  store.upsertObservations([makeCanonicalObservation("p", "r", "o")]);
+  const order = [];
+  const first = store.runSerializedReconcile(async () => {
+    order.push("a-start");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    order.push("a-end");
+  });
+  const second = store.runSerializedReconcile(async () => order.push("b"));
+  await Promise.all([first, second]);
+  store.unbindPageTarget(target);
+
+  assert.deepEqual(order, ["a-start", "a-end", "b"]);
+  assert.equal(store.getPageHandle("p").target, null);
+  assert.equal(store.getObservationsForPage("p").length, 1);
+});
+
+test("render projections select one active text page and allow standby takeover", () => {
+  const pages = [
+    { pageId: "a", readingOrder: 1 },
+    { pageId: "b", readingOrder: 2 }
+  ];
+  const canonical = {
+    id: "c",
+    revision: 1,
+    originalText: "hello",
+    geometryByPage: {
+      a: [{ x: 0, y: 90, w: 20, h: 8 }],
+      b: [{ x: 0, y: 0, w: 20, h: 4 }]
+    },
+    translation: { translated_text: "你好" }
+  };
+  const primaryPresent = P.fallbackBuildRenderProjections({ pages, canonicals: [canonical], availablePageIds: ["a", "b"] });
+  const primaryAbsent = P.fallbackBuildRenderProjections({ pages, canonicals: [canonical], availablePageIds: ["b"] });
+
+  assert.equal(primaryPresent.filter((item) => item.activeText).length, 1);
+  assert.equal(primaryPresent.find((item) => item.activeText).pageId, "a");
+  assert.equal(primaryAbsent.filter((item) => item.activeText).length, 1);
+  assert.equal(primaryAbsent.find((item) => item.activeText).pageId, "b");
+});
+
+test("a non-primary cross-page projection keeps standby metadata and adds a cover", () => {
+  const standby = {
+    id: "projection-b",
+    canonicalId: "canonical",
+    pageId: "b",
+    role: "standby",
+    activeText: false,
+    translated_text: "不应显示",
+    visual: { regionHash: "preserved" },
+    bubble: { x: 1, y: 2, w: 3, h: 4, translated_text: "不应显示" }
+  };
+  const [cover] = P.buildStandbyCoverProjections(standby);
+
+  assert.equal(standby.role, "standby");
+  assert.equal(cover.role, "cover");
+  assert.equal(cover.activeText, false);
+  assert.equal(cover.coverOnly, true);
+  assert.deepEqual(cover.visual, standby.visual);
+  assert.equal(cover.bubble.translated_text, "");
+  assert.equal(cover.bubble.projection_role, "cover_only");
+});
+
+test("A/B page OCR completion order does not change canonical or projection sets", async () => {
+  const forward = createCanonicalHarness();
+  await forward.pipeline.run(forward.targets.a);
+  await forward.pipeline.run(forward.targets.b);
+  const reverse = createCanonicalHarness();
+  await reverse.pipeline.run(reverse.targets.b);
+  await reverse.pipeline.run(reverse.targets.a);
+
+  const canonicalShape = (store) => store.getCanonicalSnapshot().map((item) => ({
+    id: item.id,
+    revision: item.revision,
+    members: item.memberObservationIds,
+    text: item.originalText
+  }));
+  const projectionShape = (store) => [...store.getAllProjections().entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([pageId, items]) => [pageId, items.map((item) => ({
+      canonicalId: item.canonicalId,
+      revision: item.canonicalRevision || item.revision,
+      role: item.role,
+      activeText: item.activeText
+    }))]);
+  assert.deepEqual(canonicalShape(forward.store), canonicalShape(reverse.store));
+  assert.deepEqual(projectionShape(forward.store), projectionShape(reverse.store));
+});
+
+function boundaryMergeHarnessOptions() {
+  return {
+    pageObservations: {
+      a: [{
+        ...makeCanonicalObservation("page-a", "rev-a", "merge-a", 94, "A tail"),
+        visual: { regionType: "speech", regionHash: "same", bgType: "solid" }
+      }],
+      b: [{
+        ...makeCanonicalObservation("page-b", "rev-b", "merge-b", 0, "B head"),
+        visual: { regionType: "speech", regionHash: "same", bgType: "solid" }
+      }]
+    },
+    seamObservations: [{
+      id: "merge-seam",
+      sourceType: "seam",
+      pageIds: ["page-a", "page-b"],
+      imageRevisionByPage: { "page-a": "rev-a", "page-b": "rev-b" },
+      pageSpans: [
+        { pageId: "page-a", box: { x: 20, y: 94, w: 20, h: 6 }, overlapRatio: 1 },
+        { pageId: "page-b", box: { x: 20, y: 0, w: 20, h: 6 }, overlapRatio: 1 }
+      ],
+      originalText: "A tail B head",
+      confidence: 0.99,
+      visual: { regionType: "speech", regionHash: "same", bgType: "solid" },
+      providerBlockId: "merge-seam"
+    }]
+  };
+}
+
+test("merged boundary canonical identity and projections are invariant to A/B OCR order", async () => {
+  const forward = createCanonicalHarness(boundaryMergeHarnessOptions());
+  await forward.pipeline.run(forward.targets.a);
+  await forward.pipeline.run(forward.targets.b);
+  const reverse = createCanonicalHarness(boundaryMergeHarnessOptions());
+  await reverse.pipeline.run(reverse.targets.b);
+  await reverse.pipeline.run(reverse.targets.a);
+
+  const mergedShape = (store) => {
+    const canonical = store.getCanonicalSnapshot().find((item) =>
+      item.memberObservationIds.includes("merge-a") && item.memberObservationIds.includes("merge-b")
+    );
+    assert.ok(canonical, "boundary evidence should reconcile into one canonical");
+    return {
+      id: canonical.id,
+      revision: canonical.revision,
+      supersedesId: canonical.supersedesId || null,
+      members: canonical.memberObservationIds,
+      text: canonical.originalText,
+      projections: [...store.getAllProjections().entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([pageId, items]) => [pageId, items.map((item) => ({
+          id: item.projectionId || item.id,
+          canonicalId: item.canonicalId,
+          revision: item.canonicalRevision || item.revision,
+          role: item.role,
+          activeText: item.activeText
+        }))])
+    };
+  };
+  assert.deepEqual(mergedShape(forward.store), mergedShape(reverse.store));
+});
+
+test("one page OCR failure does not clear another page canonical projection", async () => {
+  const harness = createCanonicalHarness({ pageFailure: "b" });
+  const first = await harness.pipeline.run(harness.targets.a);
+  const before = harness.store.getProjections("page-a");
+  const second = await harness.pipeline.run(harness.targets.b);
+  const after = harness.store.getProjections("page-a");
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, false);
+  assert.ok(before.some((item) => item.activeText));
+  assert.deepEqual(after, before);
+  assert.equal(harness.store.getPageTerminal("page-b").state, "failed");
+});
+
+test("a whole canonical translation failure is surfaced and never re-requested for that revision", async () => {
+  let translationCalls = 0;
+  const harness = createCanonicalHarness({
+    adapterOverrides: {
+      findAdjacentKakaoPageTargets: () => ({ previous: null, next: null }),
+      requestCanonicalTranslations: async () => {
+        translationCalls += 1;
+        return { ok: false, error: "translation credentials invalid" };
+      }
+    }
+  });
+
+  const first = await harness.pipeline.run(harness.targets.a);
+  const second = await harness.pipeline.run(harness.targets.a, { reason: "same-revision-retry" });
+
+  assert.equal(first.ok, false);
+  assert.match(first.error, /credentials invalid/);
+  assert.equal(second.ok, false);
+  assert.match(second.error, /credentials invalid/);
+  assert.equal(translationCalls, 1, "a canonical revision can make at most one external translation request");
+  assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
+  assert.equal(harness.store.getCanonicalPagePhase("page-a"), P.CanonicalPhase.RETRY_WAIT);
+  assert.equal(harness.store.getProjections("page-a").some((item) => item.activeText), false);
+  assert.ok(harness.calls.includes("retry"));
+});
+
+test("late translation is rejected when canonical revision has advanced", () => {
+  const store = P.createStore();
+  const geometryByPage = { p: [{ box: { left: 1, top: 1, width: 2, height: 2 } }] };
+  store.setCanonicalSnapshot([{
+    id: "canonical",
+    revision: 1,
+    memberObservationIds: ["o1"],
+    originalText: "first",
+    geometryByPage,
+    status: "ready"
+  }]);
+  const [claimed] = store.claimTranslations([{ id: "canonical", revision: 1, original_text: "first" }]);
+  store.setCanonicalSnapshot([{
+    id: "canonical",
+    revision: 2,
+    memberObservationIds: ["o1", "o2"],
+    originalText: "first second",
+    geometryByPage,
+    status: "ready"
+  }]);
+
+  assert.equal(store.settleTranslation(claimed, { translated_text: "stale" }), false);
+  assert.equal(store.getTranslation("canonical", 1), null);
+});
+
+test("a canonical revision is claimed for translation at most once", () => {
+  const store = P.createStore();
+  const item = { id: "canonical", revision: 1, original_text: "source" };
+  assert.equal(store.claimTranslations([item]).length, 1);
+  store.releaseTranslationClaims([item]);
+  assert.equal(store.claimTranslations([item]).length, 0);
+  assert.equal(store.claimTranslations([{ ...item, revision: 2 }]).length, 1);
+});
+
+test("late seam evidence supersedes an edge-timeout translation with a new revision", async () => {
+  const seamObservation = {
+    id: "seam-ab",
+    sourceType: "seam",
+    pageIds: ["page-a", "page-b"],
+    imageRevisionByPage: { "page-a": "rev-a", "page-b": "rev-b" },
+    pageSpans: [
+      { pageId: "page-a", box: { x: 20, y: 94, w: 20, h: 6 }, overlapRatio: 1 },
+      { pageId: "page-b", box: { x: 20, y: 0, w: 20, h: 6 }, overlapRatio: 1 }
+    ],
+    originalText: "A tail B head",
+    confidence: 0.99,
+    visual: { regionType: "speech", regionHash: "same", bgType: "solid" },
+    providerBlockId: "seam-ab"
+  };
+  const harness = createCanonicalHarness({
+    pageObservations: {
+      a: [{
+        ...makeCanonicalObservation("page-a", "rev-a", "late-a", 94, "A tail"),
+        visual: { regionType: "speech", regionHash: "same", bgType: "solid" }
+      }],
+      b: [{
+        ...makeCanonicalObservation("page-b", "rev-b", "late-b", 0, "B head"),
+        visual: { regionType: "speech", regionHash: "same", bgType: "solid" }
+      }]
+    },
+    seamObservations: [seamObservation]
+  });
+
+  await harness.pipeline.run(harness.targets.a);
+  harness.timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const timeoutCanonical = harness.store.getCanonicalSnapshot().find((item) => item.memberObservationIds.includes("late-a"));
+  assert.equal(timeoutCanonical.revision, 1);
+  assert.ok(harness.store.getTranslation(timeoutCanonical.id, 1));
+
+  await harness.pipeline.run(harness.targets.b);
+  const merged = harness.store.getCanonicalSnapshot().find((item) =>
+    item.memberObservationIds.includes("late-a") && item.memberObservationIds.includes("late-b")
+  );
+  assert.ok(merged, "late seam should merge the two edge observations");
+  assert.equal(merged.id, timeoutCanonical.id);
+  assert.ok(merged.revision > timeoutCanonical.revision);
+  assert.ok(harness.store.getTranslation(merged.id, merged.revision));
+  assert.equal(harness.store.getProjections("page-a").filter((item) => item.activeText).length, 1);
+  assert.equal(harness.store.getProjections("page-b").filter((item) => item.activeText).length, 0);
+  assert.equal(harness.store.getProjections("page-b").filter((item) => item.role === "cover").length, 1);
+});
+
+async function runFailedRevisionFallbackScenario({ reverse = false, throwError = false }) {
+  let translationRequestCount = 0;
+  const harness = createCanonicalHarness({
+    ...boundaryMergeHarnessOptions(),
+    translateDeferred: async (items) => {
+      translationRequestCount += 1;
+      if (translationRequestCount === 1) {
+        return {
+          ok: true,
+          result: {
+            translations: items.map((item) => ({
+              id: item.id,
+              revision: item.revision,
+              translated_text: `OLD:${item.original_text}`
+            }))
+          }
+        };
+      }
+      if (throwError) throw new Error("translation unavailable");
+      return {
+        ok: true,
+        result: {
+          translations: [],
+          errors: items.map((item) => ({ id: item.id, revision: item.revision, error: "missing" })),
+          partial: true
+        }
+      };
+    }
+  });
+  const firstTarget = reverse ? harness.targets.b : harness.targets.a;
+  const secondTarget = reverse ? harness.targets.a : harness.targets.b;
+  await harness.pipeline.run(firstTarget);
+  harness.timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const oldCanonical = harness.store.getCanonicalSnapshot()[0];
+  assert.ok(harness.store.getTranslation(oldCanonical.id, oldCanonical.revision));
+
+  await harness.pipeline.run(secondTarget);
+  const current = harness.store.getCanonicalSnapshot().find((item) =>
+    item.memberObservationIds.includes("merge-a") && item.memberObservationIds.includes("merge-b")
+  );
+  assert.ok(current);
+  assert.equal(harness.store.getTranslation(current.id, current.revision), null);
+  const visible = [...harness.store.getAllProjections().values()].flat()
+    .filter((projection) => projection.activeText && projection.translated_text);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].canonicalId, oldCanonical.id);
+  assert.equal(visible[0].provisional, true);
+  assert.equal(visible[0].pendingCanonicalId, current.id);
+
+  const requestsBeforeRefresh = translationRequestCount;
+  const refresh = () => harness.pipeline.refresh({ reason: "retry-render", focusPageIds: ["page-a", "page-b"] });
+  if (throwError) {
+    await assert.rejects(refresh, /translation unavailable/);
+  } else {
+    await refresh();
+  }
+  assert.equal(translationRequestCount, requestsBeforeRefresh, "a revision must not be requested twice");
+  const visibleAfter = [...harness.store.getAllProjections().values()].flat()
+    .filter((projection) => projection.activeText && projection.translated_text);
+  assert.equal(visibleAfter.length, 1);
+  assert.equal(visibleAfter[0].canonicalId, oldCanonical.id);
+}
+
+test("partial translation for a new revision keeps exactly one prior visible projection", async () => {
+  await runFailedRevisionFallbackScenario({ reverse: false, throwError: false });
+});
+
+test("thrown translation after an anchor supersession keeps exactly one prior visible projection", async () => {
+  await runFailedRevisionFallbackScenario({ reverse: true, throwError: true });
 });

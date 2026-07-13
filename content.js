@@ -44,6 +44,10 @@
   const EMBEDDED_MAX_ORIGINAL_BYTES = 16 * 1024 * 1024;
   const MAX_LOCAL_RESULT_CACHE = 120;
   const KP = globalThis.MangaTranslatorKakaoPipeline;
+  const KR = globalThis.MangaTranslatorKakaoReconciler;
+  const KAKAO_CANONICAL_TARGET_LANGUAGE = "zh-CN";
+  const KAKAO_CANONICAL_SOURCE_LANGUAGE = "auto";
+  const KAKAO_AUTH_QUERY_PARAM_RE = /^(?:signature|credential|expires|policy|token|key-pair-id|x-amz-(?:algorithm|credential|date|expires|security-token|signature|signedheaders))$/i;
   const {
     KAKAO_OVERLAP_SAMPLE_WIDTH,
     KAKAO_THIN_STRIP_MIN_HEIGHT
@@ -53,7 +57,7 @@
   const PRETRANSLATE_AHEAD_COUNT = 6;
   const RUNTIME_OWNER_ATTRIBUTE = "data-manga-translator-runtime-owner";
   const RUNTIME_FEATURE_ATTRIBUTE = "data-manga-translator-feature-version";
-  const RUNTIME_FEATURE_VERSION = "visual-dedupe-v2";
+  const RUNTIME_FEATURE_VERSION = "kakao-canonical-v1";
   const MAX_EMBEDDED_IMAGE_CACHE = 40;
   const STATUS_INFO_THROTTLE_MS = 1200;
   const CONTEXT_INVALIDATED_RE = /extension context invalidated/i;
@@ -127,6 +131,13 @@
     overlayPreviousVisibility: "",
     payloadCacheByTargetKey: new Map(),
     localResultCache: new Map(),
+    /** pageId 只映射当前可用 DOM 句柄；canonical/translation 事实保存在 Kakao Store。 */
+    kakaoTargetsByPageId: new Map(),
+    kakaoPageIdByTarget: new WeakMap(),
+    kakaoImageRevisionByTarget: new WeakMap(),
+    kakaoLoadListenerTargets: new WeakSet(),
+    kakaoProjectionRefreshPageIds: new Set(),
+    kakaoProjectionRefreshTimer: 0,
     /** Kakao 管线 Store（由 kakao-pipeline.js 提供） */
     kakaoStore: null,
     lastRecoveryAt: 0,
@@ -164,11 +175,11 @@
     onReady: queuePageAutoTranslate
   });
 
-  const kakaoPipeline = KP && typeof KP.createPipeline === "function"
+  const kakaoLegacyPipeline = KP && typeof KP.createPipeline === "function"
     ? KP.createPipeline({
       store: state.kakaoStore,
       extractTargetPayload: (target, scopedKey) =>
-        extractTargetPayload(target, scopedKey, { skipKakaoStitch: true }),
+        extractTargetPayload(target, scopedKey, { skipKakaoStitch: true, forceLegacyKakao: true }),
       requestTranslationForPayload,
       renderTranslationResult,
       clearRenderedTarget,
@@ -196,6 +207,49 @@
     })
     : null;
 
+  const kakaoCanonicalPipeline = KP && KR && typeof KP.createCanonicalPipeline === "function"
+    ? KP.createCanonicalPipeline({
+      store: state.kakaoStore,
+      reconciler: KR,
+      extractTargetPayload: (target, scopedKey) =>
+        extractTargetPayload(target, buildKakaoCanonicalPayloadCacheKey(scopedKey, target), { skipKakaoStitch: true }),
+      buildPageIdentity: buildKakaoPageIdentity,
+      commitPageIdentity: (target, identity) => bindKakaoTargetToPage(
+        target,
+        identity && identity.pageId,
+        identity && identity.imageRevision
+      ),
+      requestOcrForPayload,
+      requestCanonicalTranslations,
+      findAdjacentPageTargets: findAdjacentKakaoPageTargets,
+      resolvePageRecord: (target) => {
+        return state.kakaoStore && typeof state.kakaoStore.getPageHandleForTarget === "function"
+          ? state.kakaoStore.getPageHandleForTarget(target)
+          : null;
+      },
+      buildSeamPayload: buildKakaoSeamPayload,
+      detectAdjacentPixelRisk: detectAdjacentKakaoPixelRisk,
+      getTargetForPageId: getTargetForKakaoPageId,
+      renderCanonicalProjections,
+      clearCanonicalProjection: (target) => clearRenderedTarget(target),
+      computeTargetKey,
+      getQuickSourceToken,
+      buildTargetSourceCacheKey,
+      captureTargetSnapshot,
+      isTargetSnapshotStillValid,
+      getTargetGeneration: getKakaoTargetGeneration,
+      renderLoadingOverlay,
+      scheduleAutoTranslateRetry,
+      reportPipelineError: reportKakaoPipelineError,
+      tracePipeline,
+      targetLanguage: KAKAO_CANONICAL_TARGET_LANGUAGE,
+      sourceLanguage: KAKAO_CANONICAL_SOURCE_LANGUAGE,
+      edgeWaitTimeoutMs: 8000
+    })
+    : null;
+
+  const kakaoPipeline = kakaoCanonicalPipeline || kakaoLegacyPipeline;
+
   const api = {
     invalidated: false,
     rescan,
@@ -208,14 +262,30 @@
       /** 访问 Store（已封装） */
       get kakaoStore() { return state.kakaoStore; },
       get kakaoPipeline() { return kakaoPipeline; },
+      get kakaoCanonicalPipeline() { return kakaoCanonicalPipeline; },
+      get kakaoLegacyPipeline() { return kakaoLegacyPipeline; },
       mapKakaoStitchedResult,
       dedupeKakaoResultByPageCoordinates,
       buildKakaoStitchWindowPlan,
       findKakaoStitchNeighborTarget,
       isVerifiedKakaoStitchNeighbor,
       shouldFallbackFromKakaoStitch,
+      hasKakaoFragmentStructureRisk,
       shouldRejectKakaoPageEdgeStitch,
       buildOcrRequestKey,
+      shouldUseKakaoCanonicalPipeline,
+      normalizeKakaoStableImageSource,
+      buildKakaoPageIdentity,
+      detachKakaoTargetForSourceChange,
+      getTargetForKakaoPageId,
+      prepareKakaoTargetRevisionCheck,
+      captureTargetSnapshot,
+      isTargetSnapshotStillValid,
+      shouldReuseTargetInflight,
+      upgradeQueuedTranslationRequest,
+      normalizeOcrObservationResult,
+      projectionToRendererBubble,
+      normalizeProjectionPages,
       normalizeDebugCoordinateItems,
       normalizePretranslateMode,
       textSimilarity,
@@ -538,10 +608,18 @@
       return;
     }
 
-    if (target instanceof HTMLImageElement && !target.complete) {
+    if (
+      target instanceof HTMLImageElement && !target.complete &&
+      !state.kakaoLoadListenerTargets.has(target)
+    ) {
+      state.kakaoLoadListenerTargets.add(target);
       target.addEventListener(
         "load",
         () => {
+          state.kakaoLoadListenerTargets.delete(target);
+          if (shouldUseKakaoCanonicalPipeline(target) && shouldRevalidateKakaoImageLoad(target)) {
+            prepareKakaoTargetRevisionCheck(target, "image-load");
+          }
           registerTarget(target);
           // Image just finished loading — queue for translation if the
           // IntersectionObserver already fired and won't fire again.
@@ -551,13 +629,24 @@
         },
         { once: true }
       );
+      target.addEventListener("error", () => state.kakaoLoadListenerTargets.delete(target), { once: true });
     }
 
     const sourceToken = getQuickSourceToken(target);
     const oldSourceToken = target.dataset.mtSourceToken || "";
+    const canonicalTarget = shouldUseKakaoCanonicalPipeline(target);
+    if (
+      canonicalTarget && oldSourceToken && oldSourceToken === sourceToken &&
+      shouldRevalidateReconnectedKakaoTarget(target)
+    ) {
+      prepareKakaoTargetRevisionCheck(target, "dom-reconnected");
+    }
     if (oldSourceToken && oldSourceToken !== sourceToken) {
       const oldScopedTargetKey = buildTargetSourceCacheKey(computeTargetKey(target), oldSourceToken);
       state.kakaoStore.cancelPageJob(oldScopedTargetKey);
+      if (canonicalTarget) {
+        detachKakaoTargetForSourceChange(target);
+      }
       const oldTranslatedKey = target.dataset.mtLastTranslatedKey || "";
       if (oldTranslatedKey) {
         state.payloadCacheByTargetKey.delete(oldTranslatedKey);
@@ -567,17 +656,25 @@
       target.dataset.mtLastTranslatedKey = "";
       target.dataset.mtNoTextKey = "";
       target.dataset.mtRecoveryReqAt = "";
-      state.kakaoStore.clearShortPage(target);
+      if (!canonicalTarget && typeof state.kakaoStore.clearShortPage === "function") {
+        state.kakaoStore.clearShortPage(target);
+      }
       delete target.dataset.mtBoundaryReadyToken;
       kakaoRetryScheduler.cancel(target);
       // 清理全局去重条目
-      if (oldTranslatedKey) {
+      if (!canonicalTarget && oldTranslatedKey) {
         state.kakaoStore.deleteEntriesForKey(oldTranslatedKey);
       }
       // 允许该 DOM 元素重新入队
       state.queuedTargets.delete(target);
+      for (let index = state.queue.length - 1; index >= 0; index -= 1) {
+        if (state.queue[index] && state.queue[index].target === target) state.queue.splice(index, 1);
+      }
     }
     target.dataset.mtSourceToken = sourceToken;
+    if (!oldSourceToken || oldSourceToken === sourceToken) {
+      restoreKnownKakaoPageHandle(target);
+    }
 
     const isNewObservation = !state.observedTargets.has(target);
     if (isNewObservation) {
@@ -590,11 +687,22 @@
 
     // 自动翻译开启时，在两种情况下立即入队：
     const imgNotComplete = target instanceof HTMLImageElement && !target.complete;
+    const needsRevisionCheck = target.dataset.mtKakaoRevisionCheck === "true";
     const shouldAutoQueue =
       state.autoTranslatePageEnabled &&
       state.enabled &&
       target.isConnected &&
       !imgNotComplete;
+    if (needsRevisionCheck && state.enabled && target.isConnected && !imgNotComplete) {
+      delete target.dataset.mtKakaoRevisionCheck;
+      queueTranslate(target, {
+        manual: true,
+        force: true,
+        relaxed: true,
+        allowOffscreen: true,
+        reason: "kakao-image-revision-check"
+      });
+    }
     if (!shouldAutoQueue && state.autoTranslatePageEnabled && state.enabled && imgNotComplete) {
       // 图片还未加载完成（CDN 慢），等 load 事件触发后会再进 registerTarget 入队。
       // 但如果 load 事件永远不触发（CDN 错误），重试机制需要兜底。
@@ -644,6 +752,14 @@
       "previous"
     );
     if (!previous) {
+      return;
+    }
+    if (shouldUseKakaoCanonicalPipeline(target) && kakaoCanonicalPipeline) {
+      if (typeof kakaoCanonicalPipeline.onAdjacentTargetAvailable === "function") {
+        Promise.resolve(kakaoCanonicalPipeline.onAdjacentTargetAvailable(previous, target)).catch((error) => {
+          console.warn("[MangaTranslator][Kakao canonical] adjacent reconcile failed:", error);
+        });
+      }
       return;
     }
     if (
@@ -698,6 +814,7 @@
 
     let shouldRepairUi = false;
     let sawExternalMutation = false;
+    const disconnectedCanonicalPageIds = new Set();
     for (const mutation of mutations) {
       const mutationInsideOverlay = mutation.target instanceof Element && mutation.target.closest("[data-manga-translator-overlay]");
       if (mutationInsideOverlay) {
@@ -707,6 +824,18 @@
         mutation.removedNodes.forEach((node) => {
           if (node === state.overlayLayer || node === state.floatingBallWrap) {
             shouldRepairUi = true;
+          }
+          if (node instanceof Element && !node.closest("[data-manga-translator-overlay]")) {
+            const removedTargets = [];
+            if (isSupportedTarget(node)) removedTargets.push(node);
+            node.querySelectorAll(TARGET_SELECTOR).forEach((target) => {
+              if (isSupportedTarget(target)) removedTargets.push(target);
+            });
+            for (const removedTarget of removedTargets) {
+              const pageId = detachKakaoTargetHandle(removedTarget);
+              if (pageId) disconnectedCanonicalPageIds.add(pageId);
+            }
+            if (removedTargets.length > 0) sawExternalMutation = true;
           }
         });
         mutation.addedNodes.forEach((node) => {
@@ -734,6 +863,9 @@
     }
     if (sawExternalMutation || shouldRepairUi) {
       scheduleAheadPretranslation("mutation");
+    }
+    if (disconnectedCanonicalPageIds.size > 0) {
+      scheduleKakaoProjectionRefresh([...disconnectedCanonicalPageIds], "page-handle-disconnected");
     }
   }
 
@@ -826,13 +958,18 @@
       return false;
     }
     const rect = target.getBoundingClientRect();
-        if (rect.width < 80 || rect.height < 80) {
+    const canonicalTarget = shouldUseKakaoCanonicalPipeline(target);
+    if (rect.width < 80 || rect.height < (canonicalTarget ? KAKAO_THIN_STRIP_MIN_HEIGHT : 80)) {
       return false;
     }
     if (target instanceof HTMLImageElement) {
       const naturalWidth = Number(target.naturalWidth || 0);
       const naturalHeight = Number(target.naturalHeight || 0);
-      if (naturalWidth > 0 && naturalHeight > 0 && (naturalHeight < 80 || naturalHeight / naturalWidth < 0.10)) {
+      if (
+        naturalWidth > 0 && naturalHeight > 0 &&
+        (naturalHeight < (canonicalTarget ? KAKAO_THIN_STRIP_MIN_HEIGHT : 80) ||
+          naturalHeight / naturalWidth < (canonicalTarget ? 0.01 : 0.10))
+      ) {
         return false;
       }
     }
@@ -840,7 +977,7 @@
   }
 
   function isKakaoShortPageQueueBlocked(target) {
-    if (!IS_KAKAOPAGE_READER) {
+    if (!IS_KAKAOPAGE_READER || shouldUseKakaoCanonicalPipeline(target)) {
       return false;
     }
     const gate = KP.getShortPageAttachmentGate(state.kakaoStore, target);
@@ -869,8 +1006,13 @@
       return;
     }
 
-    if (state.queuedTargets.has(target) || state.inflightByTarget.has(target)) {
+    const revisionCheck = isCanonicalRevisionCheckOptions(options);
+    if (state.queuedTargets.has(target)) {
+      if (revisionCheck) upgradeQueuedTranslationRequest(state.queue, target, options);
       return;
+    }
+    if (state.inflightByTarget.has(target)) {
+      if (shouldReuseTargetInflight(target.dataset.inflightSourceToken, getTargetExecutionToken(target))) return;
     }
 
     state.queue.push({ target, options });
@@ -880,6 +1022,21 @@
       targetKey: computeTargetKey(target).slice(0, 80)
     });
     pumpQueue();
+  }
+
+  function isCanonicalRevisionCheckOptions(options) {
+    return options && options.force === true && options.reason === "kakao-image-revision-check";
+  }
+
+  function shouldReuseTargetInflight(inflightToken, currentExecutionToken) {
+    return !!inflightToken && String(inflightToken) === String(currentExecutionToken);
+  }
+
+  function upgradeQueuedTranslationRequest(queue, target, options) {
+    const queued = Array.isArray(queue) ? queue.find((item) => item && item.target === target) : null;
+    if (!queued) return false;
+    queued.options = { ...(queued.options || {}), ...(options || {}), force: true };
+    return true;
   }
 
   function queuePreload(target, options = {}) {
@@ -1036,6 +1193,40 @@
     }
   }
 
+  async function runKakaoCanonicalTarget(target, options, cached = false) {
+    let result = cached
+      ? await kakaoCanonicalPipeline.runCached(target, null, options)
+      : await kakaoCanonicalPipeline.run(target, options);
+    if (result && result.fallbackLegacy === true && kakaoLegacyPipeline) {
+      tracePipeline("canonical-legacy-fallback", target, {
+        reason: result.reason || "non-authoritative-page-payload",
+        source: String(result.payload && result.payload.source || "")
+      });
+      const targetKey = computeTargetKey(target);
+      const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+      // Canonical FETCH 已缓存了未经旧截图归一化的 payload；委托旧链路前移除它，
+      // 让截图/裁剪模式完整走原有提取与坐标适配流程。
+      state.payloadCacheByTargetKey.delete(scopedTargetKey);
+      state.payloadCacheByTargetKey.delete(buildKakaoCanonicalPayloadCacheKey(scopedTargetKey, target));
+      result = await kakaoLegacyPipeline.run(target, {
+        ...options,
+        reason: options && options.reason
+          ? `${options.reason}:canonical-payload-fallback`
+          : "canonical-payload-fallback"
+      });
+    }
+    if (result && result.ok) {
+      await reportStatus("info", "translation done", {
+        reason: options && options.reason,
+        pageId: result.pageId || "",
+        bubbles: Number(result.bubbles || 0),
+        cached: result.cached === true || result.reused === true,
+        pipeline: "kakao-canonical-v1"
+      });
+    }
+    return result;
+  }
+
   async function translateTarget(target, options) {
     if (state.invalidated) {
       throw new Error("Extension context invalidated");
@@ -1063,7 +1254,7 @@
 
     if (state.inflightByTarget.has(target)) {
       const inflightToken = target.dataset.inflightSourceToken;
-      const currentToken = getQuickSourceToken(target);
+      const currentToken = getTargetExecutionToken(target);
       if (inflightToken === currentToken) {
         tracePipeline("inflight-bypass", target, { skipReason: "sameSourceToken" });
         return state.inflightByTarget.get(target);
@@ -1074,6 +1265,7 @@
       tracePipeline("inflight-bypass", target, { skipReason: "sourceTokenChanged" });
     }
 
+    const executionToken = getTargetExecutionToken(target);
     const task = (async () => {
       let payload = null;
       let renderPayload = null;
@@ -1119,8 +1311,11 @@
 
         const localCachedResult = state.localResultCache.get(scopedTargetKey);
         if (!options.force && localCachedResult) {
-          if (IS_KAKAOPAGE_READER && kakaoPipeline) {
-            return kakaoPipeline.runCached(target, localCachedResult, options);
+          if (shouldUseKakaoCanonicalPipeline(target) && kakaoCanonicalPipeline) {
+            return await runKakaoCanonicalTarget(target, options, true);
+          }
+          if (IS_KAKAOPAGE_READER && kakaoLegacyPipeline) {
+            return await kakaoLegacyPipeline.runCached(target, localCachedResult, options);
           }
           const dedupedCachedResult = await dedupeKakaoResultByPageCoordinates(localCachedResult, target, targetKey);
           state.localResultCache.set(scopedTargetKey, dedupedCachedResult);
@@ -1138,8 +1333,11 @@
           return { ok: true, reused: true, bubbles: dedupedCachedResult.bubbles.length };
         }
 
-        if (IS_KAKAOPAGE_READER && kakaoPipeline) {
-          return kakaoPipeline.run(target, options);
+        if (shouldUseKakaoCanonicalPipeline(target) && kakaoCanonicalPipeline) {
+          return await runKakaoCanonicalTarget(target, options, false);
+        }
+        if (IS_KAKAOPAGE_READER && kakaoLegacyPipeline) {
+          return await kakaoLegacyPipeline.run(target, options);
         }
 
         // Stale result defense: capture snapshot before translation
@@ -1246,20 +1444,29 @@
 
         return { ok: false, error: reason };
       } finally {
-        state.inflightByTarget.delete(target);
-        delete target.dataset.inflightSourceToken;
-
         // Owner 翻译结束，检查是否有短页在 inflight 期间被附着到此 owner。
         // 如果有，这些短页的附着标记指向一个不会再被重翻译的 owner 结果，
         // 需要立即释放让它们独立翻译。
-        if (IS_KAKAOPAGE_READER && state.autoTranslatePageEnabled) {
+        if (
+          IS_KAKAOPAGE_READER &&
+          state.autoTranslatePageEnabled &&
+          !shouldUseKakaoCanonicalPipeline(target)
+        ) {
           releaseShortPagesAttachedDuringInflight(target);
         }
       }
     })();
 
-    target.dataset.inflightSourceToken = getQuickSourceToken(target);
+    target.dataset.inflightSourceToken = executionToken;
     state.inflightByTarget.set(target, task);
+    void task.finally(() => {
+      if (state.inflightByTarget.get(target) === task) {
+        state.inflightByTarget.delete(target);
+      }
+      if (target.dataset.inflightSourceToken === executionToken) {
+        delete target.dataset.inflightSourceToken;
+      }
+    });
     return task;
   }
 
@@ -1287,16 +1494,22 @@
     const task = (async () => {
       const targetKey = computeTargetKey(target);
       const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+      const canonicalTarget = shouldUseKakaoCanonicalPipeline(target);
+      const payloadCacheKey = canonicalTarget
+        ? buildKakaoCanonicalPayloadCacheKey(scopedTargetKey, target)
+        : scopedTargetKey;
       if (
         state.localResultCache.has(targetKey) ||
         state.localResultCache.has(scopedTargetKey) ||
         getPayloadCache(targetKey) ||
-        getPayloadCache(scopedTargetKey)
+        getPayloadCache(payloadCacheKey)
       ) {
         return;
       }
 
-      await extractTargetPayload(target, scopedTargetKey);
+      await extractTargetPayload(target, payloadCacheKey, {
+        skipKakaoStitch: canonicalTarget
+      });
     })().finally(() => {
       state.preloadInFlightByTarget.delete(target);
     });
@@ -1337,7 +1550,7 @@
       throw new Error("Unsupported target element");
     }
 
-    payload = await normalizeKakaopagePayload(target, payload);
+    payload = await normalizeKakaopagePayload(target, payload, options);
     payload = enrichPayloadForTarget(payload, target);
 
     // 单图版本始终缓存到普通 key
@@ -1435,6 +1648,658 @@
     const base = String(targetKey || "");
     const token = String(sourceToken || "");
     return token ? `${base}|src:${hashSourceIdentity(token)}` : base;
+  }
+
+  function shouldUseKakaoCanonicalPipeline(target) {
+    return !!(
+      IS_KAKAOPAGE_READER &&
+      state.captureMode === CAPTURE_MODE_DIRECT &&
+      state.renderMode === RENDER_MODE_OVERLAY &&
+      target instanceof HTMLImageElement
+    );
+  }
+
+  function getStableChapterUrl() {
+    const href = String(
+      (typeof location !== "undefined" && location.href) ||
+      `${(typeof location !== "undefined" && location.origin) || ""}${(typeof location !== "undefined" && location.pathname) || ""}${(typeof location !== "undefined" && location.search) || ""}`
+    );
+    const hashIndex = href.indexOf("#");
+    return hashIndex >= 0 ? href.slice(0, hashIndex) : href;
+  }
+
+  function normalizeKakaoStableImageSource(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    // Inline data has no stable identity independent of its bytes.
+    if (isDataUrl(raw)) return "";
+    // Blob URLs carry a document-local object token that distinguishes equal-size pages.
+    if (isBlobUrl(raw)) {
+      const hashIndex = raw.indexOf("#");
+      return hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
+    }
+    try {
+      const base = (typeof location !== "undefined" && location.href) || undefined;
+      const url = new URL(raw, base);
+      url.hash = "";
+      const retained = [];
+      for (const [key, itemValue] of url.searchParams.entries()) {
+        if (!KAKAO_AUTH_QUERY_PARAM_RE.test(key)) {
+          retained.push([key, itemValue]);
+        }
+      }
+      retained.sort((left, right) =>
+        left[0].localeCompare(right[0]) || left[1].localeCompare(right[1]));
+      url.search = "";
+      for (const [key, itemValue] of retained) {
+        url.searchParams.append(key, itemValue);
+      }
+      return url.toString();
+    } catch {
+      return raw.replace(/([?&])(?:signature|credential|expires|policy|token|key-pair-id|x-amz-[^=&]+)=[^&#]*/gi, "$1")
+        .replace(/[?&]+$/, "")
+        .replace(/\?&/, "?");
+    }
+  }
+
+  async function sha256HexBytes(bytes) {
+    const cryptoObject = globalThis.crypto;
+    if (cryptoObject && cryptoObject.subtle && typeof cryptoObject.subtle.digest === "function") {
+      const digest = await cryptoObject.subtle.digest("SHA-256", bytes);
+      return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+    }
+    let fallback = 2166136261;
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    for (const value of view) {
+      fallback ^= value;
+      fallback = Math.imul(fallback, 16777619);
+    }
+    return (fallback >>> 0).toString(16).padStart(8, "0");
+  }
+
+  async function sha256HexText(value) {
+    return sha256HexBytes(new TextEncoder().encode(String(value || "")));
+  }
+
+  function dataUrlToBytes(dataUrl) {
+    const raw = String(dataUrl || "");
+    const commaIndex = raw.indexOf(",");
+    if (commaIndex < 0) {
+      return new TextEncoder().encode(raw);
+    }
+    const header = raw.slice(0, commaIndex);
+    const body = raw.slice(commaIndex + 1);
+    if (/;base64(?:;|$)/i.test(header)) {
+      const decoded = atob(body);
+      const bytes = new Uint8Array(decoded.length);
+      for (let index = 0; index < decoded.length; index += 1) {
+        bytes[index] = decoded.charCodeAt(index);
+      }
+      return bytes;
+    }
+    return new TextEncoder().encode(decodeURIComponent(body));
+  }
+
+  async function buildKakaoPageIdentity(target, payload, context = {}) {
+    const width = Math.max(1, Math.round(Number(
+      payload && (payload.sourceWidth || payload.width) ||
+      target && (target.naturalWidth || target.width) || 0
+    )));
+    const height = Math.max(1, Math.round(Number(
+      payload && (payload.sourceHeight || payload.height) ||
+      target && (target.naturalHeight || target.height) || 0
+    )));
+    const imageRevision = await sha256HexBytes(dataUrlToBytes(payload && payload.dataUrl));
+    const chapterId = `chapter-${await sha256HexText(getStableChapterUrl())}`;
+    const rawSource = String(
+      payload && payload.imageUrl ||
+      payload && payload.sourceToken ||
+      context.sourceToken ||
+      target && target.dataset && getQuickSourceToken(target) ||
+      payload && payload.sourceImageId || ""
+    );
+    const stableSource = normalizeKakaoStableImageSource(rawSource) || `inline:${imageRevision}`;
+    const pageId = `page-${await sha256HexText(`${chapterId}\n${stableSource}\n${width}x${height}`)}`;
+    const rect = target && typeof target.getBoundingClientRect === "function"
+      ? target.getBoundingClientRect()
+      : null;
+    const identity = Object.freeze({
+      chapterId,
+      pageId,
+      imageRevision,
+      stableSource,
+      width,
+      height,
+      readingOrder: Number(rect && rect.top || 0) + Number(window.scrollY || 0),
+      shortPage: height <= 420 || height / Math.max(1, width) <= 0.45,
+      imageMeta: Object.freeze({
+        ...buildPayloadImageMeta(payload),
+        chapterId,
+        pageId,
+        imageRevision,
+        stableSource,
+        sourceType: "page",
+        pageIds: [pageId],
+        imageRevisionByPage: { [pageId]: imageRevision }
+      }),
+      targetKey: String(context.targetKey || ""),
+      scopedTargetKey: String(context.scopedTargetKey || ""),
+      sourceToken: String(context.sourceToken || payload && payload.sourceToken || target && target.dataset && getQuickSourceToken(target) || "")
+    });
+    if (context.deferBind !== true) bindKakaoTargetToPage(target, pageId, imageRevision);
+    return identity;
+  }
+
+  function bindKakaoTargetToPage(target, pageId, imageRevision = "") {
+    if (!target || !pageId) {
+      return;
+    }
+    const previousPageId = state.kakaoPageIdByTarget.get(target);
+    if (previousPageId && previousPageId !== pageId) {
+      const previousTargets = state.kakaoTargetsByPageId.get(previousPageId);
+      if (previousTargets) {
+        previousTargets.delete(target);
+        if (previousTargets.size === 0) state.kakaoTargetsByPageId.delete(previousPageId);
+      }
+    }
+    state.kakaoPageIdByTarget.set(target, pageId);
+    const storedRevision = state.kakaoStore && typeof state.kakaoStore.getPageHandle === "function"
+      ? state.kakaoStore.getPageHandle(pageId)?.imageRevision || ""
+      : "";
+    const currentRevision = String(
+      imageRevision
+      || (previousPageId === pageId ? state.kakaoImageRevisionByTarget.get(target) : "")
+      || storedRevision
+      || ""
+    );
+    if (currentRevision) state.kakaoImageRevisionByTarget.set(target, currentRevision);
+    else state.kakaoImageRevisionByTarget.delete(target);
+    const targets = state.kakaoTargetsByPageId.get(pageId) || new Set();
+    targets.add(target);
+    state.kakaoTargetsByPageId.set(pageId, targets);
+  }
+
+  function unbindKakaoTargetFromPage(target) {
+    if (!target) return;
+    const pageId = state.kakaoPageIdByTarget.get(target);
+    state.kakaoPageIdByTarget.delete(target);
+    state.kakaoImageRevisionByTarget.delete(target);
+    if (!pageId) return;
+    const targets = state.kakaoTargetsByPageId.get(pageId);
+    if (!targets) return;
+    targets.delete(target);
+    if (targets.size === 0) state.kakaoTargetsByPageId.delete(pageId);
+  }
+
+  function detachKakaoTargetHandle(target) {
+    if (!target) return "";
+    const pageId = String(state.kakaoPageIdByTarget.get(target) || "");
+    if (!pageId) return "";
+    const targets = state.kakaoTargetsByPageId.get(pageId);
+    if (targets) {
+      targets.delete(target);
+      if (targets.size === 0) state.kakaoTargetsByPageId.delete(pageId);
+    }
+    if (state.kakaoStore && typeof state.kakaoStore.unbindPageTarget === "function") {
+      state.kakaoStore.unbindPageTarget(target);
+    }
+    return pageId;
+  }
+
+  function detachKakaoTargetForSourceChange(target, scheduleRefresh = scheduleKakaoProjectionRefresh) {
+    if (!target) return "";
+    const pageId = String(state.kakaoPageIdByTarget.get(target) || "");
+    unbindKakaoTargetFromPage(target);
+    if (state.kakaoStore && typeof state.kakaoStore.unbindPageTarget === "function") {
+      state.kakaoStore.unbindPageTarget(target);
+    }
+    // 新图片尚未完成 OCR 时，也要立刻让旧 canonical 的 standby 接管。
+    if (pageId && typeof scheduleRefresh === "function") {
+      scheduleRefresh([pageId], "page-handle-source-changed");
+    }
+    return pageId;
+  }
+
+  function getKakaoTargetGeneration(target) {
+    return Math.max(0, Number(target && target.dataset && target.dataset.mtKakaoSourceGeneration) || 0);
+  }
+
+  function buildKakaoCanonicalPayloadCacheKey(scopedTargetKey, target) {
+    return `${String(scopedTargetKey || "")}|generation:${getKakaoTargetGeneration(target)}`;
+  }
+
+  function getTargetExecutionToken(target) {
+    return `${getQuickSourceToken(target)}|generation:${getKakaoTargetGeneration(target)}`;
+  }
+
+  function shouldRevalidateReconnectedKakaoTarget(target) {
+    const pageId = String(state.kakaoPageIdByTarget.get(target) || "");
+    if (!pageId || !state.kakaoStore || typeof state.kakaoStore.getPageHandle !== "function") return false;
+    const handle = state.kakaoStore.getPageHandle(pageId);
+    return !!handle && (!handle.target || handle.target.isConnected === false);
+  }
+
+  function shouldRevalidateKakaoImageLoad(target) {
+    const pageId = String(state.kakaoPageIdByTarget.get(target) || "");
+    if (!pageId || !state.kakaoStore || typeof state.kakaoStore.getPageHandle !== "function") return false;
+    const handle = state.kakaoStore.getPageHandle(pageId);
+    return !!handle && (handle.target === target || !handle.target || handle.target.isConnected === false);
+  }
+
+  function prepareKakaoTargetRevisionCheck(target, reason = "image-reload") {
+    if (!target || !target.dataset) return 0;
+    const previousPageId = String(state.kakaoPageIdByTarget.get(target) || "");
+    const nextGeneration = getKakaoTargetGeneration(target) + 1;
+    target.dataset.mtKakaoSourceGeneration = String(nextGeneration);
+    target.dataset.mtKakaoRevisionCheck = "true";
+    const targetKey = computeTargetKey(target);
+    const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+    state.payloadCacheByTargetKey.delete(targetKey);
+    state.payloadCacheByTargetKey.delete(scopedTargetKey);
+    state.payloadCacheByTargetKey.delete(buildKakaoCanonicalPayloadCacheKey(scopedTargetKey, target));
+    state.payloadCacheByTargetKey.delete(`${scopedTargetKey}|stitch`);
+    state.localResultCache.delete(scopedTargetKey);
+    if (previousPageId) {
+      unbindKakaoTargetFromPage(target);
+      if (state.kakaoStore && typeof state.kakaoStore.unbindPageTarget === "function") {
+        state.kakaoStore.unbindPageTarget(target);
+      }
+      clearRenderedTarget(target);
+      if (typeof window.setTimeout === "function") {
+        scheduleKakaoProjectionRefresh([previousPageId], "page-image-revision-check");
+      }
+    }
+    tracePipeline("canonical-revision-check", target, { reason, generation: nextGeneration });
+    return nextGeneration;
+  }
+
+  function scheduleKakaoProjectionRefresh(pageIds, reason) {
+    if (!kakaoCanonicalPipeline || typeof kakaoCanonicalPipeline.refresh !== "function") return;
+    for (const pageId of Array.isArray(pageIds) ? pageIds : [pageIds]) {
+      if (pageId) state.kakaoProjectionRefreshPageIds.add(String(pageId));
+    }
+    if (state.kakaoProjectionRefreshTimer || state.kakaoProjectionRefreshPageIds.size === 0) return;
+    state.kakaoProjectionRefreshTimer = window.setTimeout(() => {
+      state.kakaoProjectionRefreshTimer = 0;
+      const focusPageIds = [...state.kakaoProjectionRefreshPageIds];
+      state.kakaoProjectionRefreshPageIds.clear();
+      Promise.resolve(kakaoCanonicalPipeline.refresh({
+        reason: String(reason || "page-handle-change"),
+        focusPageIds
+      })).catch((error) => {
+        console.warn("[MangaTranslator][Kakao canonical] projection refresh failed:", error);
+      });
+    }, 0);
+  }
+
+  function restoreKnownKakaoPageHandle(target) {
+    if (!target || !shouldUseKakaoCanonicalPipeline(target)) return "";
+    const pageId = String(state.kakaoPageIdByTarget.get(target) || "");
+    if (!pageId || !state.kakaoStore || typeof state.kakaoStore.getPageHandle !== "function") return "";
+    const previous = state.kakaoStore.getPageHandle(pageId);
+    if (!previous || previous.imageRevision == null) return "";
+    const boundRevision = String(state.kakaoImageRevisionByTarget.get(target) || "");
+    if (boundRevision && boundRevision !== String(previous.imageRevision || "")) return "";
+    bindKakaoTargetToPage(target, pageId, previous.imageRevision);
+    if (typeof state.kakaoStore.registerPageHandle === "function") {
+      state.kakaoStore.registerPageHandle({
+        ...previous,
+        target,
+        targetKey: computeTargetKey(target),
+        scopedTargetKey: buildTargetSourceCacheKey(computeTargetKey(target), getQuickSourceToken(target)),
+        sourceToken: getQuickSourceToken(target)
+      });
+    }
+    scheduleKakaoProjectionRefresh([pageId], "page-handle-restored");
+    return pageId;
+  }
+
+  function getTargetForKakaoPageId(pageId) {
+    const normalizedPageId = String(pageId || "");
+    const targets = state.kakaoTargetsByPageId.get(normalizedPageId);
+    if (!targets) return null;
+
+    const isUsable = (target) => !!target && target.isConnected &&
+      state.kakaoPageIdByTarget.get(target) === normalizedPageId &&
+      shouldUseKakaoCanonicalPipeline(target);
+    const currentHandleTarget = state.kakaoStore && typeof state.kakaoStore.getPageHandle === "function"
+      ? state.kakaoStore.getPageHandle(normalizedPageId)?.target
+      : null;
+    const currentImageRevision = state.kakaoStore && typeof state.kakaoStore.getPageHandle === "function"
+      ? String(state.kakaoStore.getPageHandle(normalizedPageId)?.imageRevision || "")
+      : "";
+
+    let bestTarget = null;
+    let bestVisibleArea = -1;
+    for (const target of Array.from(targets)) {
+      if (!isUsable(target)
+        || (currentImageRevision
+          && String(state.kakaoImageRevisionByTarget.get(target) || "") !== currentImageRevision)) {
+        targets.delete(target);
+        continue;
+      }
+      let visibleArea = 0;
+      try {
+        visibleArea = getVisibleArea(target.getBoundingClientRect());
+      } catch {
+        visibleArea = 0;
+      }
+      // 可见面积优先；面积相同时优先 Store 当前句柄，其次取后绑定 clone。
+      if (
+        visibleArea > bestVisibleArea ||
+        (visibleArea === bestVisibleArea && target === currentHandleTarget) ||
+        (visibleArea === bestVisibleArea && bestTarget !== currentHandleTarget)
+      ) {
+        bestTarget = target;
+        bestVisibleArea = visibleArea;
+      }
+    }
+    if (targets.size === 0) state.kakaoTargetsByPageId.delete(normalizedPageId);
+    return bestTarget;
+  }
+
+  function findAdjacentKakaoPageTargets(target) {
+    const targets = collectKakaopageManualTargetCandidates(true, target)
+      .filter((candidate) => candidate instanceof HTMLImageElement && candidate.isConnected && candidate.complete);
+    const entries = buildKakaoStitchCandidateEntries(targets);
+    const ownerIndex = entries.findIndex((entry) => entry && entry.target === target);
+    if (ownerIndex < 0) {
+      return { previous: null, next: null };
+    }
+    return {
+      previous: findKakaoStitchNeighborTarget(entries, ownerIndex, "previous"),
+      next: findKakaoStitchNeighborTarget(entries, ownerIndex, "next")
+    };
+  }
+
+  async function detectAdjacentKakaoPixelRisk(pageARecord, pageBRecord) {
+    const payloadA = pageARecord && pageARecord.payload;
+    const payloadB = pageBRecord && pageBRecord.payload;
+    const fragmentRisk = hasKakaoFragmentStructureRisk(pageARecord) || hasKakaoFragmentStructureRisk(pageBRecord);
+    if (!payloadA || !payloadB || !isDataUrl(payloadA.dataUrl) || !isDataUrl(payloadB.dataUrl)) {
+      return fragmentRisk ? Object.freeze({ risk: true, fragmentRisk: true }) : null;
+    }
+    const [imageA, imageB] = await Promise.all([
+      loadImageFromDataUrl(payloadA.dataUrl),
+      loadImageFromDataUrl(payloadB.dataUrl)
+    ]);
+    const overlap = findKakaoVerticalOverlap(
+      sampleKakaoImageForOverlap(imageA),
+      sampleKakaoImageForOverlap(imageB)
+    );
+    if (overlap && overlap.accepted) {
+      return Object.freeze({ ...overlap, risk: true, ...(fragmentRisk ? { fragmentRisk: true } : {}) });
+    }
+    return fragmentRisk ? Object.freeze({ risk: true, fragmentRisk: true }) : null;
+  }
+
+  function hasKakaoFragmentStructureRisk(record) {
+    if (!record || typeof KP.isKakaoPageEdgeFragment !== "function") return false;
+    const identity = record.identity || record.pageIdentity || record;
+    const payload = record.payload || {};
+    const width = Math.max(1, Number(identity.width || payload.sourceWidth || payload.width || 0));
+    const height = Math.max(1, Number(identity.height || payload.sourceHeight || payload.height || 0));
+    const sourceKey = String(identity.stableSource || payload.imageUrl || record.sourceToken || "");
+    return KP.isKakaoPageEdgeFragment({
+      owner: { sourceKey, width, height },
+      canonicalWidth: width,
+      ownerHeight: height
+    });
+  }
+
+  async function buildKakaoSeamPayload(pageARecord, pageBRecord, options = {}) {
+    const payloadA = pageARecord && pageARecord.payload;
+    const payloadB = pageBRecord && pageBRecord.payload;
+    const identityA = pageARecord && (pageARecord.identity || pageARecord.pageIdentity || pageARecord);
+    const identityB = pageBRecord && (pageBRecord.identity || pageBRecord.pageIdentity || pageBRecord);
+    if (!payloadA || !payloadB || !identityA || !identityB) return null;
+    if (!isDataUrl(payloadA.dataUrl) || !isDataUrl(payloadB.dataUrl)) return null;
+
+    const [imageA, imageB] = await Promise.all([
+      loadImageFromDataUrl(payloadA.dataUrl),
+      loadImageFromDataUrl(payloadB.dataUrl)
+    ]);
+    const widthA = Number(identityA.width || imageA.naturalWidth || imageA.width || 0);
+    const widthB = Number(identityB.width || imageB.naturalWidth || imageB.width || 0);
+    const heightA = Number(identityA.height || imageA.naturalHeight || imageA.height || 0);
+    const heightB = Number(identityB.height || imageB.naturalHeight || imageB.height || 0);
+    const bitmapWidthA = Number(imageA.naturalWidth || imageA.width || 0);
+    const bitmapWidthB = Number(imageB.naturalWidth || imageB.width || 0);
+    const bitmapHeightA = Number(imageA.naturalHeight || imageA.height || 0);
+    const bitmapHeightB = Number(imageB.naturalHeight || imageB.height || 0);
+    if (!(widthA > 0 && widthB > 0 && heightA > 0 && heightB > 0)) return null;
+    const requestedHeight = Number(options.height || options.bandHeight || 0);
+    const bandHeight = Math.max(160, Math.min(420,
+      Math.round(requestedHeight || Math.min(widthA, widthB) * 0.15)));
+    const sourceBandA = Math.min(heightA, bandHeight);
+    const sourceBandB = Math.min(heightB, bandHeight);
+    const bitmapBandA = Math.min(bitmapHeightA, sourceBandA * bitmapHeightA / heightA);
+    const bitmapBandB = Math.min(bitmapHeightB, sourceBandB * bitmapHeightB / heightB);
+    const canvasWidth = Math.max(1, Math.round(Math.min(widthA, widthB)));
+    const drawnHeightA = Math.max(1, Math.round(sourceBandA * canvasWidth / widthA));
+    const drawnHeightB = Math.max(1, Math.round(sourceBandB * canvasWidth / widthB));
+    const overlap = options.overlap || null;
+    const overlapRows = overlap && overlap.accepted
+      ? Math.round(Number(overlap.rows || 0) / Math.max(1, Number(overlap.currentRows || 1)) * drawnHeightB)
+      : 0;
+    const alignedOverlap = Math.max(0, Math.min(overlapRows, drawnHeightA - 1, drawnHeightB - 1));
+    const canvasHeight = drawnHeightA + drawnHeightB - alignedOverlap;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return null;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvasWidth, canvasHeight);
+    context.drawImage(
+      imageA,
+      0,
+      bitmapHeightA - bitmapBandA,
+      bitmapWidthA,
+      bitmapBandA,
+      0,
+      0,
+      canvasWidth,
+      drawnHeightA
+    );
+    context.drawImage(
+      imageB,
+      0,
+      0,
+      bitmapWidthB,
+      bitmapBandB,
+      0,
+      drawnHeightA - alignedOverlap,
+      canvasWidth,
+      drawnHeightB
+    );
+
+    const pageIds = [String(identityA.pageId), String(identityB.pageId)];
+    const imageRevisionByPage = {
+      [pageIds[0]]: String(identityA.imageRevision || ""),
+      [pageIds[1]]: String(identityB.imageRevision || "")
+    };
+    const segments = [
+      {
+        pageId: pageIds[0],
+        drawRect: { x: 0, y: 0, w: canvasWidth, h: drawnHeightA },
+        sourceCrop: { x: 0, y: heightA - sourceBandA, w: widthA, h: sourceBandA },
+        naturalWidth: widthA,
+        naturalHeight: heightA
+      },
+      {
+        pageId: pageIds[1],
+        drawRect: { x: 0, y: drawnHeightA - alignedOverlap, w: canvasWidth, h: drawnHeightB },
+        sourceCrop: { x: 0, y: 0, w: widthB, h: sourceBandB },
+        naturalWidth: widthB,
+        naturalHeight: heightB
+      }
+    ];
+    const pageSpans = segments.map((segment) => ({
+      pageId: segment.pageId,
+      canvasBox: {
+        x: segment.drawRect.x,
+        y: segment.drawRect.y,
+        w: segment.drawRect.w,
+        h: segment.drawRect.h
+      },
+      pageBox: {
+        x: segment.sourceCrop.x,
+        y: segment.sourceCrop.y,
+        w: segment.sourceCrop.w,
+        h: segment.sourceCrop.h
+      },
+      pageWidth: segment.naturalWidth,
+      pageHeight: segment.naturalHeight
+    }));
+    return {
+      dataUrl: canvas.toDataURL("image/jpeg", IMAGE_JPEG_QUALITY),
+      imageUrl: `kakao-seam:${pageIds.join("+")}`,
+      width: canvasWidth,
+      height: canvasHeight,
+      sourceWidth: canvasWidth,
+      sourceHeight: canvasHeight,
+      cssWidth: canvasWidth,
+      cssHeight: canvasHeight,
+      source: "kakao-seam",
+      sourceType: "seam",
+      ocrMode: "seam",
+      pageIds,
+      imageRevisionByPage,
+      pageSpans,
+      seam: {
+        bandHeight,
+        alignedOverlap,
+        canvasWidth,
+        canvasHeight,
+        segments
+      },
+      coordinateSpace: "kakao-seam-v1"
+    };
+  }
+
+  async function requestOcrForPayload(payload, context = {}) {
+    const sourceType = context.sourceType === "seam" ? "seam" : "page";
+    const pageIds = Array.isArray(context.pageIds) ? context.pageIds.map(String) : [];
+    const imageRevisionByPage = context.imageRevisionByPage && typeof context.imageRevisionByPage === "object"
+      ? context.imageRevisionByPage
+      : {};
+    const response = await sendRuntimeMessage({
+      type: "OCR_DATA_URL",
+      dataUrl: payload && payload.dataUrl,
+      imageUrl: payload && payload.imageUrl,
+      targetKey: String(context.requestKey || ""),
+      ocrMode: String(payload && payload.ocrMode || (sourceType === "seam" ? "seam" : "single")),
+      sourceToken: String(payload && payload.sourceToken || ""),
+      sourceType,
+      pageIds,
+      imageRevision: String(context.imageRevision || (pageIds[0] && imageRevisionByPage[pageIds[0]]) || ""),
+      imageRevisionByPage,
+      requireCleanedImage: context.requireCleanedImage === true,
+      forceCleanedImageArtifact: context.forceCleanedImageArtifact === true,
+      imageMeta: {
+        ...buildPayloadImageMeta(payload),
+        ...(context.imageMeta || {}),
+        sourceType,
+        pageIds,
+        imageRevisionByPage,
+        pageSpans: payload && payload.pageSpans || context.imageMeta && context.imageMeta.pageSpans || null,
+        seam: payload && payload.seam || null
+      }
+    });
+    if (!response || !response.ok) return response;
+    const result = normalizeOcrObservationResult(response.result, {
+      sourceType,
+      pageIds,
+      imageRevisionByPage
+    });
+    return { ...response, result };
+  }
+
+  function normalizeOcrObservationResult(result, fallback = {}) {
+    const normalizeObservation = (observation, filtered = false) => {
+      const {
+        translated_text: _legacyTranslatedText,
+        translatedText: _legacyTranslatedTextCamel,
+        ...evidence
+      } = observation && typeof observation === "object" ? observation : {};
+      const originalText = cleanRenderableText(observation && (observation.originalText || observation.original_text) || "");
+      return Object.freeze({
+        ...evidence,
+        id: String(observation && (observation.id || observation.block_id) || ""),
+        sourceType: observation && observation.sourceType === "seam" ? "seam" : String(fallback.sourceType || "page"),
+        pageIds: Array.isArray(observation && observation.pageIds)
+          ? observation.pageIds.map(String)
+          : Array.from(fallback.pageIds || [], String),
+        imageRevisionByPage: observation && observation.imageRevisionByPage || fallback.imageRevisionByPage || {},
+        originalText,
+        original_text: originalText,
+        confidence: Number(observation && observation.confidence || 0),
+        ...(filtered ? { filterReason: String(observation && observation.filterReason || "unspecified") } : {})
+      });
+    };
+    const observations = Array.isArray(result && result.observations)
+      ? result.observations.map((item) => normalizeObservation(item, false))
+      : [];
+    const filteredObservations = Array.isArray(result && result.filteredObservations)
+      ? result.filteredObservations.map((item) => normalizeObservation(item, true))
+      : [];
+    return {
+      ...(result || {}),
+      observations,
+      filteredObservations,
+      edgeSignals: result && result.edgeSignals && typeof result.edgeSignals === "object"
+        ? result.edgeSignals
+        : { top: false, bottom: false },
+      counts: result && result.counts || {
+        eligible: observations.length,
+        filtered: filteredObservations.length
+      }
+    };
+  }
+
+  async function requestCanonicalTranslations(items, context = {}) {
+    const requestItems = (Array.isArray(items) ? items : []).map((item) => ({
+      id: String(item && item.id || ""),
+      revision: Math.max(1, Number(item && item.revision || 1)),
+      original_text: String(item && (item.original_text || item.originalText) || "")
+    })).filter((item) => item.id && item.original_text);
+    if (requestItems.length === 0) {
+      return { ok: true, result: { translations: [], errors: [], partial: false } };
+    }
+    const response = await sendRuntimeMessage({
+      type: "TRANSLATE_TEXT_BLOCKS",
+      sourceLanguage: String(context.sourceLanguage || KAKAO_CANONICAL_SOURCE_LANGUAGE),
+      targetLanguage: String(context.targetLanguage || KAKAO_CANONICAL_TARGET_LANGUAGE),
+      items: requestItems
+    });
+    if (!response) return response;
+    const translations = Array.isArray(response.translations)
+      ? response.translations
+      : Array.isArray(response.result && response.result.translations)
+        ? response.result.translations
+        : [];
+    const errors = Array.isArray(response.errors)
+      ? response.errors
+      : Array.isArray(response.result && response.result.errors)
+        ? response.result.errors
+        : [];
+    if (!response.ok && !(response.partial === true && translations.length > 0)) {
+      return response;
+    }
+    const normalized = {
+      translations: translations.map((item) => ({
+        ...item,
+        id: String(item && item.id || ""),
+        revision: Math.max(1, Number(item && item.revision || 1)),
+        translated_text: cleanRenderableText(item && item.translated_text || ""),
+        translationFingerprint: String(item && item.translationFingerprint || ""),
+        cached: item && item.cached === true
+      })).filter((item) => item.id && item.translated_text),
+      errors,
+      partial: response.partial === true || response.result && response.result.partial === true || errors.length > 0
+    };
+    return { ...response, ok: true, partial: normalized.partial, result: normalized };
   }
 
   function shouldUseKakaoStitchedOcr(target, payload) {
@@ -1865,8 +2730,14 @@
   function textSimilarity(first, second) {
     return KP.textSimilarity(first, second);
   }
-  async function normalizeKakaopagePayload(target, payload) {
+  async function normalizeKakaopagePayload(target, payload, options = {}) {
     if (!IS_KAKAOPAGE_READER || !payload || !isSupportedTarget(target)) {
+      return payload;
+    }
+
+    // Canonical 链路的单页 OCR 输入是权威证据：重复像素仅用于 seam 对齐，
+    // 短页/碎图片也必须按自身完整字节独立进入 OCR。
+    if (shouldUseKakaoCanonicalPipeline(target) && options.forceLegacyKakao !== true) {
       return payload;
     }
 
@@ -1988,7 +2859,9 @@
       const fetched = await sendRuntimeMessage({
         type: "FETCH_IMAGE_DATA_URL",
         url: imageUrl,
-        referrer: location.href
+        referrer: location.href,
+        preserveSize: shouldUseKakaoCanonicalPipeline(img),
+        maxOriginalBytes: EMBEDDED_MAX_ORIGINAL_BYTES
       });
 
       if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
@@ -2364,6 +3237,152 @@
     });
   }
 
+  function projectionToRendererBubble(projection) {
+    const source = projection && projection.bubble && typeof projection.bubble === "object"
+      ? projection.bubble
+      : projection || {};
+    const rawGeometry = projection && (
+      projection.geometry || projection.pageLocalBox || projection.box
+    ) || source.geometry || source.pageLocalBox || source.box || source;
+    const geometry = Array.isArray(rawGeometry) ? rawGeometry[0] || {} : rawGeometry;
+    const visual = projection && projection.visual || source.visual || {};
+    const rawRole = String(projection && projection.role || source.projection_role || "text_primary");
+    const role = rawRole === "primary" ? "text_primary"
+      : rawRole === "standby" && projection && projection.coverOnly === true ? "cover_only"
+        : rawRole === "standby" ? "text_standby"
+        : rawRole === "cover" ? "cover_only"
+          : rawRole;
+    const originalText = String(
+      projection && (projection.originalText || projection.original_text) ||
+      source.originalText || source.original_text || ""
+    );
+    const translatedText = String(
+      projection && (projection.translatedText || projection.translated_text) ||
+      source.translatedText || source.translated_text || ""
+    );
+    return {
+      ...source,
+      x: Number(geometry && (geometry.x ?? geometry.left) || 0),
+      y: Number(geometry && (geometry.y ?? geometry.top) || 0),
+      w: Number(geometry && (geometry.w ?? geometry.width) || 0),
+      h: Number(geometry && (geometry.h ?? geometry.height) || 0),
+      fill_box: source.fill_box || visual.fill_box || visual.fillBox || null,
+      bg_type: source.bg_type || visual.bg_type || visual.bgType || "none",
+      bg_color: source.bg_color || visual.bg_color || visual.bgColor || "",
+      bg_confidence: Number(source.bg_confidence || visual.bg_confidence || visual.bgConfidence || 0),
+      region_id: String(source.region_id || visual.region_id || visual.regionId || ""),
+      region_type: String(source.region_type || visual.region_type || visual.regionType || "plain_text"),
+      region_polygon: source.region_polygon || visual.region_polygon || visual.regionPolygon || null,
+      polygon: source.polygon || visual.polygon || null,
+      text_color: source.text_color || visual.text_color || visual.textColor || "",
+      stroke_color: source.stroke_color || visual.stroke_color || visual.strokeColor || "",
+      rotation_deg: Number(source.rotation_deg || visual.rotation_deg || visual.rotationDeg || 0),
+      source_line_count: Math.max(1, Number(source.source_line_count || visual.source_line_count || visual.sourceLineCount || 1)),
+      block_id: String(
+        projection && (projection.projectionId || projection.id) ||
+        source.block_id || source.id || ""
+      ),
+      canonical_id: String(projection && (projection.canonicalId || projection.groupId) || source.canonical_id || ""),
+      canonical_revision: Math.max(1, Number(projection && (projection.canonicalRevision || projection.groupRevision || projection.revision) || source.canonical_revision || 1)),
+      projection_role: role,
+      original_text: originalText,
+      translated_text: role === "cover_only" ? "" : translatedText
+    };
+  }
+
+  function normalizeProjectionPages(input) {
+    const normalized = new Map();
+    const add = (pageId, projections) => {
+      if (!pageId) return;
+      normalized.set(String(pageId), Array.isArray(projections) ? projections : []);
+    };
+    if (input && input.projectionsByPage instanceof Map) {
+      for (const [pageId, projections] of input.projectionsByPage.entries()) add(pageId, projections);
+    } else if (input && input.projectionsByPage && typeof input.projectionsByPage === "object") {
+      for (const [pageId, projections] of Object.entries(input.projectionsByPage)) add(pageId, projections);
+    } else {
+      add(input && input.pageId, input && input.projections);
+    }
+    return normalized;
+  }
+
+  async function renderCanonicalProjections(input = {}) {
+    const pages = normalizeProjectionPages(input);
+    const allTextCandidates = new Map();
+    for (const [pageId, projections] of pages.entries()) {
+      for (const projection of projections) {
+        const rawRole = String(projection && projection.role || "text_primary");
+        const role = rawRole === "primary" ? "text_primary" : rawRole === "standby" ? "text_standby" : rawRole;
+        if (role !== "text_primary" && role !== "text_standby") continue;
+        const canonicalId = String(projection && (projection.canonicalId || projection.groupId || projection.id) || "");
+        if (!canonicalId) continue;
+        const target = getTargetForKakaoPageId(pageId);
+        if (!target) continue;
+        const candidates = allTextCandidates.get(canonicalId) || [];
+        candidates.push({ pageId, projection, target, role });
+        allTextCandidates.set(canonicalId, candidates);
+      }
+    }
+
+    const activeProjectionIds = new Set();
+    for (const candidates of allTextCandidates.values()) {
+      candidates.sort((left, right) => {
+        const leftPrimary = left.role === "text_primary" ? 0 : 1;
+        const rightPrimary = right.role === "text_primary" ? 0 : 1;
+        return leftPrimary - rightPrimary || String(left.pageId).localeCompare(String(right.pageId));
+      });
+      const selected = candidates.find((candidate) => candidate.projection.activeText === true) ||
+        candidates.find((candidate) => candidate.projection.active !== false) || candidates[0];
+      activeProjectionIds.add(String(selected.projection.projectionId || selected.projection.id || ""));
+    }
+
+    let renderedCount = 0;
+    for (const [pageId, projections] of pages.entries()) {
+      const target = getTargetForKakaoPageId(pageId) || (pageId === String(input.pageId || "") ? input.target : null);
+      if (!target || !target.isConnected) continue;
+      const bubbles = [...projections]
+        .sort((left, right) => {
+          const leftCover = left && (left.role === "cover" || left.role === "cover_only" || left.coverOnly === true) ? 0 : 1;
+          const rightCover = right && (right.role === "cover" || right.role === "cover_only" || right.coverOnly === true) ? 0 : 1;
+          return leftCover - rightCover;
+        })
+        .filter((projection) => {
+          const rawRole = String(projection && projection.role || "text_primary");
+          const role = rawRole === "primary" ? "text_primary"
+            : rawRole === "standby" && projection && projection.coverOnly === true ? "cover_only"
+              : rawRole === "standby" ? "text_standby"
+              : rawRole === "cover" ? "cover_only"
+                : rawRole;
+          if (role === "cover_only") return projection.active !== false;
+          if (typeof projection.activeText === "boolean") return projection.activeText;
+          const projectionId = String(projection && (projection.projectionId || projection.id) || "");
+          return activeProjectionIds.has(projectionId);
+        })
+        .map(projectionToRendererBubble)
+        .filter((bubble) => bubble.w > 0 && bubble.h > 0)
+        .filter((bubble) => bubble.projection_role === "cover_only" || bubble.translated_text);
+      const targetKey = computeTargetKey(target);
+      const scopedTargetKey = buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target));
+      const result = {
+        bubbles,
+        cleanedImage: input.cleanedImageByPage && input.cleanedImageByPage[pageId] ||
+          input.result && input.result.cleanedImage || null,
+        debug: input.debugByPage && input.debugByPage[pageId] || null
+      };
+      rememberLocalResult(scopedTargetKey, result);
+      if (bubbles.length > 0) {
+        await renderTranslationResult(target, targetKey, result, input.payloadByPage && input.payloadByPage[pageId] || input.payload || null, { stream: true });
+        target.dataset.mtNoTextKey = "";
+      } else {
+        clearRenderedTarget(target);
+        target.dataset.mtNoTextKey = scopedTargetKey;
+      }
+      target.dataset.mtLastTranslatedKey = scopedTargetKey;
+      renderedCount += bubbles.length;
+    }
+    return { ok: true, bubbles: renderedCount };
+  }
+
   async function renderTranslationResult(target, targetKey, result, payload, options = {}) {
     if (IS_KAKAOPAGE_READER) {
       const renderable = isKakaopageTargetStillRenderable(target);
@@ -2520,7 +3539,9 @@
     state.overlayLayer.appendChild(root);
     state.overlaysById.set(targetId, overlayState);
     syncOverlayPosition(overlayState);
-    syncKakaoVisualDuplicateBubbles(true);
+    if (!bubbles.some((bubble) => bubble && bubble.canonical_id)) {
+      syncKakaoVisualDuplicateBubbles(true);
+    }
     ensureOverlayFrameSync();
     logOcrDebugMapping(overlayState, result);
     if (result && result.debug) {
@@ -2583,6 +3604,9 @@
     const imageId = `image-${hashSourceIdentity(`${targetKey}|${sourceIdentity}`)}`;
     const blocks = (result && Array.isArray(result.bubbles) ? result.bubbles : [])
       .map((bubble, index) => {
+        if (bubble && bubble.projection_role === "cover_only") {
+          return null;
+        }
         const originalText = String(bubble && bubble.original_text || "").trim();
         if (!originalText) {
           return null;
@@ -2636,6 +3660,7 @@
       if (overlayState.root.style.display === "none") return;
       overlayState.bubbleNodes.forEach((node) => {
         if (!node || !node.isConnected) return;
+        if (node.dataset.canonicalId) return;
         const rect = node.getBoundingClientRect();
         if (!(rect.width > 0) || !(rect.height > 0)) return;
         candidates.push({
@@ -3318,9 +4343,13 @@
       y = clamp(centerY - h / 2, 0, 100 - h);
     }
 
+    const projectionRole = String(bubble.projection_role || "text_primary");
+    const coverOnly = projectionRole === "cover_only";
     const originalText = cleanRenderableText(bubble.original_text || "");
-    const translatedText = cleanRenderableText(bubble.translated_text || "") || originalText;
-    if (!translatedText) {
+    const translatedText = coverOnly
+      ? ""
+      : cleanRenderableText(bubble.translated_text || "") || originalText;
+    if (!coverOnly && !translatedText) {
       return null;
     }
     const bgType = normalizeBgType(bubble.bg_type);
@@ -3328,9 +4357,11 @@
     const node = document.createElement("div");
     const renderColors = getBubbleRenderColors(bubble, bgType);
     node.className = `mt-bubble mt-bg-${bgType}`;
+    if (coverOnly) node.classList.add("mt-cover-only");
     node.dataset.mangaTranslatorOverlay = "true";
     node.dataset.index = String(index);
-    node.dataset.mode = "translated";
+    node.dataset.mode = coverOnly ? "cover" : "translated";
+    node.dataset.projectionRole = projectionRole;
     node.dataset.original = originalText;
     node.dataset.translated = translatedText;
     node.dataset.sourceLineCount = String(Math.max(1, Math.round(Number(bubble.source_line_count) || 1)));
@@ -3345,6 +4376,7 @@
     node.dataset.backgroundTarget = options.backgroundTarget ? "true" : "";
     node.dataset.stitchOverflow = bubble.stitch_overflow === true ? "true" : "";
     node.dataset.blockId = String(bubble.block_id || bubble.id || `block-${index}`);
+    node.dataset.canonicalId = String(bubble.canonical_id || "");
     if (bgType === "none") {
       const sourceBox = normalizeFillBox(bubble.cleaned_source_box) || { x, y, w, h };
       const patchStyle = getCleanedPatchStyle(sourceBox);
@@ -3397,9 +4429,11 @@
     const rotation = normalizeBubbleRotation(bubble.rotation_deg);
     node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${rotation.toFixed(2)}deg)`);
 
-    node.textContent = formatTranslationForOriginalLines(translatedText, Number(node.dataset.sourceLineCount));
-    node.title = originalText || translatedText;
-    applyBubbleTextLayout(node, translatedText);
+    node.textContent = coverOnly ? "" : formatTranslationForOriginalLines(translatedText, Number(node.dataset.sourceLineCount));
+    node.title = coverOnly ? "" : originalText || translatedText;
+    if (!coverOnly) {
+      applyBubbleTextLayout(node, translatedText);
+    }
 
     node.addEventListener("click", (event) => {
       event.preventDefault();
@@ -3562,6 +4596,12 @@
         continue;
       }
 
+      if (shouldUseKakaoCanonicalPipeline(target) && kakaoCanonicalPipeline) {
+        Promise.resolve(kakaoCanonicalPipeline.runCached(target, null, { reason: "overlay-recovery" }))
+          .catch(() => undefined);
+        continue;
+      }
+
       const localCachedResult = state.localResultCache.get(scopedTargetKey) || state.localResultCache.get(targetKey);
       if (localCachedResult && Array.isArray(localCachedResult.bubbles) && localCachedResult.bubbles.length > 0) {
         if (shouldUseEmbeddedRender(target)) {
@@ -3591,6 +4631,14 @@
     }
 
     if (overlayState.sourceToken && getQuickSourceToken(overlayState.target) !== overlayState.sourceToken) {
+      const stalePageId = String(state.kakaoPageIdByTarget.get(overlayState.target) || "");
+      if (stalePageId) {
+        if (state.kakaoStore && typeof state.kakaoStore.unbindPageTarget === "function") {
+          state.kakaoStore.unbindPageTarget(overlayState.target);
+        }
+        unbindKakaoTargetFromPage(overlayState.target);
+        scheduleKakaoProjectionRefresh([stalePageId], "page-handle-source-changed");
+      }
       overlayState.root.remove();
       state.overlaysById.delete(overlayState.targetId);
       if (state.overlaysById.size === 0) {
@@ -3600,6 +4648,10 @@
     }
 
     if (!overlayState.target.isConnected) {
+      const disconnectedPageId = detachKakaoTargetHandle(overlayState.target);
+      if (disconnectedPageId) {
+        scheduleKakaoProjectionRefresh([disconnectedPageId], "page-handle-disconnected");
+      }
       overlayState.root.remove();
       state.overlaysById.delete(overlayState.targetId);
       if (state.overlaysById.size === 0) {
@@ -3975,6 +5027,7 @@
       naturalHeight: target.naturalHeight || 0,
       rectWidth: rect.width,
       rectHeight: rect.height,
+      sourceGeneration: getKakaoTargetGeneration(target),
       isConnected: target.isConnected
     };
   }
@@ -3984,6 +5037,9 @@
       return false;
     }
     if (!snapshot.isConnected) {
+      return false;
+    }
+    if (Number(snapshot.sourceGeneration || 0) !== getKakaoTargetGeneration(target)) {
       return false;
     }
     const currentSrc = target.currentSrc || target.src || "";
@@ -4406,6 +5462,7 @@
   function maybeQueueKakaoShortPageAttachmentOwner(target, options = {}) {
     if (
       !IS_KAKAOPAGE_READER ||
+      shouldUseKakaoCanonicalPipeline(target) ||
       state.captureMode !== CAPTURE_MODE_DIRECT ||
       state.renderMode !== RENDER_MODE_OVERLAY ||
       !(target instanceof HTMLImageElement) ||
@@ -4771,9 +5828,11 @@
     const effectiveWidthLimit = relaxed ? Math.max(90, Math.min(widthLimit, 100)) : widthLimit;
     // KakaoPage: accept thin strips so they can be stitched into neighbors
     const stripMinHeight = IS_KAKAOPAGE_READER ? KAKAO_THIN_STRIP_MIN_HEIGHT : 0;
-    const effectiveHeightLimit = relaxed
-      ? Math.max(90, Math.min(heightLimit, 100))
-      : Math.max(stripMinHeight, heightLimit);
+    const effectiveHeightLimit = shouldUseKakaoCanonicalPipeline(target)
+      ? stripMinHeight
+      : relaxed
+        ? Math.max(90, Math.min(heightLimit, 100))
+        : Math.max(stripMinHeight, heightLimit);
 
     if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
       console.debug("[MangaTranslator][Filter] rect too small", {
@@ -4824,11 +5883,12 @@
 
   function passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen = false) {
     if (!allowOffscreen) {
+      const canonicalTarget = shouldUseKakaoCanonicalPipeline(target);
       const visibleArea = getVisibleArea(rect);
       const visibleRect = getVisibleViewportRect(target);
       // KakaoPage uses virtual scrolling with tall images (up to 1100px+).
       // Lower thresholds so partially-scrolled images aren't filtered out.
-      const minVisibleArea = relaxed ? 3000 : manual ? 6000 : 8000;
+      const minVisibleArea = canonicalTarget ? 1200 : relaxed ? 3000 : manual ? 6000 : 8000;
       if (!visibleRect || visibleArea < minVisibleArea) {
         console.debug("[MangaTranslator][Filter] KakaoPage not enough visible area", {
           src: (target.currentSrc || target.src || '').slice(0, 60),
@@ -4840,7 +5900,7 @@
         return false;
       }
 
-      const minVisibleHeight = relaxed ? 40 : manual ? 50 : 60;
+      const minVisibleHeight = canonicalTarget ? KAKAO_THIN_STRIP_MIN_HEIGHT : relaxed ? 40 : manual ? 50 : 60;
       const minVisibleWidth = relaxed ? 50 : manual ? 60 : 80;
       if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
         console.debug("[MangaTranslator][Filter] KakaoPage visible rect too small", {
@@ -5614,6 +6674,11 @@
 
     clearAllOverlays();
     clearAutoTranslateRetryTimers();
+    if (state.kakaoProjectionRefreshTimer) {
+      window.clearTimeout(state.kakaoProjectionRefreshTimer);
+      state.kakaoProjectionRefreshTimer = 0;
+    }
+    state.kakaoProjectionRefreshPageIds.clear();
     state.kakaoStore.reset();
     state.queue.length = 0;
     state.preloadQueue.length = 0;

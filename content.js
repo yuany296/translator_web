@@ -1452,9 +1452,7 @@
           };
         }
 
-        if (CONTEXT_INVALIDATED_RE.test(reason)) {
-          markInvalidated(reason);
-        } else {
+        if (!CONTEXT_INVALIDATED_RE.test(reason)) {
           await reportStatus("error", reason, {
             reason: options.reason,
             targetTag: target.tagName.toLowerCase()
@@ -3247,7 +3245,6 @@
   async function reportKakaoPipelineError(error, target, options) {
     const reason = getErrorMessage(error);
     if (CONTEXT_INVALIDATED_RE.test(reason)) {
-      markInvalidated(reason);
       return;
     }
     await reportStatus("error", reason, {
@@ -6647,9 +6644,6 @@
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
           const reason = chrome.runtime.lastError.message || "runtime message failed";
-          if (CONTEXT_INVALIDATED_RE.test(reason)) {
-            markInvalidated(reason);
-          }
           reject(new Error(reason));
           return;
         }

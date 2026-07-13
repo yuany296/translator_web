@@ -57,6 +57,9 @@
 
   const LOADING_OVERLAY_TIMEOUT_MS = 30000;
   const PRETRANSLATE_AHEAD_COUNT = 6;
+  const KAKAO_READER_MIN_TARGET_WIDTH = 200;
+  const KAKAO_READER_MAX_TARGET_WIDTH_GATE = 420;
+  const KAKAO_READER_VIEWPORT_WIDTH_RATIO = 0.46;
   const RUNTIME_OWNER_ATTRIBUTE = "data-manga-translator-runtime-owner";
   const RUNTIME_FEATURE_ATTRIBUTE = "data-manga-translator-feature-version";
   const RUNTIME_FEATURE_VERSION = "kakao-canonical-v1";
@@ -121,6 +124,7 @@
     inflightByTarget: new WeakMap(),
     queue: [],
     queuedTargets: new WeakSet(),
+    queuePumpScheduled: false,
     runningJobs: 0,
     preloadQueue: [],
     preloadQueuedTargets: new WeakSet(),
@@ -306,6 +310,10 @@
       getOverlayVisibilityRect,
       syncOverlayPosition,
       passesKakaopageTargetGeometry,
+      isKakaoReaderContentTarget,
+      compareKakaoTranslationQueueItems,
+      takeNextKakaoTranslationQueueItem,
+      canStartKakaoTranslationQueueItem,
       hasUsableKakaoStripCaptureRect,
       selectPendingAheadCandidates,
       selectPendingContinuousCandidates,
@@ -962,6 +970,9 @@
       return false;
     }
     const rect = target.getBoundingClientRect();
+    if (shouldScopeKakaoReaderTargets() && !isKakaoReaderContentTarget(target, rect)) {
+      return false;
+    }
     const canonicalTarget = shouldUseKakaoCanonicalPipeline(target);
     if (rect.width < 80 || rect.height < (canonicalTarget ? KAKAO_THIN_STRIP_MIN_HEIGHT : 80)) {
       return false;
@@ -999,6 +1010,12 @@
     }
 
     if (!options.manual) {
+      return;
+    }
+
+    // Kakao 正文链路只接收阅读器主画布，推荐卡片不得占用 OCR/翻译槽位。
+    if (shouldScopeKakaoReaderTargets() && !isKakaoReaderContentTarget(target)) {
+      tracePipeline("skipped", target, { skipReason: "outsideKakaoReaderContent" });
       return;
     }
 
@@ -1070,13 +1087,52 @@
       return;
     }
 
-    while (state.runningJobs < MAX_PARALLEL_TRANSLATIONS && state.queue.length > 0) {
-      const item = state.queue.shift();
-      state.queuedTargets.delete(item.target);
+    // IntersectionObserver 会批量回调；延迟到微任务末尾后统一按当前可视区排序。
+    if (state.queuePumpScheduled) {
+      return;
+    }
+    state.queuePumpScheduled = true;
+    const schedule = typeof queueMicrotask === "function"
+      ? queueMicrotask
+      : (callback) => Promise.resolve().then(callback);
+    schedule(() => {
+      state.queuePumpScheduled = false;
+      drainTranslationQueue();
+    });
+  }
 
+  function debugTargetFilter(reason, target, detail = {}) {
+    if (!ENABLE_PIPELINE_TRACE) return;
+    console.debug(`[MangaTranslator][Filter] ${reason}`, {
+      src: String((target && (target.currentSrc || target.src)) || "").slice(0, 60),
+      ...detail
+    });
+  }
+
+  function drainTranslationQueue() {
+    if (state.invalidated) {
+      return;
+    }
+
+    while (state.runningJobs < MAX_PARALLEL_TRANSLATIONS && state.queue.length > 0) {
+      const item = IS_KAKAOPAGE_READER
+        ? takeNextKakaoTranslationQueueItem(state.queue)
+        : state.queue.shift();
+      if (!item) {
+        break;
+      }
       if (!item.target.isConnected) {
+        state.queuedTargets.delete(item.target);
         continue;
       }
+      if (
+        IS_KAKAOPAGE_READER &&
+        !canStartKakaoTranslationQueueItem(item, state.runningJobs, MAX_PARALLEL_TRANSLATIONS)
+      ) {
+        state.queue.push(item);
+        break;
+      }
+      state.queuedTargets.delete(item.target);
 
       state.runningJobs += 1;
       translateTarget(item.target, item.options)
@@ -1229,6 +1285,63 @@
       });
     }
     return result;
+  }
+
+  function compareKakaoTranslationQueueItems(left, right, viewportHeight = window.innerHeight) {
+    const leftPriority = getKakaoTranslationQueuePriority(left && left.target, viewportHeight);
+    const rightPriority = getKakaoTranslationQueuePriority(right && right.target, viewportHeight);
+    return leftPriority.group - rightPriority.group ||
+      leftPriority.distance - rightPriority.distance ||
+      rightPriority.visibleArea - leftPriority.visibleArea;
+  }
+
+  function getKakaoTranslationQueuePriority(target, viewportHeight = window.innerHeight) {
+    if (!target || typeof target.getBoundingClientRect !== "function") {
+      return { group: 3, distance: Number.POSITIVE_INFINITY, visibleArea: 0 };
+    }
+    const rect = target.getBoundingClientRect();
+    const height = Math.max(1, Number(viewportHeight || 0));
+    const visibleTop = Math.max(0, Number(rect.top || 0));
+    const visibleBottom = Math.min(height, Number(rect.bottom ?? (Number(rect.top || 0) + Number(rect.height || 0))));
+    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+    const visibleWidth = Math.max(0, Math.min(window.innerWidth, Number(rect.right ?? (Number(rect.left || 0) + Number(rect.width || 0)))) - Math.max(0, Number(rect.left || 0)));
+    if (visibleHeight > 0 && visibleWidth > 0) {
+      const center = visibleTop + visibleHeight / 2;
+      return {
+        group: 0,
+        distance: Math.abs(center - height / 2),
+        visibleArea: visibleHeight * visibleWidth
+      };
+    }
+    const top = Number(rect.top || 0);
+    const bottom = Number(rect.bottom ?? (top + Number(rect.height || 0)));
+    if (top >= height) {
+      return { group: 1, distance: top - height, visibleArea: 0 };
+    }
+    return { group: 2, distance: Math.max(0, -bottom), visibleArea: 0 };
+  }
+
+  function takeNextKakaoTranslationQueueItem(queue, viewportHeight = window.innerHeight) {
+    if (!Array.isArray(queue) || queue.length === 0) return null;
+    let bestIndex = 0;
+    for (let index = 1; index < queue.length; index += 1) {
+      if (compareKakaoTranslationQueueItems(queue[index], queue[bestIndex], viewportHeight) < 0) {
+        bestIndex = index;
+      }
+    }
+    return queue.splice(bestIndex, 1)[0] || null;
+  }
+
+  function canStartKakaoTranslationQueueItem(
+    item,
+    runningJobs,
+    maxParallelJobs = MAX_PARALLEL_TRANSLATIONS,
+    viewportHeight = window.innerHeight
+  ) {
+    const priority = getKakaoTranslationQueuePriority(item && item.target, viewportHeight);
+    if (priority.group === 0) return true;
+    // 预翻译不占满全部并发，确保新进入视口的页面能立即获得一个执行槽。
+    return Number(runningJobs || 0) < Math.max(1, Number(maxParallelJobs || 1) - 1);
   }
 
   async function translateTarget(target, options) {
@@ -5467,8 +5580,7 @@
     }
 
     if (!passesTargetFilter(target, true)) {
-      console.debug("[MangaTranslator][Filter] queuePageAutoTranslate rejected", {
-        src: (target.currentSrc || target.src || '').slice(0, 60),
+      debugTargetFilter("queuePageAutoTranslate rejected", target, {
         rect: (() => { try { const r = target.getBoundingClientRect(); return `${Math.round(r.width)}x${Math.round(r.height)}`; } catch { return '?'; } })()
       });
       tracePipeline("skipped", target, { skipReason: "filterFail" });
@@ -5739,6 +5851,9 @@
       if (!(rect.width >= 1 && rect.height >= 1)) {
         return false;
       }
+      if (shouldScopeKakaoReaderTargets() && !isKakaoReaderContentTarget(target, rect)) {
+        return false;
+      }
 
       // Visibility check: skip hidden elements
       try {
@@ -5844,14 +5959,15 @@
     }
 
     if (target instanceof HTMLImageElement && !target.complete) {
-      console.debug("[MangaTranslator][Filter] image not complete", {
-        src: (target.currentSrc || target.src || '').slice(0, 60)
-      });
+      debugTargetFilter("image not complete", target);
       return false;
     }
 
     const rect = target.getBoundingClientRect();
     if (rect.width <= 1 || rect.height <= 1) {
+      return false;
+    }
+    if (shouldScopeKakaoReaderTargets() && !isKakaoReaderContentTarget(target, rect)) {
       return false;
     }
 
@@ -5867,8 +5983,7 @@
         : Math.max(stripMinHeight, heightLimit);
 
     if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
-      console.debug("[MangaTranslator][Filter] rect too small", {
-        src: (target.currentSrc || target.src || '').slice(0, 60),
+      debugTargetFilter("rect too small", target, {
         rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
         min: `${effectiveWidthLimit}x${effectiveHeightLimit}`,
         manual
@@ -5877,8 +5992,7 @@
     }
 
     if (IS_KAKAOPAGE_READER && !passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen)) {
-      console.debug("[MangaTranslator][Filter] KakaoPage geometry rejected", {
-        src: (target.currentSrc || target.src || '').slice(0, 60),
+      debugTargetFilter("KakaoPage geometry rejected", target, {
         rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
         manual,
         relaxed
@@ -5892,8 +6006,7 @@
     const effectiveMinRatio = IS_KAKAOPAGE_READER ? 0.01 : (relaxed ? 0.10 : AUTO_MIN_RATIO);
     const maxRatio = relaxed ? 20 : 14;
     if (ratio < effectiveMinRatio || ratio > maxRatio) {
-      console.debug("[MangaTranslator][Filter] aspect ratio out of bounds", {
-        src: (target.currentSrc || target.src || '').slice(0, 60),
+      debugTargetFilter("aspect ratio out of bounds", target, {
         ratio: ratio.toFixed(3),
         min: effectiveMinRatio,
         max: maxRatio
@@ -5913,6 +6026,32 @@
     return true;
   }
 
+  function shouldScopeKakaoReaderTargets() {
+    return IS_KAKAOPAGE_READER &&
+      state.captureMode === CAPTURE_MODE_DIRECT &&
+      state.renderMode === RENDER_MODE_OVERLAY;
+  }
+
+  function isKakaoReaderContentTarget(target, rect = null) {
+    if (!target || typeof target.getBoundingClientRect !== "function") return false;
+    const targetRect = rect || target.getBoundingClientRect();
+    const viewportWidth = Math.max(1, Number(window.innerWidth || 0));
+    const minWidth = Math.max(
+      KAKAO_READER_MIN_TARGET_WIDTH,
+      Math.min(KAKAO_READER_MAX_TARGET_WIDTH_GATE, viewportWidth * KAKAO_READER_VIEWPORT_WIDTH_RATIO)
+    );
+    if (Number(targetRect.width || 0) < minWidth) {
+      return false;
+    }
+    if (target instanceof HTMLImageElement) {
+      const source = String(target.currentSrc || target.src || "");
+      if (/^data:image\/svg\+xml/i.test(source)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   function passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen = false) {
     if (!allowOffscreen) {
       const canonicalTarget = shouldUseKakaoCanonicalPipeline(target);
@@ -5922,8 +6061,7 @@
       // Lower thresholds so partially-scrolled images aren't filtered out.
       const minVisibleArea = canonicalTarget ? 1200 : relaxed ? 3000 : manual ? 6000 : 8000;
       if (!visibleRect || visibleArea < minVisibleArea) {
-        console.debug("[MangaTranslator][Filter] KakaoPage not enough visible area", {
-          src: (target.currentSrc || target.src || '').slice(0, 60),
+        debugTargetFilter("KakaoPage not enough visible area", target, {
           visibleArea: visibleArea,
           minVisibleArea,
           manual,
@@ -5935,8 +6073,7 @@
       const minVisibleHeight = canonicalTarget ? KAKAO_THIN_STRIP_MIN_HEIGHT : relaxed ? 40 : manual ? 50 : 60;
       const minVisibleWidth = relaxed ? 50 : manual ? 60 : 80;
       if (visibleRect.height < minVisibleHeight || visibleRect.width < minVisibleWidth) {
-        console.debug("[MangaTranslator][Filter] KakaoPage visible rect too small", {
-          src: (target.currentSrc || target.src || '').slice(0, 60),
+        debugTargetFilter("KakaoPage visible rect too small", target, {
           visibleRect: `${Math.round(visibleRect.width)}x${Math.round(visibleRect.height)}`,
           min: `${minVisibleWidth}x${minVisibleHeight}`
         });
@@ -5957,8 +6094,7 @@
         // Accept thin strips (down to 8px, ratio ≥ 0.01) so they
         // get their own translation with stitching context.
         if (naturalHeight < KAKAO_THIN_STRIP_MIN_HEIGHT || naturalRatio < 0.01) {
-          console.debug("[MangaTranslator][Filter] KakaoPage natural size too thin", {
-            src: (target.currentSrc || target.src || '').slice(0, 60),
+          debugTargetFilter("KakaoPage natural size too thin", target, {
             natural: `${naturalWidth}x${naturalHeight}`
           });
           return false;

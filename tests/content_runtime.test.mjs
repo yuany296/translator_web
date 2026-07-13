@@ -1043,6 +1043,40 @@ test("Kakao ahead geometry accepts a valid image outside the viewport", () => {
   assert.equal(runtime.__test.passesKakaopageTargetGeometry(image, rect, true, true, true), true);
 });
 
+test("Kakao reader content scope excludes recommendation cards but keeps comic pages", () => {
+  const originalWidth = window.innerWidth;
+  window.innerWidth = 1200;
+  try {
+    const comicPage = new globalThis.HTMLImageElement();
+    comicPage.currentSrc = "https://dw-img-page.kakao.com/sdownload/resource?kid=page";
+    comicPage.getBoundingClientRect = () => ({ left: 300, right: 900, top: 100, bottom: 1100, width: 600, height: 1000 });
+
+    const recommendationCover = new globalThis.HTMLImageElement();
+    recommendationCover.currentSrc = "https://dn-img-page.kakao.com/download/resource?kid=recommendation";
+    recommendationCover.getBoundingClientRect = () => ({ left: 100, right: 280, top: 1400, bottom: 1660, width: 180, height: 260 });
+
+    assert.equal(runtime.__test.isKakaoReaderContentTarget(comicPage), true);
+    assert.equal(runtime.__test.isKakaoReaderContentTarget(recommendationCover), false);
+  } finally {
+    window.innerWidth = originalWidth;
+  }
+});
+
+test("Kakao translation queue selects visible content before ahead and previous pages", () => {
+  const targetAt = (rect) => ({ getBoundingClientRect: () => rect });
+  const visible = { target: targetAt({ left: 300, right: 900, top: 160, bottom: 760, width: 600, height: 600 }) };
+  const ahead = { target: targetAt({ left: 300, right: 900, top: 900, bottom: 1900, width: 600, height: 1000 }) };
+  const previous = { target: targetAt({ left: 300, right: 900, top: -1100, bottom: -100, width: 600, height: 1000 }) };
+  const queue = [ahead, previous, visible];
+
+  assert.equal(runtime.__test.takeNextKakaoTranslationQueueItem(queue, 800), visible);
+  assert.equal(runtime.__test.takeNextKakaoTranslationQueueItem(queue, 800), ahead);
+  assert.deepEqual(queue, [previous]);
+  assert.equal(runtime.__test.canStartKakaoTranslationQueueItem(visible, 5, 6, 800), true);
+  assert.equal(runtime.__test.canStartKakaoTranslationQueueItem(ahead, 5, 6, 800), false);
+  assert.match(contentSource, /queueMicrotask[\s\S]*drainTranslationQueue\(\)/);
+});
+
 test("Kakao strip screenshot waits until a useful target area is visible", () => {
   assert.equal(runtime.__test.hasUsableKakaoStripCaptureRect(null), false);
   assert.equal(runtime.__test.hasUsableKakaoStripCaptureRect({ width: 760, height: 179 }), false);

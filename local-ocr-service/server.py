@@ -37,6 +37,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from pydantic import BaseModel, Field
+from term_extractor import extract_term_candidates, get_term_extractor_status
 
 try:
     from paddleocr import PaddleOCR, TextDetection, TextRecognition
@@ -104,6 +105,17 @@ class BackgroundDebugRequest(BaseModel):
     parameterGroups: list[dict[str, Any]]
 
 
+class TermExtractionBlock(BaseModel):
+    id: str
+    text: str
+
+
+class TermExtractionRequest(BaseModel):
+    blocks: list[TermExtractionBlock] = Field(default_factory=list, max_length=200)
+    mode: str = "balanced"
+    user_terms: list[str] = Field(default_factory=list, max_length=200)
+
+
 app = FastAPI(title="Manga Translator Local OCR")
 app.add_middleware(
     CORSMiddleware,
@@ -127,14 +139,40 @@ def health() -> dict[str, Any]:
     except Exception as exc:
         device = ""
         device_error = str(exc)
+    term_extractor = get_term_extractor_status()
     return {
         "ok": PADDLE_IMPORT_ERROR is None and not device_error,
         "engine": "paddleocr",
         "device": device,
         "cuda": is_cuda_available(),
         "cv2_available": CV2_AVAILABLE,
+        "term_extractor_available": term_extractor["available"],
+        "term_extractor_engine": term_extractor["engine"],
+        "term_extractor_error": term_extractor["error"],
         "error": str(PADDLE_IMPORT_ERROR) if PADDLE_IMPORT_ERROR else device_error,
     }
+
+
+@app.get("/terms/health")
+def terms_health() -> dict[str, Any]:
+    status = get_term_extractor_status(check_runtime=True)
+    return {"ok": status["available"], **status}
+
+
+@app.post("/terms/extract")
+async def extract_terms(payload: TermExtractionRequest) -> dict[str, Any]:
+    status = await asyncio.to_thread(get_term_extractor_status, True)
+    if not status["available"]:
+        raise HTTPException(status_code=503, detail=status["error"] or "Kiwi is unavailable")
+    if payload.mode != "balanced":
+        raise HTTPException(status_code=400, detail="only balanced mode is supported")
+    blocks = [
+        {"id": block.id.strip(), "text": block.text.strip()}
+        for block in payload.blocks
+        if block.id.strip() and block.text.strip()
+    ]
+    candidates = await asyncio.to_thread(extract_term_candidates, blocks, None, payload.user_terms)
+    return {"ok": True, "engine": "kiwi", "candidates": candidates}
 
 
 @app.post("/ocr")

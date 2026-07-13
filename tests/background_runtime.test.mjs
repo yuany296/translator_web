@@ -6,6 +6,7 @@ import vm from "node:vm";
 
 const root = path.resolve(import.meta.dirname, "..");
 const glossarySource = fs.readFileSync(path.join(root, "glossary-core.js"), "utf8");
+const termDiscoverySource = fs.readFileSync(path.join(root, "term-discovery-core.js"), "utf8");
 const source = fs.readFileSync(path.join(root, "background.js"), "utf8");
 const listeners = { addListener() {} };
 const context = vm.createContext({
@@ -23,10 +24,92 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildOpenAICompatibleTranslationPrompt, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildOpenAICompatibleTranslationPrompt, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms };`,
   context,
   { filename: "background.js" }
 );
+
+test("term extractor enters cooldown after failure and recovers after success", () => {
+  const background = context.__backgroundTest;
+  background.markTermExtractorOffline(new Error("offline"), 1000);
+  assert.equal(background.isTermExtractorCoolingDown(1001), true);
+  assert.equal(background.getTermExtractorStatusSnapshot().state, "offline");
+  background.markTermExtractorOnline(2000);
+  assert.equal(background.isTermExtractorCoolingDown(2001), false);
+  assert.equal(background.getTermExtractorStatusSnapshot().state, "online");
+});
+
+test("confirming a pending candidate writes the formal glossary and removes every same-source candidate", async () => {
+  const stored = {
+    mt_glossary_v1: { entries: [] },
+    mt_glossary_pending_v1: {
+      chapters: [
+        {
+          key: "https://example.test/chapter/1",
+          url: "https://example.test/chapter/1",
+          candidates: [{ source: "성현", kind: "proper_noun", score: 0.9 }]
+        },
+        {
+          key: "https://example.test/chapter/2",
+          url: "https://example.test/chapter/2",
+          candidates: [{ source: "성현", kind: "proper_noun", score: 0.9 }]
+        }
+      ]
+    }
+  };
+  context.chrome.storage.local.get = (keys, callback) => {
+    callback(Object.fromEntries(keys.map((key) => [key, stored[key]])));
+  };
+  context.chrome.storage.local.set = (value, callback) => {
+    Object.assign(stored, JSON.parse(JSON.stringify(value)));
+    callback();
+  };
+
+  const response = await context.__backgroundTest.handleConfirmTermCandidates({
+    entries: [{ source: "성현", target: "成贤", note: "角色名" }, { source: "空项", target: "" }]
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(stored.mt_glossary_v1.entries.length, 1);
+  assert.equal(stored.mt_glossary_v1.entries[0].target, "成贤");
+  assert.equal(stored.mt_glossary_pending_v1.chapters.every((chapter) => chapter.candidates.length === 0), true);
+});
+
+test("offline term discovery cools down without surfacing a translation failure", async () => {
+  const stored = {
+    mt_term_discovery_enabled: true,
+    mt_glossary_v1: { entries: [] },
+    mt_glossary_pending_v1: { chapters: [] },
+    mt_glossary_ignored_v1: { sources: [] },
+    mt_local_ocr_base_url: "http://127.0.0.1:8765"
+  };
+  context.chrome.storage.local.get = (keys, callback) => {
+    callback(Object.fromEntries(keys.map((key) => [key, stored[key]])));
+  };
+  context.chrome.storage.local.set = (value, callback) => {
+    Object.assign(stored, JSON.parse(JSON.stringify(value)));
+    callback();
+  };
+  let fetchCount = 0;
+  context.fetch = async () => {
+    fetchCount += 1;
+    throw new Error("connection refused");
+  };
+  context.__backgroundTest.markTermExtractorOnline();
+  const request = {
+    pageUrl: "https://example.test/chapter/3",
+    targetKey: "image-1",
+    blocks: [{ id: "b1", originalText: "김성현", translatedText: "金成贤" }]
+  };
+
+  const first = await context.__backgroundTest.handleDiscoverTerms(request);
+  const second = await context.__backgroundTest.handleDiscoverTerms(request);
+
+  assert.equal(first.ok, true);
+  assert.equal(first.reason, "offline");
+  assert.equal(second.reason, "cooldown");
+  assert.equal(fetchCount, 1);
+});
 
 test("translation cache cleanup recognizes old cache versions and quota errors", () => {
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);

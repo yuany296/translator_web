@@ -1,8 +1,9 @@
 if (typeof importScripts === "function") {
-  importScripts("glossary-core.js");
+  importScripts("glossary-core.js", "term-discovery-core.js");
 }
 
 const glossaryCore = globalThis.MangaGlossary;
+const termDiscoveryCore = globalThis.MangaTermDiscovery;
 
 const STORAGE_KEYS = {
   provider: "mt_provider",
@@ -39,7 +40,10 @@ const STORAGE_KEYS = {
   renderMode: "mt_render_mode",
   pretranslateMode: "mt_pretranslate_mode",
   ignoreSimplifiedChinese: "mt_ignore_simplified_zh",
-  glossary: glossaryCore.STORAGE_KEY
+  glossary: glossaryCore.STORAGE_KEY,
+  glossaryPending: termDiscoveryCore.PENDING_STORAGE_KEY,
+  glossaryIgnored: termDiscoveryCore.IGNORED_STORAGE_KEY,
+  termDiscoveryEnabled: termDiscoveryCore.ENABLED_STORAGE_KEY
 };
 
 const DEFAULT_SETTINGS = {
@@ -76,7 +80,8 @@ const DEFAULT_SETTINGS = {
   captureMode: "direct",
   renderMode: "overlay",
   pretranslateMode: "manual",
-  ignoreSimplifiedChinese: false
+  ignoreSimplifiedChinese: false,
+  termDiscoveryEnabled: true
 };
 
 const PROVIDERS = {
@@ -119,6 +124,9 @@ const BAIDU_MERGE_MAX_WIDTH_RATIO = 0.68;
 const LOCAL_OCR_CONTAINER_SCAN_MAX_SIDE = 760;
 const LOCAL_OCR_EFFECT_JOIN_DISTANCE_RATIO = 2.25;
 const LOCAL_OCR_BUBBLE_JOIN_GAP_RATIO = 1.65;
+const TERM_EXTRACTOR_TIMEOUT_MS = 8000;
+const TERM_EXTRACTOR_COOLDOWN_MS = 5 * 60 * 1000;
+const TERM_EXTRACTOR_HEALTH_CACHE_MS = 30 * 1000;
 const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
 const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
 const inflightTranslateByCacheKey = new Map();
@@ -127,6 +135,13 @@ const visibleTabCaptureCacheByWindow = new Map();
 let baiduAccessTokenCache = null;
 let baiduOcrQueue = Promise.resolve();
 let baiduLastOcrRequestAt = 0;
+let termDiscoveryMutationQueue = Promise.resolve();
+let termExtractorRuntime = {
+  state: "unknown",
+  error: "",
+  checkedAt: 0,
+  cooldownUntil: 0
+};
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   try {
@@ -183,8 +198,297 @@ async function handleMessage(message, sender) {
       return handleGetTabStatus(message);
     case "GET_SETTINGS":
       return { ok: true, settings: await loadSettings() };
+    case "DISCOVER_TERMS":
+      return handleDiscoverTerms(message);
+    case "GET_TERM_DISCOVERY_STATUS":
+      return handleGetTermDiscoveryStatus(message);
+    case "GET_TERM_DISCOVERY_STATE":
+      return handleGetTermDiscoveryState(message);
+    case "SET_TERM_DISCOVERY_ENABLED":
+      return handleSetTermDiscoveryEnabled(message);
+    case "CONFIRM_TERM_CANDIDATES":
+      return handleConfirmTermCandidates(message);
+    case "IGNORE_TERM_CANDIDATE":
+      return handleIgnoreTermCandidate(message);
+    case "RESTORE_IGNORED_TERM":
+      return handleRestoreIgnoredTerm(message);
     default:
       return { ok: false, error: `Unknown message type: ${message.type}` };
+  }
+}
+
+async function handleDiscoverTerms(message) {
+  return enqueueTermDiscoveryMutation(async () => {
+    const stored = await storageGet([
+      STORAGE_KEYS.termDiscoveryEnabled,
+      STORAGE_KEYS.glossaryPending,
+      STORAGE_KEYS.glossaryIgnored,
+      STORAGE_KEYS.glossary,
+      STORAGE_KEYS.localOcrBaseUrl
+    ]);
+    if (stored[STORAGE_KEYS.termDiscoveryEnabled] === false) {
+      return { ok: true, skipped: true, reason: "disabled" };
+    }
+
+    const pageUrl = String(message.pageUrl || "").trim();
+    const targetKey = String(message.targetKey || "").trim();
+    const pending = termDiscoveryCore.normalizePendingStore(stored[STORAGE_KEYS.glossaryPending]);
+    const blocks = termDiscoveryCore.getUnprocessedBlocks(pending, pageUrl, message.blocks, targetKey);
+    if (blocks.length === 0) {
+      return { ok: true, skipped: true, reason: "already_processed" };
+    }
+    if (isTermExtractorCoolingDown()) {
+      return { ok: true, skipped: true, reason: "cooldown", status: getTermExtractorStatusSnapshot() };
+    }
+
+    const baseUrl = sanitizeLocalOcrBaseUrl(
+      stored[STORAGE_KEYS.localOcrBaseUrl] || DEFAULT_LOCAL_OCR_BASE_URL
+    );
+    try {
+      const payload = await requestTermExtractorJson(`${baseUrl}/terms/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "balanced",
+          blocks: blocks.map((block) => ({ id: block.id, text: block.originalText })),
+          user_terms: [
+            ...glossaryCore.normalizeGlossary(stored[STORAGE_KEYS.glossary]).entries
+              .map((entry) => entry.source),
+            ...pending.chapters
+              .flatMap((chapter) => chapter.candidates)
+              .filter((candidate) => candidate.kind === "person")
+              .map((candidate) => candidate.source)
+          ]
+            .slice(0, 200)
+        })
+      });
+      markTermExtractorOnline();
+      const nextPending = termDiscoveryCore.mergeDiscoveryResult({
+        store: pending,
+        ignored: stored[STORAGE_KEYS.glossaryIgnored],
+        glossary: glossaryCore.normalizeGlossary(stored[STORAGE_KEYS.glossary]),
+        pageUrl,
+        pageTitle: message.pageTitle,
+        targetKey,
+        blocks,
+        extractedCandidates: payload && payload.candidates
+      });
+      await storageSet({ [STORAGE_KEYS.glossaryPending]: nextPending });
+      return {
+        ok: true,
+        added: termDiscoveryCore.getPendingCount(nextPending) - termDiscoveryCore.getPendingCount(pending),
+        pendingCount: termDiscoveryCore.getPendingCount(nextPending),
+        status: getTermExtractorStatusSnapshot()
+      };
+    } catch (error) {
+      markTermExtractorOffline(error);
+      console.warn("[MangaTranslator] 术语提取器暂时不可用：", getErrorMessage(error));
+      return { ok: true, skipped: true, reason: "offline", status: getTermExtractorStatusSnapshot() };
+    }
+  });
+}
+
+async function handleGetTermDiscoveryStatus(message = {}) {
+  const stored = await storageGet([
+    STORAGE_KEYS.termDiscoveryEnabled,
+    STORAGE_KEYS.glossaryPending,
+    STORAGE_KEYS.localOcrBaseUrl
+  ]);
+  const enabled = stored[STORAGE_KEYS.termDiscoveryEnabled] !== false;
+  if (enabled && message.probe === true) {
+    await probeTermExtractor(stored[STORAGE_KEYS.localOcrBaseUrl]);
+  }
+  return {
+    ok: true,
+    enabled,
+    pendingCount: termDiscoveryCore.getPendingCount(stored[STORAGE_KEYS.glossaryPending]),
+    status: enabled ? getTermExtractorStatusSnapshot() : { ...getTermExtractorStatusSnapshot(), state: "disabled" }
+  };
+}
+
+async function handleGetTermDiscoveryState(message = {}) {
+  const stored = await storageGet([
+    STORAGE_KEYS.termDiscoveryEnabled,
+    STORAGE_KEYS.glossaryPending,
+    STORAGE_KEYS.glossaryIgnored,
+    STORAGE_KEYS.localOcrBaseUrl
+  ]);
+  const enabled = stored[STORAGE_KEYS.termDiscoveryEnabled] !== false;
+  if (enabled && message.probe === true) {
+    await probeTermExtractor(stored[STORAGE_KEYS.localOcrBaseUrl]);
+  }
+  const pending = termDiscoveryCore.normalizePendingStore(stored[STORAGE_KEYS.glossaryPending]);
+  return {
+    ok: true,
+    enabled,
+    pending,
+    ignored: termDiscoveryCore.normalizeIgnoredStore(stored[STORAGE_KEYS.glossaryIgnored]),
+    pendingCount: termDiscoveryCore.getPendingCount(pending),
+    status: enabled ? getTermExtractorStatusSnapshot() : { ...getTermExtractorStatusSnapshot(), state: "disabled" }
+  };
+}
+
+async function handleSetTermDiscoveryEnabled(message) {
+  const enabled = message.enabled !== false;
+  await storageSet({ [STORAGE_KEYS.termDiscoveryEnabled]: enabled });
+  return handleGetTermDiscoveryStatus({ probe: enabled && message.probe === true });
+}
+
+async function handleConfirmTermCandidates(message) {
+  return enqueueTermDiscoveryMutation(async () => {
+    const requestedEntries = (Array.isArray(message.entries) ? message.entries : [])
+      .map((entry) => ({
+        source: termDiscoveryCore.normalizeSource(entry && entry.source),
+        target: String(entry && entry.target || "").trim().slice(0, glossaryCore.MAX_TARGET_LENGTH),
+        note: String(entry && entry.note || "").trim().slice(0, glossaryCore.MAX_NOTE_LENGTH)
+      }))
+      .filter((entry) => entry.source && entry.target);
+    if (requestedEntries.length === 0) {
+      return { ok: false, error: "请至少填写一个候选术语的译名" };
+    }
+
+    const stored = await storageGet([STORAGE_KEYS.glossary, STORAGE_KEYS.glossaryPending]);
+    const glossary = glossaryCore.normalizeGlossary(stored[STORAGE_KEYS.glossary]);
+    const entries = [...glossary.entries];
+    const indexBySource = new Map(entries.map((entry, index) => [termDiscoveryCore.getSourceKey(entry.source), index]));
+    const confirmedSources = [];
+    for (const requested of requestedEntries) {
+      const sourceKey = termDiscoveryCore.getSourceKey(requested.source);
+      const entry = glossaryCore.normalizeGlossaryEntry({
+        id: `term-auto-${hashString(`${requested.source}\u0000${Date.now()}\u0000${confirmedSources.length}`)}`,
+        source: requested.source,
+        target: requested.target,
+        note: requested.note,
+        enabled: true
+      });
+      if (!entry) {
+        continue;
+      }
+      if (indexBySource.has(sourceKey)) {
+        entries[indexBySource.get(sourceKey)] = { ...entries[indexBySource.get(sourceKey)], ...entry };
+      } else if (entries.length < glossaryCore.MAX_ENTRIES) {
+        indexBySource.set(sourceKey, entries.length);
+        entries.push(entry);
+      } else {
+        return { ok: false, error: `术语库最多保存 ${glossaryCore.MAX_ENTRIES} 条` };
+      }
+      confirmedSources.push(entry.source);
+    }
+    if (confirmedSources.length === 0) {
+      return { ok: false, error: "没有可加入的候选术语" };
+    }
+
+    const nextGlossary = glossaryCore.normalizeGlossary({
+      version: glossaryCore.SCHEMA_VERSION,
+      revision: glossary.revision + 1,
+      updatedAt: Date.now(),
+      entries
+    });
+    const nextPending = termDiscoveryCore.removeSourcesFromPending(
+      stored[STORAGE_KEYS.glossaryPending],
+      confirmedSources
+    );
+    await storageSet({
+      [STORAGE_KEYS.glossary]: nextGlossary,
+      [STORAGE_KEYS.glossaryPending]: nextPending
+    });
+    return {
+      ok: true,
+      added: confirmedSources.length,
+      pendingCount: termDiscoveryCore.getPendingCount(nextPending)
+    };
+  });
+}
+
+async function handleIgnoreTermCandidate(message) {
+  return enqueueTermDiscoveryMutation(async () => {
+    const stored = await storageGet([STORAGE_KEYS.glossaryPending, STORAGE_KEYS.glossaryIgnored]);
+    const next = termDiscoveryCore.ignoreCandidate({
+      store: stored[STORAGE_KEYS.glossaryPending],
+      ignored: stored[STORAGE_KEYS.glossaryIgnored],
+      chapterKey: String(message.chapterKey || ""),
+      source: message.source,
+      scope: message.scope === "global" ? "global" : "chapter"
+    });
+    await storageSet({
+      [STORAGE_KEYS.glossaryPending]: next.store,
+      [STORAGE_KEYS.glossaryIgnored]: next.ignored
+    });
+    return { ok: true, pendingCount: termDiscoveryCore.getPendingCount(next.store) };
+  });
+}
+
+async function handleRestoreIgnoredTerm(message) {
+  return enqueueTermDiscoveryMutation(async () => {
+    const stored = await storageGet([STORAGE_KEYS.glossaryIgnored]);
+    const ignored = termDiscoveryCore.restoreIgnoredSource(stored[STORAGE_KEYS.glossaryIgnored], message.source);
+    await storageSet({ [STORAGE_KEYS.glossaryIgnored]: ignored });
+    return { ok: true };
+  });
+}
+
+function enqueueTermDiscoveryMutation(task) {
+  const running = termDiscoveryMutationQueue.then(task, task);
+  termDiscoveryMutationQueue = running.catch(() => undefined);
+  return running;
+}
+
+function isTermExtractorCoolingDown(now = Date.now()) {
+  return termExtractorRuntime.state === "offline" && termExtractorRuntime.cooldownUntil > now;
+}
+
+function getTermExtractorStatusSnapshot() {
+  return { ...termExtractorRuntime };
+}
+
+function markTermExtractorOnline(now = Date.now()) {
+  termExtractorRuntime = { state: "online", error: "", checkedAt: now, cooldownUntil: 0 };
+}
+
+function markTermExtractorOffline(error, now = Date.now()) {
+  termExtractorRuntime = {
+    state: "offline",
+    error: getErrorMessage(error) || "术语提取器离线",
+    checkedAt: now,
+    cooldownUntil: now + TERM_EXTRACTOR_COOLDOWN_MS
+  };
+}
+
+async function probeTermExtractor(baseUrlValue) {
+  const now = Date.now();
+  if (termExtractorRuntime.checkedAt > 0 && now - termExtractorRuntime.checkedAt < TERM_EXTRACTOR_HEALTH_CACHE_MS) {
+    return getTermExtractorStatusSnapshot();
+  }
+  const baseUrl = sanitizeLocalOcrBaseUrl(baseUrlValue || DEFAULT_LOCAL_OCR_BASE_URL);
+  try {
+    const payload = await requestTermExtractorJson(`${baseUrl}/terms/health`, { method: "GET" });
+    if (!payload || payload.ok !== true || payload.available === false) {
+      throw new Error(String(payload && payload.error || "Kiwi 加载失败"));
+    }
+    markTermExtractorOnline();
+  } catch (error) {
+    markTermExtractorOffline(error);
+  }
+  return getTermExtractorStatusSnapshot();
+}
+
+async function requestTermExtractorJson(url, options) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TERM_EXTRACTOR_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const payload = await safeJson(response);
+    if (!response.ok) {
+      throw new Error(String(payload && (payload.detail || payload.error) || `HTTP ${response.status}`));
+    }
+    return payload;
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error("术语提取请求超时");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -4745,7 +5049,10 @@ async function ensureDefaultSettings() {
     STORAGE_KEYS.renderMode,
     STORAGE_KEYS.pretranslateMode,
     STORAGE_KEYS.ignoreSimplifiedChinese,
-    STORAGE_KEYS.glossary
+    STORAGE_KEYS.glossary,
+    STORAGE_KEYS.glossaryPending,
+    STORAGE_KEYS.glossaryIgnored,
+    STORAGE_KEYS.termDiscoveryEnabled
   ]);
 
   const patch = {};
@@ -4839,6 +5146,15 @@ async function ensureDefaultSettings() {
   ) {
     patch[STORAGE_KEYS.glossary] = glossaryCore.normalizeGlossary(null);
   }
+  if (!stored[STORAGE_KEYS.glossaryPending] || typeof stored[STORAGE_KEYS.glossaryPending] !== "object") {
+    patch[STORAGE_KEYS.glossaryPending] = termDiscoveryCore.normalizePendingStore(null);
+  }
+  if (!stored[STORAGE_KEYS.glossaryIgnored] || typeof stored[STORAGE_KEYS.glossaryIgnored] !== "object") {
+    patch[STORAGE_KEYS.glossaryIgnored] = termDiscoveryCore.normalizeIgnoredStore(null);
+  }
+  if (typeof stored[STORAGE_KEYS.termDiscoveryEnabled] !== "boolean") {
+    patch[STORAGE_KEYS.termDiscoveryEnabled] = DEFAULT_SETTINGS.termDiscoveryEnabled;
+  }
 
   if (Object.keys(patch).length > 0) {
     await storageSet(patch);
@@ -4887,7 +5203,8 @@ async function loadSettings() {
     STORAGE_KEYS.renderMode,
     STORAGE_KEYS.pretranslateMode,
     STORAGE_KEYS.ignoreSimplifiedChinese,
-    STORAGE_KEYS.glossary
+    STORAGE_KEYS.glossary,
+    STORAGE_KEYS.termDiscoveryEnabled
   ]);
 
   const storedProvider = String(raw[STORAGE_KEYS.provider] || "").trim().toLowerCase();
@@ -4937,6 +5254,7 @@ async function loadSettings() {
       ? String(raw[STORAGE_KEYS.pretranslateMode]).trim().toLowerCase()
       : "manual",
     ignoreSimplifiedChinese: raw[STORAGE_KEYS.ignoreSimplifiedChinese] === true,
+    termDiscoveryEnabled: raw[STORAGE_KEYS.termDiscoveryEnabled] !== false,
     glossary,
     glossaryEntries: glossary.entries,
     glossaryFingerprint: glossaryCore.getFingerprint(glossary)

@@ -3,7 +3,7 @@
 日期：2026-06-05  
 执行者：Codex
 
-这个服务给浏览器扩展的 `local_paddle_deepseek` Provider 使用。OCR 在本机完成，不消耗百度 OCR 次数；翻译仍由扩展调用 DeepSeek。
+这个服务给浏览器扩展提供 PaddleOCR 和 Kiwi 术语提取。OCR 在本机完成，不消耗百度 OCR 次数；翻译仍由扩展调用 OpenAI-compatible 文本接口。即使扩展选择百度 OCR，自动发现新术语仍会调用这里的 Kiwi 接口。
 
 ## 安装
 
@@ -56,6 +56,31 @@ curl http://127.0.0.1:8765/health
 ```
 
 `/health` 会返回当前 `device` 和 `cuda` 状态。注意：机器有 NVIDIA GPU 不代表当前 Python 环境已经能用 GPU；如果 `cuda=false`，说明安装的是 CPU 版 PaddlePaddle，需要先换成 GPU 版。
+
+Kiwi 术语提取健康检查：
+
+```bash
+curl http://127.0.0.1:8765/terms/health
+```
+
+返回 `ok=true`、`available=true` 表示 Kiwi 和本地词典已加载。第一次检查会初始化词典，可能比后续请求稍慢。
+
+术语提取接口：
+
+```http
+POST /terms/extract
+Content-Type: application/json
+
+{
+  "mode": "balanced",
+  "blocks": [
+    {"id": "b1", "text": "김성현"},
+    {"id": "b2", "text": "THE DAWN"}
+  ]
+}
+```
+
+接口只返回 `source`、`kind`、`score`、`evidenceIds`，不生成译名，也不修改正式术语库。Kiwi 识别韩文专名/名词短语，英文规则识别大写品牌和组合标题；`PD` 等常见职位缩写会被过滤。
 
 ## 自检
 

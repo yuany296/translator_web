@@ -142,6 +142,7 @@
     floatingBallClose: null,
     bubbleMeasureProbe: null,
     fontFitCache: new Map(),
+    termDiscoverySentKeys: new Set(),
     lastInfoStatusAt: 0,
     runtimeOwnerToken: `${Date.now()}-${Math.random().toString(36).slice(2)}`
   };
@@ -252,6 +253,7 @@
       getDebugItemPercentWithImageSize,
       mapKakaoStitchedFillBox,
       mapKakaoStitchedPolygon,
+      buildTermDiscoveryMessage,
       releaseUncoveredKakaoShortPages,
       releaseShortPagesAttachedDuringInflight,
       hasAttachedShortPageBubble,
@@ -2378,6 +2380,8 @@
       }
     }
 
+    scheduleTermDiscovery(target, targetKey, result, payload);
+
     if (shouldUseEmbeddedRender(target) && !getPayloadDisplayRect(payload)) {
       await renderEmbeddedTranslation(target, targetKey, result, payload);
       removeOverlayForTarget(target);
@@ -2542,6 +2546,67 @@
       bubbleCount: bubbleNodes.length,
       targetKey: String(targetKey).slice(0, 80)
     });
+  }
+
+  function scheduleTermDiscovery(target, targetKey, result, payload) {
+    if (state.invalidated) {
+      return;
+    }
+    const sourceIdentity = String(
+      payload && (payload.sourceImageId || payload.sourceToken) ||
+      buildTargetSourceCacheKey(targetKey, getQuickSourceToken(target))
+    );
+    const message = buildTermDiscoveryMessage(
+      result,
+      targetKey,
+      sourceIdentity,
+      location.href,
+      document.title
+    );
+    if (!message) {
+      return;
+    }
+    const sendKey = `${message.pageUrl}|${message.targetKey}|${hashSourceIdentity(JSON.stringify(message.blocks))}`;
+    if (state.termDiscoverySentKeys.has(sendKey)) {
+      return;
+    }
+    state.termDiscoverySentKeys.add(sendKey);
+    if (state.termDiscoverySentKeys.size > 500) {
+      state.termDiscoverySentKeys.delete(state.termDiscoverySentKeys.values().next().value);
+    }
+    sendRuntimeMessage(message).catch(() => {
+      // 术语发现是旁路能力，离线或扩展重载都不能影响译文渲染。
+    });
+  }
+
+  function buildTermDiscoveryMessage(result, targetKey, sourceIdentity, pageUrl, pageTitle) {
+    const imageId = `image-${hashSourceIdentity(`${targetKey}|${sourceIdentity}`)}`;
+    const blocks = (result && Array.isArray(result.bubbles) ? result.bubbles : [])
+      .map((bubble, index) => {
+        const originalText = String(bubble && bubble.original_text || "").trim();
+        if (!originalText) {
+          return null;
+        }
+        const translatedText = String(bubble && bubble.translated_text || "").trim();
+        const rawBlockId = String(bubble && (bubble.block_id || bubble.id) || index);
+        const evidenceHash = hashSourceIdentity(`${rawBlockId}|${originalText}`);
+        return {
+          id: `${imageId}-${evidenceHash}`,
+          originalText,
+          translatedText
+        };
+      })
+      .filter(Boolean);
+    if (blocks.length === 0) {
+      return null;
+    }
+    return {
+      type: "DISCOVER_TERMS",
+      pageUrl: String(pageUrl || ""),
+      pageTitle: String(pageTitle || ""),
+      targetKey: imageId,
+      blocks
+    };
   }
 
   function syncKakaoVisualDuplicateBubbles(force = false) {

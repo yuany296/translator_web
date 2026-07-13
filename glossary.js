@@ -1,7 +1,12 @@
 "use strict";
 
 const glossaryCore = globalThis.MangaGlossary;
+const termDiscoveryCore = globalThis.MangaTermDiscovery;
 const addBtn = document.getElementById("addBtn");
+const officialTabBtn = document.getElementById("officialTabBtn");
+const pendingTabBtn = document.getElementById("pendingTabBtn");
+const officialPanel = document.getElementById("officialPanel");
+const pendingPanel = document.getElementById("pendingPanel");
 const searchInput = document.getElementById("searchInput");
 const importBtn = document.getElementById("importBtn");
 const exportJsonBtn = document.getElementById("exportJsonBtn");
@@ -21,12 +26,23 @@ const targetInput = document.getElementById("targetInput");
 const noteInput = document.getElementById("noteInput");
 const enabledInput = document.getElementById("enabledInput");
 const cancelBtn = document.getElementById("cancelBtn");
+const confirmFilledBtn = document.getElementById("confirmFilledBtn");
+const extractorStatus = document.getElementById("extractorStatus");
+const pendingCountText = document.getElementById("pendingCountText");
+const pendingStatusText = document.getElementById("pendingStatusText");
+const pendingChapters = document.getElementById("pendingChapters");
+const pendingEmptyState = document.getElementById("pendingEmptyState");
+const ignoredPanel = document.getElementById("ignoredPanel");
+const ignoredRows = document.getElementById("ignoredRows");
 
 let glossary = glossaryCore.normalizeGlossary(null);
+let pendingStore = termDiscoveryCore.normalizePendingStore(null);
+let ignoredStore = termDiscoveryCore.normalizeIgnoredStore(null);
+let activeTab = "official";
 
 document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
-  await loadGlossary();
+  await Promise.all([loadGlossary(), loadTermDiscoveryState(true)]);
 });
 
 function bindEvents() {
@@ -41,14 +57,272 @@ function bindEvents() {
   cancelBtn.addEventListener("click", () => termDialog.close());
   termRows.addEventListener("click", handleRowClick);
   termRows.addEventListener("change", handleRowToggle);
+  officialTabBtn.addEventListener("click", () => switchTab("official"));
+  pendingTabBtn.addEventListener("click", () => switchTab("pending"));
+  confirmFilledBtn.addEventListener("click", confirmAllFilledCandidates);
+  pendingChapters.addEventListener("click", handlePendingCandidateClick);
+  ignoredRows.addEventListener("click", handleIgnoredClick);
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName !== "local" || !changes[glossaryCore.STORAGE_KEY]) {
+    if (areaName !== "local") {
       return;
     }
-    glossary = glossaryCore.normalizeGlossary(changes[glossaryCore.STORAGE_KEY].newValue);
-    renderGlossary();
+    if (changes[glossaryCore.STORAGE_KEY]) {
+      glossary = glossaryCore.normalizeGlossary(changes[glossaryCore.STORAGE_KEY].newValue);
+      renderGlossary();
+    }
+    if (
+      changes[termDiscoveryCore.PENDING_STORAGE_KEY] ||
+      changes[termDiscoveryCore.IGNORED_STORAGE_KEY] ||
+      changes[termDiscoveryCore.ENABLED_STORAGE_KEY]
+    ) {
+      loadTermDiscoveryState(false).catch(() => undefined);
+    }
   });
+}
+
+function switchTab(tab) {
+  activeTab = tab === "pending" ? "pending" : "official";
+  const showPending = activeTab === "pending";
+  officialPanel.classList.toggle("hidden", showPending);
+  pendingPanel.classList.toggle("hidden", !showPending);
+  officialTabBtn.classList.toggle("active", !showPending);
+  pendingTabBtn.classList.toggle("active", showPending);
+  addBtn.classList.toggle("hidden", showPending);
+  if (showPending) {
+    loadTermDiscoveryState(true).catch((error) => {
+      setPendingStatus(`读取失败：${getErrorMessage(error)}`, true);
+    });
+  }
+}
+
+async function loadTermDiscoveryState(probe = false) {
+  try {
+    const response = await sendRuntimeMessage({ type: "GET_TERM_DISCOVERY_STATE", probe });
+    if (!response || !response.ok) {
+      throw new Error(response && response.error || "读取待确认术语失败");
+    }
+    pendingStore = termDiscoveryCore.normalizePendingStore(response.pending);
+    ignoredStore = termDiscoveryCore.normalizeIgnoredStore(response.ignored);
+    renderPendingState(response);
+  } catch (error) {
+    setPendingStatus(`读取待确认术语失败：${getErrorMessage(error)}`, true);
+    throw error;
+  }
+}
+
+function renderPendingState(response = {}) {
+  const pendingCount = termDiscoveryCore.getPendingCount(pendingStore);
+  pendingTabBtn.textContent = `待确认（${pendingCount}）`;
+  pendingCountText.textContent = `最近 ${pendingStore.chapters.length} 话，共 ${pendingCount} 条待确认术语`;
+  confirmFilledBtn.disabled = pendingCount === 0;
+  pendingChapters.replaceChildren(
+    ...pendingStore.chapters
+      .filter((chapter) => chapter.candidates.length > 0)
+      .map(createPendingChapter)
+  );
+  pendingEmptyState.classList.toggle("hidden", pendingCount !== 0);
+  renderIgnoredTerms();
+
+  const enabled = response.enabled !== false;
+  const stateValue = String(response.status && response.status.state || "unknown");
+  if (!enabled || stateValue === "disabled") {
+    extractorStatus.textContent = "Kiwi 状态：自动发现已关闭";
+  } else if (stateValue === "online") {
+    extractorStatus.textContent = "Kiwi 状态：在线";
+  } else if (stateValue === "offline") {
+    extractorStatus.textContent = "Kiwi 状态：离线（不影响翻译）";
+  } else {
+    extractorStatus.textContent = "Kiwi 状态：等待本地服务";
+  }
+}
+
+function createPendingChapter(chapter) {
+  const section = document.createElement("section");
+  section.className = "pending-chapter";
+  section.dataset.chapterKey = chapter.key;
+
+  const heading = document.createElement("div");
+  heading.className = "chapter-heading";
+  const title = document.createElement("h2");
+  title.textContent = `${chapter.title || "未命名章节"}（${chapter.candidates.length}）`;
+  const url = document.createElement("div");
+  url.className = "chapter-url";
+  url.textContent = chapter.url;
+  heading.append(title, url);
+  section.append(heading, ...chapter.candidates.map((candidate) => createCandidateCard(chapter, candidate)));
+  return section;
+}
+
+function createCandidateCard(chapter, candidate) {
+  const card = document.createElement("article");
+  card.className = "candidate-card";
+  card.dataset.chapterKey = chapter.key;
+  card.dataset.source = candidate.source;
+
+  const heading = document.createElement("div");
+  heading.className = "candidate-heading";
+  const source = document.createElement("span");
+  source.className = "candidate-source";
+  source.textContent = candidate.source;
+  heading.append(
+    source,
+    createBadge(formatCandidateKind(candidate.kind)),
+    createBadge(`出现 ${candidate.occurrences} 次`)
+  );
+  if (candidate.ambiguous) {
+    heading.append(createBadge("可能有歧义", "warning"));
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "candidate-grid";
+  grid.append(
+    createCandidateField("固定译文", "candidate-target", candidate.suggestedTarget, 120),
+    createCandidateField("备注（可选）", "candidate-note", "", 240)
+  );
+
+  const contexts = document.createElement("div");
+  contexts.className = "contexts";
+  if (candidate.contexts.length === 0) {
+    contexts.textContent = "暂无可展示的上下文";
+  } else {
+    contexts.append(...candidate.contexts.map((context) => {
+      const row = document.createElement("div");
+      row.className = "context-row";
+      row.textContent = context.translatedText
+        ? `${context.originalText} → ${context.translatedText}`
+        : context.originalText;
+      return row;
+    }));
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "pending-actions";
+  actions.append(
+    createActionButton("确认加入", "confirm", "primary"),
+    createActionButton("本话忽略", "ignore-chapter"),
+    createActionButton("永久忽略", "ignore-global", "danger")
+  );
+  card.append(heading, grid, contexts, actions);
+  return card;
+}
+
+function createCandidateField(labelText, className, value, maxLength) {
+  const field = document.createElement("div");
+  const label = document.createElement("label");
+  label.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = className;
+  input.maxLength = maxLength;
+  input.value = value || "";
+  label.append(input);
+  field.append(label);
+  return field;
+}
+
+function createBadge(text, className = "") {
+  const badge = document.createElement("span");
+  badge.className = `badge${className ? ` ${className}` : ""}`;
+  badge.textContent = text;
+  return badge;
+}
+
+function formatCandidateKind(kind) {
+  const labels = {
+    person: "人名",
+    title: "韩文标题",
+    proper_noun: "专有名词",
+    latin_name: "英文名称",
+    latin_title: "英文标题"
+  };
+  return labels[String(kind || "")] || "专有名词";
+}
+
+function renderIgnoredTerms() {
+  ignoredPanel.classList.toggle("hidden", ignoredStore.sources.length === 0);
+  ignoredRows.replaceChildren(...ignoredStore.sources.map((item) => {
+    const row = document.createElement("div");
+    row.className = "ignored-row";
+    const source = document.createElement("span");
+    source.textContent = item.source;
+    const button = createActionButton("恢复", "restore");
+    button.dataset.source = item.source;
+    row.append(source, button);
+    return row;
+  }));
+}
+
+async function handlePendingCandidateClick(event) {
+  const button = event.target.closest("button[data-action]");
+  const card = event.target.closest(".candidate-card");
+  if (!button || !card) {
+    return;
+  }
+  const source = card.dataset.source;
+  const chapterKey = card.dataset.chapterKey;
+  if (button.dataset.action === "confirm") {
+    const target = card.querySelector(".candidate-target").value.trim();
+    const note = card.querySelector(".candidate-note").value.trim();
+    if (!target) {
+      setPendingStatus(`请先填写“${source}”的固定译文`, true);
+      card.querySelector(".candidate-target").focus();
+      return;
+    }
+    await confirmPendingEntries([{ source, target, note }]);
+    return;
+  }
+  const scope = button.dataset.action === "ignore-global" ? "global" : "chapter";
+  await runPendingAction(
+    { type: "IGNORE_TERM_CANDIDATE", chapterKey, source, scope },
+    scope === "global" ? `已永久忽略“${source}”` : `本话已忽略“${source}”`
+  );
+}
+
+async function confirmAllFilledCandidates() {
+  const entries = Array.from(pendingChapters.querySelectorAll(".candidate-card"))
+    .map((card) => ({
+      source: card.dataset.source,
+      target: card.querySelector(".candidate-target").value.trim(),
+      note: card.querySelector(".candidate-note").value.trim()
+    }))
+    .filter((entry) => entry.target);
+  if (entries.length === 0) {
+    setPendingStatus("没有已填写译名的候选术语", true);
+    return;
+  }
+  await confirmPendingEntries(entries);
+}
+
+async function confirmPendingEntries(entries) {
+  await runPendingAction(
+    { type: "CONFIRM_TERM_CANDIDATES", entries },
+    `已加入 ${entries.length} 条正式术语`
+  );
+}
+
+async function handleIgnoredClick(event) {
+  const button = event.target.closest("button[data-action='restore']");
+  if (!button) {
+    return;
+  }
+  await runPendingAction(
+    { type: "RESTORE_IGNORED_TERM", source: button.dataset.source },
+    `已恢复“${button.dataset.source}”，后续出现时会重新发现`
+  );
+}
+
+async function runPendingAction(message, successMessage) {
+  try {
+    const response = await sendRuntimeMessage(message);
+    if (!response || !response.ok) {
+      throw new Error(response && response.error || "操作失败");
+    }
+    setPendingStatus(successMessage, false);
+    await Promise.all([loadGlossary(), loadTermDiscoveryState(false)]);
+  } catch (error) {
+    setPendingStatus(`操作失败：${getErrorMessage(error)}`, true);
+  }
 }
 
 async function loadGlossary() {
@@ -332,9 +606,18 @@ async function persistEntries(entries, message) {
     entries
   });
   try {
-    await storageSet({ [glossaryCore.STORAGE_KEY]: next });
+    const nextPending = termDiscoveryCore.removeSourcesFromPending(
+      pendingStore,
+      next.entries.map((entry) => entry.source)
+    );
+    await storageSet({
+      [glossaryCore.STORAGE_KEY]: next,
+      [termDiscoveryCore.PENDING_STORAGE_KEY]: nextPending
+    });
     glossary = next;
+    pendingStore = nextPending;
     renderGlossary();
+    renderPendingState();
     setStatus(message, false);
   } catch (error) {
     setStatus(`保存失败：${getErrorMessage(error)}`, true);
@@ -373,6 +656,11 @@ function setStatus(message, isError) {
   statusText.dataset.error = isError ? "true" : "false";
 }
 
+function setPendingStatus(message, isError) {
+  pendingStatusText.textContent = message;
+  pendingStatusText.dataset.error = isError ? "true" : "false";
+}
+
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error || "未知错误");
 }
@@ -397,6 +685,18 @@ function storageSet(value) {
         return;
       }
       resolve();
+    });
+  });
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(response || null);
     });
   });
 }

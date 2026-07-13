@@ -86,6 +86,7 @@ const pretranslateModeStatus = document.createElement("div");
 pretranslateModeStatus.className = "mode-status";
 pretranslateModeSelect.insertAdjacentElement("afterend", pretranslateModeStatus);
 const ignoreZhSwitch = document.getElementById("ignoreZhSwitch");
+const termDiscoverySwitch = document.getElementById("termDiscoverySwitch");
 const glossaryBtn = document.getElementById("glossaryBtn");
 const saveBtn = document.getElementById("saveBtn");
 const clearCacheBtn = document.getElementById("clearCacheBtn");
@@ -93,6 +94,7 @@ const translateBtn = document.getElementById("translateBtn");
 const statusText = document.getElementById("statusText");
 const tabStatus = document.getElementById("tabStatus");
 const cacheStats = document.getElementById("cacheStats");
+const termDiscoveryStatus = document.getElementById("termDiscoveryStatus");
 let pageAutoTranslateEnabled = false;
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -101,11 +103,22 @@ document.addEventListener("DOMContentLoaded", async () => {
   await refreshCacheStats();
   await refreshTabStatus();
   await refreshPageAutoTranslateStatus();
+  await refreshTermDiscoveryStatus(true);
 });
 
 function bindEvents() {
   providerSelect.addEventListener("change", onProviderChanged);
   pretranslateModeSelect.addEventListener("change", updatePretranslateModeStatus);
+  termDiscoverySwitch.addEventListener("change", updateTermDiscoveryEnabled);
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (
+      areaName === "local" &&
+      (changes.mt_glossary_pending_v1 || changes.mt_term_discovery_enabled)
+    ) {
+      refreshTermDiscoveryStatus(false).catch(() => undefined);
+    }
+  });
 
   glossaryBtn.addEventListener("click", () => {
     chrome.runtime.openOptionsPage();
@@ -677,6 +690,57 @@ function mergeManualFrameResults(frameResults) {
 async function ensureContentInjected(tabId) {
   await insertCss(tabId, "styles.css");
   await executeScriptFiles(tabId, CONTENT_SCRIPT_FILES);
+}
+
+async function updateTermDiscoveryEnabled() {
+  termDiscoverySwitch.disabled = true;
+  try {
+    const response = await sendRuntimeMessage({
+      type: "SET_TERM_DISCOVERY_ENABLED",
+      enabled: termDiscoverySwitch.checked,
+      probe: termDiscoverySwitch.checked
+    });
+    if (!response || !response.ok) {
+      throw new Error(response && response.error || "更新术语发现开关失败");
+    }
+    renderTermDiscoveryStatus(response);
+  } catch (error) {
+    termDiscoverySwitch.checked = !termDiscoverySwitch.checked;
+    setStatus(`术语发现设置失败：${getErrorMessage(error)}`, true);
+  } finally {
+    termDiscoverySwitch.disabled = false;
+  }
+}
+
+async function refreshTermDiscoveryStatus(probe = false) {
+  try {
+    const response = await sendRuntimeMessage({ type: "GET_TERM_DISCOVERY_STATUS", probe });
+    if (!response || !response.ok) {
+      throw new Error(response && response.error || "读取术语发现状态失败");
+    }
+    renderTermDiscoveryStatus(response);
+  } catch (error) {
+    termDiscoveryStatus.textContent = `术语发现：状态读取失败（${getErrorMessage(error)}）`;
+  }
+}
+
+function renderTermDiscoveryStatus(response) {
+  const enabled = response && response.enabled !== false;
+  const pendingCount = Math.max(0, Number(response && response.pendingCount) || 0);
+  const stateValue = String(response && response.status && response.status.state || "unknown");
+  termDiscoverySwitch.checked = enabled;
+  glossaryBtn.textContent = pendingCount > 0
+    ? `管理全局术语库（${pendingCount} 条待确认）`
+    : "管理全局术语库";
+  if (!enabled || stateValue === "disabled") {
+    termDiscoveryStatus.textContent = `术语发现：已关闭，${pendingCount} 条待确认`;
+  } else if (stateValue === "online") {
+    termDiscoveryStatus.textContent = `术语发现：Kiwi 在线，${pendingCount} 条待确认`;
+  } else if (stateValue === "offline") {
+    termDiscoveryStatus.textContent = `术语发现：提取器离线，${pendingCount} 条待确认`;
+  } else {
+    termDiscoveryStatus.textContent = `术语发现：等待本地服务，${pendingCount} 条待确认`;
+  }
 }
 
 async function refreshCacheStats() {

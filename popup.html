@@ -272,6 +272,11 @@
         <input id="ignoreZhSwitch" type="checkbox" />
       </div>
 
+      <div class="toggle-row">
+        <span>自动发现新术语</span>
+        <input id="termDiscoverySwitch" type="checkbox" />
+      </div>
+
       <button id="glossaryBtn" type="button">管理全局术语库</button>
 
       <div class="actions">
@@ -286,6 +291,7 @@
       <div id="statusText" class="status"></div>
       <div id="tabStatus" class="stats">页面状态：读取中...</div>
       <div id="cacheStats" class="stats">缓存状态：读取中...</div>
+      <div id="termDiscoveryStatus" class="stats">术语发现：读取中...</div>
 
       <div class="hint">
         百度模式：Provider 选 <code>baidu_deepseek</code>，Model 填兼容接口模型名，

@@ -66,6 +66,25 @@
         box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
       }
 
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .tab-button {
+        border-color: transparent;
+        color: #475569;
+        background: transparent;
+      }
+
+      .tab-button.active {
+        border-color: #bfdbfe;
+        color: #1d4ed8;
+        background: #dbeafe;
+        font-weight: 700;
+      }
+
       .toolbar {
         flex-wrap: wrap;
         gap: 10px;
@@ -137,11 +156,13 @@
         font-size: 13px;
       }
 
-      #statusText[data-error="true"] {
+      #statusText[data-error="true"],
+      #pendingStatusText[data-error="true"] {
         color: #b42318;
       }
 
-      #statusText[data-error="false"] {
+      #statusText[data-error="false"],
+      #pendingStatusText[data-error="false"] {
         color: #047857;
       }
 
@@ -249,6 +270,137 @@
       .hidden {
         display: none;
       }
+
+      .pending-list {
+        padding: 0 16px 18px;
+      }
+
+      .pending-chapter {
+        padding: 18px 0 4px;
+        border-bottom: 1px solid #e5eaf1;
+      }
+
+      .pending-chapter:last-child {
+        border-bottom: 0;
+      }
+
+      .chapter-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+
+      .chapter-heading h2 {
+        margin-bottom: 0;
+        font-size: 18px;
+      }
+
+      .chapter-url {
+        max-width: 64%;
+        color: #64748b;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .candidate-card {
+        margin-bottom: 12px;
+        border: 1px solid #dce4ef;
+        border-radius: 12px;
+        padding: 14px;
+        background: #fbfdff;
+      }
+
+      .candidate-heading,
+      .pending-actions,
+      .ignored-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .candidate-heading {
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+
+      .candidate-source {
+        margin-right: 4px;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .badge {
+        border-radius: 999px;
+        padding: 3px 7px;
+        color: #475569;
+        background: #e2e8f0;
+        font-size: 11px;
+      }
+
+      .badge.warning {
+        color: #9a3412;
+        background: #ffedd5;
+      }
+
+      .candidate-grid {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+        gap: 10px;
+      }
+
+      .contexts {
+        margin: 10px 0;
+        padding: 9px 11px;
+        border-radius: 9px;
+        color: #475569;
+        background: #f1f5f9;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .context-row + .context-row {
+        margin-top: 6px;
+        padding-top: 6px;
+        border-top: 1px dashed #cbd5e1;
+      }
+
+      .pending-actions {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .pending-actions button {
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
+      .ignored-panel {
+        margin: 0 16px 18px;
+        border-top: 1px solid #e5eaf1;
+        padding-top: 16px;
+      }
+
+      .ignored-row {
+        justify-content: space-between;
+        padding: 8px 0;
+      }
+
+      @media (max-width: 800px) {
+        .candidate-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .chapter-heading {
+          display: block;
+        }
+
+        .chapter-url {
+          max-width: none;
+          margin-top: 5px;
+        }
+      }
     </style>
   </head>
   <body>
@@ -261,7 +413,12 @@
         <button id="addBtn" class="primary" type="button">新增术语</button>
       </header>
 
-      <section class="panel">
+      <nav class="tabs" aria-label="术语库分区">
+        <button id="officialTabBtn" class="tab-button active" type="button">正式术语</button>
+        <button id="pendingTabBtn" class="tab-button" type="button">待确认（0）</button>
+      </nav>
+
+      <section id="officialPanel" class="panel">
         <div class="toolbar">
           <input id="searchInput" class="search" type="search" placeholder="搜索原文、译文或备注" />
           <button id="importBtn" type="button">导入 JSON/CSV</button>
@@ -290,6 +447,23 @@
             <tbody id="termRows"></tbody>
           </table>
           <div id="emptyState" class="empty-state hidden">暂无术语，点击“新增术语”开始建立词库。</div>
+        </div>
+      </section>
+
+      <section id="pendingPanel" class="panel hidden">
+        <div class="toolbar">
+          <button id="confirmFilledBtn" class="primary" type="button">加入所有已填写</button>
+          <span id="extractorStatus" class="subtitle">Kiwi 状态：读取中...</span>
+        </div>
+        <div class="summary">
+          <span id="pendingCountText">正在读取待确认术语...</span>
+          <span id="pendingStatusText" aria-live="polite"></span>
+        </div>
+        <div id="pendingChapters" class="pending-list"></div>
+        <div id="pendingEmptyState" class="empty-state hidden">本话翻译后发现的新术语会出现在这里。</div>
+        <div id="ignoredPanel" class="ignored-panel hidden">
+          <h2>永久忽略项</h2>
+          <div id="ignoredRows"></div>
         </div>
       </section>
     </main>
@@ -322,6 +496,7 @@
     </dialog>
 
     <script src="glossary-core.js"></script>
+    <script src="term-discovery-core.js"></script>
     <script src="glossary.js"></script>
   </body>
 </html>

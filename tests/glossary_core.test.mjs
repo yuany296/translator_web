@@ -69,3 +69,17 @@ test("extension exposes the glossary page and removes direct vision providers", 
   assert.doesNotMatch(popup, /value="anthropic"|value="openai_compatible"/);
   assert.doesNotMatch(popupScript, /safe === "anthropic"|safe === "openai_compatible"/);
 });
+
+test("glossary and popup expose pending-term confirmation controls", () => {
+  const glossaryPage = fs.readFileSync(path.join(root, "glossary.html"), "utf8");
+  const glossaryScript = fs.readFileSync(path.join(root, "glossary.js"), "utf8");
+  const popup = fs.readFileSync(path.join(root, "popup.html"), "utf8");
+
+  assert.match(glossaryPage, /id="pendingTabBtn"/);
+  assert.match(glossaryPage, /id="confirmFilledBtn"/);
+  assert.match(glossaryScript, /CONFIRM_TERM_CANDIDATES/);
+  assert.match(glossaryScript, /IGNORE_TERM_CANDIDATE/);
+  assert.match(glossaryScript, /RESTORE_IGNORED_TERM/);
+  assert.match(popup, /id="termDiscoverySwitch"/);
+  assert.match(popup, /id="termDiscoveryStatus"/);
+});

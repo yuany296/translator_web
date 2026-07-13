@@ -14,6 +14,28 @@ await import("../content.js");
 
 const runtime = globalThis.__MANGA_TRANSLATOR_V3__;
 
+test("rendered OCR bubbles produce an asynchronous term-discovery payload", () => {
+  const message = runtime.__test.buildTermDiscoveryMessage(
+    {
+      bubbles: [
+        { id: "t0", original_text: "김성현", translated_text: "金成贤" },
+        { id: "t1", original_text: "성현", translated_text: "成贤" },
+        { id: "empty", original_text: "", translated_text: "" }
+      ]
+    },
+    "target-1",
+    "https://cdn.example.test/page-1.jpg",
+    "https://reader.example.test/chapter?episode=1#p2",
+    "第 1 话"
+  );
+
+  assert.equal(message.type, "DISCOVER_TERMS");
+  assert.equal(message.blocks.length, 2);
+  assert.equal(message.blocks[0].originalText, "김성현");
+  assert.notEqual(message.blocks[0].id, message.blocks[1].id);
+  assert.match(message.targetKey, /^image-/);
+});
+
 test("Kakao stitch neighbor scan skips repeated owner-source nodes", () => {
   const entries = [
     {

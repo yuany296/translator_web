@@ -720,6 +720,16 @@
       if (isNewObservation && isTargetVisible(target)) {
         queuePageAutoTranslate(target);
       }
+      // 3) 已观察过且在视口中、未翻译 → init 时 autoTranslate 尚未开启，
+      //    toggle 后 rescan 不会再次触发 intersection，需要此处显式入队。
+      if (
+        !isNewObservation &&
+        isTargetVisible(target) &&
+        !target.dataset.mtLastTranslatedKey &&
+        !target.dataset.mtNoTextKey
+      ) {
+        queuePageAutoTranslate(target);
+      }
     }
 
     if (IS_KAKAOPAGE_READER && target instanceof HTMLImageElement && target.complete && sourceToken) {
@@ -970,6 +980,10 @@
         (naturalHeight < (canonicalTarget ? KAKAO_THIN_STRIP_MIN_HEIGHT : 80) ||
           naturalHeight / naturalWidth < (canonicalTarget ? 0.01 : 0.10))
       ) {
+        return false;
+      }
+      // KakaoPage 推荐区封面（~98x140）不应占用预翻译槽位，确保漫画页优先。
+      if (canonicalTarget && naturalWidth > 0 && naturalWidth < 200) {
         return false;
       }
     }

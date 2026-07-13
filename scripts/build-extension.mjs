@@ -12,12 +12,15 @@ const extensionFiles = [
   "content.js",
   "popup.html",
   "popup.js",
+  "glossary.html",
+  "glossary-core.js",
+  "glossary.js",
   "styles.css"
 ];
 
 // 根目录是唯一源码；构建只负责校验并生成可加载副本。
 JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
-for (const file of ["background.js", "kakao-pipeline.js", "content.js", "popup.js"]) {
+for (const file of ["background.js", "kakao-pipeline.js", "content.js", "popup.js", "glossary-core.js", "glossary.js"]) {
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 

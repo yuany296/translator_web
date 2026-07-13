@@ -5,6 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 const root = path.resolve(import.meta.dirname, "..");
+const glossarySource = fs.readFileSync(path.join(root, "glossary-core.js"), "utf8");
 const source = fs.readFileSync(path.join(root, "background.js"), "utf8");
 const listeners = { addListener() {} };
 const context = vm.createContext({
@@ -22,7 +23,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta };`,
+  `${glossarySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildOpenAICompatibleTranslationPrompt, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta };`,
   context,
   { filename: "background.js" }
 );
@@ -31,7 +32,7 @@ test("translation cache cleanup recognizes old cache versions and quota errors",
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v4:def"), true);
   assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_api_key"), false);
-  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v19:/);
+  assert.match(context.__backgroundTest.buildCacheKey({ dataUrl: "" }), /^mt_cache_v20:/);
   assert.equal(
     context.__backgroundTest.isStorageQuotaError(new Error("Resource::kQuotaBytes quota exceeded")),
     true
@@ -563,6 +564,42 @@ test("block translation cache key depends on source image, normalized text, and 
   assert.equal(first, normalized);
   assert.notEqual(first, moved);
   assert.notEqual(first, otherImage);
+});
+
+test("glossary fingerprint invalidates full-image and block translation caches", () => {
+  const base = {
+    provider: "local_paddle_deepseek",
+    model: "model",
+    dataUrl: "data:image/png;base64,AAAA"
+  };
+  const item = { original_text: "성현", rawBox: { left: 10, top: 20, width: 30, height: 40 } };
+
+  assert.notEqual(
+    context.__backgroundTest.buildCacheKey({ ...base, glossaryFingerprint: "g1-old" }),
+    context.__backgroundTest.buildCacheKey({ ...base, glossaryFingerprint: "g1-new" })
+  );
+  assert.notEqual(
+    context.__backgroundTest.buildBlockTranslationCacheKey("source", item, "model", "base", "g1-old"),
+    context.__backgroundTest.buildBlockTranslationCacheKey("source", item, "model", "base", "g1-new")
+  );
+});
+
+test("text translation prompt injects matching glossary entries", () => {
+  const prompt = context.__backgroundTest.buildOpenAICompatibleTranslationPrompt(
+    [{ id: "t0", original_text: "성현 공작이 왔다" }],
+    {
+      entries: [
+        { source: "성현 공작", target: "成贤公爵", enabled: true },
+        { source: "마법사", target: "魔法师", enabled: true }
+      ]
+    }
+  );
+
+  assert.match(prompt, /Mandatory terminology glossary/);
+  assert.match(prompt, /成贤公爵/);
+  assert.doesNotMatch(prompt, /魔法师/);
+  assert.equal(context.__backgroundTest.normalizeProvider("anthropic"), "baidu_deepseek");
+  assert.equal(context.__backgroundTest.normalizeProvider("openai_compatible"), "baidu_deepseek");
 });
 
 test("stitched OCR drops a completed cluster owned by the adjacent slice", async () => {

@@ -25,10 +25,8 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULTS = {
-  provider: "anthropic",
+  provider: "baidu_deepseek",
   modelByProvider: {
-    anthropic: "claude-3-5-sonnet-20241022",
-    openai_compatible: "gpt-4o-mini",
     baidu_deepseek: "deepseek-chat",
     local_paddle_deepseek: "deepseek-chat"
   },
@@ -52,14 +50,6 @@ const DEFAULTS = {
 const CONTENT_SCRIPT_FILES = Object.freeze(["kakao-pipeline.js", "content.js"]);
 
 const providerMeta = {
-  anthropic: {
-    apiKeyLabel: "Anthropic API Key",
-    apiKeyPlaceholder: "sk-ant-..."
-  },
-  openai_compatible: {
-    apiKeyLabel: "OpenAI Compatible API Key",
-    apiKeyPlaceholder: "your-api-key"
-  },
   baidu_deepseek: {
     apiKeyLabel: "Translation API Key",
     apiKeyPlaceholder: "sk-..."
@@ -96,6 +86,7 @@ const pretranslateModeStatus = document.createElement("div");
 pretranslateModeStatus.className = "mode-status";
 pretranslateModeSelect.insertAdjacentElement("afterend", pretranslateModeStatus);
 const ignoreZhSwitch = document.getElementById("ignoreZhSwitch");
+const glossaryBtn = document.getElementById("glossaryBtn");
 const saveBtn = document.getElementById("saveBtn");
 const clearCacheBtn = document.getElementById("clearCacheBtn");
 const translateBtn = document.getElementById("translateBtn");
@@ -115,6 +106,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 function bindEvents() {
   providerSelect.addEventListener("change", onProviderChanged);
   pretranslateModeSelect.addEventListener("change", updatePretranslateModeStatus);
+
+  glossaryBtn.addEventListener("click", () => {
+    chrome.runtime.openOptionsPage();
+  });
 
   saveBtn.addEventListener("click", async () => {
     await saveSettings();
@@ -188,11 +183,12 @@ async function loadSettings() {
       STORAGE_KEYS.ignoreSimplifiedChinese
     ]);
 
-    const provider = normalizeProvider(data[STORAGE_KEYS.provider]);
+    const storedProvider = String(data[STORAGE_KEYS.provider] || "").trim().toLowerCase();
+    const provider = normalizeProvider(storedProvider);
     const model = String(data[STORAGE_KEYS.model] || "").trim();
 
     providerSelect.value = provider;
-    modelInput.value = model || DEFAULTS.modelByProvider[provider];
+    modelInput.value = (storedProvider === provider ? model : "") || DEFAULTS.modelByProvider[provider];
     apiKeyInput.value = String(data[STORAGE_KEYS.apiKey] || "");
     baseUrlInput.value = sanitizeBaseUrl(data[STORAGE_KEYS.baseUrl] || "");
     baiduApiKeyInput.value = String(data[STORAGE_KEYS.baiduApiKey] || "");
@@ -246,11 +242,6 @@ async function saveSettings() {
         : "请先填写 API Key",
       true
     );
-    return;
-  }
-
-  if (provider === "openai_compatible" && !baseUrl) {
-    setStatus("openai_compatible 模式必须填写 Base URL", true);
     return;
   }
 
@@ -751,30 +742,19 @@ async function refreshTabStatus(tabId) {
 }
 
 function applyProviderUi(provider) {
-  const meta = providerMeta[provider] || providerMeta.anthropic;
+  const meta = providerMeta[provider] || providerMeta.baidu_deepseek;
   apiKeyLabel.textContent = meta.apiKeyLabel;
   apiKeyInput.placeholder = meta.apiKeyPlaceholder;
-  baseUrlField.classList.toggle(
-    "hidden",
-    provider !== "openai_compatible" &&
-      provider !== "baidu_deepseek" &&
-      provider !== "local_paddle_deepseek"
-  );
+  baseUrlField.classList.remove("hidden");
   baiduFields.classList.toggle("hidden", provider !== "baidu_deepseek");
   localOcrFields.classList.toggle("hidden", provider !== "local_paddle_deepseek");
 
-  if (provider === "baidu_deepseek" || provider === "local_paddle_deepseek") {
-    baseUrlInput.placeholder = "https://api.deepseek.com or any OpenAI-compatible base URL";
-  } else {
-    baseUrlInput.placeholder = "https://ark.cn-beijing.volces.com/api/v3";
-  }
+  baseUrlInput.placeholder = "https://api.deepseek.com or any OpenAI-compatible base URL";
 }
 
 function normalizeProvider(provider) {
   const safe = String(provider || "").trim().toLowerCase();
   if (
-    safe === "anthropic" ||
-    safe === "openai_compatible" ||
     safe === "baidu_deepseek" ||
     safe === "local_paddle_deepseek"
   ) {

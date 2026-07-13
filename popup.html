@@ -108,6 +108,13 @@
         background: #e2e8f0;
       }
 
+      #glossaryBtn {
+        width: 100%;
+        margin-bottom: 10px;
+        color: #1d4ed8;
+        background: #dbeafe;
+      }
+
       .status {
         min-height: 20px;
         margin-top: 6px;
@@ -144,8 +151,6 @@
       <div class="field">
         <label for="providerSelect">Provider</label>
         <select id="providerSelect">
-          <option value="anthropic">anthropic（Claude Vision）</option>
-          <option value="openai_compatible">openai_compatible（方舟/兼容接口）</option>
           <option value="baidu_deepseek">百度 OCR + OpenAI-compatible 翻译</option>
           <option value="local_paddle_deepseek">本地 PaddleOCR + OpenAI-compatible 翻译</option>
         </select>
@@ -153,7 +158,7 @@
 
       <div class="field">
         <label for="modelInput">Model</label>
-        <input id="modelInput" type="text" placeholder="claude-3-5-sonnet-20241022" />
+        <input id="modelInput" type="text" placeholder="deepseek-chat" />
       </div>
 
       <div class="field">
@@ -266,6 +271,8 @@
         <span>忽略简体中文文本</span>
         <input id="ignoreZhSwitch" type="checkbox" />
       </div>
+
+      <button id="glossaryBtn" type="button">管理全局术语库</button>
 
       <div class="actions">
         <button id="saveBtn" type="button">保存配置</button>

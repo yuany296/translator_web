@@ -1,6 +1,6 @@
 # Manga Realtime Translator (MV3)
 
-一个可直接加载运行的 Edge/Chrome 扩展：在漫画网站自动识别 `img/canvas`，调用视觉大模型做 OCR + 翻译，并将中文覆写到原图位置。支持覆盖层显示，也支持把译文真实绘制进图片/画布的嵌入式改图模式。
+一个可直接加载运行的 Edge/Chrome 扩展：在漫画网站自动识别 `img/canvas`，通过百度 OCR 或本地 PaddleOCR 识别文字，再调用 OpenAI-compatible 文本接口翻译并将中文覆写到原图位置。支持覆盖层显示，也支持把译文真实绘制进图片/画布的嵌入式改图模式。
 
 ## 功能总览
 
@@ -15,11 +15,13 @@
   - 统一转 Data URL（优先 JPEG，必要时回退 PNG）
   - Popup 可切换取图模式：直接覆盖或截图覆盖
   - 遇到 `image format not supported` 自动转 JPEG 重试
-- 模型 provider：
-  - `anthropic`（Claude Vision）
-  - `openai_compatible`（方舟/其他兼容接口）
+- OCR + 翻译 provider：
   - `baidu_deepseek`（百度 OCR 含位置识别 + OpenAI-compatible 文本翻译，保留历史 provider 名）
   - `local_paddle_deepseek`（本地 PaddleOCR + OpenAI-compatible 文本翻译，保留历史 provider 名）
+- 全局术语库：
+  - 从 popup 打开独立管理页，支持搜索、增删改、启停和 JSON/CSV 导入导出
+  - 当前 OCR 文本命中的启用术语会作为强约束注入翻译提示词
+  - 修改、停用或删除术语后自动使用新的缓存身份，不会继续复用旧译文
 - 覆写渲染：
   - 按百分比坐标绝对定位覆写层
   - 字号按气泡高度比例自适应（带 clamp）
@@ -45,6 +47,8 @@ translator/
 ├─ background.js
 ├─ content.js
 ├─ popup.html
+├─ glossary.html           # 全局术语库管理页
+├─ glossary-core.js        # 术语规范化、命中与提示词规则
 ├─ local-ocr-service/      # 可选本地 PaddleOCR 服务
 ├─ popup.js
 ├─ styles.css
@@ -64,10 +68,10 @@ translator/
 
 1. 点击工具栏扩展图标，打开 popup。
 2. 填写：
-   - Provider：`anthropic` 或 `openai_compatible`
-   - Model：例如 `claude-3-5-sonnet-20241022` / `doubao-seed-2-0-lite-250821`
-   - API Key
-   - Base URL（仅 `openai_compatible` 需要）
+   - Provider：`baidu_deepseek` 或 `local_paddle_deepseek`
+   - Model：OpenAI-compatible 文本翻译模型名，例如 `deepseek-chat`
+   - API Key：文本翻译接口 Key
+   - Base URL：文本翻译接口地址，例如 `https://api.deepseek.com`
 3. 勾选“启用悬浮球翻译”。
 4. 选择取图模式：
    - 直接覆盖：优先读取原图、canvas 或背景图数据，再把译文覆盖回原位置。
@@ -76,12 +80,6 @@ translator/
    - 覆盖层：译文浮在原图上，点击气泡可切换原文/译文。
    - 嵌入式改图：生成带译文的新图片，文字会真实绘制进画面。
 6. 点击“保存配置”。
-
-### 方舟示例
-
-- Provider：`openai_compatible`
-- Base URL：`https://ark.cn-beijing.volces.com/api/v3`
-- Model：填写你的模型 ID 或 Endpoint ID
 
 ### 百度 OCR + OpenAI-compatible 翻译示例
 
@@ -105,6 +103,14 @@ translator/
 - 本地 OCR 语言：`auto`、`japan` 或 `korean`
 
 该模式 OCR 在本机执行，不消耗百度 OCR 调用次数；适合主要翻译日文或韩文漫画。
+
+## 术语库
+
+1. 在 popup 点击“管理全局术语库”。
+2. 新增“原文术语”和“固定译文”；备注可填写角色身份、语境等补充信息。
+3. 启用后的术语对所有网站生效。翻译时只发送当前 OCR 文本实际命中的术语，避免无关术语占用上下文。
+4. JSON/CSV 导入采用合并策略：相同原文更新已有译法，新原文追加；导出文件可用于备份或迁移。
+5. 术语库最多保存 500 条，单条原文和译文最多 120 字，备注最多 240 字。
 
 ## 使用方式
 
@@ -130,17 +136,14 @@ translator/
 - 后台日志：扩展详情页 -> Service Worker -> Inspect。
 - 常见问题：
   - `API Key is missing`：popup 未保存或字段为空。
-  - `Base URL is required`：`openai_compatible` 未填 Base URL。
-  - `image format not supported`：代码会自动转 JPEG 重试；若仍失败，换支持视觉输入的模型。
+  - 文本翻译接口请求失败：检查 Base URL、Model 和 API Key 是否与 OpenAI-compatible 接口匹配。
+  - `image format not supported`：仅与本地模式的可选低置信度 Vision OCR 有关；代码会自动转 JPEG 重试。
   - `Extension context invalidated`：通常是热更新后旧上下文失效，重新注入后会恢复。
 
 ## 关键实现备注
 
-- 模型提示词已在 `background.js -> buildVisionPrompt()` 固化：
-  - 强制 OCR + 翻译 + 气泡定位
-  - 强制仅输出 JSON
-  - 强制输出 `bg_type`
-  - 无文本返回 `{"bubbles":[]}`
+- OCR 与翻译分层执行：OCR 负责文字和区域定位，`buildOpenAICompatibleTranslationPrompt()` 负责批量文本翻译。
+- 启用术语按原文长度降序匹配，命中后要求模型严格使用指定译文；术语有效内容的指纹同时进入整图和文本块缓存键。
 - 统一输出结构：
 
 ```json

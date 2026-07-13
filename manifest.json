@@ -6,7 +6,6 @@
   "permissions": ["storage", "tabs", "activeTab", "scripting"],
   "host_permissions": [
     "<all_urls>",
-    "https://api.anthropic.com/*",
     "http://127.0.0.1:*/*",
     "http://localhost:*/*"
   ],
@@ -16,6 +15,10 @@
   "action": {
     "default_title": "漫画实时翻译",
     "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "glossary.html",
+    "open_in_tab": true
   },
   "content_scripts": [
     {

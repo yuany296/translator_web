@@ -1,3 +1,9 @@
+if (typeof importScripts === "function") {
+  importScripts("glossary-core.js");
+}
+
+const glossaryCore = globalThis.MangaGlossary;
+
 const STORAGE_KEYS = {
   provider: "mt_provider",
   model: "mt_model",
@@ -32,12 +38,13 @@ const STORAGE_KEYS = {
   captureMode: "mt_capture_mode",
   renderMode: "mt_render_mode",
   pretranslateMode: "mt_pretranslate_mode",
-  ignoreSimplifiedChinese: "mt_ignore_simplified_zh"
+  ignoreSimplifiedChinese: "mt_ignore_simplified_zh",
+  glossary: glossaryCore.STORAGE_KEY
 };
 
 const DEFAULT_SETTINGS = {
-  provider: "anthropic",
-  model: "claude-3-5-sonnet-20241022",
+  provider: "baidu_deepseek",
+  model: "deepseek-chat",
   apiKey: "",
   baseUrl: "",
   baiduApiKey: "",
@@ -73,15 +80,11 @@ const DEFAULT_SETTINGS = {
 };
 
 const PROVIDERS = {
-  anthropic: "anthropic",
-  openaiCompatible: "openai_compatible",
   baiduDeepSeek: "baidu_deepseek",
   localPaddleDeepSeek: "local_paddle_deepseek"
 };
 
 const DEFAULT_MODELS = {
-  [PROVIDERS.anthropic]: "claude-3-5-sonnet-20241022",
-  [PROVIDERS.openaiCompatible]: "gpt-4o-mini",
   [PROVIDERS.baiduDeepSeek]: "deepseek-chat",
   [PROVIDERS.localPaddleDeepSeek]: "deepseek-chat"
 };
@@ -98,7 +101,7 @@ const DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO = 1.2;
 const DEBUG_OVERLAY_MODES = new Set(["raw", "filtered", "merged", "final"]);
 const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 
-const CACHE_PREFIX = "mt_cache_v19:";
+const CACHE_PREFIX = "mt_cache_v20:";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const TAB_STATUS_PREFIX = "mt_tab_status_v1:";
@@ -197,7 +200,7 @@ async function handleTranslateTextBlocks(message) {
     return { ok: true, translations: [] };
   }
   const settings = await loadSettings();
-  if (![PROVIDERS.baiduDeepSeek, PROVIDERS.localPaddleDeepSeek, PROVIDERS.openaiCompatible].includes(settings.provider)) {
+  if (![PROVIDERS.baiduDeepSeek, PROVIDERS.localPaddleDeepSeek].includes(settings.provider)) {
     return { ok: false, error: "Current provider does not support text-only boundary translation" };
   }
   if (!settings.apiKey) {
@@ -208,7 +211,9 @@ async function handleTranslateTextBlocks(message) {
     apiKey: settings.apiKey,
     baseUrl: settings.baseUrl || DEFAULT_TRANSLATION_BASE_URL,
     model: settings.model || DEFAULT_MODELS[settings.provider],
-    sourceImageId: String(message.sourceImageId || "boundary-trim")
+    sourceImageId: String(message.sourceImageId || "boundary-trim"),
+    glossary: settings.glossary,
+    glossaryFingerprint: settings.glossaryFingerprint
   });
   return {
     ok: true,
@@ -508,12 +513,6 @@ async function handleTranslateDataUrl(message, sender) {
     if (settings.visionOcrEnabled && !settings.visionOcrApiKey) {
       return { ok: false, error: "Vision OCR API Key is missing. Please configure it in popup." };
     }
-  } else if (!settings.apiKey) {
-    return { ok: false, error: "API Key is missing. Please configure it in popup." };
-  }
-
-  if (settings.provider === PROVIDERS.openaiCompatible && !settings.baseUrl) {
-    return { ok: false, error: "Base URL is required for openai_compatible provider" };
   }
 
   const cacheKey = buildCacheKey({
@@ -542,6 +541,7 @@ async function handleTranslateDataUrl(message, sender) {
     visionOcrEnabled: settings.visionOcrEnabled,
     visionOcrBaseUrl: settings.visionOcrBaseUrl,
     visionOcrModel: settings.visionOcrModel,
+    glossaryFingerprint: settings.glossaryFingerprint,
     imageUrl,
     targetKey,
     ocrMode,
@@ -593,27 +593,7 @@ async function handleTranslateDataUrl(message, sender) {
 
   const task = (async () => {
     try {
-      const prompt = buildVisionPrompt({
-        ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese
-      });
-      let rawText = "";
-
-      if (settings.provider === PROVIDERS.anthropic) {
-        rawText = await requestAnthropicVision({
-          model: settings.model,
-          apiKey: settings.apiKey,
-          dataUrl,
-          prompt
-        });
-      } else if (settings.provider === PROVIDERS.openaiCompatible) {
-        rawText = await requestOpenAICompatibleVision({
-          model: settings.model,
-          apiKey: settings.apiKey,
-          baseUrl: settings.baseUrl,
-          dataUrl,
-          prompt
-        });
-      } else if (settings.provider === PROVIDERS.baiduDeepSeek) {
+      if (settings.provider === PROVIDERS.baiduDeepSeek) {
         const result = await requestBaiduOcrAndOpenAICompatibleTranslate({
           dataUrl,
           baiduApiKey: settings.baiduApiKey,
@@ -622,7 +602,9 @@ async function handleTranslateDataUrl(message, sender) {
           translatorBaseUrl: settings.baseUrl || DEFAULT_TRANSLATION_BASE_URL,
           translatorModel: settings.model || DEFAULT_MODELS[PROVIDERS.baiduDeepSeek],
           ocrTuning: getOcrTuning(settings),
-          ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese
+          ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese,
+          glossary: settings.glossary,
+          glossaryFingerprint: settings.glossaryFingerprint
         });
 
         await setCache(cacheKey, result);
@@ -662,7 +644,9 @@ async function handleTranslateDataUrl(message, sender) {
             baseUrl: settings.visionOcrBaseUrl || DEFAULT_QWEN_BASE_URL,
             model: settings.visionOcrModel || DEFAULT_VISION_OCR_MODEL
           },
-          ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese
+          ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese,
+          glossary: settings.glossary,
+          glossaryFingerprint: settings.glossaryFingerprint
         });
 
         await setCache(cacheKey, result);
@@ -686,29 +670,6 @@ async function handleTranslateDataUrl(message, sender) {
       } else {
         throw new Error(`Unsupported provider: ${settings.provider}`);
       }
-
-      const parsed = parseModelJson(rawText);
-      const result = normalizeTranslationResult(parsed, {
-        ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese
-      });
-
-      await setCache(cacheKey, result);
-
-      await saveTabStatus(sender && sender.tab ? sender.tab.id : null, {
-        level: "info",
-        message: `Translation success (${settings.provider}/${settings.model})`,
-        details: {
-          bubbles: result.bubbles.length,
-          cached: false
-        },
-        pageUrl: sender && sender.url ? sender.url : ""
-      });
-
-      return {
-        ok: true,
-        result,
-        cached: false
-      };
     } catch (error) {
       const safeError = error && error.message ? error.message : "Model request failed";
 
@@ -733,62 +694,6 @@ async function handleTranslateDataUrl(message, sender) {
 
   inflightTranslateByCacheKey.set(cacheKey, task);
   return task;
-}
-
-async function requestAnthropicVision({ model, apiKey, dataUrl, prompt }) {
-  const parsed = parseDataUrl(dataUrl);
-
-  const body = {
-    model: model || DEFAULT_MODELS[PROVIDERS.anthropic],
-    max_tokens: 2600,
-    temperature: 0,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: parsed.mediaType,
-              data: parsed.base64Data
-            }
-          },
-          {
-            type: "text",
-            text: prompt
-          }
-        ]
-      }
-    ]
-  };
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify(body)
-  });
-
-  const payload = await safeJson(response);
-  if (!response.ok) {
-    throw toProviderError(payload, response.status, response.statusText, "Anthropic API error");
-  }
-
-  const text = (payload && Array.isArray(payload.content) ? payload.content : [])
-    .filter((item) => item && item.type === "text")
-    .map((item) => String(item.text || ""))
-    .join("\n")
-    .trim();
-
-  if (!text) {
-    throw new Error("Anthropic response is empty");
-  }
-
-  return text;
 }
 
 async function requestOpenAICompatibleVision({ model, apiKey, baseUrl, dataUrl, prompt }) {
@@ -834,7 +739,9 @@ async function requestBaiduOcrAndOpenAICompatibleTranslate({
   translatorModel,
   visionOcrOptions,
   ocrTuning,
-  ignoreSimplifiedChinese
+  ignoreSimplifiedChinese,
+  glossary,
+  glossaryFingerprint
 }) {
   const imageSize = await decodeDataUrlImageSize(dataUrl);
   const ocrPayload = await requestBaiduAccurateOcr({
@@ -884,7 +791,9 @@ async function requestBaiduOcrAndOpenAICompatibleTranslate({
     items: candidates,
     apiKey: translatorApiKey,
     baseUrl: translatorBaseUrl,
-    model: translatorModel
+    model: translatorModel,
+    glossary,
+    glossaryFingerprint
   });
 
   if (localOcrDebug) {
@@ -932,7 +841,9 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
   translatorBaseUrl,
   translatorModel,
   visionOcrOptions,
-  ignoreSimplifiedChinese
+  ignoreSimplifiedChinese,
+  glossary,
+  glossaryFingerprint
 }) {
   const imageSize = await decodeDataUrlImageSize(dataUrl);
   let effectiveOcrMode = localOcrMode;
@@ -1007,7 +918,9 @@ async function requestLocalPaddleOcrAndOpenAICompatibleTranslate({
     apiKey: translatorApiKey,
     baseUrl: translatorBaseUrl,
     model: translatorModel,
-    sourceImageId
+    sourceImageId,
+    glossary,
+    glossaryFingerprint
   });
 
   console.debug("[MangaTranslator][localPaddle] Translation result map size:", translated.size, "keys:", [...translated.keys()]);
@@ -3548,12 +3461,26 @@ function normalizePercentPolygon(value, imageSize) {
   });
 }
 
-async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl, model, sourceImageId = "" }) {
+async function requestOpenAICompatibleTextTranslations({
+  items,
+  apiKey,
+  baseUrl,
+  model,
+  sourceImageId = "",
+  glossary = null,
+  glossaryFingerprint = ""
+}) {
   const result = new Map();
   const cacheKeys = new Map();
   const uncachedItems = [];
   for (const item of items) {
-    const cacheKey = buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl);
+    const cacheKey = buildBlockTranslationCacheKey(
+      sourceImageId,
+      item,
+      model,
+      baseUrl,
+      glossaryFingerprint
+    );
     cacheKeys.set(item.id, cacheKey);
     const cached = await getCache(cacheKey);
     if (cached && typeof cached.translatedText === "string" && cached.translatedText.trim()) {
@@ -3573,11 +3500,11 @@ async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl,
       {
         role: "system",
         content:
-          "You are a manga dialogue translator. Translate grouped OCR blocks into natural Simplified Chinese. Return JSON only."
+          "You are a manga dialogue translator. Translate grouped OCR blocks into natural Simplified Chinese, obey every supplied glossary mapping, and return JSON only."
       },
       {
         role: "user",
-        content: buildOpenAICompatibleTranslationPrompt(uncachedItems)
+        content: buildOpenAICompatibleTranslationPrompt(uncachedItems, glossary)
       }
     ],
     response_format: { type: "json_object" }
@@ -3608,7 +3535,7 @@ async function requestOpenAICompatibleTextTranslations({ items, apiKey, baseUrl,
   return result;
 }
 
-function buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl) {
+function buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl, glossaryFingerprint = "") {
   const text = normalizeTextForLocalPaddle(item && item.original_text);
   const box = item && item.rawBox ? item.rawBox : item || {};
   const bbox = [box.left ?? box.x, box.top ?? box.y, box.width ?? box.w, box.height ?? box.h]
@@ -3619,7 +3546,8 @@ function buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl) {
     text,
     bbox,
     model || "",
-    baseUrl || ""
+    baseUrl || "",
+    glossaryFingerprint || ""
   ].join("|"))}`;
 }
 
@@ -3647,11 +3575,12 @@ async function sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body) {
     : "";
 }
 
-function buildOpenAICompatibleTranslationPrompt(items) {
+function buildOpenAICompatibleTranslationPrompt(items, glossary = null) {
   const rows = items.map((item) => ({
     id: item.id,
     text: item.original_text
   }));
+  const glossaryPrompt = glossaryCore.buildPrompt(glossary, items);
 
   return [
     "Translate each OCR block into Simplified Chinese as one complete manga bubble or narration box.",
@@ -3661,6 +3590,7 @@ function buildOpenAICompatibleTranslationPrompt(items) {
     "Preserve the input id exactly. Return one translated_text per id.",
     "Return JSON only with this schema:",
     '{"translations":[{"id":"t0","translated_text":"..."}]}',
+    ...(glossaryPrompt ? [glossaryPrompt] : []),
     "Input:",
     JSON.stringify(rows)
   ].join("\n");
@@ -3733,7 +3663,7 @@ async function sendOpenAICompatibleOnce({
   useJsonResponseFormat
 }) {
   const body = {
-    model: model || DEFAULT_MODELS[PROVIDERS.openaiCompatible],
+    model: model || DEFAULT_VISION_OCR_MODEL,
     temperature: 0,
     messages: [
       {
@@ -3809,49 +3739,6 @@ function ensureOpenAICompatibleError(reason) {
   return `OpenAI-compatible API error: ${text}`;
 }
 
-function buildVisionPrompt({ ignoreSimplifiedChinese = false } = {}) {
-  const promptLines = [
-    "You are a manga OCR + translation engine.",
-    "Do OCR, translation, and speech bubble localization on this manga image.",
-    "Translate all detected text into Simplified Chinese.",
-    "For every text item, return the replacement box that should be erased and redrawn, not just the tight OCR glyph bounds.",
-    "For speech bubbles, x/y/w/h should cover the whole usable inner bubble area including the original text, with a small margin.",
-    "For narration boxes or floating sound-effect text, x/y/w/h should cover enough area to hide the original text completely.",
-    "Prefer one box per visually connected bubble or caption. Do not split one speech bubble into multiple small boxes unless there are separate texts far apart.",
-    "Ignore decorative symbols, musical notes, and standalone punctuation marks (e.g. ♪ ♫ ♩ ♬ ♭ ♯).",
-    "Ignore meaningless alphabetic noise (e.g. random letters like 'aaa', 'hm', 'zzz', isolated short Latin fragments).",
-    "Ignore model attachment labels such as [Image #1], [Image#1], or Image 1. They are not manga text and must never appear in original_text or translated_text.",
-    "If a bubble contains only symbols (no meaningful text), do not include it in output.",
-    "Return JSON only. No markdown, no explanation, no code fences.",
-    "Output schema:",
-    "{",
-    '  "bubbles": [',
-    "    {",
-    '      "x": 0-100,',
-    '      "y": 0-100,',
-    '      "w": 0-100,',
-    '      "h": 0-100,',
-    '      "bg_type": "solid|transparent|none",',
-    '      "original_text": "...",',
-    '      "translated_text": "..."',
-    "    }",
-    "  ]",
-    "}",
-    "Coordinates should be percentages relative to the whole image, using top-left x/y and width/height.",
-    "Coordinates must be large enough for the translated Chinese text to fit inside and must fully cover the original text.",
-    "If there is no text, return exactly: {\"bubbles\":[]}",
-    "bg_type must be one of: solid, transparent, none."
-  ];
-
-  if (ignoreSimplifiedChinese) {
-    promptLines.push(
-      "Important: Ignore already Simplified Chinese text. Do not include those bubbles in output."
-    );
-  }
-
-  return promptLines.join("\n");
-}
-
 function parseModelJson(rawText) {
   const text = String(rawText || "").trim();
   if (!text) {
@@ -3869,68 +3756,6 @@ function parseModelJson(rawText) {
 
   const jsonText = candidate.slice(start, end + 1);
   return JSON.parse(jsonText);
-}
-
-function normalizeTranslationResult(payload, { ignoreSimplifiedChinese = false } = {}) {
-  const rawBubbles = payload && Array.isArray(payload.bubbles) ? payload.bubbles : [];
-
-  const normalized = rawBubbles.map((item) => {
-    return {
-      x: toNumber(item && item.x !== undefined ? item.x : item && item.left),
-      y: toNumber(item && item.y !== undefined ? item.y : item && item.top),
-      w: toNumber(item && item.w !== undefined ? item.w : item && item.width),
-      h: toNumber(item && item.h !== undefined ? item.h : item && item.height),
-      bg_type: normalizeBgType(item ? item.bg_type : "solid"),
-      original_text: String(item && item.original_text ? item.original_text : "").trim(),
-      translated_text: String(item && item.translated_text ? item.translated_text : "").trim()
-    };
-  });
-
-  const looksLikeUnitCoordinate =
-    normalized.length > 0 &&
-    normalized.every((item) => {
-      const values = [item.x, item.y, item.w, item.h];
-      return values.every((value) => Number.isFinite(value) && value >= 0 && value <= 1.2);
-    });
-
-  const scale = looksLikeUnitCoordinate ? 100 : 1;
-
-  const bubbles = normalized
-    .map((item) => {
-      const x = clamp(item.x * scale, 0, 100);
-      const y = clamp(item.y * scale, 0, 100);
-      const w = clamp(item.w * scale, 0, 100);
-      const h = clamp(item.h * scale, 0, 100);
-      const rawOriginalText = String(item.original_text || "").trim();
-      const rawTranslatedText = String(item.translated_text || "").trim();
-      const sourceWasImagePlaceholder = isModelImagePlaceholderOnly(rawOriginalText);
-      const originalText = sourceWasImagePlaceholder ? "" : cleanDecorativeSymbols(rawOriginalText);
-      const translatedText = sourceWasImagePlaceholder
-        ? ""
-        : cleanDecorativeSymbols(rawTranslatedText) || originalText;
-
-      return {
-        x,
-        y,
-        w,
-        h,
-        bg_type: item.bg_type,
-        original_text: originalText,
-        translated_text: translatedText
-      };
-    })
-    .filter((item) => !shouldDropSymbolOnlyBubble(item))
-    .filter((item) => !shouldDropMeaninglessAlphabeticBubble(item))
-    .filter((item) => {
-      if (!ignoreSimplifiedChinese) {
-        return true;
-      }
-      return !isConfidentSimplifiedChinese(item.original_text);
-    })
-    .filter((item) => item.w > 0 && item.h > 0)
-    .slice(0, MAX_BUBBLES);
-
-  return { bubbles };
 }
 
 function normalizeBgType(value) {
@@ -4723,6 +4548,7 @@ function buildCacheKey({
   visionOcrEnabled,
   visionOcrBaseUrl,
   visionOcrModel,
+  glossaryFingerprint,
   imageUrl,
   targetKey,
   ocrMode,
@@ -4757,6 +4583,7 @@ function buildCacheKey({
     visionOcrEnabled ? "vision-ocr" : "",
     visionOcrBaseUrl || "",
     visionOcrModel || "",
+    glossaryFingerprint || "",
     imageUrl || "",
     targetKey || "",
     normalizeOcrRequestMode(ocrMode),
@@ -4884,15 +4711,22 @@ async function ensureDefaultSettings() {
     STORAGE_KEYS.captureMode,
     STORAGE_KEYS.renderMode,
     STORAGE_KEYS.pretranslateMode,
-    STORAGE_KEYS.ignoreSimplifiedChinese
+    STORAGE_KEYS.ignoreSimplifiedChinese,
+    STORAGE_KEYS.glossary
   ]);
 
   const patch = {};
 
-  if (typeof stored[STORAGE_KEYS.provider] !== "string") {
+  const storedProvider = String(stored[STORAGE_KEYS.provider] || "").trim().toLowerCase();
+  const providerIsSupported = [
+    PROVIDERS.baiduDeepSeek,
+    PROVIDERS.localPaddleDeepSeek
+  ].includes(storedProvider);
+  if (!providerIsSupported) {
     patch[STORAGE_KEYS.provider] = DEFAULT_SETTINGS.provider;
+    patch[STORAGE_KEYS.model] = DEFAULT_SETTINGS.model;
   }
-  if (typeof stored[STORAGE_KEYS.model] !== "string") {
+  if (providerIsSupported && typeof stored[STORAGE_KEYS.model] !== "string") {
     patch[STORAGE_KEYS.model] = DEFAULT_SETTINGS.model;
   }
   if (typeof stored[STORAGE_KEYS.apiKey] !== "string") {
@@ -4965,6 +4799,13 @@ async function ensureDefaultSettings() {
   if (typeof stored[STORAGE_KEYS.ignoreSimplifiedChinese] !== "boolean") {
     patch[STORAGE_KEYS.ignoreSimplifiedChinese] = DEFAULT_SETTINGS.ignoreSimplifiedChinese;
   }
+  if (
+    !stored[STORAGE_KEYS.glossary] ||
+    typeof stored[STORAGE_KEYS.glossary] !== "object" ||
+    !Array.isArray(stored[STORAGE_KEYS.glossary].entries)
+  ) {
+    patch[STORAGE_KEYS.glossary] = glossaryCore.normalizeGlossary(null);
+  }
 
   if (Object.keys(patch).length > 0) {
     await storageSet(patch);
@@ -5012,12 +4853,15 @@ async function loadSettings() {
     STORAGE_KEYS.captureMode,
     STORAGE_KEYS.renderMode,
     STORAGE_KEYS.pretranslateMode,
-    STORAGE_KEYS.ignoreSimplifiedChinese
+    STORAGE_KEYS.ignoreSimplifiedChinese,
+    STORAGE_KEYS.glossary
   ]);
 
-  const provider = normalizeProvider(raw[STORAGE_KEYS.provider]);
+  const storedProvider = String(raw[STORAGE_KEYS.provider] || "").trim().toLowerCase();
+  const provider = normalizeProvider(storedProvider);
   const modelRaw = String(raw[STORAGE_KEYS.model] || "").trim();
-  const model = modelRaw || DEFAULT_MODELS[provider];
+  const model = (storedProvider === provider ? modelRaw : "") || DEFAULT_MODELS[provider];
+  const glossary = glossaryCore.normalizeGlossary(raw[STORAGE_KEYS.glossary]);
 
   return {
     provider,
@@ -5059,21 +4903,22 @@ async function loadSettings() {
     )
       ? String(raw[STORAGE_KEYS.pretranslateMode]).trim().toLowerCase()
       : "manual",
-    ignoreSimplifiedChinese: raw[STORAGE_KEYS.ignoreSimplifiedChinese] === true
+    ignoreSimplifiedChinese: raw[STORAGE_KEYS.ignoreSimplifiedChinese] === true,
+    glossary,
+    glossaryEntries: glossary.entries,
+    glossaryFingerprint: glossaryCore.getFingerprint(glossary)
   };
 }
 
 function normalizeProvider(provider) {
   const text = String(provider || "").trim().toLowerCase();
   if (
-    text === PROVIDERS.anthropic ||
-    text === PROVIDERS.openaiCompatible ||
     text === PROVIDERS.baiduDeepSeek ||
     text === PROVIDERS.localPaddleDeepSeek
   ) {
     return text;
   }
-  return PROVIDERS.anthropic;
+  return PROVIDERS.baiduDeepSeek;
 }
 
 function sanitizeLocalOcrBaseUrl(value) {

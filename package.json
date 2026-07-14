@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "node scripts/sync-to-root.mjs",
     "build": "node scripts/build-extension.mjs",
     "test": "node --test tests/kakao_reconciler.test.mjs tests/kakao_pipeline.test.mjs tests/content_runtime.test.mjs tests/background_runtime.test.mjs tests/glossary_core.test.mjs tests/term_discovery_core.test.mjs tests/overlay_style.test.mjs"
   }

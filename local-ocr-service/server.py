@@ -33,11 +33,12 @@ if os.environ.get("LOCAL_OCR_DISABLE_MODELSCOPE", "1") != "0":
     modelscope_stub.snapshot_download = _disabled_modelscope_download
     sys.modules.setdefault("modelscope", modelscope_stub)
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from pydantic import BaseModel, Field
 from term_extractor import extract_term_candidates, get_term_extractor_status
+from glossary_db import GlossaryDB
 
 try:
     from paddleocr import PaddleOCR, TextDetection, TextRecognition
@@ -118,6 +119,37 @@ class TermExtractionRequest(BaseModel):
     user_terms: list[str] = Field(default_factory=list, max_length=200)
 
 
+class GlossaryEntryPayload(BaseModel):
+    id: str = ""
+    source: str
+    target: str
+    note: str = ""
+    enabled: bool = True
+
+
+class GlossaryConfirmPayload(BaseModel):
+    source: str
+    target: str
+
+
+class GlossaryIgnorePayload(BaseModel):
+    source: str
+
+
+class GlossaryAddPendingPayload(BaseModel):
+    source: str
+    kind: str = "proper_noun"
+    score: float = 0.0
+    evidence_ids: list[Any] = Field(default_factory=list, max_length=50)
+    chapter_key: str = ""
+    chapter_url: str = ""
+    chapter_title: str = ""
+
+
+class GlossaryImportPayload(BaseModel):
+    entries: list = Field(default_factory=list, max_length=1000)
+
+
 app = FastAPI(title="Manga Translator Local OCR")
 app.add_middleware(
     CORSMiddleware,
@@ -131,6 +163,20 @@ _text_detection_clients: dict[str, Any] = {}
 _text_recognition_clients: dict[str, Any] = {}
 _ocr_client_lock = threading.Lock()
 _ocr_runtime_lock = asyncio.Lock()
+
+# Glossary database (persistent SQLite storage for terminology)
+GLOSSARY_DB_PATH = os.environ.get(
+    "GLOSSARY_DB_PATH",
+    str(Path(__file__).resolve().parent / "glossary.db"),
+)
+_glossary_db: GlossaryDB | None = None
+
+
+def get_glossary_db() -> GlossaryDB:
+    global _glossary_db
+    if _glossary_db is None:
+        _glossary_db = GlossaryDB(GLOSSARY_DB_PATH)
+    return _glossary_db
 
 
 @app.get("/health")
@@ -175,6 +221,136 @@ async def extract_terms(payload: TermExtractionRequest) -> dict[str, Any]:
     ]
     candidates = await asyncio.to_thread(extract_term_candidates, blocks, None, payload.user_terms)
     return {"ok": True, "engine": "kiwi", "candidates": candidates}
+
+
+# ---------------------------------------------------------------------------
+# Glossary API (persistent SQLite storage for terminology)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/glossary/health")
+def glossary_health() -> dict[str, Any]:
+    try:
+        db = get_glossary_db()
+        count = db.get_entry_count()
+        pending = db.get_pending_count()
+        return {"ok": True, "entryCount": count, "pendingCount": pending}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/glossary")
+def glossary_list(search: str = "", enabled_only: bool = False) -> dict[str, Any]:
+    db = get_glossary_db()
+    entries = db.get_entries(search=search, enabled_only=enabled_only)
+    return {"ok": True, "entries": entries}
+
+
+@app.put("/glossary")
+def glossary_upsert(payload: GlossaryEntryPayload) -> dict[str, Any]:
+    db = get_glossary_db()
+    eid = db.add_entry(
+        source=payload.source,
+        target=payload.target,
+        note=payload.note,
+        enabled=payload.enabled,
+        entry_id=payload.id,
+    )
+    return {"ok": True, "id": eid}
+
+
+@app.delete("/glossary/{entry_id}")
+def glossary_delete(entry_id: str) -> dict[str, Any]:
+    db = get_glossary_db()
+    deleted = db.delete_entry(entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"ok": True}
+
+
+@app.get("/glossary/pending")
+def glossary_pending_list() -> dict[str, Any]:
+    db = get_glossary_db()
+    chapters = db.get_pending_chapters()
+    candidates = db.get_pending()
+    return {"ok": True, "chapters": chapters, "candidates": candidates}
+
+
+@app.post("/glossary/pending/confirm")
+def glossary_pending_confirm(payload: GlossaryConfirmPayload) -> dict[str, Any]:
+    db = get_glossary_db()
+    ok = db.confirm_pending(source=payload.source, target=payload.target)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Pending candidate not found")
+    return {"ok": True}
+
+
+@app.post("/glossary/pending/ignore")
+def glossary_pending_ignore(payload: GlossaryIgnorePayload) -> dict[str, Any]:
+    db = get_glossary_db()
+    db.add_ignored(source=payload.source)
+    db.delete_pending(source=payload.source)
+    return {"ok": True}
+
+
+@app.get("/glossary/ignored")
+def glossary_ignored_list() -> dict[str, Any]:
+    db = get_glossary_db()
+    return {"ok": True, "sources": db.get_ignored()}
+
+
+@app.post("/glossary/ignored/restore")
+def glossary_ignored_restore(payload: GlossaryIgnorePayload) -> dict[str, Any]:
+    db = get_glossary_db()
+    db.remove_ignored(source=payload.source)
+    return {"ok": True}
+
+
+@app.post("/glossary/export")
+def glossary_export() -> dict[str, Any]:
+    db = get_glossary_db()
+    data = db.export_json()
+    return {"ok": True, "data": data}
+
+
+@app.post("/glossary/import")
+async def glossary_import(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    entries = body.get("entries", []) if isinstance(body, dict) else []
+    if not isinstance(entries, list):
+        raise HTTPException(status_code=400, detail="entries must be a list")
+    db = get_glossary_db()
+    try:
+        count = db.import_entries(entries)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"import_entries failed: {exc}")
+    return {"ok": True, "imported": count}
+
+
+@app.post("/glossary/pending")
+def glossary_pending_add(payload: GlossaryAddPendingPayload) -> dict[str, Any]:
+    db = get_glossary_db()
+    db.add_pending(
+        source=payload.source,
+        kind=payload.kind,
+        score=payload.score,
+        evidence_ids=payload.evidence_ids,
+        chapter_key=payload.chapter_key,
+        chapter_url=payload.chapter_url,
+        chapter_title=payload.chapter_title,
+    )
+    return {"ok": True}
+
+
+@app.get("/glossary/pending/count")
+def glossary_pending_count() -> dict[str, Any]:
+    db = get_glossary_db()
+    return {"ok": True, "count": db.get_pending_count()}
 
 
 @app.post("/ocr")

@@ -20,6 +20,38 @@ COMMON_KOREAN_SURNAMES = set(
     "김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예봉사부가복"
 )
 COMPOUND_KOREAN_SURNAMES = {"남궁", "독고", "동방", "망절", "사공", "서문", "선우", "제갈", "황보"}
+KOREAN_STOP_WORDS = {
+    # 一般名词（在术语语境中不应作为候选的常见词）
+    "한국", "사람", "장소", "이야기", "생각", "시간", "너무", "정말",
+    "모든", "우리", "그것", "무엇", "어떤", "때문", "안녕", "감사",
+    "다시", "지금", "오늘", "내일", "어제", "여기", "저기", "거기",
+    "아마", "진짜", "항상", "가장", "같은", "다른", "이런", "저런",
+    "그런", "없이", "함께", "바로", "아직", "이미", "처음", "마지막",
+    "사실", "물론", "아니", "응", "그래", "하지만", "그리고", "근데",
+    "이제", "저도", "그럼", "아까", "각자", "모두", "전부", "일부",
+    "나중", "중간", "옆", "위", "밑", "안", "밖", "앞", "뒤", "근처",
+    "주변", "확인", "시작", "끝", "방법", "경우", "이유", "결과",
+    "정도", "한번", "가끔", "자주", "늘", "언제", "어디", "누구",
+    "왜", "얼마", "몇", "대한", "관한", "의해", "통해",
+    "어떠한", "어느", "이것", "저것", "이분", "그분", "저분", "여러분",
+    "이쪽", "그쪽", "저쪽", "이런저런",
+    # 常见动词词干（可能被误标记为名词）
+    "하다", "되다", "있다", "없다", "않다", "그렇다", "이렇다", "저렇다",
+    "아니다", "그러다", "모르다", "알다", "보이다", "들리다",
+    "좋다", "싫다", "많다", "적다", "크다", "작다", "길다", "짧다",
+    "높다", "낮다", "넓다", "좁다", "멀다", "가깝다",
+    "예쁘다", "아름답다", "귀엽다", "멋있다", "재미있다",
+    # 常见副词
+    "아주", "매우", "거의", "별로", "전혀", "결코", "과연", "설마",
+    "제일", "조금", "약간", "많이", "빨리", "천천히",
+    "드디어", "마침내", "겨우", "간신히", "대충", "일단", "우선",
+    "곧", "바로", "방금", "일찍", "늦게",
+    "또", "또한", "더", "덜", "아주", "훨씬", "오히려", "도리어",
+    # 高频依存名词（조사/어미가 붙은 형태의 어근）
+    "것", "수", "데", "거", "게", "줄", "길", "일", "중", "때",
+    "곳", "쪽", "분", "군", "듯", "채", "만", "대로", "뿐", "나름",
+    "척", "양", "터", "적", "판", "참", "통", "동안", "무렵", "즈음",
+}
 LATIN_STOP_TERMS = {
     "AD",
     "CEO",
@@ -132,6 +164,15 @@ def extract_term_candidates(
             if candidate.get("kind") == "person":
                 register_confirmed_person_aliases(kiwi, [source])
 
+    # 频率过滤："title" 类型（NNG-only）候选词需要至少跨 3 个证据块出现才保留
+    filtered: dict[str, dict[str, Any]] = {}
+    for key, candidate in merged.items():
+        if candidate["kind"] in ("person", "proper_noun", "latin_name", "latin_title"):
+            filtered[key] = candidate
+        elif candidate["kind"] == "title" and len(candidate["evidenceIds"]) >= 2:
+            filtered[key] = candidate
+    merged = filtered
+
     return sorted(
         merged.values(),
         key=lambda item: (-float(item["score"]), -len(str(item["source"])), str(item["source"])),
@@ -203,7 +244,17 @@ def extract_korean_candidates(text: str, tokens: list[dict[str, Any]]) -> list[d
             continue
         # 平衡模式允许完整 OCR 块中的短名词短语进入人工确认，但不接受普通单个名词。
         if is_full_block and 2 <= len(group) <= 4 and " " in surface and len(compact) >= 4:
-            candidates.append({"source": surface, "kind": "title", "score": 0.72})
+            # 纯 NNG 组的停用词检查：任意组成词为停用词则丢弃
+            if "NNP" not in tags:
+                has_stop = False
+                for token in group:
+                    if token["form"] in KOREAN_STOP_WORDS:
+                        has_stop = True
+                        break
+                if not has_stop:
+                    candidates.append({"source": surface, "kind": "title", "score": 0.72})
+            else:
+                candidates.append({"source": surface, "kind": "title", "score": 0.72})
 
     return candidates
 
@@ -247,11 +298,29 @@ def is_korean_person_name(value: str, tokens: list[dict[str, Any]] | None = None
         return False
     if not tokens:
         return True
-    # 姓氏结构本身会把“마법사”“김밥집”等普通词误判成人名；要求 Kiwi 给出专名，
-    # 或整词是词典外低频词，再交给人工待确认区。
-    return any(token.get("tag") == "NNP" for token in tokens) or all(
-        not token.get("baseForm") for token in tokens
-    )
+    has_nnp = any(token.get("tag") == "NNP" for token in tokens)
+    all_unseen = all(not token.get("baseForm") for token in tokens)
+    # 排除"김밥"(김/NNP+밥/NNG)等混合标签的常见名词：如果前 1~2 字是姓氏且剩余部分
+    # 有 baseForm（即词典已知），则不是人名。
+    tokens_by_tag = {}
+    for token in tokens:
+        tokens_by_tag.setdefault(token.get("tag"), []).append(token)
+    nng_with_baseform = [
+        t for t in tokens_by_tag.get("NNG", []) if t.get("baseForm")
+    ]
+    nnp_without_baseform = [
+        t for t in tokens_by_tag.get("NNP", []) if not t.get("baseForm")
+    ]
+    # 如果只含 NNP 且全部无 baseForm → 词典外专名，大概率是人名（如"김철수"）
+    if has_nnp and not tokens_by_tag.get("NNG") and nnp_without_baseform:
+        return True
+    # NNP + NNG 混合：NNG 有词典定义 → 是合成名词（如"김밥"）而非人名
+    if has_nnp and nng_with_baseform:
+        return False
+    # 纯 NNP 但有 baseForm → 词典已知词，不一定是人名
+    if has_nnp and not all_unseen:
+        return False
+    return has_nnp or all_unseen
 
 
 def register_confirmed_person_aliases(kiwi: Any, terms: Iterable[str]) -> None:
@@ -284,7 +353,17 @@ def is_usable_candidate(value: str) -> bool:
         return False
     if all(char.isdigit() or char.isspace() or unicodedata.category(char).startswith("P") for char in value):
         return False
-    return contains_hangul(value) or bool(re.search(r"[A-Za-z]", value))
+    if not contains_hangul(value) and not bool(re.search(r"[A-Za-z]", value)):
+        return False
+    # 停用词过滤：去除空白后直接匹配
+    compact = re.sub(r"\s+", "", value)
+    if compact in KOREAN_STOP_WORDS:
+        return False
+    # 前缀匹配：处理"한국에"→"한국"、"시작이다"→"시작"等变形
+    for length in range(2, min(len(compact), 6) + 1):
+        if compact[:length] in KOREAN_STOP_WORDS:
+            return False
+    return True
 
 
 def normalize_text(value: Any) -> str:

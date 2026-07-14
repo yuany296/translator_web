@@ -211,6 +211,24 @@ test("debug and loading overlays never count as reusable translated results", ()
   assert.equal(runtime.__test.isReusableRenderedState({ mode: "embedded", bubbleCount: 1 }, true), true);
 });
 
+test("extension-owned seam composites never reenter Kakao OCR target selection", () => {
+  const target = new globalThis.HTMLImageElement();
+  target.dataset = { mangaTranslatorOverlay: "true" };
+  target.closest = () => null;
+
+  assert.equal(runtime.__test.isMangaTranslatorOverlayTarget(target), true);
+  assert.equal(runtime.__test.isSupportedTarget(target), false);
+
+  target.dataset = {};
+  target.closest = () => ({ dataset: { mangaTranslatorOverlay: "true" } });
+  assert.equal(runtime.__test.isMangaTranslatorOverlayTarget(target), true);
+  assert.equal(runtime.__test.isSupportedTarget(target), false);
+
+  target.closest = () => null;
+  assert.equal(runtime.__test.isMangaTranslatorOverlayTarget(target), false);
+  assert.equal(runtime.__test.isSupportedTarget(target), true);
+});
+
 test("known Kakao page bindings are idempotent until target or revision changes", () => {
   const target = { isConnected: true };
   const targets = new Set([target]);
@@ -354,6 +372,33 @@ test("canonical seam rendering uses the regular page overlay path only", () => {
   assert.match(pipelineSource, /async function runSeamCrossPageRender\(pageA, pageB\) \{\s*return;/);
   assert.doesNotMatch(contentSource, /\n\s*renderSeamCrossPage,\n/);
   assert.match(contentSource, /renderCanonicalProjections[\s\S]*renderTranslationResult\(/);
+});
+
+test("canonical seam surfaces render from one host page only", () => {
+  const surface = { pageIds: ["page-a", "page-b"] };
+
+  assert.equal(
+    runtime.__test.getSeamSurfaceHostPageId(surface, (pageId) => ({ isConnected: pageId === "page-a" })),
+    "page-a"
+  );
+  assert.equal(
+    runtime.__test.getSeamSurfaceHostPageId(surface, (pageId) => ({ isConnected: pageId === "page-b" })),
+    "page-b"
+  );
+  assert.equal(runtime.__test.getSeamSurfaceHostPageId(surface, () => null), "page-a");
+
+  const renderStart = contentSource.indexOf("async function renderCanonicalProjections");
+  const renderEnd = contentSource.indexOf("async function renderTranslationResult", renderStart);
+  const renderSource = contentSource.slice(renderStart, renderEnd);
+  assert.match(renderSource, /hostedSeamSurfacesByPage/);
+  assert.match(renderSource, /const pageSurfaces = seamSurfacesByPage\.get\(pageId\) \|\| \[\]/);
+  assert.match(renderSource, /const hostedPageSurfaces = hostedSeamSurfacesByPage\.get\(pageId\) \|\| \[\]/);
+  assert.match(renderSource, /seamSurfaces: hostedPageSurfaces/);
+
+  const overlayStart = contentSource.indexOf("function renderOverlay(");
+  const overlayEnd = contentSource.indexOf("function scheduleTermDiscovery", overlayStart);
+  const overlaySource = contentSource.slice(overlayStart, overlayEnd);
+  assert.match(overlaySource, /removeDuplicateSeamSurfaceRoots\(seamSurfaces, root\)/);
 });
 
 test("Kakao recommendation covers wait for visible flow instead of entering the ahead queue", () => {

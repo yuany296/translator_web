@@ -315,6 +315,8 @@
       buildOcrRequestKey,
       shouldUseKakaoCanonicalPipeline,
       isKakaoEpisodeImageTarget,
+      isMangaTranslatorOverlayTarget,
+      isSupportedTarget,
       normalizeKakaoStableImageSource,
       buildKakaoPageIdentity,
       buildOcrMessageForPayload,
@@ -330,6 +332,7 @@
       projectionToRendererBubble,
       normalizeProjectionPages,
       normalizeSeamRenderSurfaces,
+      getSeamSurfaceHostPageId,
       getSeamSegmentTransform,
       buildSeamSurfaceRenderSignature,
       isSeamSurfaceRenderable,
@@ -3696,6 +3699,16 @@
     };
   }
 
+  function getSeamSurfaceHostPageId(surface, resolveTarget = getTargetForKakaoPageId) {
+    const pageIds = Array.isArray(surface && surface.pageIds)
+      ? surface.pageIds.map(String).filter(Boolean)
+      : [];
+    return pageIds.find((pageId) => {
+      const target = typeof resolveTarget === "function" ? resolveTarget(pageId) : null;
+      return !!target && target.isConnected !== false;
+    }) || pageIds[0] || "";
+  }
+
   function buildSeamSurfaceRenderSignature(surface) {
     try {
       return hashSourceIdentity(JSON.stringify({
@@ -3924,9 +3937,11 @@
       isSeamSurfaceRenderable(surface)
     );
     const seamSurfacesByPage = new Map();
+    const hostedSeamSurfacesByPage = new Map();
     const handledCanonicalIds = new Set();
     const atomicSeamPageIds = new Set();
     seamSurfaces.forEach((surface) => {
+      const hostPageId = getSeamSurfaceHostPageId(surface);
       surface.handledCanonicalIds.forEach((canonicalId) => handledCanonicalIds.add(canonicalId));
       surface.pageIds.forEach((pageId) => {
         if (!pages.has(pageId)) pages.set(pageId, []);
@@ -3935,6 +3950,12 @@
         seamSurfacesByPage.set(pageId, pageSurfaces);
         atomicSeamPageIds.add(pageId);
       });
+      if (hostPageId) {
+        if (!pages.has(hostPageId)) pages.set(hostPageId, []);
+        const hostedSurfaces = hostedSeamSurfacesByPage.get(hostPageId) || [];
+        hostedSurfaces.push(surface);
+        hostedSeamSurfacesByPage.set(hostPageId, hostedSurfaces);
+      }
     });
 
     // pipeline 保留一份未被 surface 接管前的逐页投影。若 DOM revision 在提交瞬间变化、
@@ -3996,6 +4017,7 @@
       const target = getTargetForKakaoPageId(pageId) || (pageId === String(input.pageId || "") ? input.target : null);
       if (!target || !target.isConnected) continue;
       const pageSurfaces = seamSurfacesByPage.get(pageId) || [];
+      const hostedPageSurfaces = hostedSeamSurfacesByPage.get(pageId) || [];
       const ordinaryProjections = [...projections].filter((projection) => {
         const canonicalId = String(projection && (projection.canonicalId || projection.groupId) || "");
         return !canonicalId || !handledCanonicalIds.has(canonicalId);
@@ -4029,7 +4051,7 @@
         bubbles,
         cleanedImage: getPageMappedValue(input.cleanedImageByPage, pageId, defaultCleanedImage),
         debug: getPageMappedValue(input.debugByPage, pageId, defaultDebug),
-        seamSurfaces: pageSurfaces,
+        seamSurfaces: hostedPageSurfaces,
         seamPageId: pageId
       };
       const pageRenderOptions = {
@@ -4076,8 +4098,8 @@
       rememberLocalResult(scopedTargetKey, result);
       if (disposition === "translated") {
         const task = invokeRender({
-          stream: pageSurfaces.length === 0,
-          forceOverlay: pageSurfaces.length > 0
+          stream: hostedPageSurfaces.length === 0,
+          forceOverlay: hostedPageSurfaces.length > 0
         });
         if (task) await task;
         target.dataset.mtNoTextKey = "";
@@ -4412,6 +4434,39 @@
     setSeamSourceModeForOverlays(state.overlaysById, key, showSource);
   }
 
+  function getSeamSurfaceRenderKeys(seamSurfaces) {
+    return new Set((Array.isArray(seamSurfaces) ? seamSurfaces : [])
+      .map((surface) => String(surface && surface.renderKey || ""))
+      .filter(Boolean));
+  }
+
+  function rootHasAnySeamRenderKey(root, renderKeys) {
+    if (!root || !renderKeys || renderKeys.size === 0) return false;
+    const keys = String(root.dataset && root.dataset.seamRenderKeys || "")
+      .split(/\s+/)
+      .filter(Boolean);
+    return keys.some((key) => renderKeys.has(key));
+  }
+
+  function removeDuplicateSeamSurfaceRoots(seamSurfaces, keepRoot) {
+    const renderKeys = getSeamSurfaceRenderKeys(seamSurfaces);
+    if (renderKeys.size === 0 || !state.overlayLayer) return;
+
+    for (const root of Array.from(state.overlayLayer.querySelectorAll(".mt-overlay-root"))) {
+      if (root === keepRoot || !rootHasAnySeamRenderKey(root, renderKeys)) continue;
+      const rootTargetId = String(root.dataset && root.dataset.targetId || "");
+      const overlayState = rootTargetId ? state.overlaysById.get(rootTargetId) : null;
+      if (overlayState && overlayState.root === root) {
+        if (overlayState.loadingTimeout) {
+          window.clearTimeout(overlayState.loadingTimeout);
+          overlayState.loadingTimeout = 0;
+        }
+        state.overlaysById.delete(rootTargetId);
+      }
+      root.remove();
+    }
+  }
+
   function renderOverlay(target, targetKey, result, options = {}) {
     const bubbles = Array.isArray(result.bubbles) ? result.bubbles : [];
     const seamSurfaces = Array.isArray(result && result.seamSurfaces) ? result.seamSurfaces : [];
@@ -4522,6 +4577,7 @@
       state.overlayLayer.appendChild(root);
     }
     state.overlaysById.set(targetId, overlayState);
+    removeDuplicateSeamSurfaceRoots(seamSurfaces, root);
     syncOverlayPosition(overlayState);
     if (!bubbles.some((bubble) => bubble && bubble.canonical_id)) {
       syncKakaoVisualDuplicateBubbles(true);
@@ -7899,7 +7955,23 @@
     return id;
   }
 
+  function isMangaTranslatorOverlayTarget(target) {
+    if (!target) {
+      return false;
+    }
+    if (target.dataset && target.dataset.mangaTranslatorOverlay === "true") {
+      return true;
+    }
+    return typeof target.closest === "function" &&
+      !!target.closest("[data-manga-translator-overlay]");
+  }
+
   function isSupportedTarget(target) {
+    // 扩展自己的拼接画布带有 background-image；若再次作为 OCR 目标采集，
+    // 会在接缝处叠加一套普通翻译气泡。
+    if (isMangaTranslatorOverlayTarget(target)) {
+      return false;
+    }
     return target instanceof HTMLImageElement || target instanceof HTMLCanvasElement || isBackgroundImageTarget(target);
   }
 

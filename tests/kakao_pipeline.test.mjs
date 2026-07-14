@@ -2443,6 +2443,55 @@ test("seam composite is cleaned once and atomically replaces both page projectio
   assert.equal(harness.ocrMetas.filter((meta) => meta.sourceType === "seam").length, beforeRefresh.seamRequests);
 });
 
+test("translated seam geometry suppresses a smaller conflicting page-edge projection", () => {
+  const surface = {
+    renderKey: "live-seam",
+    canvasWidth: 720,
+    canvasHeight: 192,
+    pageIds: ["page-a", "page-b"],
+    segments: [
+      {
+        pageId: "page-a",
+        drawRect: { x: 0, y: 0, w: 720, h: 96 },
+        sourceCrop: { x: 0, y: 1004, w: 720, h: 96 },
+        naturalWidth: 720,
+        naturalHeight: 1100
+      },
+      {
+        pageId: "page-b",
+        drawRect: { x: 0, y: 96, w: 720, h: 96 },
+        sourceCrop: { x: 0, y: 0, w: 720, h: 96 },
+        naturalWidth: 720,
+        naturalHeight: 1100
+      }
+    ],
+    bubbles: [{
+      x: 7.52,
+      y: 37.13,
+      w: 57.05,
+      h: 28.88,
+      region_type: "speech_bubble",
+      original_text: "다준이ㅋㅋㅋㅋ작곡 잘하네",
+      translated_text: "多俊哈哈哈哈，作曲得真好"
+    }],
+    handledCanonicalIds: ["canonical-seam"]
+  };
+  const projections = new Map([["page-a", [{
+    canonicalId: "canonical-small-wrong",
+    role: "primary",
+    activeText: true,
+    geometry: { left: 36.91, top: 98.45, width: 26.88, height: 1.55 },
+    bubble: { region_type: "caption_panel" },
+    original_text: "그자고자하니는",
+    translated_text: "那个想睡觉的人"
+  }]]]);
+
+  assert.deepEqual(
+    [...P.collectSeamSuppressedCanonicalIds(surface, projections)],
+    ["canonical-small-wrong"]
+  );
+});
+
 test("canonical pipeline translates interior observations while edge candidates wait", async () => {
   const harness = createCanonicalHarness({
     pageObservations: {
@@ -3148,7 +3197,7 @@ async function runFailedRevisionFallbackScenario({ reverse = false, throwError =
   }
   assert.equal(
     translationRequestCount,
-    requestsBeforeRefresh + 1,
+    requestsBeforeRefresh + (throwError ? 1 : 2),
     "a failed revision must be retryable while retaining the prior visible projection"
   );
   const visibleAfter = [...harness.store.getAllProjections().values()].flat()
@@ -3167,7 +3216,7 @@ test("partial translation for a new revision keeps exactly one prior visible pro
   await runFailedRevisionFallbackScenario({ reverse: false, throwError: false });
 });
 
-test("a mixed partial response settles successful items and retries only missing canonicals", async () => {
+test("a mixed partial response settles successful items and immediately retries only missing canonicals", async () => {
   const requestedIds = [];
   const harness = createCanonicalHarness({
     pageObservations: {
@@ -3198,32 +3247,19 @@ test("a mixed partial response settles successful items and retries only missing
   });
 
   const first = await harness.pipeline.run(harness.targets.a);
-  assert.equal(first.ok, false);
-  assert.match(first.error, /Translation response omitted 1 canonical item/);
+  assert.equal(first.ok, true);
   assert.equal(requestedIds[0].length, 2);
-  assert.equal(
-    harness.store.getCanonicalSnapshot().filter((canonical) =>
-      harness.store.getTranslation(canonical.id, canonical.revision)
-    ).length,
-    1
-  );
-  assert.ok(harness.renderInputs.some((input) =>
-    String(input.reason || "").includes("translation-fallback") && input.translationComplete === false
-  ));
-
-  const second = await harness.pipeline.runCached(harness.targets.a, null, { reason: "recovery" });
-  assert.equal(second.ok, true);
-  assert.equal(
-    harness.calls.filter((call) => call === "ocr:page:page-a").length,
-    1,
-    "a ready page recovery must not repeat authoritative OCR"
-  );
-  assert.equal(requestedIds[1].length, 1, "only the missing canonical should be requested again");
+  assert.equal(requestedIds[1].length, 1, "only the missing canonical should be retried");
   assert.equal(
     harness.store.getCanonicalSnapshot().filter((canonical) =>
       harness.store.getTranslation(canonical.id, canonical.revision)
     ).length,
     2
+  );
+  assert.equal(
+    harness.calls.filter((call) => call === "ocr:page:page-a").length,
+    1,
+    "the retry must not repeat authoritative OCR"
   );
   assert.equal(harness.renderInputs.findLast((input) => input.pageId === "page-a").translationComplete, true);
 });

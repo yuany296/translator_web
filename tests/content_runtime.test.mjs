@@ -2685,13 +2685,15 @@ test("seam surface validation is atomic across targets and image revisions", () 
       ],
       cleanedImage: "data:image/png;base64,AQID",
       bubbles: [{ x: 20, y: 35, w: 60, h: 30, translated_text: "合并页" }],
-      handledCanonicalIds: ["canonical-1"]
+      handledCanonicalIds: ["canonical-1"],
+      suppressedCanonicalIds: ["canonical-small-edge"]
     }]
   })[0];
   const resolveTarget = (pageId) => targets[pageId];
   const resolveRevision = (target) => target.revision;
 
   assert.equal(runtime.__test.isSeamSurfaceRenderable(surface, resolveTarget, resolveRevision), true);
+  assert.deepEqual(surface.suppressedCanonicalIds, ["canonical-small-edge"]);
   targets.lower.revision = "stale-revision";
   assert.equal(runtime.__test.isSeamSurfaceRenderable(surface, resolveTarget, resolveRevision), false);
   targets.lower.revision = "rev-b";

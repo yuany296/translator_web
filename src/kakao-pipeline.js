@@ -3670,9 +3670,16 @@
         // 错误继续向上抛给重试调度，页面则不会在此期间变成空白。
         if (guardAllows()) {
           try {
-            const fallbackSurfaces = buildSeamRenderSurfaceIndex(store, { isPageAvailable });
             const ordinaryFallbackProjections = buildCanonicalProjections(store);
-            const fallbackProjections = buildCanonicalProjections(store, fallbackSurfaces.handledCanonicalIds);
+            const fallbackSurfaces = addSeamProjectionSuppressions(
+              buildSeamRenderSurfaceIndex(store, { isPageAvailable }),
+              ordinaryFallbackProjections
+            );
+            const fallbackHandledIds = new Set([
+              ...fallbackSurfaces.handledCanonicalIds,
+              ...getSeamSuppressedCanonicalIds(fallbackSurfaces)
+            ]);
+            const fallbackProjections = buildCanonicalProjections(store, fallbackHandledIds);
             store.setProjections(fallbackProjections);
             await refreshRequiredCleanedArtifacts(fallbackProjections);
             if (guardAllows()) {
@@ -3693,9 +3700,16 @@
 
       trace("project", null, { reason });
       for (const pageId of focusPageIds) store.setCanonicalPagePhase(pageId, CanonicalPhase.PROJECTING);
-      const seamSurfaceIndex = buildSeamRenderSurfaceIndex(store, { isPageAvailable });
       const ordinaryFallbackProjections = buildCanonicalProjections(store);
-      const projections = buildCanonicalProjections(store, seamSurfaceIndex.handledCanonicalIds);
+      const seamSurfaceIndex = addSeamProjectionSuppressions(
+        buildSeamRenderSurfaceIndex(store, { isPageAvailable }),
+        ordinaryFallbackProjections
+      );
+      const seamHandledIds = new Set([
+        ...seamSurfaceIndex.handledCanonicalIds,
+        ...getSeamSuppressedCanonicalIds(seamSurfaceIndex)
+      ]);
+      const projections = buildCanonicalProjections(store, seamHandledIds);
       store.setProjections(projections);
       await refreshRequiredCleanedArtifacts(projections);
       if (!guardAllows()) return { aborted: true };
@@ -3790,10 +3804,46 @@
         }
       }
       if (missing.length > 0) {
-        const error = new CanonicalTranslationError(`Translation response omitted ${missing.length} canonical item(s)`);
-        store.failTranslationClaims(missing, error);
-        trace("translation-error", null, { error: getErrorMessage(error), count: missing.length });
-        throw error;
+        // 批量翻译偶尔只返回部分 id。接缝候选若恰好被漏掉，页面会只剩
+        // 单页误识别的小框；对漏项做一次小批次重试，仍缺失才结算失败。
+        trace("translation-partial-retry", null, { count: missing.length });
+        let retryResponse;
+        try {
+          retryResponse = await requestCanonicalTranslations(missing, {
+            sourceLanguage: adapters.sourceLanguage || "auto",
+            targetLanguage: adapters.targetLanguage || KAKAO_CANONICAL_TARGET_LANGUAGE,
+            reason: `${reason}:partial-retry`
+          });
+          if (!retryResponse || retryResponse.ok === false) {
+            throw new CanonicalTranslationError(retryResponse && retryResponse.error || "Canonical translation retry failed");
+          }
+        } catch (error) {
+          store.failTranslationClaims(missing, error);
+          trace("translation-error", null, { error: getErrorMessage(error), count: missing.length });
+          throw error;
+        }
+        const retryTranslations = retryResponse && retryResponse.result && Array.isArray(retryResponse.result.translations)
+          ? retryResponse.result.translations
+          : retryResponse && Array.isArray(retryResponse.translations) ? retryResponse.translations : [];
+        const retryByKey = new Map(retryTranslations.map((translation) => [
+          canonicalRevisionKey(translation && translation.id, translation && translation.revision),
+          translation
+        ]));
+        const unresolved = [];
+        for (const item of missing) {
+          const translation = retryByKey.get(canonicalRevisionKey(item.id, item.revision));
+          if (translation && String(translation.translated_text || translation.translatedText || "").trim()) {
+            store.settleTranslation(item, translation);
+          } else {
+            unresolved.push(item);
+          }
+        }
+        if (unresolved.length > 0) {
+          const error = new CanonicalTranslationError(`Translation response omitted ${unresolved.length} canonical item(s) after retry`);
+          store.failTranslationClaims(unresolved, error);
+          trace("translation-error", null, { error: getErrorMessage(error), count: unresolved.length });
+          throw error;
+        }
       }
       // 翻译事实按 canonical revision 保存；旧作业不能继续 project/render。
       // 若同 URL 重载后的摘要相同，新作业可以复用这次唯一的外部请求结果。
@@ -4716,6 +4766,134 @@
       .trim()
       .toLowerCase();
     return bgType !== "solid";
+  }
+
+  function seamProjectionRegionFamily(value) {
+    const visual = value && value.visual && typeof value.visual === "object" ? value.visual : {};
+    const bubble = value && value.bubble && typeof value.bubble === "object" ? value.bubble : value || {};
+    const type = String(
+      bubble.region_type || bubble.regionType ||
+      visual.region_type || visual.regionType || "plain_text"
+    ).trim().toLowerCase();
+    if (/effect|sfx|onomatopoeia/u.test(type)) return "effect";
+    if (/chat|comment|ui|metadata/u.test(type)) return "ui";
+    return "text";
+  }
+
+  function seamProjectionBox(projection) {
+    const geometry = projection && projection.geometry;
+    const values = Array.isArray(geometry) ? geometry : [geometry, projection && projection.box, projection && projection.bubble];
+    for (const value of values) {
+      const box = normalizeSeamPercentBox(value && (value.box || value.geometry || value));
+      if (box) return box;
+    }
+    return null;
+  }
+
+  function projectSeamBubbleToPage(surface, bubble, pageId) {
+    const canvasWidth = Number(surface && surface.canvasWidth) || 0;
+    const canvasHeight = Number(surface && surface.canvasHeight) || 0;
+    const segment = (Array.isArray(surface && surface.segments) ? surface.segments : [])
+      .find((item) => String(item && item.pageId || "") === String(pageId || ""));
+    const drawRect = normalizeSeamGeometryRect(segment && segment.drawRect);
+    const sourceCrop = normalizeSeamGeometryRect(segment && segment.sourceCrop);
+    const bubbleBox = normalizeSeamPercentBox(bubble);
+    const naturalWidth = Number(segment && segment.naturalWidth) || 0;
+    const naturalHeight = Number(segment && segment.naturalHeight) || 0;
+    if (!drawRect || !sourceCrop || !bubbleBox || !(canvasWidth > 0 && canvasHeight > 0) ||
+      !(naturalWidth > 0 && naturalHeight > 0)) return null;
+    const compositeBox = {
+      left: bubbleBox.x / 100 * canvasWidth,
+      top: bubbleBox.y / 100 * canvasHeight,
+      width: bubbleBox.w / 100 * canvasWidth,
+      height: bubbleBox.h / 100 * canvasHeight
+    };
+    const drawBox = { left: drawRect.x, top: drawRect.y, width: drawRect.w, height: drawRect.h };
+    const intersectionLeft = Math.max(compositeBox.left, drawBox.left);
+    const intersectionTop = Math.max(compositeBox.top, drawBox.top);
+    const intersectionRight = Math.min(
+      compositeBox.left + compositeBox.width,
+      drawBox.left + drawBox.width
+    );
+    const intersectionBottom = Math.min(
+      compositeBox.top + compositeBox.height,
+      drawBox.top + drawBox.height
+    );
+    if (intersectionRight <= intersectionLeft || intersectionBottom <= intersectionTop) return null;
+    const intersection = {
+      left: intersectionLeft,
+      top: intersectionTop,
+      width: intersectionRight - intersectionLeft,
+      height: intersectionBottom - intersectionTop
+    };
+    return normalizeSeamPercentBox({
+      x: (sourceCrop.x + (intersection.left - drawRect.x) * sourceCrop.w / drawRect.w) / naturalWidth * 100,
+      y: (sourceCrop.y + (intersection.top - drawRect.y) * sourceCrop.h / drawRect.h) / naturalHeight * 100,
+      w: intersection.width * sourceCrop.w / drawRect.w / naturalWidth * 100,
+      h: intersection.height * sourceCrop.h / drawRect.h / naturalHeight * 100
+    });
+  }
+
+  function seamBoxOverlapOverSmaller(left, right) {
+    if (!left || !right) return 0;
+    const intersectionWidth = Math.max(0, Math.min(left.x + left.w, right.x + right.w) - Math.max(left.x, right.x));
+    const intersectionHeight = Math.max(0, Math.min(left.y + left.h, right.y + right.h) - Math.max(left.y, right.y));
+    return intersectionWidth * intersectionHeight / Math.max(0.0001, Math.min(left.w * left.h, right.w * right.h));
+  }
+
+  function collectSeamSuppressedCanonicalIds(surface, projectionsByPage) {
+    const suppressed = new Set();
+    if (!surface || !Array.isArray(surface.bubbles) || surface.bubbles.length === 0) return suppressed;
+    for (const pageId of Array.isArray(surface.pageIds) ? surface.pageIds : []) {
+      const coverages = surface.bubbles.map((bubble) => ({
+        bubble,
+        box: projectSeamBubbleToPage(surface, bubble, pageId)
+      })).filter((item) => item.box && (item.box.y <= 6 || item.box.y + item.box.h >= 94));
+      if (!coverages.length) continue;
+      for (const projection of projectionsByPage instanceof Map ? projectionsByPage.get(pageId) || [] : []) {
+        const canonicalId = String(projection && projection.canonicalId || "");
+        const role = String(projection && projection.role || "");
+        if (!canonicalId || role === "cover" || projection.activeText === false) continue;
+        const box = seamProjectionBox(projection);
+        if (!box || !(box.y <= 6 || box.y + box.h >= 94)) continue;
+        const regionFamily = seamProjectionRegionFamily(projection);
+        const covered = coverages.some((coverage) =>
+          seamProjectionRegionFamily(coverage.bubble) === regionFamily &&
+          seamBoxOverlapOverSmaller(box, coverage.box) >= 0.72 &&
+          box.w * box.h <= coverage.box.w * coverage.box.h * 1.35
+        );
+        if (covered) suppressed.add(canonicalId);
+      }
+    }
+    for (const canonicalId of Array.isArray(surface.handledCanonicalIds) ? surface.handledCanonicalIds : []) {
+      suppressed.delete(String(canonicalId));
+    }
+    return suppressed;
+  }
+
+  function addSeamProjectionSuppressions(index, projectionsByPage) {
+    if (!index || !Array.isArray(index.surfaces) || index.surfaces.length === 0) return index;
+    const surfaces = index.surfaces.map((surface) => freezeCanonicalValue({
+      ...surface,
+      suppressedCanonicalIds: [...collectSeamSuppressedCanonicalIds(surface, projectionsByPage)].sort()
+    }));
+    const byRenderKey = new Map(surfaces.map((surface) => [surface.renderKey, surface]));
+    const byPage = new Map();
+    for (const [pageId, pageSurfaces] of index.byPage instanceof Map ? index.byPage : []) {
+      byPage.set(pageId, Object.freeze(pageSurfaces.map((surface) => byRenderKey.get(surface.renderKey) || surface)));
+    }
+    return {
+      ...index,
+      byPage,
+      surfaces: Object.freeze(surfaces)
+    };
+  }
+
+  function getSeamSuppressedCanonicalIds(index) {
+    return new Set((Array.isArray(index && index.surfaces) ? index.surfaces : [])
+      .flatMap((surface) => Array.isArray(surface && surface.suppressedCanonicalIds)
+        ? surface.suppressedCanonicalIds.map(String)
+        : []));
   }
 
   function buildSeamRenderSurfaceIndex(activeStore, options = {}) {
@@ -5735,6 +5913,9 @@
     projectionsRequireCleanedImage,
     buildCanonicalCleanMasks,
     buildCleanedArtifactKey,
+    projectSeamBubbleToPage,
+    collectSeamSuppressedCanonicalIds,
+    addSeamProjectionSuppressions,
     assertCoverageInvariant,
 
     // 纯函数

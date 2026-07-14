@@ -3801,6 +3801,9 @@
         debug: surface && surface.debug && typeof surface.debug === "object" ? surface.debug : null,
         handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds)
           ? surface.handledCanonicalIds.map(String).filter(Boolean)
+          : [],
+        suppressedCanonicalIds: Array.isArray(surface && surface.suppressedCanonicalIds)
+          ? surface.suppressedCanonicalIds.map(String).filter(Boolean)
           : []
       };
     });
@@ -3860,6 +3863,9 @@
         bubbles: Array.isArray(surface && surface.bubbles) ? surface.bubbles : [],
         handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds)
           ? surface.handledCanonicalIds
+          : [],
+        suppressedCanonicalIds: Array.isArray(surface && surface.suppressedCanonicalIds)
+          ? surface.suppressedCanonicalIds
           : []
       }));
     } catch {
@@ -4117,6 +4123,7 @@
     const atomicSeamPageIds = new Set();
     seamSurfaces.forEach((surface) => {
       surface.handledCanonicalIds.forEach((canonicalId) => handledCanonicalIds.add(canonicalId));
+      surface.suppressedCanonicalIds.forEach((canonicalId) => handledCanonicalIds.add(canonicalId));
       surface.pageIds.forEach((pageId) => {
         if (!pages.has(pageId)) pages.set(pageId, []);
         const pageSurfaces = seamSurfacesByPage.get(pageId) || [];

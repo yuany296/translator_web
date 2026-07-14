@@ -27,7 +27,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType };`,
   context,
   { filename: "background.js" }
 );
@@ -424,6 +424,58 @@ test("same-line merge accepts emphasis colors but rejects a title-sized fragment
   ), false);
 });
 
+test("chat-style metadata and body keep separate visual/font candidates", async () => {
+  const item = (text, left, top, width, height) => ({
+    text,
+    box: { left, top, width, height },
+    score: 0.98,
+    det_score: 0.95,
+    rotation_deg: 0
+  });
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    {
+      imageWidth: 760,
+      imageHeight: 900,
+      items: [
+        item("사용자", 100, 100, 110, 20),
+        item("오후 5:14", 225, 100, 90, 18),
+        item("아 밥에 미친 서호윤", 100, 128, 300, 43)
+      ]
+    },
+    { width: 760, height: 900 },
+    "",
+    false
+  );
+
+  assert.equal(result.length, 2);
+  const metadata = result.find((row) => row.nonTranslate === true);
+  const body = result.find((row) => row.words.includes("서호윤"));
+  assert.ok(metadata);
+  assert.ok(body);
+  assert.match(metadata.words, /오후 5:14/);
+  assert.equal(body.nonTranslate, false);
+  assert.ok(Number(metadata.fontHeight) < Number(body.fontHeight));
+});
+
+test("OCR polygon supplies a fallback tilt angle when the provider omits rotation", () => {
+  const result = context.__backgroundTest.clusterLocalPaddleWords([
+    {
+      words: "기울어진 글자",
+      confidence: 0.98,
+      location: { left: 100, top: 100, width: 220, height: 40 },
+      polygon: [
+        { x: 100, y: 100 },
+        { x: 316, y: 138 },
+        { x: 310, y: 178 },
+        { x: 94, y: 140 }
+      ]
+    }
+  ], { width: 760, height: 900 }, null, null);
+
+  assert.equal(result.length, 1);
+  assert.ok(Math.abs(result[0].rotation_deg - 10) < 0.5);
+});
+
 test("paragraph merge rejects large whitespace, title/body scale, remote columns, and Chinese overlays", () => {
   const box = (left, top, width, height) => ({
     left, top, width, height,
@@ -682,6 +734,37 @@ test("local paragraph display box stays tight and its solid background uses the 
   assert.ok(Math.abs(fillTop - block.location.top) < 1e-9);
   assert.ok(Math.abs(fillRight - (block.location.left + block.location.width)) < 1e-9);
   assert.ok(Math.abs(fillBottom - (block.location.top + block.location.height)) < 1e-9);
+});
+
+test("high-confidence speech bubbles use their interior region for layout and paint", async () => {
+  const regionBox = { left: 120, top: 160, width: 360, height: 220 };
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    {
+      imageWidth: 760,
+      imageHeight: 900,
+      items: [{
+        region_id: "speech-interior",
+        region_type: "speech_bubble",
+        region_box: regionBox,
+        region_polygon: [[120, 160], [480, 160], [480, 380], [120, 380]],
+        region_confidence: 0.96,
+        bg_color: "#ffffff",
+        text: "짧은 대사",
+        score: 0.98,
+        box: { left: 245, top: 245, width: 110, height: 40 }
+      }]
+    },
+    { width: 760, height: 900 },
+    "",
+    false
+  );
+
+  assert.equal(result.length, 1);
+  assert.ok(result[0].location.width > 200, JSON.stringify(result[0].location));
+  const candidate = context.__backgroundTest.normalizeBaiduOcrItem(result[0], 0, { width: 760, height: 900 });
+  assert.equal(candidate.bg_type, "solid");
+  assert.ok(candidate.fill_box.w > 20, JSON.stringify(candidate.fill_box));
+  assert.ok(candidate.fill_box.h > 15, JSON.stringify(candidate.fill_box));
 });
 
 test("shifted multi-line paragraphs stay separate through final candidate coalescing", async () => {
@@ -1420,6 +1503,42 @@ test("visual fill regions trigger seam evidence even when the OCR text box is in
   assert.equal(result.observations[0].pageSpans[0].box.y < 80, true);
   assert.equal(result.edgeSignals.bottom.detected, true);
   assert.equal(result.edgeSignals.bottom.visualDetected, true);
+});
+
+test("chat metadata is retained as filtered evidence but never enters translation observations", () => {
+  const base = (text, top, nonTranslate = false) => ({
+    x: 10,
+    y: top,
+    w: 30,
+    h: 4,
+    original_text: text,
+    confidence: 0.99,
+    bg_type: "solid",
+    region_type: "chat",
+    non_translate: nonTranslate,
+    rawBox: { left: 80, top: top * 10, width: 240, height: 32 }
+  });
+  const result = context.__backgroundTest.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request: {
+      sourceType: "page",
+      pageIds: ["chat-page"],
+      imageRevisionByPage: { "chat-page": "revision-chat" },
+      imageDigest: "digest-chat",
+      imageMeta: { pageSpans: [] }
+    },
+    imageSize: { width: 800, height: 800 },
+    normalized: [base("사용자", 10, true), base("오늘의 본문입니다", 20)],
+    ocrTuning: context.__backgroundTest.getDefaultOcrTuning(),
+    ocrDebug: { filterReasons: [] },
+    ignoreSimplifiedChinese: false,
+    debug: false
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].originalText, "오늘의 본문입니다");
+  assert.equal(result.filteredObservations[0].originalText, "사용자");
+  assert.equal(result.filteredObservations[0].filterReason, "non-translatable-chat-metadata");
 });
 
 test("provider-neutral OCR accounts for every max-bubbles overflow as filtered evidence", () => {

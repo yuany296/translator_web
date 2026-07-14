@@ -44,6 +44,8 @@
   const KAKAO_SHORT_PAGE_ATTACHMENT_TIMEOUT_MS = 8000;
   const KAKAO_GEOMETRY_DUPLICATE_MIN_INTERSECTION = 0.72;
   const KAKAO_GEOMETRY_DUPLICATE_MIN_AREA_RATIO = 0.35;
+  const KAKAO_STITCH_MIN_CROSS_PX = 16;
+  const KAKAO_STITCH_MIN_CROSS_RATIO = 0.008;
 
   /**
    * Canonical 链路只描述真实处理阶段。旧 PagePhase 继续供非目标链路兼容，
@@ -999,6 +1001,47 @@
     return mapped.every(Boolean) ? mapped : null;
   }
 
+  /**
+   * Sutherland-Hodgman polygon clipping against owner top/bottom boundaries.
+   * Clips polygon points to the horizontal strip [ownerTop, ownerBottom].
+   * Returns the clipped polygon, or null if entirely outside.
+   */
+  function clipKakaoPolygonToOwnerBounds(points, ownerTop, ownerBottom) {
+    if (!Array.isArray(points) || points.length < 3) return null;
+
+    const clipEdge = (input, edgeY, isTop) => {
+      if (input.length === 0) return [];
+      const result = [];
+      for (let i = 0; i < input.length; i++) {
+        const current = input[i];
+        const previous = input[(i + input.length - 1) % input.length];
+        const currentInside = isTop ? current.y >= edgeY : current.y <= edgeY;
+        const previousInside = isTop ? previous.y >= edgeY : previous.y <= edgeY;
+
+        if (currentInside) {
+          if (!previousInside) {
+            const t = (edgeY - previous.y) / (current.y - previous.y);
+            if (Number.isFinite(t)) {
+              result.push({ x: previous.x + t * (current.x - previous.x), y: edgeY });
+            }
+          }
+          result.push(current);
+        } else if (previousInside) {
+          const t = (edgeY - previous.y) / (current.y - previous.y);
+          if (Number.isFinite(t)) {
+            result.push({ x: previous.x + t * (current.x - previous.x), y: edgeY });
+          }
+        }
+      }
+      return result;
+    };
+
+    let output = clipEdge(points, ownerTop, true);   // clip top
+    output = clipEdge(output, ownerBottom, false);     // clip bottom
+
+    return output.length >= 3 ? output : null;
+  }
+
   function computeKakaoGlobalBox(bubblePercent, scrollX, scrollY, targetRect) {
     if (!targetRect || !(targetRect.width > 0) || !(targetRect.height > 0)) return null;
     const bx = Number(bubblePercent.x);
@@ -1029,6 +1072,20 @@
       : { x: 0, y: 0, w: canvasWidth, h: canvasHeight };
     const segments = normalizeKakaoStitchSegments(payloadStitch, canvasWidth, canvasHeight, ownerDraw);
 
+    // Compute seam boundaries between owner and neighbor segments
+    const seamBoundaries = [];
+    for (const seg of segments) {
+      if (seg && seg.drawRect) {
+        if (seg.source === "previous") {
+          seamBoundaries.push(seg.drawRect.y + seg.drawRect.h);
+        } else if (seg.source === "next") {
+          seamBoundaries.push(seg.drawRect.y);
+        }
+      }
+    }
+
+    const minCrossPx = Math.max(KAKAO_STITCH_MIN_CROSS_PX, canvasHeight * KAKAO_STITCH_MIN_CROSS_RATIO);
+
     const mapped = result.bubbles.map((bubble) => {
       const bx = Number(bubble.x);
       const by = Number(bubble.y);
@@ -1044,6 +1101,14 @@
         w: (bw / 100) * canvasWidth,
         h: (bh / 100) * canvasHeight
       };
+
+      const crossesSeam = seamBoundaries.some((seamY) =>
+        bubblePx.y < seamY - minCrossPx &&
+        (bubblePx.y + bubblePx.h) > seamY + minCrossPx
+      );
+      const crossesSeamWithClip = crossesSeam
+        ? clipKakaoPolygonToOwnerBounds(bubble.polygon, ownerDraw.y, ownerDraw.y + ownerDraw.h)
+        : null;
 
       const bubbleArea = Math.max(1, bubblePx.w * bubblePx.h);
       const ranked = segments.map((seg) => {
@@ -1076,6 +1141,9 @@
             ...boundaryNeighbor,
             stitch_overflow: true,
             stitch_boundary_neighbor: true,
+            crossesSeam: false,
+            sourceType: "seam",
+            clippedPolygon: null,
             fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerDraw.y, ownerDraw.h, canvasHeight),
             polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerDraw.y, ownerDraw.h, canvasHeight),
             region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerDraw.y, ownerDraw.h, canvasHeight)
@@ -1096,6 +1164,9 @@
           h: mappedH,
           stitch_overflow: true,
           stitch_attached_short_page: true,
+          crossesSeam,
+          sourceType: crossesSeam ? "seam" : "single",
+          clippedPolygon: crossesSeamWithClip,
           fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerDraw.y, ownerDraw.h, canvasHeight),
           polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerDraw.y, ownerDraw.h, canvasHeight),
           region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerDraw.y, ownerDraw.h, canvasHeight)
@@ -1118,6 +1189,9 @@
           w: (bubblePx.w / ownerDraw.w) * 100,
           h: mappedH,
           stitch_overflow: true,
+          crossesSeam,
+          sourceType: crossesSeam ? "seam" : "single",
+          clippedPolygon: crossesSeamWithClip,
           fill_box: mapKakaoStitchedFillBox(bubble.fill_box, ownerDraw.y, ownerDraw.h, canvasHeight),
           polygon: mapKakaoStitchedPolygon(bubble.polygon, ownerDraw.y, ownerDraw.h, canvasHeight),
           region_polygon: mapKakaoStitchedPolygon(bubble.region_polygon, ownerDraw.y, ownerDraw.h, canvasHeight)
@@ -1155,15 +1229,31 @@
         w: mappedW,
         h: clampedHfinal,
         stitch_overflow: false,
+        crossesSeam,
+        sourceType: crossesSeam ? "seam" : "single",
+        clippedPolygon: clampAdjusted ? null : crossesSeamWithClip,
         fill_box: clampAdjusted ? null : mapKakaoStitchedFillBox(bubble.fill_box, ownerDraw.y, ownerDraw.h, canvasHeight),
         polygon: clampAdjusted ? null : mapKakaoStitchedPolygon(bubble.polygon, ownerDraw.y, ownerDraw.h, canvasHeight),
         region_polygon: clampAdjusted ? null : mapKakaoStitchedPolygon(bubble.region_polygon, ownerDraw.y, ownerDraw.h, canvasHeight)
       };
     }).filter(Boolean);
 
+    // Drop stitched bubbles that don't cross the seam — they duplicate single-page OCR.
+    // Only applies when there are actual neighbor seam boundaries to cross
+    // and no short-page attachments are involved (short pages need full mapping).
+    const hasShortPageAttachments = segments.some((seg) => seg && seg.shortPageAttachment === true);
+    const filtered = (seamBoundaries.length === 0 || hasShortPageAttachments)
+      ? mapped
+      : mapped.filter((bubble) =>
+          bubble.stitch_boundary_neighbor === true ||
+          bubble.stitch_attached_short_page === true ||
+          bubble.crossesSeam === true ||
+          bubble.stitch_overflow === true
+        );
+
     return {
       ...result,
-      bubbles: mapped,
+      bubbles: filtered,
       debug: normalizeKakaoStitchDebugCoordinates(result.debug, payloadStitch)
     };
   }
@@ -2771,10 +2861,15 @@
       ? adapters.getTargetGeneration
       : () => 0;
     const edgeWaitTimeoutMs = Math.max(0, Number(adapters.edgeWaitTimeoutMs ?? KAKAO_EDGE_WAIT_TIMEOUT_MS));
+    const extractTimeoutMs = Math.max(0, Number(adapters.extractTimeoutMs ?? 30000));
+    const identityTimeoutMs = Math.max(0, Number(adapters.identityTimeoutMs ?? 30000));
+    const pageOcrTimeoutMs = Math.max(0, Number(adapters.pageOcrTimeoutMs ?? 30000));
+    const seamTimeoutMs = Math.max(0, Number(adapters.seamTimeoutMs ?? 30000));
     const store = adapters.store || createStore();
     let runSeq = 0;
     let targetHandleSeq = 0;
     const targetHandleIds = new WeakMap();
+    const activeRunByTarget = new WeakMap();
 
     function getTargetHandleId(target) {
       if (!target || (typeof target !== "object" && typeof target !== "function")) return "no-target";
@@ -2800,6 +2895,31 @@
 
     function targetIsUsable(target) {
       return !!target && target.isConnected !== false;
+    }
+
+    function withCanonicalTimeout(promise, timeoutMs, message) {
+      if (!(timeoutMs > 0)) return Promise.resolve(promise);
+      const deadlineSetTimer = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout : setTimer;
+      const deadlineClearTimer = typeof globalThis.clearTimeout === "function" ? globalThis.clearTimeout : clearTimer;
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = deadlineSetTimer(() => {
+          if (settled) return;
+          settled = true;
+          reject(new Error(message));
+        }, timeoutMs);
+        Promise.resolve(promise).then((value) => {
+          if (settled) return;
+          settled = true;
+          deadlineClearTimer(timer);
+          resolve(value);
+        }, (error) => {
+          if (settled) return;
+          settled = true;
+          deadlineClearTimer(timer);
+          reject(error);
+        });
+      });
     }
 
     function buildJobIdentity(target) {
@@ -2872,7 +2992,8 @@
         }
         store.cancelPageJob(identity.jobKey, identity);
       }
-      if (typeof adapters.clearLoadingOverlay === "function") {
+      if (ownsCurrentJob && activeRunByTarget.get(target) === identity &&
+          typeof adapters.clearLoadingOverlay === "function") {
         try { adapters.clearLoadingOverlay(target); } catch { /* 清理只是 UI 恢复 */ }
       }
       trace("cancelled", target, { runId: identity.runId, pageId, reason });
@@ -2884,6 +3005,9 @@
       return store.getOrCreateInflightJob(
         `canonical-target:${identity.scopedTargetKey}:${identity.sourceGeneration}:${identity.targetHandleId}`,
         async () => {
+          const previousRun = activeRunByTarget.get(target);
+          identity.suppressLoadingClear = !!previousRun && previousRun !== identity;
+          activeRunByTarget.set(target, identity);
           store.beginPageJob(identity.jobKey, identity);
           return execute(target, identity, options);
         }
@@ -2903,7 +3027,11 @@
         const snapshot = typeof adapters.captureTargetSnapshot === "function"
           ? adapters.captureTargetSnapshot(target)
           : null;
-        const payload = await extractTargetPayload(target, identity.scopedTargetKey);
+        const payload = await withCanonicalTimeout(
+          extractTargetPayload(target, identity.scopedTargetKey),
+          extractTimeoutMs,
+          "Page fetch timed out"
+        );
         if (!isCurrentJob(target, identity)) return cancelJob(target, identity, "", "sourceChanged after fetch");
         const authoritativePayload = await isAuthoritativePagePayload(payload, target);
         if (!isCurrentJob(target, identity)) {
@@ -2920,7 +3048,11 @@
           };
         }
 
-        const pageIdentity = await buildPageIdentity(target, payload, { ...identity, deferBind: true });
+        const pageIdentity = await withCanonicalTimeout(
+          buildPageIdentity(target, payload, { ...identity, deferBind: true }),
+          identityTimeoutMs,
+          "Page identity timed out"
+        );
         if (!isCurrentJob(target, identity)) {
           return cancelJob(target, identity, "", "sourceChanged while hashing page bytes");
         }
@@ -2960,7 +3092,11 @@
 
         const response = await store.getOrCreateInflightJob(
           `canonical-page-ocr:${pageRecord.pageId}:${pageRecord.imageRevision}`,
-          () => requestOcrForPayload(payload, buildOcrMeta("page", [pageRecord]))
+          () => withCanonicalTimeout(
+            requestOcrForPayload(payload, buildOcrMeta("page", [pageRecord])),
+            pageOcrTimeoutMs,
+            "Page OCR timed out"
+          )
         );
         if (!response || !response.ok) {
           throw new CanonicalPageOcrError(response && response.error ? response.error : "Page OCR failed");
@@ -3129,8 +3265,12 @@
         // 安全网：确保任何 exit 路径都清理 loading overlay。正常路径中
         // refreshCanonicalState → renderCanonicalProjections → renderOverlay
         // 已经替换了 loading overlay，此处再次清理是幂等的。
-        if (typeof adapters.clearLoadingOverlay === "function") {
+        if (!identity.suppressLoadingClear && activeRunByTarget.get(target) === identity &&
+            typeof adapters.clearLoadingOverlay === "function") {
           try { adapters.clearLoadingOverlay(target); } catch { /* 安全网清理 */ }
+        }
+        if (activeRunByTarget.get(target) === identity) {
+          activeRunByTarget.delete(target);
         }
         trace("pipeline-finally", target, { runId: identity.runId, pageId: pageRecord && pageRecord.pageId || "" });
       }
@@ -3303,11 +3443,15 @@
         trace("seam-ocr", pageA.target, { pairKey });
 
         try {
-          const seamPayload = await buildSeamPayload(pageA, pageB, {
-            height: evidenceDecision.bandHeight,
-            bandHeight: evidenceDecision.bandHeight,
-            overlap: overlapRisk
-          });
+          const seamPayload = await withCanonicalTimeout(
+            buildSeamPayload(pageA, pageB, {
+              height: evidenceDecision.bandHeight,
+              bandHeight: evidenceDecision.bandHeight,
+              overlap: overlapRisk
+            }),
+            seamTimeoutMs,
+            "Seam payload timed out"
+          );
           if (!seamPayload) throw new Error("Seam payload unavailable");
           const payloadGeometry = captureSeamPayloadGeometry(seamPayload, [pageA, pageB]);
           const response = await requestOcrForPayload(
@@ -3582,7 +3726,8 @@
       const candidates = canonicals.map((canonical) => ({
         id: canonical.id,
         revision: Number(canonical.revision) || 1,
-        original_text: String(canonical.originalText || canonical.original_text || "")
+        original_text: String(canonical.originalText || canonical.original_text || ""),
+        non_translate: canonical.nonTranslate === true
       })).filter((item) => item.original_text);
       const items = store.claimTranslations(candidates);
       if (items.length === 0) {

@@ -75,6 +75,7 @@
   const CAPTURE_MODE_DIRECT = "direct";
   const CAPTURE_MODE_SCREENSHOT = "screenshot";
   const SCREENSHOT_TARGET_NOT_VISIBLE = "Target is not visible enough for screenshot capture";
+  const IMAGE_RUNTIME_MESSAGE_TIMEOUT_MS = 12000;
   const IS_CMOA_SPEED_READER =
     /(^|\.)cmoa\.jp$/i.test(location.hostname) && /^\/bib\/speedreader\//i.test(location.pathname);
   const CMOA_AUTO_MIN_VISIBLE_AREA = 8000;
@@ -85,6 +86,9 @@
   const BUBBLE_FONT_BINARY_STEPS = 9;
   const BUBBLE_FONT_SAFETY_SCALE = 0.9;
   const BUBBLE_FONT_VERTICAL_SAFETY_SCALE = 0.84;
+  const BUBBLE_FONT_ORIGINAL_SCALE = 1.15;
+  const BUBBLE_ROTATION_NEAR_HORIZONTAL = 0.75;
+  const BUBBLE_ROTATION_MAX = 89;
   const MAX_FONT_FIT_CACHE = 600;
   const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
   const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
@@ -155,6 +159,7 @@
     observedTargets: new WeakSet(),
     inflightByTarget: new WeakMap(),
     queue: [],
+    queueDrainScheduled: false,
     queuedTargets: new WeakSet(),
     runningJobs: 0,
     runningAheadJobs: 0,
@@ -361,6 +366,10 @@
       passesKakaoAheadTargetFilter,
       isAheadTranslationOptions,
       getTranslationQueueInsertIndex,
+      takeNextKakaoTranslationQueueItem,
+      canStartKakaoTranslationQueueItem,
+      isKakaoReaderContentTarget,
+      waitForPaint,
       canStartQueuedTranslation,
       textSimilarity,
       formatTranslationForOriginalLines,
@@ -1129,7 +1138,11 @@
       reason: options.reason,
       targetKey: computeTargetKey(target).slice(0, 80)
     });
-    pumpQueue();
+    if (typeof queueMicrotask === "function") {
+      queueMicrotask(() => drainTranslationQueue());
+    } else {
+      drainTranslationQueue();
+    }
   }
 
   function isCanonicalRevisionCheckOptions(options) {
@@ -1156,6 +1169,55 @@
     if (isAheadTranslationOptions(options)) return items.length;
     const firstAhead = items.findIndex((item) => isAheadTranslationOptions(item && item.options));
     return firstAhead >= 0 ? firstAhead : items.length;
+  }
+
+  function getKakaoQueueItemRect(item) {
+    const target = item && item.target ? item.target : item;
+    return target && typeof target.getBoundingClientRect === "function"
+      ? target.getBoundingClientRect()
+      : null;
+  }
+
+  function isKakaoQueueItemVisible(item, viewportHeight = window.innerHeight) {
+    const rect = getKakaoQueueItemRect(item);
+    return !!(rect && rect.width > 0 && rect.height > 0 &&
+      rect.bottom > 0 && rect.top < Number(viewportHeight || 0));
+  }
+
+  function takeNextKakaoTranslationQueueItem(queue, viewportHeight = window.innerHeight) {
+    if (!Array.isArray(queue) || queue.length === 0) return null;
+    const visibleIndex = queue.findIndex((item) => isKakaoQueueItemVisible(item, viewportHeight));
+    if (visibleIndex >= 0) return queue.splice(visibleIndex, 1)[0];
+
+    let bestIndex = -1;
+    let bestDistance = Infinity;
+    queue.forEach((item, index) => {
+      const rect = getKakaoQueueItemRect(item);
+      if (!rect || rect.top < Number(viewportHeight || 0)) return;
+      const distance = rect.top - Number(viewportHeight || 0);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+    if (bestIndex < 0) {
+      queue.forEach((item, index) => {
+        const rect = getKakaoQueueItemRect(item);
+        if (!rect) return;
+        const distance = Math.max(0, -rect.bottom);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      });
+    }
+    return bestIndex >= 0 ? queue.splice(bestIndex, 1)[0] : queue.shift() || null;
+  }
+
+  function canStartKakaoTranslationQueueItem(item, runningJobs, maxParallel, viewportHeight = window.innerHeight) {
+    if (Number(runningJobs) >= Number(maxParallel)) return false;
+    if (isKakaoQueueItemVisible(item, viewportHeight)) return true;
+    return Number(runningJobs) < Math.max(0, Number(maxParallel) - 1);
   }
 
   function canStartQueuedTranslation(item, input = {}) {
@@ -1193,6 +1255,19 @@
   }
 
   function pumpQueue() {
+    if (state.queueDrainScheduled) return;
+    if (typeof queueMicrotask === "function") {
+      state.queueDrainScheduled = true;
+      queueMicrotask(() => {
+        state.queueDrainScheduled = false;
+        drainTranslationQueue();
+      });
+      return;
+    }
+    drainTranslationQueue();
+  }
+
+  function drainTranslationQueue() {
     if (state.invalidated) {
       return;
     }
@@ -1838,6 +1913,21 @@
     const displayWidth = Number(rect && rect.width || 0);
     const naturalWidth = Number(target.naturalWidth || 0);
     return displayWidth >= 240 && (naturalWidth <= 0 || naturalWidth >= 240);
+  }
+
+  function drainTranslationQueue() {
+    pumpQueue();
+  }
+
+  function isKakaoReaderContentTarget(target) {
+    if (!IS_KAKAOPAGE_READER || !(target instanceof HTMLImageElement)) {
+      return false;
+    }
+    const source = String(target.currentSrc || target.src || "");
+    if (/dn-img-page\.kakao\.com/i.test(source)) {
+      return false;
+    }
+    return /dw-img-page\.kakao\.com/i.test(source) && isKakaoEpisodeImageTarget(target);
   }
 
   function getStableChapterUrl() {
@@ -2533,7 +2623,8 @@
     const requestItems = (Array.isArray(items) ? items : []).map((item) => ({
       id: String(item && item.id || ""),
       revision: Math.max(1, Number(item && item.revision || 1)),
-      original_text: String(item && (item.original_text || item.originalText) || "")
+      original_text: String(item && (item.original_text || item.originalText) || ""),
+      non_translate: item && (item.non_translate === true || item.nonTranslate === true)
     })).filter((item) => item.id && item.original_text);
     if (requestItems.length === 0) {
       return { ok: true, result: { translations: [], errors: [], partial: false } };
@@ -3124,27 +3215,33 @@
       };
     }
 
+    let imageFetchError = null;
     if (isHttpUrl(imageUrl)) {
       // Pass page URL as referrer so background fetch can set the Referer header.
       // Kakao CDNs check Referer for hotlink protection.
-      const fetched = await sendRuntimeMessage({
-        type: "FETCH_IMAGE_DATA_URL",
-        url: imageUrl,
-        referrer: location.href,
-        preserveSize: shouldUseKakaoCanonicalPipeline(img),
-        maxOriginalBytes: EMBEDDED_MAX_ORIGINAL_BYTES
-      });
+      try {
+        const fetched = await sendRuntimeMessage({
+          type: "FETCH_IMAGE_DATA_URL",
+          url: imageUrl,
+          referrer: location.href,
+          preserveSize: shouldUseKakaoCanonicalPipeline(img),
+          maxOriginalBytes: EMBEDDED_MAX_ORIGINAL_BYTES
+        });
 
-      if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
-        return {
-          dataUrl: fetched.dataUrl,
-          imageUrl,
-          width: img.naturalWidth || img.width || 0,
-          height: img.naturalHeight || img.height || 0,
-          cssWidth: img.getBoundingClientRect().width,
-          cssHeight: img.getBoundingClientRect().height,
-          source: "img-fetch"
-        };
+        if (fetched && fetched.ok && isDataUrl(fetched.dataUrl)) {
+          return {
+            dataUrl: fetched.dataUrl,
+            imageUrl,
+            width: img.naturalWidth || img.width || 0,
+            height: img.naturalHeight || img.height || 0,
+            cssWidth: img.getBoundingClientRect().width,
+            cssHeight: img.getBoundingClientRect().height,
+            source: "img-fetch"
+          };
+        }
+        imageFetchError = new Error(fetched && fetched.error || "image fetch failed");
+      } catch (error) {
+        imageFetchError = error;
       }
     }
 
@@ -3166,7 +3263,8 @@
       if (IS_KAKAOPAGE_READER && img.isConnected && (img.naturalWidth || 0) > 0 && !getVisibleViewportRect(img)) {
         throw new Error(SCREENSHOT_TARGET_NOT_VISIBLE);
       }
-      return captureVisibleTargetPayload(img, error, imageUrl || "visible-tab-image-crop");
+      console.debug("[MangaTranslator] image-fetch-fallback", imageFetchError || error);
+      return captureVisibleTargetPayload(img, imageFetchError || error, imageUrl || "visible-tab-image-crop");
     }
   }
 
@@ -3380,11 +3478,24 @@
     }
   }
 
-  function waitForPaint() {
+  function waitForPaint(timeoutMs = 0) {
     return new Promise((resolve) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(resolve);
-      });
+      let settled = false;
+      let timer = 0;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) window.clearTimeout(timer);
+        resolve();
+      };
+      if (Number(timeoutMs) > 0 && typeof window.setTimeout === "function") {
+        timer = window.setTimeout(finish, Number(timeoutMs));
+      }
+      if (typeof requestAnimationFrame !== "function") {
+        finish();
+        return;
+      }
+      requestAnimationFrame(() => requestAnimationFrame(finish));
     });
   }
 
@@ -3543,6 +3654,11 @@
     if (CONTEXT_INVALIDATED_RE.test(reason)) {
       return;
     }
+    const restored = clearKakaoLoadingOverlay(target);
+    tracePipeline("pipeline-error-restore", target, {
+      restored,
+      reason
+    });
     await reportStatus("error", reason, {
       reason: options && options.reason,
       targetTag: target && target.tagName ? target.tagName.toLowerCase() : "unknown"
@@ -3589,6 +3705,10 @@
       text_color: source.text_color || visual.text_color || visual.textColor || "",
       stroke_color: source.stroke_color || visual.stroke_color || visual.strokeColor || "",
       rotation_deg: Number(source.rotation_deg || visual.rotation_deg || visual.rotationDeg || 0),
+      font_height: Number(source.font_height || visual.font_height || visual.fontHeight || 0),
+      font_height_percent: Number(
+        source.font_height_percent || visual.font_height_percent || visual.fontHeightPercent || 0
+      ),
       source_line_count: Math.max(1, Number(source.source_line_count || visual.source_line_count || visual.sourceLineCount || 1)),
       block_id: String(
         projection && (projection.projectionId || projection.id) ||
@@ -3875,7 +3995,7 @@
         region_polygon: visual.regionPolygon || visual.region_polygon || null,
         fill_box: visual.fillBox || visual.fill_box || null,
         cleaned_source_box: visual.cleanedSourceBox || visual.cleaned_source_box || null,
-        rotation_deg: 0,
+        rotation_deg: Number(visual.rotationDeg ?? visual.rotation_deg) || 0,
         canonical_id: "",
         block_id: "seam-cross-" + idx,
         projection_role: "text_primary"
@@ -3900,7 +4020,8 @@
       // 字号拟合（跨页 overlay 不走 syncOverlayPosition）
       const bubbleWidthPx = cssWidth * wPct / 100;
       const bubbleHeightPx = cssHeight * hPct / 100;
-      const fittedSize = fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx);
+      const fittedSize = fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, {},
+        getBubbleOriginalTextHeight(node, bubbleHeightPx, cssHeight));
       node.style.fontSize = `${fittedSize}px`;
       node.style.setProperty("--mt-stroke-width", `${getDynamicStrokeWidth(fittedSize)}px`);
 
@@ -4332,7 +4453,8 @@
           Number(surface.canvasWidth),
           Number(surface.canvasHeight)
         );
-        const fontSize = fitBubbleFontSize(node, geometry.width, geometry.height);
+        const fontSize = fitBubbleFontSize(node, geometry.width, geometry.height, {},
+          getBubbleOriginalTextHeight(node, geometry.height, Number(surface.canvasHeight)));
         return {
           fontSize,
           strokeWidth: getDynamicStrokeWidth(fontSize)
@@ -4483,6 +4605,10 @@
     const bubbles = Array.isArray(result.bubbles) ? result.bubbles : [];
     const seamSurfaces = Array.isArray(result && result.seamSurfaces) ? result.seamSurfaces : [];
     const stream = options.stream === true;
+
+    // 旧版 seam renderer 可能在扩展热更新后留下不受 overlaysById 管理的根节点。
+    // canonical renderer 是唯一跨页渲染入口，新的页面结果到达时应立即清理旧根。
+    removeLegacySeamCrossPageOverlays(target);
 
     if (bubbles.length === 0 && seamSurfaces.length === 0 && !hasRenderableOcrDebug(result)) {
       removeOverlayForTarget(target);
@@ -5054,7 +5180,7 @@
       let w = (clamp(Number(bubble.w), 0, 100) / 100) * canvasWidth;
       let h = (clamp(Number(bubble.h), 0, 100) / 100) * canvasHeight;
       const embeddedGeometry = getEmbeddedPolygonGeometry(bubble.polygon, canvasWidth, canvasHeight);
-      const rotation = normalizeBubbleRotation(bubble.rotation_deg);
+      const rotation = normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
       if (embeddedGeometry) {
         x = embeddedGeometry.centerX - embeddedGeometry.width / 2;
         y = embeddedGeometry.centerY - embeddedGeometry.height / 2;
@@ -5089,7 +5215,17 @@
         h: Math.min(canvasHeight - boxY, h + paddingY * 2)
       };
       const sourceFillBox = getCanvasFillBox(bubble.fill_box, canvasWidth, canvasHeight);
-      const fillBox = unionRenderBoxes(box, sourceFillBox);
+      let fillBox = unionRenderBoxes(box, sourceFillBox);
+
+      // Guard against oversized merged-group fill boxes (chat/forum regions)
+      // If the fill box is >3x the bubble box area, it's likely a group-merge artifact
+      const bubbleArea = Math.max(1, box.w * box.h);
+      const fillArea = Math.max(1, fillBox.w * fillBox.h);
+      const isChatRegion = String(bubble.region_type || "") === "chat" ||
+        String(bubble.region_type || "") === "ui";
+      if (isChatRegion && fillArea > bubbleArea * 3) {
+        fillBox = box;
+      }
 
       if (bgType === "solid" && Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3) {
         ctx.save();
@@ -5434,7 +5570,11 @@
     node.dataset.original = originalText;
     node.dataset.translated = translatedText;
     node.dataset.sourceLineCount = String(Math.max(1, Math.round(Number(bubble.source_line_count) || 1)));
-    node.dataset.rotationDeg = String(normalizeBubbleRotation(bubble.rotation_deg));
+    node.dataset.sourceFontHeightPercent = String(Number(
+      bubble.font_height_percent || bubble.fontHeightPercent ||
+      bubble.visual && (bubble.visual.fontHeightPercent || bubble.visual.font_height_percent) || 0
+    ));
+    node.dataset.rotationDeg = String(normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type));
     if (Array.isArray(bubble.polygon)) {
       node.dataset.polygon = JSON.stringify(bubble.polygon);
     }
@@ -5496,7 +5636,7 @@
     node.style.top = `${centerY}%`;
     node.style.width = `${w}%`;
     node.style.height = `${h}%`;
-    const rotation = normalizeBubbleRotation(bubble.rotation_deg);
+    const rotation = normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
     node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${rotation.toFixed(2)}deg)`);
 
     node.textContent = coverOnly ? "" : formatTranslationForOriginalLines(translatedText, Number(node.dataset.sourceLineCount));
@@ -5538,20 +5678,44 @@
     if (!raw || lineCount <= 1 || raw.includes("\n")) {
       return raw;
     }
-    const units = /[\u3400-\u9fff]/.test(raw)
-      ? Array.from(raw.replace(/\s+/g, ""))
-      : raw.split(/\s+/).filter(Boolean);
+    const isCjk = /[\u3400-\u9fff]/.test(raw);
+    const units = isCjk ? Array.from(raw.replace(/\s+/g, "")) : raw.split(/\s+/).filter(Boolean);
     if (units.length <= lineCount) {
       return raw;
     }
-    const rows = [];
-    let offset = 0;
-    for (let line = 0; line < lineCount; line += 1) {
-      const remaining = units.length - offset;
-      const take = Math.ceil(remaining / (lineCount - line));
-      rows.push(units.slice(offset, offset + take).join(/[\u3400-\u9fff]/.test(raw) ? "" : " "));
-      offset += take;
+
+    // Choose all line breaks together. Greedy wrapping makes the last line
+    // very short and is the source of isolated characters in speech bubbles.
+    const targetLength = units.length / lineCount;
+    const punctuation = /[，。！？、；：,.!?;:]/;
+    const states = Array.from({ length: lineCount + 1 }, () => new Map());
+    states[0].set(0, { score: 0, breaks: [] });
+    for (let line = 1; line <= lineCount; line += 1) {
+      const current = states[line];
+      for (let end = line; end <= units.length - (lineCount - line); end += 1) {
+        let best = null;
+        for (let start = line - 1; start < end; start += 1) {
+          const previous = states[line - 1].get(start);
+          if (!previous) continue;
+          const length = end - start;
+          let score = previous.score + (length - targetLength) ** 2;
+          if (length === 1) score += 120;
+          if (line === lineCount && length <= 2) score += 45;
+          if (isCjk && start > 0 && !punctuation.test(units[start - 1])) score += 4;
+          const candidate = { score, breaks: [...previous.breaks, end] };
+          if (!best || candidate.score < best.score) best = candidate;
+        }
+        if (best) current.set(end, best);
+      }
     }
+    const result = states[lineCount].get(units.length);
+    if (!result) return raw;
+    const rows = [];
+    let start = 0;
+    result.breaks.forEach((end) => {
+      rows.push(units.slice(start, end).join(isCjk ? "" : " "));
+      start = end;
+    });
     return rows.filter(Boolean).join("\n");
   }
 
@@ -5820,7 +5984,7 @@
       }
       const fittedSize = fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, {
         backgroundTarget: overlayState.isBackgroundTarget
-      });
+      }, getBubbleOriginalTextHeight(node, bubbleHeightPx, rect.height));
       node.style.fontSize = `${fittedSize.toFixed(1)}px`;
       node.style.setProperty("--mt-stroke-width", `${getDynamicStrokeWidth(fittedSize).toFixed(1)}px`);
     });
@@ -5919,7 +6083,7 @@
     }
   }
 
-  function fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, options = {}) {
+  function fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, options = {}, originalTextHeight) {
     const width = Math.max(8, Math.round(bubbleWidthPx));
     const height = Math.max(8, Math.round(bubbleHeightPx));
     const text = String(node.textContent || "").trim();
@@ -5932,12 +6096,23 @@
       return fitPixivBubbleFontSize(node, width, height, text, vertical);
     }
 
-    const maxFont = options.backgroundTarget ? 34 : BUBBLE_FONT_MAX;
+    let maxFont = options.backgroundTarget ? 34 : BUBBLE_FONT_MAX;
     const baseRatio = options.backgroundTarget ? 0.42 : BUBBLE_FONT_BASE_RATIO;
     const safetyScale = options.backgroundTarget ? 0.96 : BUBBLE_FONT_SAFETY_SCALE;
     const verticalSafetyScale = options.backgroundTarget ? 0.94 : BUBBLE_FONT_VERTICAL_SAFETY_SCALE;
-    const startSize = Math.min(maxFont, clamp(height * baseRatio, BUBBLE_FONT_MIN, maxFont));
-    const cacheKey = `${options.backgroundTarget ? "bg" : "std"}|${vertical ? "v" : "h"}|${width}x${height}|${text}`;
+    let startSize = Math.min(maxFont, clamp(height * baseRatio, BUBBLE_FONT_MIN, maxFont));
+
+    // Cap font size to original text height — only shrink, never enlarge
+    if (typeof originalTextHeight === "number" && originalTextHeight > 0) {
+      const originalLineCap = originalTextHeight * BUBBLE_FONT_ORIGINAL_SCALE;
+      startSize = Math.min(startSize, originalLineCap);
+      maxFont = Math.min(maxFont, originalLineCap);
+    }
+
+    const sourceHeightKey = typeof originalTextHeight === "number" && originalTextHeight > 0
+      ? Math.round(originalTextHeight * 10) / 10
+      : 0;
+    const cacheKey = `${options.backgroundTarget ? "bg" : "std"}|${vertical ? "v" : "h"}|${width}x${height}|${sourceHeightKey}|${text}`;
     const cachedSize = state.fontFitCache.get(cacheKey);
     if (typeof cachedSize === "number" && Number.isFinite(cachedSize)) {
       return cachedSize;
@@ -5965,8 +6140,15 @@
       }
     }
 
-    const safeScale = vertical ? verticalSafetyScale : safetyScale;
-    const safeSize = clamp(best * safeScale, BUBBLE_FONT_MIN, maxFont);
+    let safeScale = vertical ? verticalSafetyScale : safetyScale;
+    let safeSize = clamp(best * safeScale, BUBBLE_FONT_MIN, maxFont);
+
+    // Re-apply original text height cap on final result
+    if (typeof originalTextHeight === "number" && originalTextHeight > 0) {
+      const originalLineCap = originalTextHeight * BUBBLE_FONT_ORIGINAL_SCALE;
+      safeSize = Math.min(safeSize, originalLineCap);
+    }
+
     const normalized = Math.round(safeSize * 10) / 10;
     rememberFontFitCache(cacheKey, normalized);
     return normalized;
@@ -6075,7 +6257,79 @@
     }
   }
 
+  function getBubbleOriginalTextHeight(node, bubbleHeightPx, imageHeightPx) {
+    const sourceFontHeightPercent = Number(node && node.dataset && node.dataset.sourceFontHeightPercent);
+    if (sourceFontHeightPercent > 0 && Number(imageHeightPx) > 0) {
+      return Number(imageHeightPx) * sourceFontHeightPercent / 100;
+    }
+    return Number(bubbleHeightPx) / Math.max(1, Number(node && node.dataset && node.dataset.sourceLineCount) || 1);
+  }
+
+  function removeLegacySeamCrossPageOverlays(target = null) {
+    if (state.seamCrossPages && state.seamCrossPages.size > 0) {
+      for (const [renderKey, entry] of state.seamCrossPages) {
+        if (target && entry && entry.targetA !== target && entry.targetB !== target) continue;
+        if (entry && entry.root && entry.root.isConnected) entry.root.remove();
+        state.seamCrossPages.delete(renderKey);
+      }
+    }
+
+    // 热更新或旧版本状态丢失时，DOM 中可能仍有无状态的旧根节点。
+    // canonical renderer 只保留新的 hosted seam surface，旧根节点必须整体移除。
+    const staleRoots = state.overlayLayer && state.overlayLayer.querySelectorAll
+      ? state.overlayLayer.querySelectorAll(".mt-seam-cross-page")
+      : [];
+    Array.from(staleRoots).forEach((root) => root.remove());
+    if (state.seamCrossPages && state.seamCrossPages.size === 0) {
+      state.seamCrossPages.clear();
+    }
+  }
+
+  function removeSeamSurfaceEntriesForTarget(target) {
+    const pageId = String(
+      state.kakaoPageIdByTarget.get(target) ||
+      state.kakaoStore && typeof state.kakaoStore.getPageHandleForTarget === "function" &&
+        (state.kakaoStore.getPageHandleForTarget(target) || {}).pageId ||
+      ""
+    );
+    if (!pageId) return;
+
+    for (const [targetId, overlayState] of state.overlaysById) {
+      const seamEntries = Array.isArray(overlayState && overlayState.seamEntries)
+        ? overlayState.seamEntries
+        : [];
+      if (seamEntries.length === 0) continue;
+      const keepEntries = [];
+      for (const entry of seamEntries) {
+        const pageIds = Array.isArray(entry.surface && entry.surface.pageIds)
+          ? entry.surface.pageIds.map(String)
+          : [];
+        if (pageIds.includes(pageId)) {
+          if (entry.windowNode && entry.windowNode.isConnected) entry.windowNode.remove();
+        } else {
+          keepEntries.push(entry);
+        }
+      }
+      if (keepEntries.length === seamEntries.length) continue;
+
+      overlayState.seamEntries = keepEntries;
+      overlayState.root.dataset.seamRenderKeys = keepEntries
+        .map((entry) => entry.surface && entry.surface.renderKey)
+        .filter(Boolean)
+        .join(" ");
+      const seamBubbleCount = keepEntries.reduce((sum, entry) => sum + (entry.bubbleNodes || []).length, 0);
+      overlayState.bubbleCount = overlayState.bubbleNodes.length + seamBubbleCount;
+      if (overlayState.bubbleCount === 0 && overlayState.debugNodeCount === 0) {
+        if (overlayState.loadingTimeout) window.clearTimeout(overlayState.loadingTimeout);
+        overlayState.root.remove();
+        state.overlaysById.delete(targetId);
+      }
+    }
+  }
+
   function removeOverlayForTarget(target) {
+    removeLegacySeamCrossPageOverlays(target);
+    removeSeamSurfaceEntriesForTarget(target);
     const targetId = state.targetIdByElement.get(target);
     if (!targetId) {
       return;
@@ -7555,7 +7809,9 @@
             text_color: normalizeCssColor(bubble.text_color, ""),
             stroke_color: normalizeCssColor(bubble.stroke_color, ""),
             polygon: normalizeBubblePolygon(bubble.polygon, bubble.stitch_overflow === true),
-            rotation_deg: normalizeBubbleRotation(bubble.rotation_deg),
+            rotation_deg: normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type),
+            font_height: Number(bubble.font_height || bubble.fontHeight || 0),
+            font_height_percent: Number(bubble.font_height_percent || bubble.fontHeightPercent || 0),
             source_line_count: Math.max(1, Math.round(Number(bubble.source_line_count) || 1)),
             block_id: String(bubble.block_id || bubble.id || ""),
             stitch_overflow: bubble.stitch_overflow === true,
@@ -7660,11 +7916,22 @@
     return /^#[0-9a-f]{6}$/i.test(text) ? text : fallback;
   }
 
-  function normalizeBubbleRotation(value) {
+  function normalizeBubbleRotation(value, regionType) {
     let angle = Number(value) || 0;
     while (angle >= 90) angle -= 180;
     while (angle < -90) angle += 180;
-    return angle;
+
+    const type = String(regionType || "").toLowerCase().trim();
+
+    // Chat and UI regions: never rotate
+    if (type === "chat" || type === "ui") return 0;
+
+    // Near-horizontal text: ignore tiny rotation noise
+    if (Math.abs(angle) < BUBBLE_ROTATION_NEAR_HORIZONTAL) return 0;
+
+    // 保留 OCR 的真实倾斜角。垂直排版由 writing-mode 单独处理，不能把
+    // 大于某个经验阈值的合法斜体一律压成水平文字。
+    return clamp(angle, -BUBBLE_ROTATION_MAX, BUBBLE_ROTATION_MAX);
   }
 
   function cleanRenderableText(text) {
@@ -7840,14 +8107,31 @@
     }
 
     return new Promise((resolve, reject) => {
+      const messageType = String(message && message.type || "");
+      const hasImageRuntimeTimeout =
+        messageType === "FETCH_IMAGE_DATA_URL" || messageType === "CAPTURE_VISIBLE_TARGET_DATA_URL";
+      const timeoutMs = hasImageRuntimeTimeout ? IMAGE_RUNTIME_MESSAGE_TIMEOUT_MS : 0;
+      let settled = false;
+      let timer = 0;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        if (timer) window.clearTimeout(timer);
+        callback(value);
+      };
+      if (timeoutMs > 0) {
+        timer = window.setTimeout(() => {
+          finish(reject, new Error(`Runtime message timed out: ${messageType}`));
+        }, timeoutMs);
+      }
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
           const reason = chrome.runtime.lastError.message || "runtime message failed";
-          reject(new Error(reason));
+          finish(reject, new Error(reason));
           return;
         }
 
-        resolve(response || null);
+        finish(resolve, response || null);
       });
     });
   }

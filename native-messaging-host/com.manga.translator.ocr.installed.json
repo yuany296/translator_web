@@ -1,0 +1,7 @@
+﻿{
+  "name": "com.manga.translator.ocr",
+  "description": "Manga Translator Local OCR Service Launcher",
+  "path": "C:\\homework\\AI_work\\translator\\native-messaging-host\\run_nmh.bat",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://cjahcfaihoncefiodpaoikelelafeceo"]
+}

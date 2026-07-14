@@ -1125,7 +1125,7 @@ test("stitched OCR keeps only boxes whose center belongs to the owner image", ()
   assert.ok(Math.abs(result.bubbles[0].h - 40) < 1e-9);
 });
 
-test("stitched OCR keeps only boxes whose overlap belongs to the owner segment", () => {
+test("stitched OCR drops owner-only bubbles that do not cross seam boundaries", () => {
   const result = runtime.__test.mapKakaoStitchedResult(
     {
       bubbles: [
@@ -1142,7 +1142,9 @@ test("stitched OCR keeps only boxes whose overlap belongs to the owner segment",
     "owner-segment"
   );
 
-  assert.deepEqual(result.bubbles.map((bubble) => bubble.original_text), ["owner-only"]);
+  // Non-seam-crossing bubbles are dropped to avoid duplicating single-page OCR results.
+  // Only bubbles that actually cross a seam boundary survive the filter.
+  assert.deepEqual(result.bubbles.map((bubble) => bubble.original_text), []);
 });
 
 test("跨图结果使用捕获时的页面全局坐标而不是滚动后的临时坐标", () => {
@@ -1906,6 +1908,23 @@ test("translation keeps the requested approximate source line count", () => {
   const formatted = runtime.__test.formatTranslationForOriginalLines("为什么没有把东西拿出来", 3);
   assert.equal(formatted.split("\n").length, 3);
   assert.equal(formatted.replace(/\n/g, ""), "为什么没有把东西拿出来");
+  assert.equal(runtime.__test.normalizeBubbleRotation(95), -85);
+});
+
+test("translation line balancing avoids isolated CJK characters", () => {
+  const formatted = runtime.__test.formatTranslationForOriginalLines(
+    "那么是不是该慢慢把粉丝团名字亮出来了呢？",
+    5
+  );
+  const lines = formatted.split("\n");
+  assert.equal(lines.length, 5);
+  assert.equal(lines.join(""), "那么是不是该慢慢把粉丝团名字亮出来了呢？");
+  assert.ok(lines.every((line) => Array.from(line).length > 1));
+  assert.ok(Array.from(lines.at(-1)).length > 2);
+});
+
+test("moderate OCR tilt is preserved while vertical noise is rejected", () => {
+  assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(8) - 8) < 0.01);
   assert.equal(runtime.__test.normalizeBubbleRotation(95), -85);
 });
 

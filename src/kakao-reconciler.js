@@ -1132,6 +1132,7 @@
     return stableHash({
       memberObservationIds: canonical.memberObservationIds,
       originalText: canonical.originalText,
+      nonTranslate: canonical.nonTranslate === true,
       geometryByPage: canonical.geometryByPage
     });
   }
@@ -1388,6 +1389,7 @@
         supersedesId: deterministicSupersedesId(pageMembers, pageIndex, canonicalId),
         memberObservationIds: memberIds,
         originalText,
+        nonTranslate: members.every((member) => member.visual && member.visual.nonTranslate === true),
         geometryByPage,
         status,
         translationFingerprint: `text_${stableHash(normalizeText(originalText))}`,

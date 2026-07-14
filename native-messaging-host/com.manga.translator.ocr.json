@@ -1,0 +1,7 @@
+{
+  "name": "com.manga.translator.ocr",
+  "description": "Manga Translator Local OCR Service Launcher",
+  "path": "nmh_launcher.py",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://__EXTENSION_ID__"]
+}

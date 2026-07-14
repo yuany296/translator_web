@@ -26,6 +26,7 @@
 .mt-seam-window {
   position: absolute;
   inset: 0;
+  /* 复合画布保持可见，但每个页面窗口只显示自己的页面坐标片段。 */
   overflow: hidden;
   pointer-events: none;
 }

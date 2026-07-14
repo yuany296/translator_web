@@ -308,6 +308,14 @@ test("left-aligned comment boxes infer left alignment and keep font-size groups 
   ), false);
 });
 
+test("single chat rows align left while ordinary bubble rows remain centered", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 420, height: 700 };
+  const box = { left: 40, top: 66, right: 250, bottom: 92, centerX: 145, width: 210, height: 26 };
+  assert.equal(background.inferTextAlignmentFromBoxes([box], imageSize, "chat"), "left");
+  assert.equal(background.inferTextAlignmentFromBoxes([box], imageSize, "speech_bubble"), "center");
+});
+
 test("rotated two-line candidate coalescing preserves visual top-to-bottom order", () => {
   const background = context.__backgroundTest;
   const lower = {
@@ -557,14 +565,54 @@ test("chat-style metadata and body keep separate visual/font candidates", async 
     false
   );
 
-  assert.equal(result.length, 2);
-  const metadata = result.find((row) => row.nonTranslate === true);
-  const body = result.find((row) => row.words.includes("서호윤"));
-  assert.ok(metadata);
+  assert.equal(result.length, 3);
+  const nickname = result.find((row) => row.translation_role === "chat_nickname");
+  const time = result.find((row) => row.translation_role === "chat_time");
+  const body = result.find((row) => row.translation_role === "chat_body");
+  assert.ok(nickname);
+  assert.ok(time);
   assert.ok(body);
-  assert.match(metadata.words, /오후 5:14/);
+  assert.equal(nickname.nonTranslate, false);
+  assert.equal(time.nonTranslate, false);
   assert.equal(body.nonTranslate, false);
-  assert.ok(Number(metadata.fontHeight) < Number(body.fontHeight));
+  assert.equal(nickname.alignment, "left");
+  assert.equal(time.alignment, "left");
+  assert.equal(body.alignment, "left");
+  assert.equal(Number(time.fontWeight), 400);
+  assert.equal(Number(nickname.fontWeight), 600);
+  assert.equal(Number(body.fontWeight), 700);
+  assert.ok(Number(time.fontHeight) < Number(body.fontHeight));
+});
+
+test("chat nickname and timestamp in one OCR box split into separate translatable roles", async () => {
+  const item = (text, left, top, width, height) => ({
+    text,
+    box: { left, top, width, height },
+    score: 0.98,
+    det_score: 0.95,
+    rotation_deg: 0
+  });
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    {
+      imageWidth: 760,
+      imageHeight: 900,
+      items: [
+        item("hoyami \uC624\uD6C4 5:15", 90, 100, 190, 20),
+        item("\uC9C4\uC815\uD55C \uBC25 \uAD11\uC778", 90, 128, 260, 42)
+      ]
+    },
+    { width: 760, height: 900 },
+    "",
+    false
+  );
+
+  assert.equal(result.length, 3);
+  assert.deepEqual(
+    Array.from(result, (row) => row.translation_role).sort(),
+    ["chat_body", "chat_nickname", "chat_time"]
+  );
+  assert.equal(result.some((row) => row.nonTranslate === true), false);
+  assert.equal(result.every((row) => row.alignment === "left"), true);
 });
 
 test("OCR polygon supplies a fallback tilt angle when the provider omits rotation", () => {
@@ -1635,7 +1683,7 @@ test("visual fill regions trigger seam evidence even when the OCR text box is in
   assert.equal(result.edgeSignals.bottom.visualDetected, true);
 });
 
-test("chat metadata is retained as filtered evidence but never enters translation observations", () => {
+test("chat metadata remains translatable observations instead of filtered evidence", () => {
   const base = (text, top, nonTranslate = false) => ({
     x: 10,
     y: top,
@@ -1665,10 +1713,9 @@ test("chat metadata is retained as filtered evidence but never enters translatio
     debug: false
   });
 
-  assert.equal(result.observations.length, 1);
-  assert.equal(result.observations[0].originalText, "오늘의 본문입니다");
-  assert.equal(result.filteredObservations[0].originalText, "사용자");
-  assert.equal(result.filteredObservations[0].filterReason, "non-translatable-chat-metadata");
+  assert.equal(result.observations.length, 2);
+  assert.equal(result.filteredObservations.length, 0);
+  assert.equal(result.observations.every((row) => row.visual && row.visual.regionType === "chat"), true);
 });
 
 test("provider-neutral OCR accounts for every max-bubbles overflow as filtered evidence", () => {

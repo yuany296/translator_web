@@ -3704,6 +3704,8 @@
       font_height_percent: Number(
         source.font_height_percent || visual.font_height_percent || visual.fontHeightPercent || 0
       ),
+      font_weight: normalizeBubbleFontWeight(source.font_weight || source.fontWeight || visual.font_weight || visual.fontWeight, 0),
+      translation_role: String(source.translation_role || source.translationRole || visual.translation_role || visual.translationRole || ""),
       source_line_count: Math.max(1, Number(source.source_line_count || visual.source_line_count || visual.sourceLineCount || 1)),
       block_id: String(
         projection && (projection.projectionId || projection.id) ||
@@ -3992,6 +3994,8 @@
         cleaned_source_box: visual.cleanedSourceBox || visual.cleaned_source_box || null,
         alignment: normalizeBubbleAlignment(visual.alignment),
         rotation_deg: Number(visual.rotationDeg ?? visual.rotation_deg) || 0,
+        font_weight: normalizeBubbleFontWeight(visual.fontWeight ?? visual.font_weight, 0),
+        translation_role: String(visual.translationRole || visual.translation_role || ""),
         canonical_id: "",
         block_id: "seam-cross-" + idx,
         projection_role: "text_primary"
@@ -5563,6 +5567,11 @@
     }
     const bgType = normalizeBgType(bubble.bg_type);
     const alignment = normalizeBubbleAlignment(bubble.alignment);
+    const fontWeight = normalizeBubbleFontWeight(
+      bubble.font_weight || bubble.fontWeight ||
+      bubble.visual && (bubble.visual.fontWeight || bubble.visual.font_weight),
+      600
+    );
 
     const node = document.createElement("div");
     const renderColors = getBubbleRenderColors(bubble, bgType);
@@ -5581,6 +5590,8 @@
       bubble.visual && (bubble.visual.fontHeightPercent || bubble.visual.font_height_percent) || 0
     ));
     node.dataset.alignment = alignment;
+    node.dataset.fontWeight = String(fontWeight);
+    node.dataset.translationRole = String(bubble.translation_role || bubble.translationRole || "");
     node.dataset.rotationDeg = String(normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type));
     if (Array.isArray(bubble.polygon)) {
       node.dataset.polygon = JSON.stringify(bubble.polygon);
@@ -5613,6 +5624,7 @@
       "--mt-stroke-color",
       renderColors.strokeColor
     );
+    node.style.setProperty("--mt-font-weight", String(fontWeight));
     node.dataset.regionType = String(bubble.region_type || "plain_text");
     const fillBox = bgType === "solid"
       ? buildSolidBackgroundBox({ x, y, w, h }, bubble.fill_box, bubble.stitch_overflow === true)
@@ -5686,6 +5698,18 @@
     const width = Math.max(0, Number(w) || 0);
     const height = Math.max(0, Number(h) || 0);
     const angle = Number(rotation) || 0;
+    const shouldUseCenterRotationAnchor = Math.abs(angle) >= BUBBLE_ROTATION_NEAR_HORIZONTAL;
+    if (shouldUseCenterRotationAnchor) {
+      const centerX = unit === "%" ? clamp(left + width / 2, 0, 100) : left + width / 2;
+      const centerY = allowVerticalOverflow
+        ? top + height / 2
+        : unit === "%" ? clamp(top + height / 2, 0, 100) : top + height / 2;
+      node.style.left = `${centerX}${unit}`;
+      node.style.top = `${centerY}${unit}`;
+      node.style.transformOrigin = "center center";
+      node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${angle.toFixed(2)}deg)`);
+      return;
+    }
     if (normalized === "left") {
       node.style.left = `${left}${unit}`;
       node.style.top = `${top}${unit}`;
@@ -7970,6 +7994,8 @@
             rotation_deg: normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type),
             font_height: Number(bubble.font_height || bubble.fontHeight || 0),
             font_height_percent: Number(bubble.font_height_percent || bubble.fontHeightPercent || 0),
+            font_weight: normalizeBubbleFontWeight(bubble.font_weight || bubble.fontWeight, 0),
+            translation_role: String(bubble.translation_role || bubble.translationRole || ""),
             source_line_count: Math.max(1, Math.round(Number(bubble.source_line_count) || 1)),
             block_id: String(bubble.block_id || bubble.id || ""),
             stitch_overflow: bubble.stitch_overflow === true,
@@ -8095,6 +8121,14 @@
   function normalizeBubbleAlignment(value) {
     const text = String(value || "").trim().toLowerCase();
     return text === "left" || text === "right" || text === "center" ? text : "center";
+  }
+
+  function normalizeBubbleFontWeight(value, fallback = 600) {
+    const numeric = Math.round(Number(value) || 0);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return fallback;
+    }
+    return clamp(Math.round(numeric / 100) * 100, 100, 900);
   }
 
   function cleanRenderableText(text) {

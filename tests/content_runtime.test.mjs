@@ -50,6 +50,28 @@ test("Kakao image runtime requests and error overlays have bounded recovery wiri
   assert.match(contentSource, /reportKakaoPipelineError[\s\S]*clearKakaoLoadingOverlay\(target\)[\s\S]*pipeline-error-restore/);
 });
 
+test("rotated aligned bubbles use a center transform anchor without changing text alignment", () => {
+  const style = {
+    setProperty(name, value) {
+      this[name] = value;
+    }
+  };
+  const node = { style };
+  runtime.__test.applyBubbleAnchorStyle(node, {
+    alignment: "left",
+    x: 10,
+    y: 20,
+    w: 30,
+    h: 12,
+    rotation: -18,
+    unit: "%"
+  });
+  assert.equal(node.style.left, "25%");
+  assert.equal(node.style.top, "26%");
+  assert.equal(node.style.transformOrigin, "center center");
+  assert.match(node.style["--mt-base-transform"], /translate\(-50%, -50%\) rotate\(-18\.00deg\)/);
+});
+
 test("Kakao page identity ignores CDN signing changes but tracks actual image bytes", async () => {
   const target = new globalThis.HTMLImageElement();
   target.currentSrc = "https://cdn.example.test/page.jpg?episode=7&signature=first&expires=100";

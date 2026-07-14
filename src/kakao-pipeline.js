@@ -163,6 +163,12 @@
     return text === "left" || text === "right" || text === "center" ? text : "center";
   }
 
+  function normalizeFontWeight(value) {
+    const numeric = Math.round(Number(value) || 0);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    return clamp(Math.round(numeric / 100) * 100, 100, 900);
+  }
+
   function getBubbleLineCount(bubble) {
     if (bubble && Number.isFinite(Number(bubble.source_line_count)) && Number(bubble.source_line_count) >= 1) {
       return Math.round(Number(bubble.source_line_count));
@@ -4635,6 +4641,8 @@
     const strokeColor = String(rawVisual.strokeColor || rawVisual.stroke_color || "");
     const alignment = normalizeTextAlignment(rawVisual.alignment);
     const rotationDeg = Number(rawVisual.rotationDeg ?? rawVisual.rotation_deg) || 0;
+    const fontWeight = normalizeFontWeight(rawVisual.fontWeight ?? rawVisual.font_weight);
+    const translationRole = String(rawVisual.translationRole || rawVisual.translation_role || "");
     const sourceLineCount = Math.max(
       linked.length,
       Number(rawVisual.sourceLineCount ?? rawVisual.source_line_count) || 1
@@ -4660,6 +4668,10 @@
       alignment,
       rotationDeg,
       rotation_deg: rotationDeg,
+      fontWeight,
+      font_weight: fontWeight,
+      translationRole,
+      translation_role: translationRole,
       sourceLineCount,
       source_line_count: sourceLineCount
     });
@@ -4693,6 +4705,8 @@
       stroke_color: strokeColor,
       alignment,
       rotation_deg: rotationDeg,
+      font_weight: fontWeight,
+      translation_role: translationRole,
       source_line_count: sourceLineCount
     });
   }

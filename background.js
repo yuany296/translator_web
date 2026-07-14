@@ -147,7 +147,20 @@ const SEAM_CROSS_MIN_HORIZONTAL_OVERLAP = 0.25;
 const SEAM_CROSS_MIN_HEIGHT_RATIO = 0.5;
 const SEAM_CROSS_MAX_ROTATION_DELTA_DEG = 20;
 const SEAM_CROSS_MAX_BAND_COVERAGE = 1.5;
-const CHAT_TIME_RE = /(?:오전|오후)\s*\d{1,2}:\d{2}/;
+const CHAT_TIME_RE = /(?:(?:\uC624\uC804|\uC624\uD6C4)\s*)?\d{1,2}:\d{2}/u;
+const CHAT_TRANSLATION_ROLES = Object.freeze({
+  nickname: "chat_nickname",
+  time: "chat_time",
+  aux: "chat_aux",
+  body: "chat_body"
+});
+const CHAT_TRANSLATION_ROLE_RE = /^chat_(?:nickname|time|aux|body)$/;
+const CHAT_FONT_WEIGHTS = Object.freeze({
+  chat_nickname: 600,
+  chat_time: 400,
+  chat_aux: 500,
+  chat_body: 700
+});
 const CHAT_MERGE_HEIGHT_RATIO_MAX = 1.32;
 const CHAT_MERGE_BRIGHTNESS_DIFF = 60;
 const CHAT_PARAGRAPH_HEIGHT_RATIO_MAX = 1.35;
@@ -1224,7 +1237,7 @@ function buildProviderNeutralObservationResult({
   const filteredRows = [];
   (Array.isArray(normalized) ? normalized : []).forEach((candidate) => {
     let reason = getFinalCandidateDropReason(candidate, imageSize, ocrTuning, provider);
-    if (!reason && candidate && candidate.non_translate === true) {
+    if (!reason && candidate && candidate.non_translate === true && !isChatOcrCandidate(candidate)) {
       reason = "non-translatable-chat-metadata";
     }
     if (!reason && shouldDropSymbolOnlyBubble(candidate)) {
@@ -1378,6 +1391,10 @@ function buildProviderNeutralObservation(provider, request, candidate, imageSize
     rotationDeg: quantizeObservationNumber(candidate && candidate.rotation_deg, 0.1),
     fontHeight: quantizeObservationNumber(candidate && candidate.font_height, 0.1),
     fontHeightPercent: quantizeObservationNumber(candidate && candidate.font_height_percent, 0.01),
+    fontWeight: normalizeOcrFontWeight(candidate && candidate.font_weight),
+    font_weight: normalizeOcrFontWeight(candidate && candidate.font_weight),
+    translationRole: normalizeChatTranslationRole(candidate && candidate.translation_role),
+    translation_role: normalizeChatTranslationRole(candidate && candidate.translation_role),
     sourceLineCount: Math.max(1, Number(candidate && candidate.source_line_count) || 1)
   };
   return {
@@ -1389,6 +1406,7 @@ function buildProviderNeutralObservation(provider, request, candidate, imageSize
     imageRevisionByPage: { ...request.imageRevisionByPage },
     pageSpans,
     originalText,
+    translationRole: normalizeChatTranslationRole(candidate && candidate.translation_role),
     confidence: quantizeObservationNumber(candidate && candidate.confidence, 0.001),
     visual,
     providerBlockId
@@ -2404,6 +2422,12 @@ async function requestLegacyTranslatedResultFromOcr({
       ...(Number(visual.fontHeightPercent || 0) > 0
         ? { font_height_percent: Number(visual.fontHeightPercent) }
         : {}),
+      ...(normalizeOcrFontWeight(visual.fontWeight || visual.font_weight) > 0
+        ? { font_weight: normalizeOcrFontWeight(visual.fontWeight || visual.font_weight) }
+        : {}),
+      ...(normalizeChatTranslationRole(visual.translationRole || visual.translation_role)
+        ? { translation_role: normalizeChatTranslationRole(visual.translationRole || visual.translation_role) }
+        : {}),
       source_line_count: Math.max(1, Number(visual.sourceLineCount) || 1),
       block_id: observation.providerBlockId,
       original_text: observation.originalText,
@@ -2984,13 +3008,14 @@ function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debug) {
   const rawEntries = words
     .map((item, index) => buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, debug))
     .filter((entry) => entry && entry.kind !== "noise");
-  const dedupeResult = dedupeLocalPaddleEntries(rawEntries);
+  const expandedEntries = expandLocalPaddleChatTimeEntries(rawEntries);
+  const dedupeResult = dedupeLocalPaddleEntries(expandedEntries);
   const entries = dedupeResult.entries;
   const lineGroups = buildLocalPaddleLineGroups(entries);
   const paragraphGroups = buildLocalPaddleParagraphGroups(lineGroups);
   const clusters = paragraphGroups.map((group) => group.flatMap((line) => line.entries));
   // Detect region types for each cluster (chat/forum vs comic bubble)
-  const clusterRegionTypes = clusters.map((cluster) => detectLocalPaddleRegionType(cluster));
+  const clusterRegionTypes = inferLocalPaddleClusterRegionTypes(clusters);
   const merged = clusters
     .flatMap((cluster, index) => splitLocalPaddleVisualStyleClusters(cluster, clusterRegionTypes[index])
       .map((styleCluster) => {
@@ -3034,6 +3059,172 @@ function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debug) {
   return merged;
 }
 
+function isChatRegionType(regionType) {
+  const type = String(regionType || "").toLowerCase();
+  return type === "chat" || type === "comment" || type === "ui";
+}
+
+function normalizeChatTranslationRole(value) {
+  const text = String(value || "").trim();
+  return CHAT_TRANSLATION_ROLE_RE.test(text) ? text : "";
+}
+
+function getChatRoleFontWeight(role) {
+  return CHAT_FONT_WEIGHTS[normalizeChatTranslationRole(role)] || 0;
+}
+
+function normalizeOcrFontWeight(value) {
+  const numeric = Math.round(Number(value) || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 0;
+  }
+  return clamp(Math.round(numeric / 100) * 100, 100, 900);
+}
+
+function isChatOcrCandidate(candidate) {
+  return !!candidate && (
+    normalizeChatTranslationRole(candidate.translation_role || candidate.translationRole) ||
+    isChatRegionType(candidate.region_type || candidate.regionType)
+  );
+}
+
+function isLocalPaddleChatLikeCluster(entries) {
+  const usable = (Array.isArray(entries) ? entries : []).filter(Boolean);
+  if (usable.length < 2) {
+    return false;
+  }
+  return usable.some((entry) =>
+    normalizeChatTranslationRole(entry && (entry.translationRole || entry.translation_role || entry.item && (entry.item.translation_role || entry.item.translationRole))) ||
+    isChatTimeText(entry && (entry.item && entry.item.words || entry.text))
+  );
+}
+
+function inferLocalPaddleClusterRegionTypes(clusters) {
+  const items = (Array.isArray(clusters) ? clusters : []).map((cluster) => ({
+    cluster,
+    box: getLocalPaddleEntriesBox(cluster),
+    type: detectLocalPaddleRegionType(cluster) || (isLocalPaddleChatLikeCluster(cluster) ? "chat" : null)
+  }));
+  items.forEach((item, index) => {
+    if (item.type || !item.box) {
+      return;
+    }
+    const previous = items[index - 1];
+    if (isLocalPaddleLikelyChatBodyCluster(item, previous)) {
+      item.type = "chat";
+    }
+  });
+  return items.map((item) => item.type);
+}
+
+function getLocalPaddleEntriesBox(entries) {
+  const boxes = (Array.isArray(entries) ? entries : [])
+    .map((entry) => entry && entry.box)
+    .filter(Boolean);
+  return boxes.length > 0 ? boxes.reduce(unionLocalPaddleBoxes) : null;
+}
+
+function isLocalPaddleLikelyChatBodyCluster(item, previous) {
+  if (!item || !item.box || !previous || previous.type !== "chat" || !previous.box) {
+    return false;
+  }
+  const box = item.box;
+  const previousBox = previous.box;
+  const avgHeight = Math.max(1, (box.height + previousBox.height) / 2);
+  const verticalGap = getVerticalGap(previousBox, box);
+  const overlapX = Math.max(0, Math.min(previousBox.right, box.right) - Math.max(previousBox.left, box.left));
+  const overlapRatio = overlapX / Math.max(1, Math.min(previousBox.width, box.width));
+  const leftAligned = Math.abs(previousBox.left - box.left) <= avgHeight * 1.8;
+  const lower = box.centerY >= previousBox.centerY;
+  const larger = box.height >= previousBox.height * 1.25 || box.height >= avgHeight * 1.08;
+  return lower && larger && verticalGap <= avgHeight * 1.05 && (leftAligned || overlapRatio >= 0.2);
+}
+
+function isChatTimeText(text) {
+  const raw = String(text || "").normalize("NFKC").trim();
+  return !!raw && CHAT_TIME_RE.test(raw);
+}
+
+function expandLocalPaddleChatTimeEntries(entries) {
+  return (Array.isArray(entries) ? entries : []).flatMap((entry) => splitLocalPaddleChatTimeEntry(entry));
+}
+
+function splitLocalPaddleChatTimeEntry(entry) {
+  if (!entry || !entry.box) {
+    return [];
+  }
+  const sourceText = String(entry.item && entry.item.words || entry.text || "").normalize("NFKC").trim();
+  const match = sourceText.match(CHAT_TIME_RE);
+  if (!match || typeof match.index !== "number") {
+    return [entry];
+  }
+  const start = match.index;
+  const end = start + String(match[0] || "").length;
+  const segments = [
+    { text: sourceText.slice(0, start).trim(), start: 0, end: start, role: CHAT_TRANSLATION_ROLES.nickname },
+    { text: sourceText.slice(start, end).trim(), start, end, role: CHAT_TRANSLATION_ROLES.time },
+    { text: sourceText.slice(end).trim(), start: end, end: sourceText.length, role: CHAT_TRANSLATION_ROLES.aux }
+  ].filter((segment) => segment.text);
+
+  if (segments.length <= 1) {
+    const role = isChatTimeText(sourceText) ? CHAT_TRANSLATION_ROLES.time : "";
+    return role ? [withLocalPaddleChatRole(entry, role)] : [entry];
+  }
+  const totalLength = Math.max(1, sourceText.length);
+  return segments.map((segment) => cloneLocalPaddleEntrySegment(entry, segment, totalLength));
+}
+
+function withLocalPaddleChatRole(entry, role) {
+  const normalizedRole = normalizeChatTranslationRole(role);
+  if (!normalizedRole || !entry) {
+    return entry;
+  }
+  const fontWeight = getChatRoleFontWeight(normalizedRole);
+  return {
+    ...entry,
+    translationRole: normalizedRole,
+    fontWeight,
+    item: {
+      ...(entry.item || {}),
+      translation_role: normalizedRole,
+      translationRole: normalizedRole,
+      font_weight: fontWeight,
+      fontWeight
+    }
+  };
+}
+
+function cloneLocalPaddleEntrySegment(entry, segment, totalLength) {
+  const sourceBox = entry.box;
+  const startRatio = clamp(Number(segment.start) / totalLength, 0, 1);
+  const endRatio = clamp(Number(segment.end) / totalLength, startRatio, 1);
+  const minWidth = Math.min(sourceBox.width, Math.max(1, sourceBox.height * 0.6));
+  const left = sourceBox.left + sourceBox.width * startRatio;
+  const right = Math.max(left + minWidth, sourceBox.left + sourceBox.width * endRatio);
+  const box = buildBaiduBox(left, sourceBox.top, Math.min(sourceBox.right, right), sourceBox.bottom);
+  const role = normalizeChatTranslationRole(segment.role);
+  const fontWeight = getChatRoleFontWeight(role);
+  const item = {
+    ...(entry.item || {}),
+    words: segment.text,
+    location: { left: box.left, top: box.top, width: box.width, height: box.height },
+    rawBox: { left: box.left, top: box.top, width: box.width, height: box.height },
+    polygon: null,
+    translation_role: role,
+    translationRole: role,
+    font_weight: fontWeight,
+    fontWeight
+  };
+  return {
+    ...entry,
+    item,
+    box,
+    text: String(segment.text || "").replace(/\s+/g, ""),
+    translationRole: role,
+    fontWeight
+  };
+}
+
 /**
  * Keep visually different text layers as independent render candidates.
  * A paragraph may be spatially connected while still containing a username,
@@ -3047,6 +3238,13 @@ function splitLocalPaddleVisualStyleClusters(cluster, regionType = "") {
   const entries = cluster.filter((entry) => entry && entry.box && entry.box.height > 0);
   if (entries.length < 2) {
     return [cluster];
+  }
+
+  if (isChatRegionType(regionType)) {
+    const chatClusters = splitLocalPaddleChatRoleClusters(entries);
+    if (chatClusters.length > 0) {
+      return chatClusters;
+    }
   }
 
   const heights = entries.map((entry) => Number(entry.box.height)).sort((left, right) => left - right);
@@ -3098,12 +3296,107 @@ function splitLocalPaddleVisualStyleClusters(cluster, regionType = "") {
   const threshold = Math.sqrt(heights[splitIndex - 1] * heights[splitIndex]);
   const small = cluster.filter((entry) => Number(entry && entry.box && entry.box.height) <= threshold);
   const large = cluster.filter((entry) => Number(entry && entry.box && entry.box.height) > threshold);
-  if (hasTimestamp && small.length > 0) {
-    // In a chat row, the compact group contains the username/time metadata.
-    // Keep it visible but out of the translation request.
-    small.nonTranslate = true;
-  }
   return small.length > 0 && large.length > 0 ? [small, large] : [cluster];
+}
+
+function splitLocalPaddleChatRoleClusters(entries) {
+  const usable = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => entry && entry.box && String(entry.text || entry.item && entry.item.words || "").trim())
+    .sort((left, right) => left.box.top - right.box.top || left.box.left - right.box.left);
+  if (usable.length === 0) {
+    return [];
+  }
+  const groups = [];
+  usable.forEach((entry) => {
+    const role = inferLocalPaddleChatEntryRole(entry, usable);
+    const withRole = withLocalPaddleChatRole(entry, role);
+    const group = groups.find((candidate) =>
+      candidate.translationRole === role && shouldJoinLocalPaddleChatRoleGroup(candidate, withRole, role)
+    );
+    if (group) {
+      group.push(withRole);
+    } else {
+      const next = [withRole];
+      next.translationRole = role;
+      next.fontWeight = getChatRoleFontWeight(role);
+      groups.push(next);
+    }
+  });
+  return groups.map((group) => {
+    group.translationRole = normalizeChatTranslationRole(group.translationRole) || inferLocalPaddleChatClusterRole(group, usable);
+    group.fontWeight = getChatRoleFontWeight(group.translationRole);
+    group.nonTranslate = false;
+    return group;
+  });
+}
+
+function inferLocalPaddleChatEntryRole(entry, entries) {
+  const explicit = normalizeChatTranslationRole(entry && (entry.translationRole || entry.translation_role || entry.item && (entry.item.translation_role || entry.item.translationRole)));
+  if (explicit) {
+    return explicit;
+  }
+  const text = String(entry && (entry.item && entry.item.words || entry.text) || "");
+  if (isChatTimeText(text)) {
+    return CHAT_TRANSLATION_ROLES.time;
+  }
+  const boxes = (Array.isArray(entries) ? entries : []).map((item) => item && item.box).filter(Boolean);
+  const heights = boxes.map((box) => Number(box.height) || 0).filter((height) => height > 0);
+  const maxHeight = Math.max(1, ...heights);
+  const height = Math.max(1, Number(entry && entry.box && entry.box.height) || 1);
+  const timePeers = (Array.isArray(entries) ? entries : []).filter((item) => item !== entry && isChatTimeText(item && (item.item && item.item.words || item.text)));
+  const sameLineTime = timePeers.find((item) => areLocalPaddleBoxesOnSameVisualLine(entry.box, item.box));
+  if (sameLineTime && entry.box.centerX <= sameLineTime.box.centerX) {
+    return CHAT_TRANSLATION_ROLES.nickname;
+  }
+  if (height >= maxHeight * 0.72) {
+    return CHAT_TRANSLATION_ROLES.body;
+  }
+  const hasLargeBelow = (Array.isArray(entries) ? entries : []).some((item) =>
+    item !== entry &&
+    item.box &&
+    item.box.height >= height * OCR_STYLE_SPLIT_HEIGHT_RATIO &&
+    item.box.top >= entry.box.top &&
+    getVerticalGap(entry.box, item.box) <= item.box.height * 1.25
+  );
+  return hasLargeBelow ? CHAT_TRANSLATION_ROLES.aux : CHAT_TRANSLATION_ROLES.nickname;
+}
+
+function inferLocalPaddleChatClusterRole(cluster, allEntries) {
+  const roles = (Array.isArray(cluster) ? cluster : [])
+    .map((entry) => inferLocalPaddleChatEntryRole(entry, allEntries))
+    .filter(Boolean);
+  return roles[0] || CHAT_TRANSLATION_ROLES.body;
+}
+
+function areLocalPaddleBoxesOnSameVisualLine(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  const overlap = Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top);
+  return overlap >= Math.min(left.height, right.height) * 0.45;
+}
+
+function shouldJoinLocalPaddleChatRoleGroup(group, entry, role) {
+  if (!Array.isArray(group) || group.length === 0 || !entry || !entry.box) {
+    return false;
+  }
+  if (role === CHAT_TRANSLATION_ROLES.time) {
+    return false;
+  }
+  const groupBox = group.map((item) => item.box).reduce(unionLocalPaddleBoxes);
+  const box = entry.box;
+  const avgHeight = Math.max(1, (groupBox.height + box.height) / 2);
+  if (areLocalPaddleBoxesOnSameVisualLine(groupBox, box)) {
+    return getHorizontalGap(groupBox, box) <= avgHeight * 2.4;
+  }
+  if (role !== CHAT_TRANSLATION_ROLES.body) {
+    return false;
+  }
+  const verticalGap = getVerticalGap(groupBox, box);
+  const leftAligned = Math.abs(groupBox.left - box.left) <= avgHeight * 1.35;
+  const overlapX = Math.max(0, Math.min(groupBox.right, box.right) - Math.max(groupBox.left, box.left));
+  const overlapRatio = overlapX / Math.max(1, Math.min(groupBox.width, box.width));
+  return verticalGap <= avgHeight * 0.85 && (leftAligned || overlapRatio >= 0.35);
 }
 
 function dedupeLocalPaddleEntries(entries) {
@@ -3528,6 +3821,9 @@ function inferLocalPaddleClusterAlignment(cluster, imageSize, regionType = "") {
 }
 
 function inferTextAlignmentFromBoxes(boxes, imageSize, regionType = "") {
+  if (isChatRegionType(regionType)) {
+    return "left";
+  }
   const usable = (Array.isArray(boxes) ? boxes : []).filter((box) =>
     box && [box.left, box.right, box.centerX, box.width, box.height].every((value) => Number.isFinite(Number(value)))
   );
@@ -3626,6 +3922,8 @@ function buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, deb
     color,
     textColor: String(item && item.text_color ? item.text_color : ""),
     strokeColor: String(item && item.stroke_color ? item.stroke_color : ""),
+    translationRole: normalizeChatTranslationRole(item && (item.translation_role || item.translationRole)),
+    fontWeight: normalizeOcrFontWeight(item && (item.font_weight || item.fontWeight)),
     rotation: Number.isFinite(Number(item && item.rotation_deg)) && Number(item && item.rotation_deg) !== 0
       ? normalizeRotationDegrees(item && item.rotation_deg)
       : inferLocalPaddlePolygonRotation(item && item.polygon)
@@ -3959,6 +4257,16 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis, regionType =
   merged.localOcrContainerId = hasSingleCompleteContainer ? representativeContainer.id : "";
   merged.localOcrRegionType = regionType || (representativeContainer ? representativeContainer.type : "effect_text");
   merged.alignment = inferLocalPaddleClusterAlignment(cluster, imageSize, merged.localOcrRegionType);
+  const translationRole = inferLocalPaddleClusterTranslationRole(cluster, merged.localOcrRegionType);
+  const fontWeight = inferLocalPaddleClusterFontWeight(cluster, translationRole, merged.localOcrRegionType);
+  if (translationRole) {
+    merged.translationRole = translationRole;
+    merged.translation_role = translationRole;
+  }
+  if (fontWeight > 0) {
+    merged.fontWeight = fontWeight;
+    merged.font_weight = fontWeight;
+  }
   merged.regionPolygon = hasSingleCompleteContainer ? representativeContainer.polygon : null;
   merged.regionBox = hasSingleCompleteContainer ? representativeContainer.box : null;
   merged.region_confidence = hasSingleCompleteContainer
@@ -3973,8 +4281,45 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis, regionType =
         confidence: representativeContainer.confidence
       }
     : { type: "outline", color: "", confidence: 0 };
-  merged.nonTranslate = cluster.nonTranslate === true || CHAT_TIME_RE.test(String(merged.words || ""));
+  merged.nonTranslate = cluster.nonTranslate === true && !normalizeChatTranslationRole(translationRole);
   return merged;
+}
+
+function inferLocalPaddleClusterTranslationRole(cluster, regionType = "") {
+  const explicit = normalizeChatTranslationRole(cluster && cluster.translationRole);
+  if (explicit) {
+    return explicit;
+  }
+  const entries = Array.isArray(cluster) ? cluster : [];
+  const roles = entries
+    .map((entry) => normalizeChatTranslationRole(
+      entry && (entry.translationRole || entry.translation_role || entry.item && (entry.item.translation_role || entry.item.translationRole))
+    ))
+    .filter(Boolean);
+  if (roles.length > 0) {
+    return roles[0];
+  }
+  if (isChatRegionType(regionType)) {
+    return inferLocalPaddleChatClusterRole(entries, entries);
+  }
+  return "";
+}
+
+function inferLocalPaddleClusterFontWeight(cluster, translationRole = "", regionType = "") {
+  const roleWeight = getChatRoleFontWeight(translationRole);
+  if (roleWeight > 0) {
+    return roleWeight;
+  }
+  const entryWeights = (Array.isArray(cluster) ? cluster : [])
+    .map((entry) => normalizeOcrFontWeight(
+      entry && (entry.fontWeight || entry.font_weight || entry.item && (entry.item.font_weight || entry.item.fontWeight))
+    ))
+    .filter((weight) => weight > 0)
+    .sort((left, right) => left - right);
+  if (entryWeights.length > 0) {
+    return entryWeights[Math.floor(entryWeights.length / 2)];
+  }
+  return isChatRegionType(regionType) ? CHAT_FONT_WEIGHTS.chat_body : 0;
 }
 
 function buildLocalPaddleDisplayBox(cluster, regionBox, imageSize, regionType = "", regionConfidence = 0) {
@@ -4365,7 +4710,9 @@ function normalizeLocalPaddleOcrItem(item, imageSize) {
     bg_color: String(item && item.bg_color ? item.bg_color : ""),
     text_color: String(item && item.text_color ? item.text_color : ""),
     stroke_color: String(item && item.stroke_color ? item.stroke_color : ""),
-    non_translate: item && item.nonTranslate === true,
+    non_translate: item && (item.nonTranslate === true || item.non_translate === true),
+    translation_role: normalizeChatTranslationRole(item && (item.translation_role || item.translationRole)),
+    font_weight: normalizeOcrFontWeight(item && (item.font_weight || item.fontWeight)),
     region_confidence: Number(item && item.region_confidence) || 0,
     rawBox: box,
     location: {
@@ -5389,10 +5736,11 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
     source_line_count: sourceLineCount,
     font_height: fontHeight,
     font_height_percent: (fontHeight / Math.max(1, imageSize.height)) * 100,
+    font_weight: normalizeOcrFontWeight(item && (item.fontWeight ?? item.font_weight)),
     original_text: text,
     translated_text: "",
     non_translate: item && (item.nonTranslate === true || item.non_translate === true),
-    translation_role: String(item && (item.translation_role || item.translationRole) || ""),
+    translation_role: normalizeChatTranslationRole(item && (item.translation_role || item.translationRole)),
     confidence: Number(item.confidence || 0),
     rawBox: {
       left: sourceLeft,
@@ -6229,6 +6577,9 @@ function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
       rightGroup.some((item) => item && item.non_translate === true)) {
     return false;
   }
+  if (isChatOcrCandidateGroup(leftGroup) || isChatOcrCandidateGroup(rightGroup)) {
+    return false;
+  }
   const leftBgType = normalizeBgType(leftGroup[0] && leftGroup[0].bg_type);
   const rightBgType = normalizeBgType(rightGroup[0] && rightGroup[0].bg_type);
   const leftRegionId = String(leftGroup[0] && leftGroup[0].region_id || "");
@@ -6275,6 +6626,10 @@ function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
     unionWidth <= 96 &&
     unionHeight <= 72
   );
+}
+
+function isChatOcrCandidateGroup(group) {
+  return (Array.isArray(group) ? group : []).some((item) => isChatOcrCandidate(item));
 }
 
 function sortOcrCandidatesByReadingOrder(group) {
@@ -6398,6 +6753,8 @@ function mergeOcrCandidateGroup(group, index) {
     text_color: bgType === "none" ? "#000000" : String(sorted[0] && sorted[0].text_color || ""),
     stroke_color: bgType === "none" ? "#ffffff" : String(sorted[0] && sorted[0].stroke_color || ""),
     alignment: inferOcrCandidateGroupAlignment(sorted),
+    translation_role: inferOcrCandidateGroupTranslationRole(sorted),
+    font_weight: inferOcrCandidateGroupFontWeight(sorted),
     polygon: mergePercentPolygons(sorted),
     rotation_deg: medianRotation(sorted.map((item) => item.rotation_deg)),
     source_line_count: Math.max(1, ...sorted.map((item) => Number(item.source_line_count) || 1)),
@@ -6406,6 +6763,24 @@ function mergeOcrCandidateGroup(group, index) {
       ? { rawBox: { left: rawLeft, top: rawTop, width: rawRight - rawLeft, height: rawBottom - rawTop } }
       : {})
   };
+}
+
+function inferOcrCandidateGroupTranslationRole(group) {
+  const roles = (Array.isArray(group) ? group : [])
+    .map((item) => normalizeChatTranslationRole(item && (item.translation_role || item.translationRole)))
+    .filter(Boolean);
+  return roles[0] || "";
+}
+
+function inferOcrCandidateGroupFontWeight(group) {
+  const weights = (Array.isArray(group) ? group : [])
+    .map((item) => normalizeOcrFontWeight(item && (item.font_weight || item.fontWeight)))
+    .filter((weight) => weight > 0)
+    .sort((left, right) => left - right);
+  if (weights.length > 0) {
+    return weights[Math.floor(weights.length / 2)];
+  }
+  return getChatRoleFontWeight(inferOcrCandidateGroupTranslationRole(group));
 }
 
 function mergePercentFillBoxes(items) {

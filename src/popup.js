@@ -407,10 +407,16 @@ async function togglePageAutoTranslate() {
     const visibleCount = Number(response.visibleCount || 0);
     const successCount = Number(response.successCount || 0);
     const failCount = Number(response.failCount || 0);
+    const queuedCount = Number(response.queuedCount || 0);
+    const runningCount = Number(response.runningCount || 0);
     const firstError = Array.isArray(response.errors) ? response.errors[0] : "";
 
     if (!pageAutoTranslateEnabled) {
       setStatus("已停止本页自动翻译，已有译文会保留", false);
+    } else if (successCount === 0 && failCount === 0 && (queuedCount > 0 || runningCount > 0)) {
+      const pendingCount = queuedCount + runningCount;
+      const targetCount = visibleCount || pendingCount;
+      setStatus(`本页自动翻译已开启：当前视口已入队 ${targetCount} 张，继续滚动会预先翻译`, false);
     } else if (visibleCount === 0) {
       setStatus("当前视口没有可翻译的漫画图片/画布", true);
     } else if (failCount === 0) {
@@ -466,7 +472,7 @@ async function runTogglePageAutoTranslateAllFrames(tabId, enabled) {
   try {
     const frameResults = await executePageAutoTranslateInAllFrames(tabId, enabled);
     const merged = mergePageAutoFrameResults(frameResults);
-    if (merged.frameCount > 0) {
+    if (hasUsablePageAutoFrameResult(merged)) {
       return { ok: true, ...merged };
     }
   } catch (error) {
@@ -599,6 +605,7 @@ function executeGetPageAutoTranslateStatusInAllFrames(tabId) {
 
 function mergePageAutoFrameResults(frameResults) {
   let frameCount = 0;
+  let skippedCount = 0;
   let enabled = false;
   let visibleCount = 0;
   let successCount = 0;
@@ -609,7 +616,11 @@ function mergePageAutoFrameResults(frameResults) {
 
   for (const item of Array.isArray(frameResults) ? frameResults : []) {
     const payload = item && item.result ? item.result : null;
-    if (!payload || payload.skipped) {
+    if (!payload) {
+      continue;
+    }
+    if (payload.skipped) {
+      skippedCount += 1;
       continue;
     }
 
@@ -636,6 +647,7 @@ function mergePageAutoFrameResults(frameResults) {
 
   return {
     frameCount,
+    skippedCount,
     enabled,
     visibleCount,
     successCount,
@@ -646,11 +658,27 @@ function mergePageAutoFrameResults(frameResults) {
   };
 }
 
+function hasUsablePageAutoFrameResult(merged) {
+  if (!merged || merged.frameCount <= 0) {
+    return false;
+  }
+  if (
+    Number(merged.visibleCount || 0) > 0 ||
+    Number(merged.successCount || 0) > 0 ||
+    Number(merged.failCount || 0) > 0 ||
+    Number(merged.queuedCount || 0) > 0 ||
+    Number(merged.runningCount || 0) > 0
+  ) {
+    return true;
+  }
+  return Number(merged.skippedCount || 0) === 0;
+}
+
 async function runManualTranslateAllFrames(tabId) {
   try {
     const frameResults = await executeManualTranslateInAllFrames(tabId);
     const merged = mergeManualFrameResults(frameResults);
-    if (merged.frameCount > 0) {
+    if (hasUsableManualFrameResult(merged)) {
       return { ok: true, ...merged };
     }
   } catch (error) {
@@ -721,6 +749,7 @@ function executeManualTranslateInAllFrames(tabId) {
 
 function mergeManualFrameResults(frameResults) {
   let frameCount = 0;
+  let skippedCount = 0;
   let visibleCount = 0;
   let successCount = 0;
   let failCount = 0;
@@ -728,7 +757,11 @@ function mergeManualFrameResults(frameResults) {
 
   for (const item of Array.isArray(frameResults) ? frameResults : []) {
     const payload = item && item.result ? item.result : null;
-    if (!payload || payload.skipped) {
+    if (!payload) {
+      continue;
+    }
+    if (payload.skipped) {
+      skippedCount += 1;
       continue;
     }
 
@@ -752,11 +785,26 @@ function mergeManualFrameResults(frameResults) {
 
   return {
     frameCount,
+    skippedCount,
     visibleCount,
     successCount,
     failCount,
     errors: [...new Set(errors)].slice(0, 3)
   };
+}
+
+function hasUsableManualFrameResult(merged) {
+  if (!merged || merged.frameCount <= 0) {
+    return false;
+  }
+  if (
+    Number(merged.visibleCount || 0) > 0 ||
+    Number(merged.successCount || 0) > 0 ||
+    Number(merged.failCount || 0) > 0
+  ) {
+    return true;
+  }
+  return Number(merged.skippedCount || 0) === 0;
 }
 
 async function ensureContentInjected(tabId) {

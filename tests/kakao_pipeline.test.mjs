@@ -65,6 +65,26 @@ test("popup translate button runs manual viewport translation in manual mode", (
   );
   assert.match(
     popupSource,
+    /async function runManualTranslateAllFrames\(tabId\)[\s\S]*?hasUsableManualFrameResult\(merged\)[\s\S]*?sendMessageToTab\(tabId, \{ type: "MANUAL_TRANSLATE_VISIBLE" \}\)/
+  );
+  assert.match(
+    popupSource,
+    /async function runTogglePageAutoTranslateAllFrames\(tabId, enabled\)[\s\S]*?hasUsablePageAutoFrameResult\(merged\)[\s\S]*?sendMessageToTab\(tabId, \{ type: "TOGGLE_PAGE_AUTO_TRANSLATE", enabled \}\)/
+  );
+  assert.match(
+    popupSource,
+    /function mergeManualFrameResults\(frameResults\)[\s\S]*?let skippedCount = 0;[\s\S]*?payload\.skipped[\s\S]*?skippedCount \+= 1;[\s\S]*?skippedCount,/
+  );
+  assert.match(
+    popupSource,
+    /function mergePageAutoFrameResults\(frameResults\)[\s\S]*?let skippedCount = 0;[\s\S]*?payload\.skipped[\s\S]*?skippedCount \+= 1;[\s\S]*?skippedCount,/
+  );
+  assert.match(
+    popupSource,
+    /function hasUsableManualFrameResult\(merged\)[\s\S]*?merged\.skippedCount[\s\S]*?=== 0;/
+  );
+  assert.match(
+    popupSource,
     /function shouldTranslateButtonUsePageAuto\(\)[\s\S]*?pageAutoTranslateEnabled \|\| normalizePretranslateMode\(pretranslateModeSelect\.value\) !== "manual"/
   );
   assert.match(popupSource, /translateBtn\.textContent = "翻译当前视口"/);

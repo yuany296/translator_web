@@ -1466,16 +1466,37 @@ test("page translation toggle does not persist activation globally", () => {
   assert.equal(/storageSet\(\{\s*mt_pretranslate_mode\s*:/.test(contentSource), false);
 });
 
-test("floating ball click keeps manual viewport translation separate from page auto toggle", () => {
+test("floating ball click follows configured pretranslation mode before manual viewport translation", () => {
   assert.match(
     contentSource,
-    /ball\.addEventListener\("click", async \(event\) => \{[\s\S]*?state\.autoTranslatePageEnabled && state\.enabled[\s\S]*?togglePageAutoTranslate\(false\)[\s\S]*?await manualTranslateVisible\(\);[\s\S]*?\}\);/
+    /ball\.addEventListener\("click", async \(event\) => \{[\s\S]*?state\.autoTranslatePageEnabled[\s\S]*?togglePageAutoTranslate\(false\)[\s\S]*?isAutomaticPretranslateMode\(state\.pretranslateMode\)[\s\S]*?togglePageAutoTranslate\(true\)[\s\S]*?await manualTranslateVisible\(\);[\s\S]*?\}\);/
   );
   assert.doesNotMatch(contentSource, /togglePageAutoTranslate\(!state\.autoTranslatePageEnabled\)/);
   assert.match(
     contentSource,
     /state\.autoTranslatePageEnabled && state\.enabled \? "关闭本页自动翻译" : "翻译当前视口漫画目标"/
   );
+});
+
+test("page auto toggle queues visible and ahead targets without blocking on manual OCR", () => {
+  const match = contentSource.match(/async function togglePageAutoTranslate\(enabled\) \{[\s\S]*?\n  function getPageAutoTranslateStatus\(\)/);
+  assert.ok(match, "togglePageAutoTranslate source should be present");
+  assert.match(match[0], /const visibleCount = queueVisiblePageAutoTargets\(\);[\s\S]*?scheduleAheadPretranslation\("page-auto-start"\);/);
+  assert.doesNotMatch(match[0], /manualTranslateVisible\(\)/);
+  assert.match(contentSource, /function queueVisiblePageAutoTargets\(\) \{[\s\S]*?return targets\.length;/);
+});
+
+test("translation queue pump coalesces microtasks without recursive drain alias", () => {
+  const queueTranslateMatch = contentSource.match(/function queueTranslate\(target, options\) \{[\s\S]*?\n  function isCanonicalRevisionCheckOptions/);
+  assert.ok(queueTranslateMatch, "queueTranslate source should be present");
+  assert.match(queueTranslateMatch[0], /pumpQueue\(\);/);
+  assert.doesNotMatch(queueTranslateMatch[0], /queueMicrotask[\s\S]*drainTranslationQueue\(\)/);
+  assert.equal((contentSource.match(/function drainTranslationQueue\(/g) || []).length, 0);
+
+  const pumpMatch = contentSource.match(/function pumpQueue\(\) \{[\s\S]*?\n  function processTranslationQueue\(\)/);
+  assert.ok(pumpMatch, "pumpQueue and processTranslationQueue should be adjacent");
+  assert.match(pumpMatch[0], /state\.queueDrainScheduled/);
+  assert.match(pumpMatch[0], /queueMicrotask\(\(\) => \{[\s\S]*processTranslationQueue\(\);/);
 });
 
 test("overlay movement updates position without triggering text layout", () => {
@@ -1591,7 +1612,17 @@ test("Kakao translation queue selects visible content before ahead and previous 
   assert.deepEqual(queue, [previous]);
   assert.equal(runtime.__test.canStartKakaoTranslationQueueItem(visible, 5, 6, 800), true);
   assert.equal(runtime.__test.canStartKakaoTranslationQueueItem(ahead, 5, 6, 800), false);
-  assert.match(contentSource, /queueMicrotask[\s\S]*drainTranslationQueue\(\)/);
+  assert.match(contentSource, /queueMicrotask[\s\S]*processTranslationQueue\(\)/);
+});
+
+test("Kakao render debug logs are gated by pipeline trace", () => {
+  const renderMatch = contentSource.match(/async function renderTranslationResult\(target, targetKey, result, payload, options = \{\}\) \{[\s\S]*?\n  function isKakaopageTargetStillRenderable/);
+  assert.ok(renderMatch, "renderTranslationResult source should be present");
+  assert.match(renderMatch[0], /if \(ENABLE_PIPELINE_TRACE && IS_KAKAOPAGE_READER\)/);
+
+  const debugMatch = contentSource.match(/function logOcrDebugMapping\(overlayState, result\) \{[\s\S]*?\n  function normalizeResult/);
+  assert.ok(debugMatch, "logOcrDebugMapping source should be present");
+  assert.match(debugMatch[0], /if \(!ENABLE_PIPELINE_TRACE\) \{[\s\S]*?return;[\s\S]*?\}/);
 });
 
 test("Kakao strip screenshot waits until a useful target area is visible", () => {

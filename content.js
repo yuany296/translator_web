@@ -1138,11 +1138,7 @@
       reason: options.reason,
       targetKey: computeTargetKey(target).slice(0, 80)
     });
-    if (typeof queueMicrotask === "function") {
-      queueMicrotask(() => drainTranslationQueue());
-    } else {
-      drainTranslationQueue();
-    }
+    pumpQueue();
   }
 
   function isCanonicalRevisionCheckOptions(options) {
@@ -1260,14 +1256,14 @@
       state.queueDrainScheduled = true;
       queueMicrotask(() => {
         state.queueDrainScheduled = false;
-        drainTranslationQueue();
+        processTranslationQueue();
       });
       return;
     }
-    drainTranslationQueue();
+    processTranslationQueue();
   }
 
-  function drainTranslationQueue() {
+  function processTranslationQueue() {
     if (state.invalidated) {
       return;
     }
@@ -1913,10 +1909,6 @@
     const displayWidth = Number(rect && rect.width || 0);
     const naturalWidth = Number(target.naturalWidth || 0);
     return displayWidth >= 240 && (naturalWidth <= 0 || naturalWidth >= 240);
-  }
-
-  function drainTranslationQueue() {
-    pumpQueue();
   }
 
   function isKakaoReaderContentTarget(target) {
@@ -4266,7 +4258,7 @@
   }
 
   async function renderTranslationResult(target, targetKey, result, payload, options = {}) {
-    if (IS_KAKAOPAGE_READER) {
+    if (ENABLE_PIPELINE_TRACE && IS_KAKAOPAGE_READER) {
       const renderable = isKakaopageTargetStillRenderable(target);
       if (!renderable.ok) {
         console.debug("[MangaTranslator][KakaoPage] overlay hidden (target outside viewport, auto-shows on scroll-back):", renderable.reason);
@@ -6623,12 +6615,17 @@
 
     ball.addEventListener("click", async (event) => {
       stopExtensionUiEvent(event);
-      if (state.invalidated) {
+      if (state.invalidated || !state.enabled) {
         return;
       }
 
-      if (state.autoTranslatePageEnabled && state.enabled) {
+      if (state.autoTranslatePageEnabled) {
         await togglePageAutoTranslate(false);
+        return;
+      }
+
+      if (isAutomaticPretranslateMode(state.pretranslateMode)) {
+        await togglePageAutoTranslate(true);
         return;
       }
 
@@ -6800,19 +6797,26 @@
     }
 
     rescan();
-    const result = await manualTranslateVisible();
-    queueVisiblePageAutoTargets();
+    const visibleCount = queueVisiblePageAutoTargets();
+    scheduleAheadPretranslation("page-auto-start");
+    const queuedCount = state.queue.length;
+    const runningCount = state.runningJobs;
 
     await reportStatus("info", "page auto translate started", {
       pageUrl: location.href,
-      visibleCount: result.visibleCount,
-      successCount: result.successCount,
-      failCount: result.failCount
+      visibleCount,
+      queuedCount,
+      runningCount
     });
 
     return {
       enabled: true,
-      ...result
+      visibleCount,
+      successCount: 0,
+      failCount: 0,
+      queuedCount,
+      runningCount,
+      errors: []
     };
   }
 
@@ -6827,6 +6831,7 @@
   function queueVisiblePageAutoTargets() {
     const targets = collectVisibleTargets({ includeLimit: false });
     targets.forEach((target) => queuePageAutoTranslate(target));
+    return targets.length;
   }
 
   function matchesTargetMarker(value, targetKey, scopedTargetKey) {
@@ -7745,6 +7750,10 @@
   }
 
   function logOcrDebugMapping(overlayState, result) {
+    if (!ENABLE_PIPELINE_TRACE) {
+      return;
+    }
+
     const debug = result && result.debug;
     if (!debug || !Array.isArray(debug.items) || debug.items.length === 0) {
       return;

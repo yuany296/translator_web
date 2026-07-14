@@ -344,6 +344,7 @@
       getSeamSurfaceHostPageId,
       getSeamSegmentTransform,
       buildSeamSurfaceRenderSignature,
+      buildOverlayDebugRenderSignature,
       isSeamSurfaceRenderable,
       syncSeamOverlayTransforms,
       setSeamSourceModeForOverlays,
@@ -351,6 +352,7 @@
       classifyCanonicalProjectionRender,
       isCanonicalRenderComplete,
       hasRenderableOcrDebug,
+      getRenderableOcrDebugStages,
       normalizeDebugCoordinateItems,
       normalizePretranslateMode,
       matchesTargetMarker,
@@ -3855,7 +3857,6 @@
         segments: Array.isArray(surface && surface.segments) ? surface.segments : [],
         cleanedImageHash: hashSourceIdentity(String(surface && surface.cleanedImage || "")),
         bubbles: Array.isArray(surface && surface.bubbles) ? surface.bubbles : [],
-        debug: surface && surface.debug || null,
         handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds)
           ? surface.handledCanonicalIds
           : []
@@ -3916,9 +3917,47 @@
         : [])
     ].filter((debug) => debug && typeof debug === "object");
     return debugPayloads.some((debug) =>
-      [debug.rawItems, debug.duplicateItems, debug.dedupedItems, debug.finalBubbles]
-        .some((items) => Array.isArray(items) && items.length > 0)
+      getRenderableOcrDebugStages(debug)
+        .some((stage) => Array.isArray(stage.items) && stage.items.length > 0)
     );
+  }
+
+  function normalizeOcrDebugOverlayMode(value) {
+    const text = String(value || "").trim().toLowerCase();
+    return text === "raw" || text === "filtered" || text === "merged" || text === "final"
+      ? text
+      : "final";
+  }
+
+  function getDebugFilterReasonItems(debug) {
+    return (Array.isArray(debug && debug.filterReasons) ? debug.filterReasons : [])
+      .map((entry) => entry && entry.item)
+      .filter(Boolean);
+  }
+
+  function getRenderableOcrDebugStages(debug) {
+    if (!debug || typeof debug !== "object") {
+      return [];
+    }
+    const mode = normalizeOcrDebugOverlayMode(
+      debug.debugOverlayMode || debug.overlayMode || debug.mode
+    );
+    if (mode === "raw") {
+      return [{ name: "raw", items: debug.rawItems, className: "mt-debug-raw" }];
+    }
+    if (mode === "filtered") {
+      return [
+        { name: "filtered", items: debug.filteredItems || getDebugFilterReasonItems(debug), className: "mt-debug-duplicate" },
+        { name: "duplicate", items: debug.duplicateItems, className: "mt-debug-duplicate" }
+      ];
+    }
+    if (mode === "merged") {
+      return [
+        { name: "deduped", items: debug.dedupedItems, className: "mt-debug-deduped" },
+        { name: "merged", items: debug.mergedItems || debug.lineItems, className: "mt-debug-deduped" }
+      ];
+    }
+    return [{ name: "block", items: debug.finalBubbles || debug.items, className: "mt-debug-block" }];
   }
 
   function renderSeamCrossPage(input = {}) {
@@ -4070,11 +4109,9 @@
       isSeamSurfaceRenderable(surface)
     );
     const seamSurfacesByPage = new Map();
-    const hostedSeamSurfacesByPage = new Map();
     const handledCanonicalIds = new Set();
     const atomicSeamPageIds = new Set();
     seamSurfaces.forEach((surface) => {
-      const hostPageId = getSeamSurfaceHostPageId(surface);
       surface.handledCanonicalIds.forEach((canonicalId) => handledCanonicalIds.add(canonicalId));
       surface.pageIds.forEach((pageId) => {
         if (!pages.has(pageId)) pages.set(pageId, []);
@@ -4083,12 +4120,6 @@
         seamSurfacesByPage.set(pageId, pageSurfaces);
         atomicSeamPageIds.add(pageId);
       });
-      if (hostPageId) {
-        if (!pages.has(hostPageId)) pages.set(hostPageId, []);
-        const hostedSurfaces = hostedSeamSurfacesByPage.get(hostPageId) || [];
-        hostedSurfaces.push(surface);
-        hostedSeamSurfacesByPage.set(hostPageId, hostedSurfaces);
-      }
     });
 
     // pipeline 保留一份未被 surface 接管前的逐页投影。若 DOM revision 在提交瞬间变化、
@@ -4150,7 +4181,6 @@
       const target = getTargetForKakaoPageId(pageId) || (pageId === String(input.pageId || "") ? input.target : null);
       if (!target || !target.isConnected) continue;
       const pageSurfaces = seamSurfacesByPage.get(pageId) || [];
-      const hostedPageSurfaces = hostedSeamSurfacesByPage.get(pageId) || [];
       const ordinaryProjections = [...projections].filter((projection) => {
         const canonicalId = String(projection && (projection.canonicalId || projection.groupId) || "");
         return !canonicalId || !handledCanonicalIds.has(canonicalId);
@@ -4184,7 +4214,7 @@
         bubbles,
         cleanedImage: getPageMappedValue(input.cleanedImageByPage, pageId, defaultCleanedImage),
         debug: getPageMappedValue(input.debugByPage, pageId, defaultDebug),
-        seamSurfaces: hostedPageSurfaces,
+        seamSurfaces: pageSurfaces,
         seamPageId: pageId
       };
       const pageRenderOptions = {
@@ -4231,8 +4261,8 @@
       rememberLocalResult(scopedTargetKey, result);
       if (disposition === "translated") {
         const task = invokeRender({
-          stream: hostedPageSurfaces.length === 0,
-          forceOverlay: hostedPageSurfaces.length > 0
+          stream: pageSurfaces.length === 0,
+          forceOverlay: pageSurfaces.length > 0
         });
         if (task) await task;
         target.dataset.mtNoTextKey = "";
@@ -4409,10 +4439,29 @@
     try {
       return hashSourceIdentity(JSON.stringify({
         bubbles: Array.isArray(result && result.bubbles) ? result.bubbles : [],
-        debug: result && result.debug || null,
         seamSurfaces: (Array.isArray(result && result.seamSurfaces) ? result.seamSurfaces : [])
           .map(buildSeamSurfaceRenderSignature)
       }));
+    } catch {
+      return hashSourceIdentity(`${Date.now()}`);
+    }
+  }
+
+  function buildOverlayDebugRenderSignature(result) {
+    try {
+      const debugPayloads = [
+        result && result.debug,
+        ...(Array.isArray(result && result.seamSurfaces)
+          ? result.seamSurfaces.map((surface) => surface && surface.debug)
+          : [])
+      ].filter((debug) => debug && typeof debug === "object");
+      return hashSourceIdentity(JSON.stringify(debugPayloads.map((debug) => ({
+        mode: normalizeOcrDebugOverlayMode(debug.debugOverlayMode || debug.overlayMode || debug.mode),
+        stages: getRenderableOcrDebugStages(debug).map((stage) => ({
+          name: stage.name,
+          items: Array.isArray(stage.items) ? stage.items : []
+        }))
+      }))));
     } catch {
       return hashSourceIdentity(`${Date.now()}`);
     }
@@ -4582,6 +4631,18 @@
       .filter(Boolean));
   }
 
+  function buildSeamSurfaceSliceKey(renderKey, pageId) {
+    const key = String(renderKey || "").trim();
+    const page = String(pageId || "").trim();
+    return key && page ? `${key}@${page}` : "";
+  }
+
+  function getSeamSurfaceSliceKeys(seamSurfaces, pageId) {
+    return new Set((Array.isArray(seamSurfaces) ? seamSurfaces : [])
+      .map((surface) => buildSeamSurfaceSliceKey(surface && surface.renderKey, pageId))
+      .filter(Boolean));
+  }
+
   function rootHasAnySeamRenderKey(root, renderKeys) {
     if (!root || !renderKeys || renderKeys.size === 0) return false;
     const keys = String(root.dataset && root.dataset.seamRenderKeys || "")
@@ -4590,12 +4651,26 @@
     return keys.some((key) => renderKeys.has(key));
   }
 
-  function removeDuplicateSeamSurfaceRoots(seamSurfaces, keepRoot) {
+  function rootHasAnySeamSliceKey(root, sliceKeys) {
+    if (!root || !sliceKeys || sliceKeys.size === 0) return false;
+    const keys = String(root.dataset && root.dataset.seamSliceKeys || "")
+      .split(/\s+/)
+      .filter(Boolean);
+    return keys.some((key) => sliceKeys.has(key));
+  }
+
+  function removeDuplicateSeamSurfaceRoots(seamSurfaces, keepRoot, pageId = "") {
     const renderKeys = getSeamSurfaceRenderKeys(seamSurfaces);
+    const sliceKeys = getSeamSurfaceSliceKeys(seamSurfaces, pageId);
     if (renderKeys.size === 0 || !state.overlayLayer) return;
 
     for (const root of Array.from(state.overlayLayer.querySelectorAll(".mt-overlay-root"))) {
-      if (root === keepRoot || !rootHasAnySeamRenderKey(root, renderKeys)) continue;
+      if (root === keepRoot) continue;
+      const hasSliceKeys = String(root.dataset && root.dataset.seamSliceKeys || "").trim();
+      const isSameSlice = hasSliceKeys
+        ? rootHasAnySeamSliceKey(root, sliceKeys)
+        : rootHasAnySeamRenderKey(root, renderKeys);
+      if (!isSameSlice) continue;
       const rootTargetId = String(root.dataset && root.dataset.targetId || "");
       const overlayState = rootTargetId ? state.overlaysById.get(rootTargetId) : null;
       if (overlayState && overlayState.root === root) {
@@ -4628,7 +4703,11 @@
     const targetId = getTargetId(target);
     const oldOverlay = state.overlaysById.get(targetId);
     const currentSourceToken = getQuickSourceToken(target);
-    const renderSignature = buildOverlayRenderSignature(result);
+    const hasTranslatedRenderContent = bubbles.length > 0 ||
+      seamSurfaces.some((surface) => Array.isArray(surface && surface.bubbles) && surface.bubbles.length > 0);
+    const renderSignature = hasTranslatedRenderContent
+      ? buildOverlayRenderSignature(result)
+      : buildOverlayDebugRenderSignature(result);
     const cleanedImage = String(result && result.cleanedImage || "");
     if (
       oldOverlay &&
@@ -4658,6 +4737,11 @@
     root.dataset.mangaTranslatorOverlay = "true";
     root.dataset.targetId = targetId;
     root.dataset.seamRenderKeys = seamSurfaces.map((surface) => surface.renderKey).join(" ");
+    const seamPageId = String(result && result.seamPageId || state.kakaoPageIdByTarget.get(target) || "");
+    root.dataset.seamPageId = seamPageId;
+    root.dataset.seamSliceKeys = getSeamSurfaceSliceKeys(seamSurfaces, seamPageId).size > 0
+      ? Array.from(getSeamSurfaceSliceKeys(seamSurfaces, seamPageId)).join(" ")
+      : "";
     if (result && isDataUrl(result.cleanedImage)) {
       root.style.setProperty("--mt-cleaned-image", `url("${result.cleanedImage}")`);
     }
@@ -4665,9 +4749,13 @@
     const seamEntries = seamSurfaces
       .map((surface) => createSeamWindowNode(
         surface,
-        String(result && result.seamPageId || state.kakaoPageIdByTarget.get(target) || "")
+        seamPageId
       ))
       .filter(Boolean);
+    root.dataset.seamSliceKeys = seamEntries
+      .map((entry) => buildSeamSurfaceSliceKey(entry.surface && entry.surface.renderKey, entry.pageId))
+      .filter(Boolean)
+      .join(" ");
     seamEntries.forEach((entry) => root.appendChild(entry.windowNode));
     const seamBubbleCount = seamEntries.reduce((count, entry) => count + entry.bubbleNodes.length, 0);
     const seamDebugNodeCount = seamEntries.reduce((count, entry) => count + entry.debugNodeCount, 0);
@@ -4723,7 +4811,7 @@
       state.overlayLayer.appendChild(root);
     }
     state.overlaysById.set(targetId, overlayState);
-    removeDuplicateSeamSurfaceRoots(seamSurfaces, root);
+    removeDuplicateSeamSurfaceRoots(seamSurfaces, root, seamPageId);
     syncOverlayPosition(overlayState);
     if (!bubbles.some((bubble) => bubble && bubble.canonical_id)) {
       syncKakaoVisualDuplicateBubbles(true);
@@ -4890,12 +4978,7 @@
       return 0;
     }
     let appended = 0;
-    const stages = [
-      { name: "raw", items: debug.rawItems, className: "mt-debug-raw" },
-      { name: "duplicate", items: debug.duplicateItems, className: "mt-debug-duplicate" },
-      { name: "deduped", items: debug.dedupedItems, className: "mt-debug-deduped" },
-      { name: "block", items: debug.finalBubbles, className: "mt-debug-block" }
-    ];
+    const stages = getRenderableOcrDebugStages(debug);
     stages.forEach((stage) => {
       (Array.isArray(stage.items) ? stage.items : []).forEach((item, index) => {
         const percent = getDebugItemPercent(item, debug);

@@ -171,6 +171,33 @@ test("translation cache excludes large image and debug payloads", () => {
   });
 });
 
+test("provider-neutral OCR debug payload preserves overlay mode", () => {
+  const result = context.__backgroundTest.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request: {
+      sourceType: "page",
+      pageIds: ["page-a"],
+      imageRevisionByPage: { "page-a": "rev-a" },
+      imageDigest: "digest-a"
+    },
+    imageSize: { width: 100, height: 100 },
+    normalized: [],
+    ocrTuning: context.__backgroundTest.getDefaultOcrTuning(),
+    ocrDebug: {
+      version: 1,
+      imageWidth: 100,
+      imageHeight: 100,
+      rawItems: [{ id: "raw-1", percent: { x: 1, y: 2, w: 3, h: 4 } }],
+      finalBubbles: []
+    },
+    ignoreSimplifiedChinese: false,
+    debugOverlayMode: "raw",
+    debug: true
+  });
+
+  assert.equal(result.debug.debugOverlayMode, "raw");
+});
+
 test("complex-background cache entries retain the cleaned-image requirement", () => {
   const result = context.__backgroundTest.buildCacheSafeTranslationResult({
     bubbles: [{ id: "t0", bg_type: "none", translated_text: "译文" }],

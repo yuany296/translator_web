@@ -312,10 +312,20 @@ test("only a current ready Kakao page binding can reuse OCR facts", () => {
 test("identical overlay payloads have a stable render signature", () => {
   const first = {
     bubbles: [{ canonical_id: "c1", x: 10, y: 20, w: 30, h: 8, translated_text: "译文" }],
-    debug: { rawItems: [{ id: "r1", percent: { x: 10, y: 20, w: 30, h: 8 } }] }
+    debug: { debugOverlayMode: "raw", rawItems: [{ id: "r1", percent: { x: 10, y: 20, w: 30, h: 8 } }] }
   };
   const second = JSON.parse(JSON.stringify(first));
   assert.equal(runtime.__test.buildOverlayRenderSignature(first), runtime.__test.buildOverlayRenderSignature(second));
+  second.debug.rawItems[0].id = "r2";
+  assert.equal(
+    runtime.__test.buildOverlayRenderSignature(first),
+    runtime.__test.buildOverlayRenderSignature(second),
+    "debug-only churn must not replace a stable translated overlay"
+  );
+  assert.notEqual(
+    runtime.__test.buildOverlayDebugRenderSignature(first),
+    runtime.__test.buildOverlayDebugRenderSignature(second)
+  );
   second.bubbles[0].translated_text = "新译文";
   assert.notEqual(runtime.__test.buildOverlayRenderSignature(first), runtime.__test.buildOverlayRenderSignature(second));
 
@@ -396,7 +406,7 @@ test("canonical seam rendering uses the regular page overlay path only", () => {
   assert.match(contentSource, /renderCanonicalProjections[\s\S]*renderTranslationResult\(/);
 });
 
-test("canonical seam surfaces render from one host page only", () => {
+test("canonical seam surfaces render page-local slices for every page", () => {
   const surface = { pageIds: ["page-a", "page-b"] };
 
   assert.equal(
@@ -412,15 +422,17 @@ test("canonical seam surfaces render from one host page only", () => {
   const renderStart = contentSource.indexOf("async function renderCanonicalProjections");
   const renderEnd = contentSource.indexOf("async function renderTranslationResult", renderStart);
   const renderSource = contentSource.slice(renderStart, renderEnd);
-  assert.match(renderSource, /hostedSeamSurfacesByPage/);
   assert.match(renderSource, /const pageSurfaces = seamSurfacesByPage\.get\(pageId\) \|\| \[\]/);
-  assert.match(renderSource, /const hostedPageSurfaces = hostedSeamSurfacesByPage\.get\(pageId\) \|\| \[\]/);
-  assert.match(renderSource, /seamSurfaces: hostedPageSurfaces/);
+  assert.doesNotMatch(renderSource, /hostedSeamSurfacesByPage/);
+  assert.doesNotMatch(renderSource, /hostedPageSurfaces/);
+  assert.match(renderSource, /seamSurfaces: pageSurfaces/);
 
   const overlayStart = contentSource.indexOf("function renderOverlay(");
   const overlayEnd = contentSource.indexOf("function scheduleTermDiscovery", overlayStart);
   const overlaySource = contentSource.slice(overlayStart, overlayEnd);
-  assert.match(overlaySource, /removeDuplicateSeamSurfaceRoots\(seamSurfaces, root\)/);
+  assert.match(overlaySource, /root\.dataset\.seamPageId = seamPageId/);
+  assert.match(overlaySource, /root\.dataset\.seamSliceKeys/);
+  assert.match(overlaySource, /removeDuplicateSeamSurfaceRoots\(seamSurfaces, root, seamPageId\)/);
 });
 
 test("Kakao seam capture is limited to the immediate 64-96px boundary band", () => {
@@ -550,10 +562,32 @@ test("canonical rendering forwards page OCR debug data to the overlay renderer",
 test("OCR debug remains renderable without translated bubbles", () => {
   assert.equal(runtime.__test.hasRenderableOcrDebug({
     bubbles: [],
-    debug: { rawItems: [{ box: { left: 1, top: 2, width: 3, height: 4 } }] }
+    debug: { debugOverlayMode: "raw", rawItems: [{ box: { left: 1, top: 2, width: 3, height: 4 } }] }
   }), true);
+  assert.equal(runtime.__test.hasRenderableOcrDebug({
+    bubbles: [],
+    debug: { debugOverlayMode: "final", rawItems: [{ box: { left: 1, top: 2, width: 3, height: 4 } }] }
+  }), false);
   assert.equal(runtime.__test.hasRenderableOcrDebug({ bubbles: [], debug: {} }), false);
   assert.equal(runtime.__test.hasRenderableOcrDebug({ bubbles: [] }), false);
+});
+
+test("OCR debug overlay mode selects only the requested stage", () => {
+  const debug = {
+    debugOverlayMode: "final",
+    rawItems: [{ id: "raw-1" }],
+    dedupedItems: [{ id: "deduped-1" }],
+    finalBubbles: [{ id: "final-1" }]
+  };
+  assert.deepEqual(
+    runtime.__test.getRenderableOcrDebugStages(debug).map((stage) => stage.name),
+    ["block"]
+  );
+  debug.debugOverlayMode = "raw";
+  assert.deepEqual(
+    runtime.__test.getRenderableOcrDebugStages(debug).map((stage) => stage.name),
+    ["raw"]
+  );
 });
 
 test("visible canonical pages left pending are eligible for recovery requeue", () => {

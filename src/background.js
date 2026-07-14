@@ -1153,6 +1153,7 @@ async function requestBaiduOcrObservations({ request, settings }) {
     ocrDebug,
     ignoreSimplifiedChinese: settings.ignoreSimplifiedChinese,
     serviceCounts: ocrPayload && ocrPayload.counts,
+    debugOverlayMode: settings.debugOverlayMode,
     debug: settings.localOcrDebug === true
   });
 }
@@ -1209,6 +1210,7 @@ async function requestLocalPaddleOcrObservations({ request, settings }) {
     serviceCounts: ocrPayload && ocrPayload.counts,
     cleanedImage: ocrPayload && ocrPayload.cleanedImage,
     cleanedImageToken: ocrPayload && ocrPayload.cleanedMaskToken,
+    debugOverlayMode: settings.debugOverlayMode,
     debug: settings.localOcrDebug === true
   });
 }
@@ -1231,6 +1233,7 @@ function buildProviderNeutralObservationResult({
   serviceCounts,
   cleanedImage,
   cleanedImageToken,
+  debugOverlayMode,
   debug
 }) {
   const retained = [];
@@ -1315,7 +1318,13 @@ function buildProviderNeutralObservationResult({
     },
     ...(isDataUrl(cleanedImage) ? { cleanedImage } : {}),
     ...(String(cleanedImageToken || "") ? { cleanedImageToken: String(cleanedImageToken) } : {}),
-    ...(debug ? { debug: buildUnifiedOcrDebugPayload(ocrDebug, retained, { provider, sourceType: request.sourceType }) } : {})
+    ...(debug ? {
+      debug: buildUnifiedOcrDebugPayload(ocrDebug, retained, {
+        provider,
+        sourceType: request.sourceType,
+        debugOverlayMode: normalizeDebugOverlayMode(debugOverlayMode)
+      })
+    } : {})
   };
   return deepFreezeObservationResult(result);
 }
@@ -2325,7 +2334,8 @@ function settingsFromOcrTuning(value) {
     ocrMinBoxHeight: tuning.minBoxHeight,
     ocrMaxAspectRatio: tuning.maxAspectRatio,
     ocrMergeLineGap: tuning.mergeLineGap,
-    localOcrDebug: tuning.debugEnabled === true
+    localOcrDebug: tuning.debugEnabled === true,
+    debugOverlayMode: normalizeDebugOverlayMode(tuning.debugOverlayMode)
   };
 }
 

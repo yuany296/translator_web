@@ -27,7 +27,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType, isMeaningfulOcrText, inferTextAlignmentFromBoxes, sortOcrCandidatesByReadingOrder };`,
   context,
   { filename: "background.js" }
 );
@@ -228,6 +228,116 @@ test("local OCR debug id includes OCR request mode", () => {
 
   assert.match(debugId, /mode-single-fallback/);
   assert.match(debugId, /reason-/);
+});
+
+test("meaningful single Hangul syllables survive OCR filtering and final observations", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 500, height: 700 };
+  const word = {
+    words: "더",
+    confidence: 0.76,
+    location: { left: 120, top: 180, width: 18, height: 18 },
+    rawBox: { left: 120, top: 180, width: 18, height: 18 }
+  };
+
+  assert.equal(background.isMeaningfulOcrText("더"), true);
+  assert.equal(background.getOcrWordDropReason(word, imageSize, background.getDefaultOcrTuning()), "");
+
+  const candidate = background.normalizeBaiduOcrItem(word, 0, imageSize);
+  assert.ok(candidate);
+  assert.equal(
+    background.getFinalCandidateDropReason(candidate, imageSize, background.getDefaultOcrTuning(), "local_paddle"),
+    ""
+  );
+
+  const result = background.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request: {
+      sourceType: "page",
+      pageIds: ["page-a"],
+      imageRevisionByPage: { "page-a": "rev-a" },
+      imageDigest: "digest-a"
+    },
+    imageSize,
+    normalized: [candidate],
+    ocrTuning: background.getDefaultOcrTuning(),
+    ocrDebug: null,
+    ignoreSimplifiedChinese: false
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].originalText, "더");
+  assert.equal(result.filteredObservations.length, 0);
+});
+
+test("left-aligned comment boxes infer left alignment and keep font-size groups separate", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 420, height: 700 };
+  const boxes = [
+    { left: 40, top: 40, right: 110, bottom: 52, centerX: 75, width: 70, height: 12 },
+    { left: 40, top: 66, right: 250, bottom: 92, centerX: 145, width: 210, height: 26 },
+    { left: 40, top: 101, right: 185, bottom: 127, centerX: 112.5, width: 145, height: 26 }
+  ];
+
+  assert.equal(background.inferTextAlignmentFromBoxes(boxes, imageSize, "chat"), "left");
+
+  const small = {
+    text: "user",
+    box: boxes[0],
+    container: null
+  };
+  const large = {
+    text: "본문",
+    box: boxes[1],
+    container: null
+  };
+
+  assert.equal(background.shouldMergeLocalPaddleParagraphLines(
+    {
+      text: small.text,
+      box: small.box,
+      rotation: 0,
+      entries: [small]
+    },
+    {
+      text: large.text,
+      box: large.box,
+      rotation: 0,
+      entries: [large]
+    }
+  ), false);
+});
+
+test("rotated two-line candidate coalescing preserves visual top-to-bottom order", () => {
+  const background = context.__backgroundTest;
+  const lower = {
+    x: 27,
+    y: 28,
+    w: 28,
+    h: 5,
+    original_text: "저런 거잖아!!",
+    translated_text: "",
+    rotation_deg: -18,
+    bg_type: "none",
+    confidence: 0.92
+  };
+  const upper = {
+    x: 44,
+    y: 20,
+    w: 18,
+    h: 5,
+    original_text: "일부러",
+    translated_text: "",
+    rotation_deg: -18,
+    bg_type: "none",
+    confidence: 0.91
+  };
+
+  const sorted = background.sortOcrCandidatesByReadingOrder([lower, upper]);
+  assert.deepEqual(Array.from(sorted, (item) => item.original_text), ["일부러", "저런 거잖아!!"]);
+
+  const merged = background.mergeOcrCandidateGroup([lower, upper], 0);
+  assert.equal(merged.original_text, "일부러\n저런 거잖아!!");
 });
 
 test("translation cache automatically clears old entries and retries after quota failure", async () => {
@@ -578,28 +688,48 @@ test("short Hangul utterances inside reliable speech bubbles survive every OCR f
   }
 });
 
-test("isolated or weak tiny Hangul remains filtered as noise", async () => {
+test("mojibake or weak tiny OCR fragments remain filtered as noise", async () => {
   const imageSize = { width: 760, height: 1350 };
+  const meaningful = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    {
+      imageWidth: imageSize.width,
+      imageHeight: imageSize.height,
+      items: [{
+        text: "음.",
+        score: 0.8876966834068298,
+        box: { left: 288, top: 1246, width: 46, height: 46 }
+      }]
+    },
+    imageSize,
+    "",
+    false
+  );
+  assert.equal(meaningful.length, 1, "legal short Hangul should survive without a speech-bubble region");
+
   const cases = [
-    { name: "no region" },
+    { name: "mojibake short fragment", text: "\u979a?" },
+    { name: "isolated jamo", text: "ㄱ" },
     {
       name: "caption panel",
+      text: "\u979a?",
       region_id: "caption-region",
       region_type: "caption_panel",
       region_confidence: 0.9981
     },
     {
       name: "weak speech-bubble region",
+      text: "\u979a?",
       region_id: "weak-region",
       region_type: "speech_bubble",
       region_confidence: 0.7
     },
     {
       name: "weak OCR",
+      text: "음.",
       region_id: "speech-region",
       region_type: "speech_bubble",
       region_confidence: 0.9981,
-      score: 0.55
+      score: 0.35
     }
   ];
 
@@ -609,7 +739,7 @@ test("isolated or weak tiny Hangul remains filtered as noise", async () => {
         imageWidth: imageSize.width,
         imageHeight: imageSize.height,
         items: [{
-          text: "음.",
+          text: item.text,
           score: item.score ?? 0.8876966834068298,
           box: { left: 288, top: 1246, width: 46, height: 46 },
           ...item

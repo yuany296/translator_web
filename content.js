@@ -374,6 +374,8 @@
       textSimilarity,
       formatTranslationForOriginalLines,
       normalizeBubbleRotation,
+      normalizeBubbleAlignment,
+      applyBubbleAnchorStyle,
       buildRegionClipPath,
       getBubbleRenderColors,
       getDynamicStrokeWidth,
@@ -3696,6 +3698,7 @@
       polygon: source.polygon || visual.polygon || null,
       text_color: source.text_color || visual.text_color || visual.textColor || "",
       stroke_color: source.stroke_color || visual.stroke_color || visual.strokeColor || "",
+      alignment: normalizeBubbleAlignment(source.alignment || visual.alignment),
       rotation_deg: Number(source.rotation_deg || visual.rotation_deg || visual.rotationDeg || 0),
       font_height: Number(source.font_height || visual.font_height || visual.fontHeight || 0),
       font_height_percent: Number(
@@ -3987,6 +3990,7 @@
         region_polygon: visual.regionPolygon || visual.region_polygon || null,
         fill_box: visual.fillBox || visual.fill_box || null,
         cleaned_source_box: visual.cleanedSourceBox || visual.cleaned_source_box || null,
+        alignment: normalizeBubbleAlignment(visual.alignment),
         rotation_deg: Number(visual.rotationDeg ?? visual.rotation_deg) || 0,
         canonical_id: "",
         block_id: "seam-cross-" + idx,
@@ -4422,10 +4426,18 @@
       height: canvasHeight
     });
     if (polygonGeometry) {
-      node.style.left = `${polygonGeometry.centerX}px`;
-      node.style.top = `${polygonGeometry.centerY}px`;
       node.style.width = `${polygonGeometry.width}px`;
       node.style.height = `${polygonGeometry.height}px`;
+      applyBubbleAnchorStyle(node, {
+        alignment: node.dataset.alignment,
+        x: polygonGeometry.left,
+        y: polygonGeometry.top,
+        w: polygonGeometry.width,
+        h: polygonGeometry.height,
+        rotation: Number(node.dataset.rotationDeg || 0),
+        unit: "px",
+        allowVerticalOverflow: true
+      });
       return polygonGeometry;
     }
     return {
@@ -5550,10 +5562,12 @@
       return null;
     }
     const bgType = normalizeBgType(bubble.bg_type);
+    const alignment = normalizeBubbleAlignment(bubble.alignment);
 
     const node = document.createElement("div");
     const renderColors = getBubbleRenderColors(bubble, bgType);
     node.className = `mt-bubble mt-bg-${bgType}`;
+    node.classList.add(`mt-align-${alignment}`);
     if (coverOnly) node.classList.add("mt-cover-only");
     node.dataset.mangaTranslatorOverlay = "true";
     node.dataset.index = String(index);
@@ -5566,6 +5580,7 @@
       bubble.font_height_percent || bubble.fontHeightPercent ||
       bubble.visual && (bubble.visual.fontHeightPercent || bubble.visual.font_height_percent) || 0
     ));
+    node.dataset.alignment = alignment;
     node.dataset.rotationDeg = String(normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type));
     if (Array.isArray(bubble.polygon)) {
       node.dataset.polygon = JSON.stringify(bubble.polygon);
@@ -5622,14 +5637,19 @@
       }
     }
 
-    const centerX = clamp(x + w / 2, 0, 100);
-    const centerY = bubble.stitch_overflow === true ? y + h / 2 : clamp(y + h / 2, 0, 100);
-    node.style.left = `${centerX}%`;
-    node.style.top = `${centerY}%`;
     node.style.width = `${w}%`;
     node.style.height = `${h}%`;
     const rotation = normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
-    node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${rotation.toFixed(2)}deg)`);
+    applyBubbleAnchorStyle(node, {
+      alignment,
+      x,
+      y,
+      w,
+      h,
+      rotation,
+      unit: "%",
+      allowVerticalOverflow: bubble.stitch_overflow === true
+    });
 
     node.textContent = coverOnly ? "" : formatTranslationForOriginalLines(translatedText, Number(node.dataset.sourceLineCount));
     node.title = coverOnly ? "" : originalText || translatedText;
@@ -5648,6 +5668,47 @@
     });
 
     return node;
+  }
+
+  function applyBubbleAnchorStyle(node, {
+    alignment = "center",
+    x = 0,
+    y = 0,
+    w = 0,
+    h = 0,
+    rotation = 0,
+    unit = "%",
+    allowVerticalOverflow = false
+  } = {}) {
+    const normalized = normalizeBubbleAlignment(alignment);
+    const top = allowVerticalOverflow ? Number(y) || 0 : clamp(Number(y) || 0, 0, unit === "%" ? 100 : Number.MAX_SAFE_INTEGER);
+    const left = Number(x) || 0;
+    const width = Math.max(0, Number(w) || 0);
+    const height = Math.max(0, Number(h) || 0);
+    const angle = Number(rotation) || 0;
+    if (normalized === "left") {
+      node.style.left = `${left}${unit}`;
+      node.style.top = `${top}${unit}`;
+      node.style.transformOrigin = "left top";
+      node.style.setProperty("--mt-base-transform", `rotate(${angle.toFixed(2)}deg)`);
+      return;
+    }
+    if (normalized === "right") {
+      const anchorX = unit === "%" ? clamp(left + width, 0, 100) : left + width;
+      node.style.left = `${anchorX}${unit}`;
+      node.style.top = `${top}${unit}`;
+      node.style.transformOrigin = "right top";
+      node.style.setProperty("--mt-base-transform", `translate(-100%, 0) rotate(${angle.toFixed(2)}deg)`);
+      return;
+    }
+    const centerX = unit === "%" ? clamp(left + width / 2, 0, 100) : left + width / 2;
+    const centerY = allowVerticalOverflow
+      ? top + height / 2
+      : unit === "%" ? clamp(top + height / 2, 0, 100) : top + height / 2;
+    node.style.left = `${centerX}${unit}`;
+    node.style.top = `${centerY}${unit}`;
+    node.style.transformOrigin = "center center";
+    node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${angle.toFixed(2)}deg)`);
   }
 
   function buildRegionClipPath(points, x, y, width, height) {
@@ -5969,10 +6030,18 @@
       const bubbleWidthPx = polygonGeometry ? polygonGeometry.width : (rect.width * bubbleWidthPercent) / 100;
       const bubbleHeightPx = polygonGeometry ? polygonGeometry.height : (rect.height * bubbleHeightPercent) / 100;
       if (polygonGeometry) {
-        node.style.left = `${polygonGeometry.centerX}px`;
-        node.style.top = `${polygonGeometry.centerY}px`;
         node.style.width = `${polygonGeometry.width}px`;
         node.style.height = `${polygonGeometry.height}px`;
+        applyBubbleAnchorStyle(node, {
+          alignment: node.dataset.alignment,
+          x: polygonGeometry.left,
+          y: polygonGeometry.top,
+          w: polygonGeometry.width,
+          h: polygonGeometry.height,
+          rotation: Number(node.dataset.rotationDeg || 0),
+          unit: "px",
+          allowVerticalOverflow: true
+        });
       }
       const fittedSize = fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, {
         backgroundTarget: overlayState.isBackgroundTarget
@@ -6062,9 +6131,17 @@
         return Math.hypot(next.x - point.x, next.y - point.y);
       });
       // 后端按文字基线方向排列四点，因此 0/2 边是宽度，1/3 边是高度。
+      const left = Math.min(...points.map((point) => point.x));
+      const top = Math.min(...points.map((point) => point.y));
+      const right = Math.max(...points.map((point) => point.x));
+      const bottom = Math.max(...points.map((point) => point.y));
       const width = Math.max(8, (edges[0] + edges[2]) / 2);
       const height = Math.max(8, (edges[1] + edges[3]) / 2);
       return {
+        left,
+        top,
+        right,
+        bottom,
         centerX: points.reduce((sum, point) => sum + point.x, 0) / points.length,
         centerY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
         width: Math.max(8, width),
@@ -6107,9 +6184,22 @@
     const cacheKey = `${options.backgroundTarget ? "bg" : "std"}|${vertical ? "v" : "h"}|${width}x${height}|${sourceHeightKey}|${text}`;
     const cachedSize = state.fontFitCache.get(cacheKey);
     if (typeof cachedSize === "number" && Number.isFinite(cachedSize)) {
+      resetBubbleOverflowExpansion(node);
+      const cachedProbe = ensureBubbleMeasureProbe();
+      cachedProbe.className = node.className;
+      cachedProbe.classList.add("mt-measure-probe");
+      cachedProbe.classList.remove("mt-show-original");
+      cachedProbe.style.width = `${width}px`;
+      cachedProbe.style.height = `${height}px`;
+      cachedProbe.style.fontSize = `${cachedSize}px`;
+      cachedProbe.textContent = text;
+      if (isProbeOverflowing(cachedProbe)) {
+        expandBubbleForTextOverflow(node, width, height, cachedProbe);
+      }
       return cachedSize;
     }
 
+    resetBubbleOverflowExpansion(node);
     const probe = ensureBubbleMeasureProbe();
     probe.className = node.className;
     probe.classList.add("mt-measure-probe");
@@ -6139,6 +6229,11 @@
     if (typeof originalTextHeight === "number" && originalTextHeight > 0) {
       const originalLineCap = originalTextHeight * BUBBLE_FONT_ORIGINAL_SCALE;
       safeSize = Math.min(safeSize, originalLineCap);
+    }
+
+    probe.style.fontSize = `${safeSize}px`;
+    if (isProbeOverflowing(probe)) {
+      expandBubbleForTextOverflow(node, width, height, probe);
     }
 
     const normalized = Math.round(safeSize * 10) / 10;
@@ -6197,6 +6292,54 @@
 
   function isProbeOverflowing(probe) {
     return probe.scrollHeight > probe.clientHeight + 0.5 || probe.scrollWidth > probe.clientWidth + 0.5;
+  }
+
+  function resetBubbleOverflowExpansion(node) {
+    if (!node || !node.style) return;
+    node.style.removeProperty("min-width");
+    node.style.removeProperty("min-height");
+    node.style.removeProperty("--mt-overflow-expanded");
+    if (node.dataset) {
+      if (node.dataset.expandedForText === "true") {
+        restoreBubbleFillVariable(node, "--mt-fill-left", node.dataset.originalFillLeft);
+        restoreBubbleFillVariable(node, "--mt-fill-top", node.dataset.originalFillTop);
+        restoreBubbleFillVariable(node, "--mt-fill-width", node.dataset.originalFillWidth);
+        restoreBubbleFillVariable(node, "--mt-fill-height", node.dataset.originalFillHeight);
+      }
+      node.dataset.expandedForText = "";
+    }
+  }
+
+  function restoreBubbleFillVariable(node, name, value) {
+    if (value) {
+      node.style.setProperty(name, value);
+    } else {
+      node.style.removeProperty(name);
+    }
+  }
+
+  function expandBubbleForTextOverflow(node, width, height, probe) {
+    if (!node || !probe) return;
+    const requiredWidth = Math.max(width, Math.ceil(probe.scrollWidth + 2));
+    const requiredHeight = Math.max(height, Math.ceil(probe.scrollHeight + 2));
+    node.style.minWidth = `${requiredWidth}px`;
+    node.style.minHeight = `${requiredHeight}px`;
+    node.style.setProperty("--mt-overflow-expanded", "1");
+    if (node.dataset) {
+      node.dataset.expandedForText = "true";
+    }
+    if (node.classList && node.classList.contains("mt-bg-solid")) {
+      if (node.dataset) {
+        node.dataset.originalFillLeft = node.style.getPropertyValue("--mt-fill-left") || "";
+        node.dataset.originalFillTop = node.style.getPropertyValue("--mt-fill-top") || "";
+        node.dataset.originalFillWidth = node.style.getPropertyValue("--mt-fill-width") || "";
+        node.dataset.originalFillHeight = node.style.getPropertyValue("--mt-fill-height") || "";
+      }
+      node.style.setProperty("--mt-fill-left", "0%");
+      node.style.setProperty("--mt-fill-top", "0%");
+      node.style.setProperty("--mt-fill-width", "100%");
+      node.style.setProperty("--mt-fill-height", "100%");
+    }
   }
 
   function rememberFontFitCache(key, value) {
@@ -7822,6 +7965,7 @@
             region_polygon: normalizeRegionPolygon(bubble.region_polygon, bubble.stitch_overflow === true),
             text_color: normalizeCssColor(bubble.text_color, ""),
             stroke_color: normalizeCssColor(bubble.stroke_color, ""),
+            alignment: normalizeBubbleAlignment(bubble.alignment),
             polygon: normalizeBubblePolygon(bubble.polygon, bubble.stitch_overflow === true),
             rotation_deg: normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type),
             font_height: Number(bubble.font_height || bubble.fontHeight || 0),
@@ -7946,6 +8090,11 @@
     // 保留 OCR 的真实倾斜角。垂直排版由 writing-mode 单独处理，不能把
     // 大于某个经验阈值的合法斜体一律压成水平文字。
     return clamp(angle, -BUBBLE_ROTATION_MAX, BUBBLE_ROTATION_MAX);
+  }
+
+  function normalizeBubbleAlignment(value) {
+    const text = String(value || "").trim().toLowerCase();
+    return text === "left" || text === "right" || text === "center" ? text : "center";
   }
 
   function cleanRenderableText(text) {

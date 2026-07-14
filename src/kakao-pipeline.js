@@ -158,6 +158,11 @@
       .replace(/[^\p{L}\p{N}]/gu, "");
   }
 
+  function normalizeTextAlignment(value) {
+    const text = String(value || "").trim().toLowerCase();
+    return text === "left" || text === "right" || text === "center" ? text : "center";
+  }
+
   function getBubbleLineCount(bubble) {
     if (bubble && Number.isFinite(Number(bubble.source_line_count)) && Number(bubble.source_line_count) >= 1) {
       return Math.round(Number(bubble.source_line_count));
@@ -4628,6 +4633,7 @@
       : rawVisual.polygon || null;
     const textColor = String(rawVisual.textColor || rawVisual.text_color || "");
     const strokeColor = String(rawVisual.strokeColor || rawVisual.stroke_color || "");
+    const alignment = normalizeTextAlignment(rawVisual.alignment);
     const rotationDeg = Number(rawVisual.rotationDeg ?? rawVisual.rotation_deg) || 0;
     const sourceLineCount = Math.max(
       linked.length,
@@ -4651,6 +4657,7 @@
       text_color: textColor,
       strokeColor,
       stroke_color: strokeColor,
+      alignment,
       rotationDeg,
       rotation_deg: rotationDeg,
       sourceLineCount,
@@ -4684,6 +4691,7 @@
       polygon,
       text_color: textColor,
       stroke_color: strokeColor,
+      alignment,
       rotation_deg: rotationDeg,
       source_line_count: sourceLineCount
     });

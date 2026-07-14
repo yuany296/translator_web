@@ -1516,6 +1516,7 @@
       text_color: raw.text_color ?? raw.textColor,
       strokeColor: raw.strokeColor ?? raw.stroke_color,
       stroke_color: raw.stroke_color ?? raw.strokeColor,
+      alignment: raw.alignment,
       rotationDeg: raw.rotationDeg ?? raw.rotation_deg,
       rotation_deg: raw.rotation_deg ?? raw.rotationDeg,
       sourceLineCount: raw.sourceLineCount ?? raw.source_line_count,

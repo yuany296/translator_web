@@ -148,14 +148,15 @@ const SEAM_CROSS_MIN_HEIGHT_RATIO = 0.5;
 const SEAM_CROSS_MAX_ROTATION_DELTA_DEG = 20;
 const SEAM_CROSS_MAX_BAND_COVERAGE = 1.5;
 const CHAT_TIME_RE = /(?:오전|오후)\s*\d{1,2}:\d{2}/;
-const CHAT_MERGE_HEIGHT_RATIO_MAX = 1.4;
+const CHAT_MERGE_HEIGHT_RATIO_MAX = 1.32;
 const CHAT_MERGE_BRIGHTNESS_DIFF = 60;
-const CHAT_PARAGRAPH_HEIGHT_RATIO_MAX = 1.6;
+const CHAT_PARAGRAPH_HEIGHT_RATIO_MAX = 1.35;
 const CHAT_SMALL_ABOVE_LARGE_MIN_GAP = 0.3;
 const CHAT_PAINT_PADDING_X = 4;
 const CHAT_PAINT_PADDING_Y = 3;
 const CHAT_PAINT_PADDING_RATIO_X = 0.12;
 const CHAT_PAINT_PADDING_RATIO_Y = 0.08;
+const OCR_STYLE_SPLIT_HEIGHT_RATIO = 1.32;
 const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
 const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
 const inflightTranslateByCacheKey = new Map();
@@ -1236,6 +1237,18 @@ function buildProviderNeutralObservationResult({
       reason = "ignored-simplified-chinese";
     }
     if (reason) {
+      traceFilterReason(ocrDebug, {
+        stage: "final",
+        engine: provider,
+        dropReason: reason,
+        reason,
+        item: {
+          text: candidate && candidate.original_text ? candidate.original_text : "",
+          confidence: Number(candidate && candidate.confidence) || 0,
+          rawBox: candidate && candidate.rawBox ? candidate.rawBox : null,
+          percent: candidate ? { x: candidate.x, y: candidate.y, w: candidate.w, h: candidate.h } : null
+        }
+      });
       filteredRows.push({ candidate, reason });
     } else {
       retained.push(candidate);
@@ -1359,6 +1372,7 @@ function buildProviderNeutralObservation(provider, request, candidate, imageSize
     regionPolygon: quantizeObservationPolygon(candidate && candidate.region_polygon),
     textColor: String(candidate && candidate.text_color || ""),
     strokeColor: String(candidate && candidate.stroke_color || ""),
+    alignment: normalizeOcrTextAlignment(candidate && candidate.alignment),
     nonTranslate: candidate && candidate.non_translate === true,
     polygon: quantizeObservationPolygon(candidate && candidate.polygon),
     rotationDeg: quantizeObservationNumber(candidate && candidate.rotation_deg, 0.1),
@@ -2381,6 +2395,9 @@ async function requestLegacyTranslatedResultFromOcr({
       region_polygon: visual.regionPolygon || null,
       text_color: visual.textColor || "",
       stroke_color: visual.strokeColor || "",
+      ...(normalizeOcrTextAlignment(visual.alignment) !== "center"
+        ? { alignment: normalizeOcrTextAlignment(visual.alignment) }
+        : {}),
       polygon: visual.polygon || null,
       rotation_deg: Number(visual.rotationDeg || 0),
       ...(Number(visual.fontHeight || 0) > 0 ? { font_height: Number(visual.fontHeight) } : {}),
@@ -2977,7 +2994,7 @@ function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debug) {
   const merged = clusters
     .flatMap((cluster, index) => splitLocalPaddleVisualStyleClusters(cluster, clusterRegionTypes[index])
       .map((styleCluster) => {
-        const item = mergeLocalPaddleCluster(styleCluster, imageSize, imageAnalysis);
+        const item = mergeLocalPaddleCluster(styleCluster, imageSize, imageAnalysis, clusterRegionTypes[index]);
         if (item && clusterRegionTypes[index]) {
           item.region_type = clusterRegionTypes[index];
           // 分段后的聊天元数据和正文都必须共享 chat 语义，不能被原始
@@ -3036,7 +3053,7 @@ function splitLocalPaddleVisualStyleClusters(cluster, regionType = "") {
   const minHeight = heights[0];
   const maxHeight = heights[heights.length - 1];
   const heightRatio = maxHeight / Math.max(1, minHeight);
-  if (heightRatio < 1.45) {
+  if (heightRatio < OCR_STYLE_SPLIT_HEIGHT_RATIO) {
     return [cluster];
   }
 
@@ -3159,6 +3176,37 @@ function normalizedTextSimilarity(left, right) {
 
 function normalizeTextForLocalPaddle(value) {
   return String(value || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function isMeaningfulOcrText(text) {
+  const raw = String(text || "").normalize("NFKC").trim();
+  return !!raw && /[\uac00-\ud7af\u3130-\u318f\u3040-\u30ff\u3400-\u9fffA-Za-z0-9]/u.test(raw);
+}
+
+function hasMeaningfulKoreanOrCjkText(text) {
+  return /[\uac00-\ud7af\u3040-\u30ff\u3400-\u9fff]/u.test(String(text || ""));
+}
+
+function isReliableMeaningfulShortOcrText(text) {
+  const raw = String(text || "").normalize("NFKC").trim();
+  if (!isMeaningfulOcrText(raw)) {
+    return false;
+  }
+  if (/[\uac00-\ud7af\u3040-\u30ff]/u.test(raw)) {
+    return true;
+  }
+  if (/[\u3400-\u9fff]/u.test(raw)) {
+    return !/[?？�]/u.test(raw);
+  }
+  return false;
+}
+
+function isLikelyMojibakeShortOcrText(text) {
+  const raw = String(text || "").normalize("NFKC").trim();
+  return Array.from(raw).length <= 4 &&
+    /[\u3400-\u9fff]/u.test(raw) &&
+    !/[\uac00-\ud7af\u3040-\u30ff]/u.test(raw) &&
+    /[?\uFFFD]/u.test(raw);
 }
 
 function localPaddleBoxIou(left, right) {
@@ -3309,7 +3357,7 @@ function shouldMergeLocalPaddleParagraphLines(left, right) {
 
   // Chat pattern rejection: small text above large text (e.g., username above message body)
   // When the upper box is significantly smaller, vertically close, and horizontally overlapping
-  if (heightRatio < 1 / CHAT_PARAGRAPH_HEIGHT_RATIO_MAX) {
+  if (rotationDelta < 3.5 && heightRatio < 1 / CHAT_PARAGRAPH_HEIGHT_RATIO_MAX) {
     const chatAvgHeight = Math.max(1, (left.box.height + right.box.height) / 2);
     const upperAboveLower = (left.box.top + left.box.bottom) < (right.box.top + right.box.bottom);
     const chatVerticalGap = getVerticalGap(left.box, right.box);
@@ -3449,7 +3497,7 @@ function detectLocalPaddleRegionType(entries) {
       Math.min(small.box.right, large.box.right) - Math.max(small.box.left, large.box.left));
     const overlapRatio = overlapX / Math.max(1, Math.min(small.box.width, large.box.width));
     return small.box.top <= large.box.top &&
-      large.box.height >= small.box.height * 1.35 &&
+      large.box.height >= small.box.height * OCR_STYLE_SPLIT_HEIGHT_RATIO &&
       getVerticalGap(small.box, large.box) <= large.box.height * 0.65 &&
       overlapRatio >= 0.3;
   }));
@@ -3465,6 +3513,59 @@ function detectLocalPaddleRegionType(entries) {
 
   const hasChatShape = hasStackedMetadata || hasSizeVariation || isLeftAligned || containsChatRegion;
   return chatScore >= 4 && (hasTimestamp || containsChatRegion) && hasChatShape ? "chat" : null;
+}
+
+function normalizeOcrTextAlignment(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return text === "left" || text === "right" || text === "center" ? text : "center";
+}
+
+function inferLocalPaddleClusterAlignment(cluster, imageSize, regionType = "") {
+  const boxes = (Array.isArray(cluster) ? cluster : [])
+    .map((entry) => entry && entry.box)
+    .filter(Boolean);
+  return inferTextAlignmentFromBoxes(boxes, imageSize, regionType);
+}
+
+function inferTextAlignmentFromBoxes(boxes, imageSize, regionType = "") {
+  const usable = (Array.isArray(boxes) ? boxes : []).filter((box) =>
+    box && [box.left, box.right, box.centerX, box.width, box.height].every((value) => Number.isFinite(Number(value)))
+  );
+  if (usable.length < 2) {
+    const type = String(regionType || "").toLowerCase();
+    return type === "chat" || type === "comment" || type === "ui" ? "left" : "center";
+  }
+
+  const avgHeight = Math.max(1, usable.reduce((sum, box) => sum + Number(box.height || 0), 0) / usable.length);
+  const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const lefts = usable.map((box) => Number(box.left));
+  const rights = usable.map((box) => Number(box.right));
+  const centers = usable.map((box) => Number(box.centerX));
+  const widths = usable.map((box) => Number(box.width));
+  const spread = (values) => Math.max(...values) - Math.min(...values);
+  const leftSpread = spread(lefts);
+  const rightSpread = spread(rights);
+  const centerSpread = spread(centers);
+  const widthSpread = spread(widths);
+  const edgeTolerance = Math.max(avgHeight * 1.15, imageWidth * 0.012);
+  const centerTolerance = Math.max(avgHeight * 1.2, imageWidth * 0.018);
+
+  if (leftSpread <= edgeTolerance && (rightSpread > leftSpread * 1.35 || widthSpread > avgHeight * 0.75)) {
+    return "left";
+  }
+  if (rightSpread <= edgeTolerance && (leftSpread > rightSpread * 1.35 || widthSpread > avgHeight * 0.75)) {
+    return "right";
+  }
+  if (centerSpread <= centerTolerance) {
+    return "center";
+  }
+  if (leftSpread <= rightSpread && leftSpread <= centerSpread) {
+    return "left";
+  }
+  if (rightSpread <= leftSpread && rightSpread <= centerSpread) {
+    return "right";
+  }
+  return "center";
 }
 
 function unionLocalPaddleBoxes(left, right) {
@@ -3810,7 +3911,7 @@ function isLocalPaddleVerticalPair(leftBox, rightBox) {
   return leftTall && rightTall && Math.abs(leftBox.centerX - rightBox.centerX) <= avgWidth * 1.35;
 }
 
-function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis) {
+function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis, regionType = "") {
   if (!Array.isArray(cluster) || cluster.length === 0) {
     return null;
   }
@@ -3856,7 +3957,8 @@ function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis) {
   }
   merged.localOcrClusterKind = representativeContainer ? "bubbleText" : representative.kind;
   merged.localOcrContainerId = hasSingleCompleteContainer ? representativeContainer.id : "";
-  merged.localOcrRegionType = representativeContainer ? representativeContainer.type : "effect_text";
+  merged.localOcrRegionType = regionType || (representativeContainer ? representativeContainer.type : "effect_text");
+  merged.alignment = inferLocalPaddleClusterAlignment(cluster, imageSize, merged.localOcrRegionType);
   merged.regionPolygon = hasSingleCompleteContainer ? representativeContainer.polygon : null;
   merged.regionBox = hasSingleCompleteContainer ? representativeContainer.box : null;
   merged.region_confidence = hasSingleCompleteContainer
@@ -3958,12 +4060,10 @@ function buildRotatedClusterGeometry(cluster, imageSize) {
 }
 
 function projectClusterCenter(entry, rotation) {
-  const radians = (rotation * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
+  const point = projectPointForReadingOrder(entry.box.centerX, entry.box.centerY, rotation);
   return {
-    x: entry.box.centerX * cos + entry.box.centerY * sin,
-    y: -entry.box.centerX * sin + entry.box.centerY * cos,
+    x: point.inline,
+    y: point.line,
     height: Math.max(1, Math.min(entry.box.width, entry.box.height))
   };
 }
@@ -3981,7 +4081,28 @@ function buildRotatedClusterRows(cluster, rotation) {
     row.y = row.entries.reduce((sum, item) => sum + item.point.y, 0) / row.entries.length;
     row.height = Math.max(row.height, point.height);
   });
-  return rows.sort((left, right) => left.y - right.y);
+  return orientProjectedRowsVisualTopFirst(rows.map((row) => ({
+    line: row.y,
+    height: row.height,
+    entries: row.entries.map((item) => ({
+      ...item,
+      box: item.entry.box,
+      point: {
+        inline: item.point.x,
+        line: item.point.y
+      }
+    }))
+  }))).map((row) => ({
+    y: row.line,
+    height: row.height,
+    entries: row.entries.map((item) => ({
+      entry: item.entry,
+      point: {
+        x: item.point.inline,
+        y: item.point.line
+      }
+    }))
+  }));
 }
 
 function estimateRotatedClusterLineCount(cluster, rotation) {
@@ -4116,6 +4237,9 @@ function shouldDropLocalPaddleNoiseItem(item, imageSize) {
   if (!box || !text) {
     return true;
   }
+  if (isLikelyMojibakeShortOcrText(text)) {
+    return true;
+  }
   if (isReliableShortSpeechBubbleItem(item)) {
     return false;
   }
@@ -4125,7 +4249,7 @@ function shouldDropLocalPaddleNoiseItem(item, imageSize) {
   const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
   const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
   const areaRatio = (box.width * box.height) / Math.max(1, imageWidth * imageHeight);
-  if (countScriptChars(text) <= 1 && areaRatio < 0.003 && Number(item.confidence || 0) < 0.98) {
+  if (!isReliableMeaningfulShortOcrText(text) && countScriptChars(text) <= 1 && areaRatio < 0.003 && Number(item.confidence || 0) < 0.98) {
     return true;
   }
   return false;
@@ -4142,6 +4266,9 @@ function shouldDropLowConfidenceLocalPaddleText(text, confidence) {
   const jamo = (raw.match(/[\u3130-\u318f]/g) || []).length;
   const latin = (raw.match(/[A-Za-z]/g) || []).length;
   const script = countScriptChars(raw);
+  if (isReliableMeaningfulShortOcrText(raw) && score >= 0.45) {
+    return false;
+  }
   if (latin > 0 && script <= 3) {
     return true;
   }
@@ -4485,6 +4612,7 @@ function keepOrTraceOcrWord(item, imageSize, tuning, debug, index, engine) {
     stage: "filter",
     engine,
     index,
+    dropReason: reason,
     reason,
     item: toDebugOcrItem(item, index, imageSize, "filtered")
   });
@@ -4520,6 +4648,10 @@ function getOcrWordDropReason(item, imageSize, tuning = getDefaultOcrTuning()) {
   if (isSymbolOnlyText(text)) {
     return "symbol-only";
   }
+  if (isLikelyMojibakeShortOcrText(text)) {
+    return "mojibake-short-fragment";
+  }
+  const meaningfulText = isMeaningfulOcrText(text);
 
   const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
   const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
@@ -4531,7 +4663,8 @@ function getOcrWordDropReason(item, imageSize, tuning = getDefaultOcrTuning()) {
   const reliableShortSpeechBubble = isReliableShortSpeechBubbleItem(item);
 
   if (!reliableShortSpeechBubble && confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
-    if (scriptChars <= 2 || areaRatio < 0.012) {
+    const stronglyUncertainMeaningfulText = isReliableMeaningfulShortOcrText(text) && confidence < 0.45;
+    if (!meaningfulText || stronglyUncertainMeaningfulText || areaRatio < 0.0012) {
       return "low-confidence";
     }
   }
@@ -4548,10 +4681,10 @@ function getOcrWordDropReason(item, imageSize, tuning = getDefaultOcrTuning()) {
   if (aspectRatio > maxAspectRatio && !isReadableHorizontalOcrLine(item, box, text, maxAspectRatio)) {
     return "bad-aspect-ratio";
   }
-  if (!reliableShortSpeechBubble && scriptChars <= 1 && areaRatio < 0.003 && confidence < 0.98) {
+  if (!reliableShortSpeechBubble && !isReliableMeaningfulShortOcrText(text) && scriptChars <= 1 && areaRatio < 0.003 && confidence < 0.98) {
     return "tiny-single-character";
   }
-  if (!reliableShortSpeechBubble && shouldDropLowConfidenceLocalPaddleText(text, confidence)) {
+  if (!reliableShortSpeechBubble && !meaningfulText && shouldDropLowConfidenceLocalPaddleText(text, confidence)) {
     return "weak-script-confidence";
   }
   return "";
@@ -4589,10 +4722,12 @@ function getFinalCandidateDropReason(item, imageSize, tuning, engine) {
   if (!reliableShortSpeechBubble && confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
     const text = String(item.original_text || "");
     const scriptChars = countScriptChars(text);
+    const meaningfulText = isMeaningfulOcrText(text);
     const areaRatio =
       (box.width * box.height) /
       Math.max(1, (Number(imageSize && imageSize.width) || 1) * (Number(imageSize && imageSize.height) || 1));
-    if (scriptChars <= 2 || areaRatio < 0.012) {
+    const stronglyUncertainMeaningfulText = isReliableMeaningfulShortOcrText(text) && confidence < 0.45;
+    if (!meaningfulText || stronglyUncertainMeaningfulText || areaRatio < 0.0012) {
       return "low-confidence-final";
     }
   }
@@ -4606,7 +4741,19 @@ function traceFilterReason(debug, entry) {
   if (!debug || !Array.isArray(debug.filterReasons)) {
     return;
   }
-  debug.filterReasons.push(entry);
+  const item = entry && entry.item;
+  const text = String(
+    entry && entry.text ||
+    item && (item.text || item.words || item.original_text) ||
+    ""
+  ).trim();
+  const dropReason = String(entry && (entry.dropReason || entry.reason) || "filtered");
+  debug.filterReasons.push({
+    ...entry,
+    text,
+    dropReason,
+    reason: String(entry && entry.reason || dropReason)
+  });
 }
 
 function toDebugOcrItem(item, index, imageSize, stage) {
@@ -5236,6 +5383,7 @@ function normalizeBaiduOcrItem(item, index, imageSize) {
     region_polygon: normalizePercentRegionPolygon(item && item.regionPolygon, imageSize),
     text_color: String(item && item.textColor ? item.textColor : ""),
     stroke_color: String(item && item.strokeColor ? item.strokeColor : ""),
+    alignment: normalizeOcrTextAlignment(item && item.alignment),
     polygon,
     rotation_deg: rotation,
     source_line_count: sourceLineCount,
@@ -5971,6 +6119,9 @@ function shouldDropLocalPaddleCandidateBubble(item, imageSize) {
   if (!text) {
     return true;
   }
+  if (isLikelyMojibakeShortOcrText(text)) {
+    return true;
+  }
 
   const box = getNormalizedCandidatePixelBox(item, imageSize);
   if (!box) {
@@ -5985,6 +6136,7 @@ function shouldDropLocalPaddleCandidateBubble(item, imageSize) {
   const areaRatio = (box.width * box.height) / Math.max(1, imageWidth * imageHeight);
   const score = Number(item.confidence || 0);
   const scriptChars = countScriptChars(text);
+  const meaningfulText = isMeaningfulOcrText(text);
   const hangulChars = (text.match(/[\uac00-\ud7af]/g) || []).length;
   const cjkChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
   const digitChars = (text.match(/\d/g) || []).length;
@@ -5999,11 +6151,11 @@ function shouldDropLocalPaddleCandidateBubble(item, imageSize) {
     return true;
   }
 
-  if (scriptChars <= 1 && areaRatio < 0.012) {
+  if (!meaningfulText && scriptChars <= 1 && areaRatio < 0.012) {
     return true;
   }
 
-  if (scriptChars <= 2 && verySmall && score < 0.96) {
+  if (scriptChars <= 2 && verySmall && score < 0.96 && !isReliableMeaningfulShortOcrText(text)) {
     return true;
   }
 
@@ -6125,8 +6277,90 @@ function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
   );
 }
 
+function sortOcrCandidatesByReadingOrder(group) {
+  const items = (Array.isArray(group) ? group : []).filter(Boolean);
+  if (items.length <= 1) {
+    return [...items];
+  }
+  const rotation = medianRotation(items.map((item) => item && item.rotation_deg));
+  const rows = buildProjectedReadingRows(
+    items.map((item, index) => {
+      const box = getPercentBubbleBox(item);
+      if (!box) return null;
+      return {
+        item,
+        index,
+        box,
+        text: String(item && item.original_text || ""),
+        point: projectPointForReadingOrder(box.centerX, box.centerY, rotation),
+        lineHeight: Math.max(0.1, Math.min(box.width, box.height))
+      };
+    }).filter(Boolean)
+  );
+  return rows
+    .flatMap((row) => row.entries
+      .sort((left, right) => left.point.inline - right.point.inline || left.index - right.index)
+      .map((entry) => entry.item));
+}
+
+function inferOcrCandidateGroupAlignment(group) {
+  const explicit = (Array.isArray(group) ? group : [])
+    .map((item) => normalizeOcrTextAlignment(item && item.alignment))
+    .filter((alignment) => alignment !== "center");
+  if (explicit.length > 0) {
+    return explicit[0];
+  }
+  return inferTextAlignmentFromBoxes(
+    (Array.isArray(group) ? group : []).map(getPercentBubbleBox).filter(Boolean),
+    { width: 100, height: 100 },
+    group && group[0] && group[0].region_type
+  );
+}
+
+function projectPointForReadingOrder(centerX, centerY, rotation) {
+  const radians = (normalizeRotationDegrees(rotation) * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    inline: centerX * cos + centerY * sin,
+    line: -centerX * sin + centerY * cos
+  };
+}
+
+function buildProjectedReadingRows(entries) {
+  const rows = [];
+  entries.forEach((entry) => {
+    let row = rows.find((candidate) =>
+      Math.abs(candidate.line - entry.point.line) <= Math.max(candidate.height, entry.lineHeight) * 0.72
+    );
+    if (!row) {
+      row = { line: entry.point.line, height: entry.lineHeight, entries: [] };
+      rows.push(row);
+    }
+    row.entries.push(entry);
+    row.line = row.entries.reduce((sum, item) => sum + item.point.line, 0) / row.entries.length;
+    row.height = Math.max(row.height, entry.lineHeight);
+  });
+  return orientProjectedRowsVisualTopFirst(rows);
+}
+
+function orientProjectedRowsVisualTopFirst(rows) {
+  const sorted = [...rows].sort((left, right) => left.line - right.line);
+  if (sorted.length < 2) {
+    return sorted;
+  }
+  const rowTop = (row) => Math.min(...row.entries.map((entry) => Number(entry.box.top) || 0));
+  const firstTop = rowTop(sorted[0]);
+  const lastTop = rowTop(sorted[sorted.length - 1]);
+  const tolerance = Math.max(...sorted.map((row) => Number(row.height) || 0)) * 0.35;
+  if (firstTop > lastTop + tolerance) {
+    sorted.reverse();
+  }
+  return sorted;
+}
+
 function mergeOcrCandidateGroup(group, index) {
-  const sorted = [...group].sort((left, right) => left.y - right.y || left.x - right.x);
+  const sorted = sortOcrCandidatesByReadingOrder(group);
   const box = getPercentBubbleGroupBox(sorted);
   const requestedBgType = normalizeBgType(sorted[0] && sorted[0].bg_type);
   const mergedFillBox = requestedBgType === "solid" ? mergePercentFillBoxes(sorted) : null;
@@ -6163,6 +6397,7 @@ function mergeOcrCandidateGroup(group, index) {
     region_polygon: sorted[0] && sorted[0].region_polygon || null,
     text_color: bgType === "none" ? "#000000" : String(sorted[0] && sorted[0].text_color || ""),
     stroke_color: bgType === "none" ? "#ffffff" : String(sorted[0] && sorted[0].stroke_color || ""),
+    alignment: inferOcrCandidateGroupAlignment(sorted),
     polygon: mergePercentPolygons(sorted),
     rotation_deg: medianRotation(sorted.map((item) => item.rotation_deg)),
     source_line_count: Math.max(1, ...sorted.map((item) => Number(item.source_line_count) || 1)),

@@ -73,3 +73,23 @@ test("seam composite is clipped only by its two page-local windows", () => {
   assert.match(sourceRule, /background-image:\s*none\s*!important/);
   assert.match(sourceBubbleRule, /opacity:\s*0/);
 });
+
+test("overlay bubbles support source alignment without clipping long translations", () => {
+  const css = readFileSync(path.resolve(projectRoot, "styles.css"), "utf8");
+  const content = readFileSync(path.resolve(projectRoot, "content.js"), "utf8");
+  const bubbleRule = css.match(/\.mt-bubble\s*\{([^}]+)\}/)?.[1] ?? "";
+  const leftRule = css.match(/\.mt-bubble\.mt-align-left\s*\{([^}]+)\}/)?.[1] ?? "";
+  const rightRule = css.match(/\.mt-bubble\.mt-align-right\s*\{([^}]+)\}/)?.[1] ?? "";
+
+  assert.match(bubbleRule, /overflow:\s*visible/);
+  assert.match(bubbleRule, /max-height:\s*none/);
+  assert.match(leftRule, /text-align:\s*left/);
+  assert.match(leftRule, /align-items:\s*flex-start/);
+  assert.match(rightRule, /text-align:\s*right/);
+  assert.match(content, /function applyBubbleAnchorStyle\(/);
+  assert.match(content, /translate\(-50%, -50%\) rotate/);
+  assert.match(content, /rotate\(\$\{angle\.toFixed\(2\)\}deg\)/);
+  assert.match(content, /function expandBubbleForTextOverflow\(/);
+  assert.match(content, /--mt-fill-width", "100%"/);
+  assert.doesNotMatch(content, /text-overflow:\s*ellipsis/);
+});

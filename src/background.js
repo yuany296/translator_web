@@ -141,6 +141,12 @@ const VISION_OCR_REPAIR_BUDGET_MS = 20 * 1000;
 const MAX_CLEANED_MASKS = 200;
 const CLEANED_MASK_COORDINATE_SCALE = 10000;
 const CLEANED_MASK_FINGERPRINT_VERSION = "cleaned-masks-v1";
+const SEAM_CROSS_EDGE_WINDOW_PX = 24;
+const SEAM_CROSS_PAIR_MAX_GAP_PX = 48;
+const SEAM_CROSS_MIN_HORIZONTAL_OVERLAP = 0.25;
+const SEAM_CROSS_MIN_HEIGHT_RATIO = 0.5;
+const SEAM_CROSS_MAX_ROTATION_DELTA_DEG = 20;
+const SEAM_CROSS_MAX_BAND_COVERAGE = 1.5;
 const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
 const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
 const inflightTranslateByCacheKey = new Map();
@@ -1210,6 +1216,13 @@ function buildProviderNeutralObservationResult({
     }
   });
 
+  if (request && request.sourceType === "seam") {
+    const seamCandidates = filterSeamOcrCandidates(retained, request, imageSize);
+    retained.length = 0;
+    retained.push(...seamCandidates.retained);
+    filteredRows.push(...seamCandidates.rejected);
+  }
+
   const coalesced = coalesceOverlappingOcrCandidates(retained);
   coalesced.slice(MAX_BUBBLES).forEach((candidate) => {
     filteredRows.push({ candidate, reason: "max_bubbles" });
@@ -1380,6 +1393,214 @@ function buildObservationPageSpans(request, candidate, imageSize) {
     polygon: null,
     overlapRatio: 0
   }));
+}
+
+function filterSeamOcrCandidates(candidates, request, imageSize) {
+  const input = Array.isArray(candidates) ? candidates : [];
+  if (!request || request.sourceType !== "seam") {
+    return { retained: [...input], rejected: [] };
+  }
+
+  const segments = normalizeObservationPageSpanMeta(request.imageMeta && request.imageMeta.pageSpans)
+    .sort((left, right) => left.canvasBox.top - right.canvasBox.top || left.pageId.localeCompare(right.pageId));
+  if (segments.length !== 2) {
+    return {
+      retained: [],
+      rejected: input.map((candidate) => ({ candidate, reason: "seam_geometry_unavailable" }))
+    };
+  }
+
+  const [upperSegment, lowerSegment] = segments;
+  const maxCrossHeight = Math.max(
+    SEAM_CROSS_EDGE_WINDOW_PX * 2,
+    Math.min(upperSegment.canvasBox.height, lowerSegment.canvasBox.height) * SEAM_CROSS_MAX_BAND_COVERAGE
+  );
+  const direct = [];
+  const upperEdge = [];
+  const lowerEdge = [];
+  const rejected = [];
+
+  input.forEach((candidate, index) => {
+    const descriptor = describeSeamOcrCandidate(
+      candidate,
+      index,
+      upperSegment,
+      lowerSegment,
+      imageSize,
+      maxCrossHeight
+    );
+    if (!descriptor) {
+      rejected.push({ candidate, reason: "seam_invalid_geometry" });
+      return;
+    }
+    if (descriptor.crossesBoundary) {
+      direct.push(descriptor);
+      return;
+    }
+    if (descriptor.upperEdgeOnly) {
+      upperEdge.push(descriptor);
+      return;
+    }
+    if (descriptor.lowerEdgeOnly) {
+      lowerEdge.push(descriptor);
+      return;
+    }
+    rejected.push({ candidate, reason: "seam_not_cross_boundary" });
+  });
+
+  const pairCandidates = [];
+  upperEdge.forEach((upper) => {
+    lowerEdge.forEach((lower) => {
+      const pair = buildSeamCrossPairCandidate(upper, lower, imageSize, maxCrossHeight);
+      if (pair) pairCandidates.push(pair);
+    });
+  });
+  pairCandidates.sort((left, right) => right.score - left.score || left.upper.index - right.upper.index || left.lower.index - right.lower.index);
+
+  const used = new Set();
+  const merged = [];
+  for (const pair of pairCandidates) {
+    if (used.has(pair.upper.index) || used.has(pair.lower.index)) continue;
+    used.add(pair.upper.index);
+    used.add(pair.lower.index);
+    merged.push(pair.candidate);
+  }
+  for (const descriptor of [...upperEdge, ...lowerEdge]) {
+    if (!used.has(descriptor.index)) {
+      rejected.push({ candidate: descriptor.candidate, reason: "seam_not_cross_boundary" });
+    }
+  }
+
+  const retained = [...direct.map((item) => item.candidate), ...merged]
+    .sort((left, right) => {
+      const leftBox = getSeamCandidateRawBox(left, imageSize);
+      const rightBox = getSeamCandidateRawBox(right, imageSize);
+      return (leftBox?.top || 0) - (rightBox?.top || 0)
+        || (leftBox?.left || 0) - (rightBox?.left || 0)
+        || String(left.original_text || "").localeCompare(String(right.original_text || ""));
+    });
+  return { retained, rejected };
+}
+
+function describeSeamOcrCandidate(candidate, index, upperSegment, lowerSegment, imageSize, maxCrossHeight) {
+  const rawBox = getSeamCandidateRawBox(candidate, imageSize);
+  const originalText = normalizeTranslationSourceText(candidate && candidate.original_text);
+  if (!rawBox || !originalText) return null;
+  const upperIntersection = intersectObservationBoxes(rawBox, upperSegment.canvasBox);
+  const lowerIntersection = intersectObservationBoxes(rawBox, lowerSegment.canvasBox);
+  const upperBottom = upperSegment.canvasBox.top + upperSegment.canvasBox.height;
+  const lowerTop = lowerSegment.canvasBox.top;
+  const crossesBoundary = Boolean(
+    upperIntersection &&
+    lowerIntersection &&
+    rawBox.top < lowerTop &&
+    rawBox.top + rawBox.height > upperBottom &&
+    rawBox.height <= maxCrossHeight
+  );
+  return {
+    candidate,
+    index,
+    rawBox,
+    upperIntersection,
+    lowerIntersection,
+    crossesBoundary,
+    upperEdgeOnly: Boolean(
+      upperIntersection &&
+      !lowerIntersection &&
+      rawBox.top + rawBox.height >= upperBottom - SEAM_CROSS_EDGE_WINDOW_PX
+    ),
+    lowerEdgeOnly: Boolean(
+      lowerIntersection &&
+      !upperIntersection &&
+      rawBox.top <= lowerTop + SEAM_CROSS_EDGE_WINDOW_PX
+    )
+  };
+}
+
+function getSeamCandidateRawBox(candidate, imageSize) {
+  return normalizeObservationPixelBox(candidate && candidate.rawBox) || normalizeObservationPixelBox({
+    left: Number(candidate && candidate.x || 0) / 100 * Math.max(1, Number(imageSize && imageSize.width) || 1),
+    top: Number(candidate && candidate.y || 0) / 100 * Math.max(1, Number(imageSize && imageSize.height) || 1),
+    width: Number(candidate && candidate.w || 0) / 100 * Math.max(1, Number(imageSize && imageSize.width) || 1),
+    height: Number(candidate && candidate.h || 0) / 100 * Math.max(1, Number(imageSize && imageSize.height) || 1)
+  });
+}
+
+function buildSeamCrossPairCandidate(upper, lower, imageSize, maxCrossHeight) {
+  const upperText = normalizeTranslationSourceText(upper && upper.candidate && upper.candidate.original_text);
+  const lowerText = normalizeTranslationSourceText(lower && lower.candidate && lower.candidate.original_text);
+  if (!upperText || !lowerText || upperText.replace(/\s+/gu, "") === lowerText.replace(/\s+/gu, "")) {
+    return null;
+  }
+
+  const upperBox = upper.rawBox;
+  const lowerBox = lower.rawBox;
+  const horizontalOverlap = Math.max(
+    0,
+    Math.min(upperBox.left + upperBox.width, lowerBox.left + lowerBox.width) - Math.max(upperBox.left, lowerBox.left)
+  ) / Math.max(1, Math.min(upperBox.width, lowerBox.width));
+  const heightRatio = Math.min(upperBox.height, lowerBox.height) / Math.max(upperBox.height, lowerBox.height, 1);
+  const verticalGap = lowerBox.top - (upperBox.top + upperBox.height);
+  const upperRotation = Number(upper.candidate && upper.candidate.rotation_deg) || 0;
+  const lowerRotation = Number(lower.candidate && lower.candidate.rotation_deg) || 0;
+  if (
+    horizontalOverlap < SEAM_CROSS_MIN_HORIZONTAL_OVERLAP ||
+    heightRatio < SEAM_CROSS_MIN_HEIGHT_RATIO ||
+    verticalGap > SEAM_CROSS_PAIR_MAX_GAP_PX ||
+    Math.abs(upperRotation - lowerRotation) > SEAM_CROSS_MAX_ROTATION_DELTA_DEG
+  ) {
+    return null;
+  }
+
+  const rawBox = {
+    left: Math.min(upperBox.left, lowerBox.left),
+    top: Math.min(upperBox.top, lowerBox.top),
+    width: Math.max(upperBox.left + upperBox.width, lowerBox.left + lowerBox.width) - Math.min(upperBox.left, lowerBox.left),
+    height: Math.max(upperBox.top + upperBox.height, lowerBox.top + lowerBox.height) - Math.min(upperBox.top, lowerBox.top)
+  };
+  if (rawBox.height > maxCrossHeight) return null;
+
+  const width = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const height = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  const sameSolidBackground = String(upper.candidate.bg_type || "").toLowerCase() === "solid" &&
+    String(lower.candidate.bg_type || "").toLowerCase() === "solid";
+  const sameRegionType = String(upper.candidate.region_type || "") === String(lower.candidate.region_type || "");
+  const candidate = {
+    ...upper.candidate,
+    id: `seam-cross-pair:${String(upper.candidate.id || upper.index)}:${String(lower.candidate.id || lower.index)}`,
+    x: rawBox.left / width * 100,
+    y: rawBox.top / height * 100,
+    w: rawBox.width / width * 100,
+    h: rawBox.height / height * 100,
+    rawBox,
+    original_text: `${upperText}\n${lowerText}`,
+    confidence: Math.min(Number(upper.candidate.confidence) || 0, Number(lower.candidate.confidence) || 0),
+    bg_type: sameSolidBackground ? "solid" : "none",
+    bg_color: sameSolidBackground && String(upper.candidate.bg_color || "") === String(lower.candidate.bg_color || "")
+      ? String(upper.candidate.bg_color || "")
+      : "",
+    region_id: String(upper.candidate.region_id || "") === String(lower.candidate.region_id || "")
+      ? String(upper.candidate.region_id || "")
+      : "",
+    region_type: sameRegionType ? String(upper.candidate.region_type || "") : "plain_text",
+    region_polygon: null,
+    polygon: null,
+    fill_box: sameSolidBackground ? {
+      x: rawBox.left / width * 100,
+      y: rawBox.top / height * 100,
+      w: rawBox.width / width * 100,
+      h: rawBox.height / height * 100
+    } : null,
+    rotation_deg: (upperRotation + lowerRotation) / 2,
+    source_line_count: Math.max(1, Number(upper.candidate.source_line_count) || 1) +
+      Math.max(1, Number(lower.candidate.source_line_count) || 1)
+  };
+  return {
+    upper,
+    lower,
+    candidate,
+    score: horizontalOverlap * 0.6 + heightRatio * 0.3 + (1 - Math.min(1, Math.max(0, verticalGap) / SEAM_CROSS_PAIR_MAX_GAP_PX)) * 0.1
+  };
 }
 
 function intersectObservationBoxes(left, right) {

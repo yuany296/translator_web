@@ -22,9 +22,10 @@
   const MAX_COMPONENT_PAGES = 3;
   const DEFAULT_EDGE_WAIT_MS = 8000;
   const MIN_SEAM_PAGE_CONTRIBUTION = 0.08;
-  const SEAM_BAND_WIDTH_RATIO = 0.35;
-  const SEAM_BAND_MIN_PX = 240;
-  const SEAM_BAND_MAX_PX = 480;
+  // seam 仅用于确认真正跨页的文字；大范围取样会把完整气泡和阅读器 UI 再次送入 OCR。
+  const SEAM_BAND_WIDTH_RATIO = 0.15;
+  const SEAM_BAND_MIN_PX = 64;
+  const SEAM_BAND_MAX_PX = 96;
   const FUZZY_SEAM_FRAGMENT_MIN_LENGTH = 5;
   const FUZZY_SEAM_FRAGMENT_THRESHOLD = 0.80;
   const FUZZY_OCR_QUOTE_RE = /['"‘’“”＇＂]/gu;

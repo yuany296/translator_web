@@ -53,6 +53,9 @@
   const KR = globalThis.MangaTranslatorKakaoReconciler;
   const KAKAO_CANONICAL_TARGET_LANGUAGE = "zh-CN";
   const KAKAO_CANONICAL_SOURCE_LANGUAGE = "auto";
+  const KAKAO_SEAM_CAPTURE_WIDTH_RATIO = 0.15;
+  const KAKAO_SEAM_CAPTURE_MIN_PX = 64;
+  const KAKAO_SEAM_CAPTURE_MAX_PX = 96;
   const KAKAO_AUTH_QUERY_PARAM_RE = /^(?:signature|credential|expires|policy|token|key-pair-id|x-amz-(?:algorithm|credential|date|expires|security-token|signature|signedheaders))$/i;
   const {
     KAKAO_OVERLAP_SAMPLE_WIDTH,
@@ -315,6 +318,7 @@
       buildOcrRequestKey,
       shouldUseKakaoCanonicalPipeline,
       isKakaoEpisodeImageTarget,
+      calculateKakaoSeamCaptureBandHeight,
       isMangaTranslatorOverlayTarget,
       isSupportedTarget,
       normalizeKakaoStableImageSource,
@@ -2300,6 +2304,15 @@
     });
   }
 
+  function calculateKakaoSeamCaptureBandHeight(widthA, widthB, requestedHeight = 0) {
+    const defaultHeight = Math.min(Number(widthA) || 0, Number(widthB) || 0) * KAKAO_SEAM_CAPTURE_WIDTH_RATIO;
+    const value = Number(requestedHeight) || defaultHeight;
+    return Math.max(
+      KAKAO_SEAM_CAPTURE_MIN_PX,
+      Math.min(KAKAO_SEAM_CAPTURE_MAX_PX, Math.round(value))
+    );
+  }
+
   async function buildKakaoSeamPayload(pageARecord, pageBRecord, options = {}) {
     const payloadA = pageARecord && pageARecord.payload;
     const payloadB = pageBRecord && pageBRecord.payload;
@@ -2322,8 +2335,7 @@
     const bitmapHeightB = Number(imageB.naturalHeight || imageB.height || 0);
     if (!(widthA > 0 && widthB > 0 && heightA > 0 && heightB > 0)) return null;
     const requestedHeight = Number(options.height || options.bandHeight || 0);
-    const bandHeight = Math.max(240, Math.min(480,
-      Math.round(requestedHeight || Math.min(widthA, widthB) * 0.35)));
+    const bandHeight = calculateKakaoSeamCaptureBandHeight(widthA, widthB, requestedHeight);
     const sourceBandA = Math.min(heightA, bandHeight);
     const sourceBandB = Math.min(heightB, bandHeight);
     const bitmapBandA = Math.min(bitmapHeightA, sourceBandA * bitmapHeightA / heightA);

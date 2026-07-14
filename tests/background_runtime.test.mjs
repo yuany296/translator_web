@@ -27,7 +27,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms };`,
   context,
   { filename: "background.js" }
 );
@@ -1286,6 +1286,104 @@ test("provider-neutral OCR observations are immutable, filtered with reasons, an
   assert.equal(Object.isFrozen(result.observations[0]), true);
   assert.equal("translated_text" in result.observations[0], false);
   assert.deepEqual(Array.from(result.observations[0].pageIds), ["page-a"]);
+});
+
+test("seam OCR rejects complete page text and keeps only strict cross-boundary evidence", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 720, height: 192 };
+  const request = {
+    sourceType: "seam",
+    imageMeta: {
+      pageSpans: [
+        {
+          pageId: "page-upper",
+          canvasBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageBox: { x: 0, y: 1004, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        },
+        {
+          pageId: "page-lower",
+          canvasBox: { x: 0, y: 96, w: 720, h: 96 },
+          pageBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        }
+      ]
+    }
+  };
+  const candidate = (text, rawBox) => ({
+    original_text: text,
+    x: rawBox.left / imageSize.width * 100,
+    y: rawBox.top / imageSize.height * 100,
+    w: rawBox.width / imageSize.width * 100,
+    h: rawBox.height / imageSize.height * 100,
+    rawBox,
+    confidence: 0.99,
+    bg_type: "solid",
+    region_type: "speech_bubble"
+  });
+
+  const result = background.filterSeamOcrCandidates([
+    candidate("upper complete bubble", { left: 140, top: 20, width: 240, height: 28 }),
+    candidate("lower publish button", { left: 600, top: 132, width: 72, height: 20 }),
+    candidate("crosses the real page seam", { left: 220, top: 84, width: 240, height: 24 }),
+    candidate("oversized mixed seam scene", { left: 20, top: 0, width: 680, height: 192 })
+  ], request, imageSize);
+
+  assert.deepEqual(Array.from(result.retained, (item) => item.original_text), ["crosses the real page seam"]);
+  assert.equal(result.rejected.length, 3);
+  assert.equal(result.rejected.every((item) => item.reason === "seam_not_cross_boundary"), true);
+});
+
+test("seam OCR can join only compatible fragments immediately above and below the boundary", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 720, height: 192 };
+  const request = {
+    sourceType: "seam",
+    imageMeta: {
+      pageSpans: [
+        {
+          pageId: "page-upper",
+          canvasBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageBox: { x: 0, y: 1004, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        },
+        {
+          pageId: "page-lower",
+          canvasBox: { x: 0, y: 96, w: 720, h: 96 },
+          pageBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        }
+      ]
+    }
+  };
+  const candidate = (text, rawBox) => ({
+    original_text: text,
+    x: rawBox.left / imageSize.width * 100,
+    y: rawBox.top / imageSize.height * 100,
+    w: rawBox.width / imageSize.width * 100,
+    h: rawBox.height / imageSize.height * 100,
+    rawBox,
+    confidence: 0.99,
+    bg_type: "solid",
+    region_type: "speech_bubble",
+    rotation_deg: 0
+  });
+
+  const result = background.filterSeamOcrCandidates([
+    candidate("upper fragment", { left: 220, top: 76, width: 220, height: 16 }),
+    candidate("lower fragment", { left: 226, top: 100, width: 214, height: 16 }),
+    candidate("unrelated lower UI", { left: 600, top: 102, width: 60, height: 16 })
+  ], request, imageSize);
+
+  assert.equal(result.retained.length, 1);
+  assert.equal(result.retained[0].original_text, "upper fragment\nlower fragment");
+  assert.equal(result.retained[0].source_line_count, 2);
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].reason, "seam_not_cross_boundary");
 });
 
 test("visual fill regions trigger seam evidence even when the OCR text box is interior", () => {

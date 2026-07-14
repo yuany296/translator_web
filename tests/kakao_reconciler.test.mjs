@@ -156,22 +156,22 @@ test("Observation IDs are stable, punctuation-sensitive, and independent of prov
   assert.equal(Object.isFrozen(first.pageSpans[0]), true);
 });
 
-test("seam band keeps enough context around ordinary 760px page boundaries", () => {
-  assert.equal(R.calculateSeamBandHeight(500, 900), 240);
-  assert.equal(R.calculateSeamBandHeight(760, 760), 266);
-  assert.equal(R.calculateSeamBandHeight(2000, 2400), 480);
-  assert.equal(R.calculateSeamBandHeight(4000, 5000), 480);
+test("seam band stays narrow so complete page text never becomes seam OCR input", () => {
+  assert.equal(R.calculateSeamBandHeight(500, 900), 75);
+  assert.equal(R.calculateSeamBandHeight(760, 760), 96);
+  assert.equal(R.calculateSeamBandHeight(2000, 2400), 96);
+  assert.equal(R.calculateSeamBandHeight(4000, 5000), 96);
 });
 
 test("seam plan crops only the two edge bands and collapses detected overlap on its canvas", () => {
   const upper = page("a", 0, { width: 1200, height: 100 });
   const lower = page("b", 1, { width: 1000, height: 2000 });
   const plan = R.buildSeamPlan(upper, lower, { overlapPx: 25 });
-  assert.equal(plan.bandHeight, 350);
-  assert.equal(plan.upperCrop.height, 100, "a short page contributes at most its whole image");
-  assert.equal(plan.lowerCrop.height, 350);
-  assert.equal(plan.canvasHeight, 425);
-  assert.equal(plan.draws[1].destY, 75);
+  assert.equal(plan.bandHeight, 96);
+  assert.equal(plan.upperCrop.height, 96, "a short page is capped to the configured seam band");
+  assert.equal(plan.lowerCrop.height, 96);
+  assert.equal(plan.canvasHeight, 167);
+  assert.equal(plan.draws[1].destY, 71);
 });
 
 test("interior page observations do not trigger seam OCR even when page overlapRatio is 1", () => {

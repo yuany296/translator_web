@@ -401,6 +401,13 @@ test("canonical seam surfaces render from one host page only", () => {
   assert.match(overlaySource, /removeDuplicateSeamSurfaceRoots\(seamSurfaces, root\)/);
 });
 
+test("Kakao seam capture is limited to the immediate 64-96px boundary band", () => {
+  assert.equal(runtime.__test.calculateKakaoSeamCaptureBandHeight(320, 480), 64);
+  assert.equal(runtime.__test.calculateKakaoSeamCaptureBandHeight(500, 900), 75);
+  assert.equal(runtime.__test.calculateKakaoSeamCaptureBandHeight(760, 760), 96);
+  assert.equal(runtime.__test.calculateKakaoSeamCaptureBandHeight(760, 760, 400), 96);
+});
+
 test("Kakao recommendation covers wait for visible flow instead of entering the ahead queue", () => {
   const cover = new globalThis.HTMLImageElement();
   cover.naturalWidth = 98;

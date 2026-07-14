@@ -3064,15 +3064,14 @@
 
         // Direct seam cross-page render: 对已就绪的相邻页，无论是否有边缘证据，
         // 都做合并图 OCR 渲染跨页 overlay。绕过 evaluateSeamEvidence 判断。
-        if (typeof adapters.renderSeamCrossPage === "function") {
-          for (const _rel of pageRecord.adjacentTargets || []) {
+        // 拼接结果统一由 canonical renderOverlay 投影，禁用旧的独立跨页渲染。
+        if (false) for (const _rel of pageRecord.adjacentTargets || []) {
             const _n = store.getPageHandleForTarget(_rel.target);
             if (!_n || !isReadyPageRecord(_n)) continue;
             const [_a, _b] = _rel.side === "previous" ? [_n, pageRecord] : [pageRecord, _n];
             loading(target, identity.targetKey, "渲染跨页...");
             runSeamCrossPageRender(_a, _b).catch(function () {});
           }
-        }
 
         if (
           snapshot &&
@@ -3198,6 +3197,7 @@
     }
 
     async function runSeamCrossPageRender(pageA, pageB) {
+      return;
       if (typeof buildSeamPayload !== "function") return;
       const pairKey = buildCanonicalPairKey(pageA, pageB);
       const bandHeight = calculateCanonicalSeamHeight(pageA.width, pageB.width);

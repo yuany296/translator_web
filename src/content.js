@@ -270,7 +270,6 @@
       detectAdjacentPixelRisk: detectAdjacentKakaoPixelRisk,
       getTargetForPageId: getTargetForKakaoPageId,
       renderCanonicalProjections,
-      renderSeamCrossPage,
       clearCanonicalProjection: (target) => clearRenderedTarget(target),
       computeTargetKey,
       getQuickSourceToken,

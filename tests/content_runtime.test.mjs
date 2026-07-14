@@ -346,6 +346,16 @@ test("canonical pending and retry failures preserve the last stable projection",
   );
 });
 
+test("canonical seam rendering uses the regular page overlay path only", () => {
+  const pipelineSource = fs.readFileSync(path.resolve(import.meta.dirname, "..", "kakao-pipeline.js"), "utf8");
+
+  assert.match(pipelineSource, /拼接结果统一由 canonical renderOverlay 投影/);
+  assert.match(pipelineSource, /if \(false\) for \(const _rel/);
+  assert.match(pipelineSource, /async function runSeamCrossPageRender\(pageA, pageB\) \{\s*return;/);
+  assert.doesNotMatch(contentSource, /\n\s*renderSeamCrossPage,\n/);
+  assert.match(contentSource, /renderCanonicalProjections[\s\S]*renderTranslationResult\(/);
+});
+
 test("Kakao recommendation covers wait for visible flow instead of entering the ahead queue", () => {
   const cover = new globalThis.HTMLImageElement();
   cover.naturalWidth = 98;

@@ -4937,8 +4937,18 @@
       const stateObservationsById = new Map((Array.isArray(state.observations) ? state.observations : [])
         .map((item) => [String(item && item.id || ""), item]));
       const candidates = [];
+      const candidateDiagnostics = [];
       for (const canonical of canonicals) {
-        if (!canonical || handledCanonicalIds.has(String(canonical.id || ""))) continue;
+        if (!canonical) continue;
+        const canonicalId = String(canonical.id || "");
+        const stateMemberIds = (Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : [])
+          .map(String)
+          .filter((id) => stateObservationIds.has(id));
+        if (!stateMemberIds.length) continue;
+        if (handledCanonicalIds.has(canonicalId)) {
+          candidateDiagnostics.push({ canonicalId, reason: "already_handled", stateMemberIds });
+          continue;
+        }
         const canonicalPageIds = Object.entries(canonical.geometryByPage || {})
           .filter(([, geometries]) => Array.isArray(geometries) ? geometries.length > 0 : !!geometries)
           .map(([pageId]) => String(pageId))
@@ -4946,15 +4956,38 @@
         if (
           canonicalPageIds.length !== pageIds.length ||
           pageIds.some((pageId) => !canonicalPageIds.includes(pageId))
-        ) continue;
-        const linked = (Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : [])
-          .filter((id) => stateObservationIds.has(String(id)))
+        ) {
+          candidateDiagnostics.push({ canonicalId, reason: "page_mismatch", stateMemberIds, canonicalPageIds });
+          continue;
+        }
+        const linked = stateMemberIds
           .map((id) => stateObservationsById.get(String(id)) || observationsById.get(String(id)))
           .filter((observation) => observationHasTrueSeamContribution(observation, pageIds));
-        if (!linked.length || !seamObservationsCoverPair(linked, pageIds)) continue;
+        if (!linked.length) {
+          candidateDiagnostics.push({ canonicalId, reason: "no_linked_observation", stateMemberIds, canonicalPageIds });
+          continue;
+        }
+        if (!seamObservationsCoverPair(linked, pageIds)) {
+          candidateDiagnostics.push({ canonicalId, reason: "incomplete_pair", stateMemberIds, canonicalPageIds });
+          continue;
+        }
         const translation = activeStore.getTranslation(canonical.id, canonical.revision);
+        if (!translation || !String(translation.translated_text || translation.translatedText || "").trim()) {
+          candidateDiagnostics.push({
+            canonicalId,
+            revision: Math.max(1, Number(canonical.revision) || 1),
+            reason: "missing_translation",
+            stateMemberIds,
+            canonicalPageIds
+          });
+          continue;
+        }
         const bubble = buildSeamSurfaceBubble(canonical, translation, linked, canvasWidth, canvasHeight);
-        if (!bubble) continue;
+        if (!bubble) {
+          candidateDiagnostics.push({ canonicalId, reason: "bubble_build_failed", stateMemberIds, canonicalPageIds });
+          continue;
+        }
+        candidateDiagnostics.push({ canonicalId, reason: "candidate", stateMemberIds, canonicalPageIds });
         candidates.push({ canonical, translation, bubble });
       }
       const hasDebug = hasRenderableSeamDebug(state.debug);
@@ -4964,6 +4997,13 @@
       const renderable = candidates.filter((candidate) =>
         !seamBubbleRequiresCleanedImage(candidate.bubble) || !!cleanedImage
       );
+      const renderableIds = new Set(renderable.map((candidate) => String(candidate.canonical.id || "")));
+      for (const candidate of candidates) {
+        const canonicalId = String(candidate.canonical.id || "");
+        const diagnostic = candidateDiagnostics.find((item) => item.canonicalId === canonicalId && item.reason === "candidate");
+        if (!diagnostic) continue;
+        diagnostic.reason = renderableIds.has(canonicalId) ? "accepted" : "missing_cleaned_image";
+      }
       if (!renderable.length && !hasDebug) continue;
       renderable.sort((left, right) => left.bubble.y - right.bubble.y
         || left.bubble.x - right.bubble.x
@@ -5025,6 +5065,7 @@
         cleanedImageToken,
         bubbles,
         debug: state.debug || null,
+        diagnostics: Object.freeze(candidateDiagnostics.map((item) => Object.freeze({ ...item }))),
         handledCanonicalIds: handledIds
       });
       surfaces.push(surface);

@@ -3799,6 +3799,9 @@
         cleanedImageToken: String(surface && surface.cleanedImageToken || ""),
         bubbles: Array.isArray(surface && surface.bubbles) ? surface.bubbles : [],
         debug: surface && surface.debug && typeof surface.debug === "object" ? surface.debug : null,
+        diagnostics: Array.isArray(surface && surface.diagnostics)
+          ? surface.diagnostics.map((item) => ({ ...item }))
+          : [],
         handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds)
           ? surface.handledCanonicalIds.map(String).filter(Boolean)
           : [],
@@ -3861,6 +3864,7 @@
         segments: Array.isArray(surface && surface.segments) ? surface.segments : [],
         cleanedImageHash: hashSourceIdentity(String(surface && surface.cleanedImage || "")),
         bubbles: Array.isArray(surface && surface.bubbles) ? surface.bubbles : [],
+        diagnostics: Array.isArray(surface && surface.diagnostics) ? surface.diagnostics : [],
         handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds)
           ? surface.handledCanonicalIds
           : [],
@@ -4570,6 +4574,7 @@
     composite.dataset.seamLayoutKey = surface.layoutKey;
     composite.dataset.seamPairKey = surface.pairKey;
     composite.dataset.seamArtifactFingerprint = surface.artifactFingerprint || surface.cleanedImageToken || "";
+    composite.dataset.seamDiagnostics = JSON.stringify(Array.isArray(surface.diagnostics) ? surface.diagnostics : []);
     composite.style.width = `${surface.canvasWidth}px`;
     composite.style.height = `${surface.canvasHeight}px`;
     if (isDataUrl(surface.cleanedImage)) {

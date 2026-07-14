@@ -2394,6 +2394,9 @@ test("seam composite is cleaned once and atomically replaces both page projectio
   );
   assert.ok(debugOnlyBatch, "seam debug must render atomically before translation is available");
   assert.deepEqual([...debugOnlyBatch.projectionsByPage.keys()].sort(), ["page-a", "page-b"]);
+  assert.ok(debugOnlyBatch.seamSurfaces.some((surface) =>
+    surface.diagnostics.some((item) => item.reason === "missing_translation")
+  ));
 
   const atomic = harness.renderInputs.findLast((input) =>
     input.projectionsByPage instanceof Map &&
@@ -2409,6 +2412,7 @@ test("seam composite is cleaned once and atomically replaces both page projectio
   assert.equal(surface.cleanedImageToken, options.seamCleanedImageToken);
   assert.equal(surface.artifactFingerprint, options.seamCleanedImageToken);
   assert.equal(surface.bubbles.length, 1);
+  assert.ok(surface.diagnostics.some((item) => item.reason === "accepted"));
   assert.deepEqual(
     {
       x: surface.bubbles[0].x,

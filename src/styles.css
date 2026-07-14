@@ -112,6 +112,7 @@
   max-width: none;
   max-height: none;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
@@ -172,6 +173,7 @@
   pointer-events: none !important;
   z-index: -1 !important;
   transform: none !important;
+  justify-content: flex-start !important;
 }
 
 .mt-bubble.mt-jp-vertical {

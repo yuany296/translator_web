@@ -27,7 +27,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType, isMeaningfulOcrText, inferTextAlignmentFromBoxes, sortOcrCandidatesByReadingOrder };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType, isMeaningfulOcrText, inferTextAlignmentFromBoxes, sortOcrCandidatesByReadingOrder, composeRotatedClusterWords, estimateRotatedClusterLineCount };`,
   context,
   { filename: "background.js" }
 );
@@ -373,6 +373,41 @@ test("rotated two-line candidate coalescing preserves visual top-to-bottom order
 
   const merged = background.mergeOcrCandidateGroup([lower, upper], 0);
   assert.equal(merged.original_text, "일부러\n저런 거잖아!!");
+});
+
+test("rotated OCR rows use polygon thickness instead of inflated axis-aligned height", () => {
+  const background = context.__backgroundTest;
+  const buildBox = (left, top, width, height) => ({
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    centerX: left + width / 2,
+    centerY: top + height / 2
+  });
+  const upper = {
+    text: "일부러 보라고",
+    rotation: -13.36,
+    box: buildBox(448, 61, 170, 79),
+    item: {
+      words: "일부러 보라고",
+      polygon: [{ x: 448, y: 99 }, { x: 608, y: 61 }, { x: 618, y: 102 }, { x: 458, y: 140 }]
+    }
+  };
+  const lower = {
+    text: "저런 거잖아!!",
+    rotation: -12.6,
+    box: buildBox(457, 106, 172, 80),
+    item: {
+      words: "저런 거잖아!!",
+      polygon: [{ x: 457, y: 142 }, { x: 618, y: 106 }, { x: 629, y: 150 }, { x: 467, y: 186 }]
+    }
+  };
+
+  assert.equal(background.estimateRotatedClusterLineCount([lower, upper], -12.6), 2);
+  assert.equal(background.composeRotatedClusterWords([lower, upper], -12.6), "일부러 보라고\n저런 거잖아!!");
 });
 
 test("translation cache automatically clears old entries and retries after quota failure", async () => {

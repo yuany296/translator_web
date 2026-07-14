@@ -111,7 +111,7 @@ const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 const CACHE_PREFIX = "mt_cache_v21:";
 const OCR_CACHE_PREFIX = "mt_cache_v22:ocr:";
 const CANONICAL_TRANSLATION_CACHE_PREFIX = "mt_cache_v22:translation:";
-const OCR_COORDINATE_MODEL_VERSION = "page-percent-v1";
+const OCR_COORDINATE_MODEL_VERSION = "page-percent-v2-rotated-reading";
 const CANONICAL_TRANSLATION_PROMPT_VERSION = "canonical-zh-cn-v1";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -4416,11 +4416,30 @@ function buildRotatedClusterGeometry(cluster, imageSize) {
 
 function projectClusterCenter(entry, rotation) {
   const point = projectPointForReadingOrder(entry.box.centerX, entry.box.centerY, rotation);
+  const polygonThickness = getProjectedPolygonLineThickness(
+    entry && entry.item && entry.item.polygon,
+    rotation
+  );
   return {
     x: point.inline,
     y: point.line,
-    height: Math.max(1, Math.min(entry.box.width, entry.box.height))
+    height: Math.max(1, polygonThickness || Math.min(entry.box.width, entry.box.height))
   };
+}
+
+function getProjectedPolygonLineThickness(polygon, rotation) {
+  const points = (Array.isArray(polygon) ? polygon : [])
+    .map((value) => ({
+      x: Array.isArray(value) ? Number(value[0]) : Number(value && value.x),
+      y: Array.isArray(value) ? Number(value[1]) : Number(value && value.y)
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (points.length < 4) {
+    return 0;
+  }
+  const positions = points.map((point) => projectPointForReadingOrder(point.x, point.y, rotation).line);
+  const thickness = Math.max(...positions) - Math.min(...positions);
+  return Number.isFinite(thickness) && thickness > 0 ? thickness : 0;
 }
 
 function buildRotatedClusterRows(cluster, rotation) {
@@ -6658,7 +6677,10 @@ function sortOcrCandidatesByReadingOrder(group) {
         box,
         text: String(item && item.original_text || ""),
         point: projectPointForReadingOrder(box.centerX, box.centerY, rotation),
-        lineHeight: Math.max(0.1, Math.min(box.width, box.height))
+        lineHeight: Math.max(
+          0.1,
+          getProjectedPolygonLineThickness(item && item.polygon, rotation) || Math.min(box.width, box.height)
+        )
       };
     }).filter(Boolean)
   );

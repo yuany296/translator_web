@@ -72,6 +72,45 @@ test("rotated aligned bubbles use a center transform anchor without changing tex
   assert.match(node.style["--mt-base-transform"], /translate\(-50%, -50%\) rotate\(-18\.00deg\)/);
 });
 
+test("rotated polygon bubbles use the polygon centroid instead of its axis-aligned corner", () => {
+  const style = {
+    setProperty(name, value) {
+      this[name] = value;
+    }
+  };
+  const node = { style };
+  runtime.__test.applyBubbleAnchorStyle(node, {
+    alignment: "left",
+    x: 51,
+    y: 31,
+    w: 32,
+    h: 58,
+    centerX: 74.7,
+    centerY: 64.3,
+    rotation: -12.6,
+    unit: "%"
+  });
+  assert.equal(node.style.left, "74.7%");
+  assert.equal(node.style.top, "64.3%");
+  assert.equal(node.style.transformOrigin, "center center");
+});
+
+test("Korean source text stays horizontal after translation even in a tall rotated box", () => {
+  const node = {
+    dataset: {
+      original: "일부러 보라고",
+      rotationDeg: "-12.6",
+      regionType: "effect_text",
+      hPercent: "71.35",
+      wPercent: "27.18",
+      backgroundTarget: ""
+    }
+  };
+  assert.equal(runtime.__test.shouldUseVerticalJapaneseLayout(node, "这不就是小嘛！"), false);
+  node.dataset.rotationDeg = "-89";
+  assert.equal(runtime.__test.shouldUseVerticalJapaneseLayout(node, "竖排文字"), true);
+});
+
 test("Kakao page identity ignores CDN signing changes but tracks actual image bytes", async () => {
   const target = new globalThis.HTMLImageElement();
   target.currentSrc = "https://cdn.example.test/page.jpg?episode=7&signature=first&expires=100";
@@ -567,12 +606,12 @@ test("OCR debug remains renderable without translated bubbles", () => {
   assert.equal(runtime.__test.hasRenderableOcrDebug({
     bubbles: [],
     debug: { debugOverlayMode: "final", rawItems: [{ box: { left: 1, top: 2, width: 3, height: 4 } }] }
-  }), false);
+  }), true);
   assert.equal(runtime.__test.hasRenderableOcrDebug({ bubbles: [], debug: {} }), false);
   assert.equal(runtime.__test.hasRenderableOcrDebug({ bubbles: [] }), false);
 });
 
-test("OCR debug overlay mode selects only the requested stage", () => {
+test("OCR final debug mode compares raw and final boxes", () => {
   const debug = {
     debugOverlayMode: "final",
     rawItems: [{ id: "raw-1" }],
@@ -581,7 +620,7 @@ test("OCR debug overlay mode selects only the requested stage", () => {
   };
   assert.deepEqual(
     runtime.__test.getRenderableOcrDebugStages(debug).map((stage) => stage.name),
-    ["block"]
+    ["raw", "block"]
   );
   debug.debugOverlayMode = "raw";
   assert.deepEqual(

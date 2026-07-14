@@ -84,9 +84,11 @@ test("overlay bubbles support source alignment without clipping long translation
   assert.match(bubbleRule, /overflow:\s*visible/);
   assert.match(bubbleRule, /max-height:\s*none/);
   assert.match(bubbleRule, /font-weight:\s*var\(--mt-font-weight,\s*600\)/);
+  assert.match(bubbleRule, /flex-direction:\s*column/);
   assert.match(leftRule, /text-align:\s*left/);
   assert.match(leftRule, /align-items:\s*flex-start/);
   assert.match(rightRule, /text-align:\s*right/);
+  assert.match(css, /\.mt-measure-probe\s*\{[\s\S]*?justify-content:\s*flex-start\s*!important/);
   assert.match(content, /function applyBubbleAnchorStyle\(/);
   assert.match(content, /shouldUseCenterRotationAnchor/);
   assert.match(content, /translate\(-50%, -50%\) rotate/);

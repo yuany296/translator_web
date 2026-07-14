@@ -377,6 +377,7 @@
       formatTranslationForOriginalLines,
       normalizeBubbleRotation,
       normalizeBubbleAlignment,
+      shouldUseVerticalJapaneseLayout,
       applyBubbleAnchorStyle,
       buildRegionClipPath,
       getBubbleRenderColors,
@@ -3957,7 +3958,10 @@
         { name: "merged", items: debug.mergedItems || debug.lineItems, className: "mt-debug-deduped" }
       ];
     }
-    return [{ name: "block", items: debug.finalBubbles || debug.items, className: "mt-debug-block" }];
+    return [
+      { name: "raw", items: debug.rawItems, className: "mt-debug-raw" },
+      { name: "block", items: debug.finalBubbles || debug.items, className: "mt-debug-block" }
+    ];
   }
 
   function renderSeamCrossPage(input = {}) {
@@ -4487,6 +4491,8 @@
         y: polygonGeometry.top,
         w: polygonGeometry.width,
         h: polygonGeometry.height,
+        centerX: polygonGeometry.centerX,
+        centerY: polygonGeometry.centerY,
         rotation: Number(node.dataset.rotationDeg || 0),
         unit: "px",
         allowVerticalOverflow: true
@@ -5771,6 +5777,8 @@
     y = 0,
     w = 0,
     h = 0,
+    centerX = null,
+    centerY = null,
     rotation = 0,
     unit = "%",
     allowVerticalOverflow = false
@@ -5783,12 +5791,18 @@
     const angle = Number(rotation) || 0;
     const shouldUseCenterRotationAnchor = Math.abs(angle) >= BUBBLE_ROTATION_NEAR_HORIZONTAL;
     if (shouldUseCenterRotationAnchor) {
-      const centerX = unit === "%" ? clamp(left + width / 2, 0, 100) : left + width / 2;
-      const centerY = allowVerticalOverflow
-        ? top + height / 2
-        : unit === "%" ? clamp(top + height / 2, 0, 100) : top + height / 2;
-      node.style.left = `${centerX}${unit}`;
-      node.style.top = `${centerY}${unit}`;
+      const explicitCenterX = centerX !== null && centerX !== undefined && Number.isFinite(Number(centerX))
+        ? Number(centerX)
+        : left + width / 2;
+      const explicitCenterY = centerY !== null && centerY !== undefined && Number.isFinite(Number(centerY))
+        ? Number(centerY)
+        : top + height / 2;
+      const anchorCenterX = unit === "%" ? clamp(explicitCenterX, 0, 100) : explicitCenterX;
+      const anchorCenterY = allowVerticalOverflow
+        ? explicitCenterY
+        : unit === "%" ? clamp(explicitCenterY, 0, 100) : explicitCenterY;
+      node.style.left = `${anchorCenterX}${unit}`;
+      node.style.top = `${anchorCenterY}${unit}`;
       node.style.transformOrigin = "center center";
       node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${angle.toFixed(2)}deg)`);
       return;
@@ -5808,12 +5822,12 @@
       node.style.setProperty("--mt-base-transform", `translate(-100%, 0) rotate(${angle.toFixed(2)}deg)`);
       return;
     }
-    const centerX = unit === "%" ? clamp(left + width / 2, 0, 100) : left + width / 2;
-    const centerY = allowVerticalOverflow
+    const fallbackCenterX = unit === "%" ? clamp(left + width / 2, 0, 100) : left + width / 2;
+    const fallbackCenterY = allowVerticalOverflow
       ? top + height / 2
       : unit === "%" ? clamp(top + height / 2, 0, 100) : top + height / 2;
-    node.style.left = `${centerX}${unit}`;
-    node.style.top = `${centerY}${unit}`;
+    node.style.left = `${fallbackCenterX}${unit}`;
+    node.style.top = `${fallbackCenterY}${unit}`;
     node.style.transformOrigin = "center center";
     node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${angle.toFixed(2)}deg)`);
   }
@@ -5893,6 +5907,18 @@
   }
 
   function shouldUseVerticalJapaneseLayout(node, text) {
+    const originalText = String(node && node.dataset && node.dataset.original || "").trim();
+    const rotation = Math.abs(normalizeBubbleRotation(
+      node && node.dataset && node.dataset.rotationDeg,
+      node && node.dataset && node.dataset.regionType
+    ));
+    if (rotation >= 45 && rotation <= 135) {
+      return looksLikeCjkText(text);
+    }
+    if (originalText && /[\uac00-\ud7afA-Za-z]/.test(originalText) && !looksLikeJapaneseText(originalText)) {
+      return false;
+    }
+
     const backgroundTarget = node.dataset.backgroundTarget === "true";
     if (backgroundTarget && looksLikeCjkText(text)) {
       const hPercent = Number(node.dataset.hPercent || "0");
@@ -6145,6 +6171,8 @@
           y: polygonGeometry.top,
           w: polygonGeometry.width,
           h: polygonGeometry.height,
+          centerX: polygonGeometry.centerX,
+          centerY: polygonGeometry.centerY,
           rotation: Number(node.dataset.rotationDeg || 0),
           unit: "px",
           allowVerticalOverflow: true

@@ -27,7 +27,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType, isMeaningfulOcrText, inferTextAlignmentFromBoxes, sortOcrCandidatesByReadingOrder, composeRotatedClusterWords, estimateRotatedClusterLineCount };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, deepFreezeObservationResult, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType, isMeaningfulOcrText, inferTextAlignmentFromBoxes, sortOcrCandidatesByReadingOrder, composeRotatedClusterWords, estimateRotatedClusterLineCount };`,
   context,
   { filename: "background.js" }
 );
@@ -1609,6 +1609,83 @@ test("provider-neutral OCR observations are immutable, filtered with reasons, an
   assert.equal(Object.isFrozen(result.observations[0]), true);
   assert.equal("translated_text" in result.observations[0], false);
   assert.deepEqual(Array.from(result.observations[0].pageIds), ["page-a"]);
+});
+
+test("retained OCR evidence cannot be shadowed by a debug filtered observation with the same id", () => {
+  const candidate = {
+    x: 8.75,
+    y: 41.67,
+    w: 54.58,
+    h: 19.79,
+    original_text: "경계를 가로지르는 대사",
+    confidence: 0.99,
+    rawBox: { left: 63, top: 80, width: 393, height: 38 },
+    bg_type: "solid",
+    region_type: "speech_bubble"
+  };
+  const request = {
+    sourceType: "seam",
+    pageIds: ["page-upper", "page-lower"],
+    imageRevisionByPage: { "page-upper": "rev-upper", "page-lower": "rev-lower" },
+    imageDigest: "digest-seam",
+    imageMeta: {
+      pageSpans: [
+        {
+          pageId: "page-upper",
+          canvasBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageBox: { x: 0, y: 1004, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        },
+        {
+          pageId: "page-lower",
+          canvasBox: { x: 0, y: 96, w: 720, h: 96 },
+          pageBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        }
+      ]
+    }
+  };
+  const result = context.__backgroundTest.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request,
+    imageSize: { width: 720, height: 192 },
+    normalized: [candidate],
+    ocrTuning: context.__backgroundTest.getDefaultOcrTuning(),
+    ocrDebug: {
+      filterReasons: [{
+        stage: "filter",
+        reason: "duplicate-provider-variant",
+        item: {
+          text: candidate.original_text,
+          confidence: candidate.confidence,
+          rawBox: candidate.rawBox,
+          percent: { x: candidate.x, y: candidate.y, w: candidate.w, h: candidate.h }
+        }
+      }]
+    },
+    ignoreSimplifiedChinese: false,
+    debug: true
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.filteredObservations.length, 0);
+  assert.equal(result.counts.filteredShadowedByRetained, 1);
+});
+
+test("legacy OCR cache payload drops filtered observations that conflict with retained ids", () => {
+  const observation = { id: "obs-shared", originalText: "경계 대사" };
+  const result = context.__backgroundTest.deepFreezeObservationResult({
+    observations: [observation],
+    filteredObservations: [{ ...observation, filterReason: "legacy-debug-filter" }],
+    counts: { retained: 1, filtered: 1 }
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.filteredObservations.length, 0);
+  assert.equal(result.counts.filteredShadowedByRetained, 1);
+  assert.equal(Object.isFrozen(result), true);
 });
 
 test("seam OCR rejects complete page text and keeps only strict cross-boundary evidence", () => {

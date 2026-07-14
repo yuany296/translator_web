@@ -4938,6 +4938,20 @@
         .map((item) => [String(item && item.id || ""), item]));
       const candidates = [];
       const candidateDiagnostics = [];
+      const canonicalMemberIds = new Set(canonicals.flatMap((canonical) =>
+        (Array.isArray(canonical && canonical.memberObservationIds) ? canonical.memberObservationIds : []).map(String)
+      ));
+      const coverageLedger = activeStore.getCoverageLedger();
+      for (const observationId of stateObservationIds) {
+        if (canonicalMemberIds.has(observationId)) continue;
+        const resolution = coverageLedger.get(observationId) || null;
+        candidateDiagnostics.push({
+          observationId,
+          reason: "no_canonical",
+          resolution: String(resolution && (resolution.resolution || resolution.status) || "missing"),
+          filterReason: String(resolution && resolution.filterReason || "")
+        });
+      }
       for (const canonical of canonicals) {
         if (!canonical) continue;
         const canonicalId = String(canonical.id || "");

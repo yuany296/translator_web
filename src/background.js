@@ -1293,13 +1293,16 @@ function buildProviderNeutralObservationResult({
   const observations = coalesced
     .slice(0, MAX_BUBBLES)
     .map((candidate) => buildProviderNeutralObservation(provider, request, candidate, imageSize));
-  const filteredObservations = filteredRows
+  const rawFilteredObservations = filteredRows
     .map(({ candidate, reason }) => ({
       ...buildProviderNeutralObservation(provider, request, candidate, imageSize),
       filterReason: String(reason || "filtered")
     }));
   const sortedObservations = sortProviderNeutralObservations(observations);
-  const sortedFiltered = sortProviderNeutralObservations(filteredObservations);
+  const retainedObservationIds = new Set(sortedObservations.map((observation) => String(observation.id || "")));
+  const sortedFiltered = sortProviderNeutralObservations(rawFilteredObservations)
+    .filter((observation) => !retainedObservationIds.has(String(observation.id || "")));
+  const filteredShadowedByRetained = rawFilteredObservations.length - sortedFiltered.length;
   const edgeSignals = buildObservationEdgeSignals(sortedObservations, sortedFiltered, imageSize);
   const result = {
     provider,
@@ -1314,6 +1317,7 @@ function buildProviderNeutralObservationResult({
     counts: {
       retained: sortedObservations.length,
       filtered: sortedFiltered.length,
+      ...(filteredShadowedByRetained > 0 ? { filteredShadowedByRetained } : {}),
       ...(serviceCounts && typeof serviceCounts === "object" ? serviceCounts : {})
     },
     ...(isDataUrl(cleanedImage) ? { cleanedImage } : {}),
@@ -1793,12 +1797,38 @@ function observationVisualTouchesEdge(observation, side, bandPercent) {
     });
 }
 
+function removeFilteredObservationIdConflicts(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.observations) || !Array.isArray(value.filteredObservations)) {
+    return value;
+  }
+  const retainedIds = new Set(value.observations.map((observation) => String(observation && observation.id || "")).filter(Boolean));
+  const filteredObservations = value.filteredObservations.filter((observation) =>
+    !retainedIds.has(String(observation && observation.id || ""))
+  );
+  if (filteredObservations.length === value.filteredObservations.length) return value;
+  const filteredShadowedByRetained = value.filteredObservations.length - filteredObservations.length;
+  return {
+    ...value,
+    filteredObservations,
+    counts: {
+      ...(value.counts && typeof value.counts === "object" ? value.counts : {}),
+      retained: value.observations.length,
+      filtered: filteredObservations.length,
+      filteredShadowedByRetained: Math.max(
+        filteredShadowedByRetained,
+        Number(value.counts && value.counts.filteredShadowedByRetained) || 0
+      )
+    }
+  };
+}
+
 function deepFreezeObservationResult(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) {
     return value;
   }
-  Object.values(value).forEach(deepFreezeObservationResult);
-  return Object.freeze(value);
+  const normalized = removeFilteredObservationIdConflicts(value);
+  Object.values(normalized).forEach(deepFreezeObservationResult);
+  return Object.freeze(normalized);
 }
 
 function normalizeCanonicalRevision(value) {

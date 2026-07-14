@@ -47,6 +47,29 @@ test("manifest loads the Kakao module before content.js", () => {
   assert.match(backgroundSource, /files:\s*\[\.\.\.files\]/);
 });
 
+test("popup translate button runs manual viewport translation in manual mode", () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const popupSource = fs.readFileSync(path.join(root, "popup.js"), "utf8");
+
+  assert.match(
+    popupSource,
+    /translateBtn\.addEventListener\("click", async \(\) => \{[\s\S]*?await handleTranslateButtonClick\(\);[\s\S]*?\}\);/
+  );
+  assert.match(
+    popupSource,
+    /async function handleTranslateButtonClick\(\)[\s\S]*?shouldTranslateButtonUsePageAuto\(\)[\s\S]*?togglePageAutoTranslate\(\)[\s\S]*?translateCurrentViewport\(\)/
+  );
+  assert.match(
+    popupSource,
+    /async function translateCurrentViewport\(\)[\s\S]*?runManualTranslateAllFrames\(tab\.id\)/
+  );
+  assert.match(
+    popupSource,
+    /function shouldTranslateButtonUsePageAuto\(\)[\s\S]*?pageAutoTranslateEnabled \|\| normalizePretranslateMode\(pretranslateModeSelect\.value\) !== "manual"/
+  );
+  assert.match(popupSource, /translateBtn\.textContent = "翻译当前视口"/);
+});
+
 /* =================================================================
  * FSM
  * ================================================================= */

@@ -6627,7 +6627,12 @@
         return;
       }
 
-      await togglePageAutoTranslate(!state.autoTranslatePageEnabled);
+      if (state.autoTranslatePageEnabled && state.enabled) {
+        await togglePageAutoTranslate(false);
+        return;
+      }
+
+      await manualTranslateVisible();
     });
 
     const closeBtn = document.createElement("button");
@@ -6661,7 +6666,7 @@
     state.floatingBall.classList.toggle("mt-auto-enabled", state.autoTranslatePageEnabled && state.enabled);
     state.floatingBall.textContent = state.autoTranslatePageEnabled && state.enabled ? "停" : "译";
     state.floatingBall.title =
-      state.autoTranslatePageEnabled && state.enabled ? "关闭本页自动翻译" : "开启本页自动翻译";
+      state.autoTranslatePageEnabled && state.enabled ? "关闭本页自动翻译" : "翻译当前视口漫画目标";
   }
 
   function setFloatingBallWorking(working) {

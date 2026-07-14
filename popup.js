@@ -113,7 +113,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 function bindEvents() {
   providerSelect.addEventListener("change", onProviderChanged);
-  pretranslateModeSelect.addEventListener("change", updatePretranslateModeStatus);
+  pretranslateModeSelect.addEventListener("change", () => {
+    updatePretranslateModeStatus();
+    updatePageAutoTranslateButton();
+  });
   termDiscoverySwitch.addEventListener("change", updateTermDiscoveryEnabled);
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -138,7 +141,7 @@ function bindEvents() {
   });
 
   translateBtn.addEventListener("click", async () => {
-    await togglePageAutoTranslate();
+    await handleTranslateButtonClick();
   });
 }
 
@@ -334,6 +337,54 @@ async function clearCache() {
   }
 }
 
+async function handleTranslateButtonClick() {
+  if (shouldTranslateButtonUsePageAuto()) {
+    await togglePageAutoTranslate();
+    return;
+  }
+
+  await translateCurrentViewport();
+}
+
+async function translateCurrentViewport() {
+  try {
+    const tab = await getActiveTab();
+    if (!tab || !tab.id) {
+      throw new Error("当前标签页不可用");
+    }
+
+    setStatus("正在翻译当前视口...", false);
+    await ensureContentInjected(tab.id);
+
+    const response = await runManualTranslateAllFrames(tab.id);
+
+    if (!response || !response.ok) {
+      throw new Error(response && response.error ? response.error : "当前视口翻译失败");
+    }
+
+    const visibleCount = Number(response.visibleCount || 0);
+    const successCount = Number(response.successCount || 0);
+    const failCount = Number(response.failCount || 0);
+    const firstError = Array.isArray(response.errors) ? response.errors[0] : "";
+
+    if (visibleCount === 0) {
+      setStatus("当前视口没有可翻译的漫画图片/画布", true);
+    } else if (failCount === 0) {
+      setStatus(`当前视口翻译完成：${successCount}/${visibleCount}`, false);
+    } else if (successCount > 0) {
+      setStatus(`当前视口部分成功 ${successCount}/${visibleCount}，失败 ${failCount}`, true);
+    } else {
+      const suffix = firstError ? `，首个错误：${firstError}` : "";
+      setStatus(`当前视口全部失败：${failCount}/${visibleCount}${suffix}`, true);
+    }
+
+    await refreshCacheStats();
+    await refreshTabStatus(tab.id);
+  } catch (error) {
+    setStatus(`执行失败：${getErrorMessage(error)}`, true);
+  }
+}
+
 async function togglePageAutoTranslate() {
   try {
     const tab = await getActiveTab();
@@ -341,6 +392,7 @@ async function togglePageAutoTranslate() {
       throw new Error("当前标签页不可用");
     }
 
+    setStatus(pageAutoTranslateEnabled ? "正在停止本页自动翻译..." : "正在开启本页自动翻译...", false);
     await ensureContentInjected(tab.id);
 
     const response = await runTogglePageAutoTranslateAllFrames(tab.id, !pageAutoTranslateEnabled);
@@ -396,8 +448,18 @@ async function refreshPageAutoTranslateStatus() {
 }
 
 function updatePageAutoTranslateButton() {
-  translateBtn.textContent = pageAutoTranslateEnabled ? "关闭本页自动翻译" : "开启本页自动翻译";
+  if (pageAutoTranslateEnabled) {
+    translateBtn.textContent = "关闭本页自动翻译";
+  } else if (shouldTranslateButtonUsePageAuto()) {
+    translateBtn.textContent = "开启本页自动翻译";
+  } else {
+    translateBtn.textContent = "翻译当前视口";
+  }
   translateBtn.dataset.autoTranslateEnabled = pageAutoTranslateEnabled ? "true" : "false";
+}
+
+function shouldTranslateButtonUsePageAuto() {
+  return pageAutoTranslateEnabled || normalizePretranslateMode(pretranslateModeSelect.value) !== "manual";
 }
 
 async function runTogglePageAutoTranslateAllFrames(tabId, enabled) {

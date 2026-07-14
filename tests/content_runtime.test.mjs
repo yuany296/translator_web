@@ -1466,6 +1466,18 @@ test("page translation toggle does not persist activation globally", () => {
   assert.equal(/storageSet\(\{\s*mt_pretranslate_mode\s*:/.test(contentSource), false);
 });
 
+test("floating ball click keeps manual viewport translation separate from page auto toggle", () => {
+  assert.match(
+    contentSource,
+    /ball\.addEventListener\("click", async \(event\) => \{[\s\S]*?state\.autoTranslatePageEnabled && state\.enabled[\s\S]*?togglePageAutoTranslate\(false\)[\s\S]*?await manualTranslateVisible\(\);[\s\S]*?\}\);/
+  );
+  assert.doesNotMatch(contentSource, /togglePageAutoTranslate\(!state\.autoTranslatePageEnabled\)/);
+  assert.match(
+    contentSource,
+    /state\.autoTranslatePageEnabled && state\.enabled \? "关闭本页自动翻译" : "翻译当前视口漫画目标"/
+  );
+});
+
 test("overlay movement updates position without triggering text layout", () => {
   assert.deepEqual(
     { ...runtime.__test.compareOverlayViewportRects(

@@ -1,5 +1,38 @@
 # Operations Log
 
+## 2026-07-16 - Codex (小文件合并)
+
+- 将 8 个极小的模块文件（6~78 行）合并到其语义归属的大文件中，减少碎片化：
+  - Background：`messages-constants.js`（6 行常量）→ `messages.js`
+  - Content：`recognition-constants.js`（14 行）→ `recognition-binding.js`；`reader-store.js`（6 行）→ `reader-api.js`；`preload-sweep.js`（61 行）→ `scheduler.js`；`capture-helpers.js`（48 行）→ `capture-payload.js`
+  - Canonical：`pipeline-errors.js`（16 行）→ `constants-fsm.js`
+  - Glossary：`glossary-dom.js`（78 行）+ `glossary-startup.js`（6 行）→ `glossary-editor.js`
+- 合并后文件总数从 89 减少到 79（Background 28，Content 31，Canonical modules 17+子目录，Glossary 3）
+- 所有合并使用 `scripts/merge-small-files.mjs` 处理，保证 UTF-8 编码安全
+- 验证通过：`npm run verify` 全绿（Node 464/464，Python 58/58）
+
+## 2026-07-16 - Codex (模块重命名)
+
+- 将所有按行数机械拆分的编号模块重命名为按领域命名的模块（rename-only，不涉及内容合并或逻辑修改）：
+  - **Background**：30 个文件从 `01-messages.js` ~ `31-messages.js` 重命名为 `messages.js`、`term-discovery.js`、`ocr-pipeline.js`、`ocr-dispatch.js`、`observation-results.js`、`seam-handling.js`、`capture.js`、`ocr-provider.js`、`vision-ocr.js`、`ocr-clustering.js`、`ocr-styles.js`、`ocr-lines.js`、`ocr-regions.js`、`ocr-cluster-geometry.js`、`ocr-display-geometry.js`、`ocr-item-filter.js`、`ocr-candidates.js`、`baidu-provider.js`、`baidu-results.js`、`translation-provider.js`、`translation-helpers.js`、`translation-coalesce.js`、`translation-utils.js`、`platform-cache.js`、`platform-settings.js`、`platform-storage.js`、`background-state.js`、`bootstrap.js`、`messages-constants.js`
+  - **Content**：35 个文件重命名为 `reader-init.js`、`reader-observers.js`、`reader-state.js`、`reader-store.js`、`reader-api.js`、`reader-startup.js`、`scheduler.js`、`preload-sweep.js`、`recognition-workflow.js`、`recognition-payload.js`、`recognition-binding.js`、`recognition-seam.js`、`recognition-stitch.js`、`recognition-overlap.js`、`recognition-constants.js`、`capture-payload.js`、`capture-helpers.js`、`scene-projection.js`、`scene-crosspage.js`、`scene-dispatch.js`、`renderer-overlay.js`、`renderer-embed.js`、`renderer-canvas.js`、`lifecycle-bubble.js`、`lifecycle-position.js`、`lifecycle-font-fit.js`、`lifecycle-restore.js`、`controls-ui.js`、`controls-autotranslate.js`、`controls-utils.js`、`target-filter.js`、`target-resolve.js`、`target-cache.js`、`platform-runtime.js`、`platform-dom.js`
+  - **Canonical modules**：19 个文件重命名为 `stitch-geometry.js` ~ `pipeline-api.js`，bridge 文件更新子目录 import
+  - **Canonical sub-directories**（保留目录结构，仅重命名文件）：`reconciler-modules/` 11 个、`pipeline-factory/` 2 个、`canonical-pipeline-factory/` 5 个、`page-store-factory/` 3 个
+  - **Glossary**：5 个文件重命名为 `glossary-editor.js` ~ `glossary-startup.js`
+- 所有重命名使用 `git mv` 保留历史，安装函数名同步更新
+- 使用 Node.js 脚本（`scripts/rename-modules.mjs`、`scripts/rename-subdirs.mjs`）处理重命名和函数名替换，避免 PowerShell 编码问题
+- 验证通过：`npm run verify` 全绿（line gate + ESLint + Pylint 10.00/10 + Build + Node 464/464 + Python 58/58）
+
+## 2026-07-16 - Codex
+
+- 完成旧根目录文件清理：删除 `background.js`、`content.js`、`kakao-pipeline.js`、`kakao-reconciler.js`、`popup.js`、`glossary*.js`、`term-discovery-core.js` 及相关 HTML/CSS/manifest 根目录副本。删除旧 `src/` 目录、`core/` 目录和 `scripts/sync-to-root.mjs`。
+- 更新 `.gitignore`：不再忽略 `CLAUDE.md` 和 `operations-log.md`；显式排除 `glossary.db` 和 `local-ocr-service/glossary.db`；移除 `image/`、`mobile-userscript/`、`docs/` 等已废弃条目。
+- 更新 `scripts/build-extension.mjs`：改用 esbuild `context` API 支持 `npm run dev` 的 `--watch` 文件监听模式；构建配置统一为数组驱动而非 for-of 循环。
+- 修正 `tests/overlay_style.test.mjs`：源码断言从已删除的根 `content.js` 改为读取 `extension/src/content/modules/` 下的模块文件。
+- 修正 `tests/kakao_pipeline.part01.test.mjs`：build 脚本断言匹配新的构建配置模式。
+- 更新 `README.md`：完整重写以反映新的目录结构、配置拆分、provider 接口、几何契约和验证命令。
+- 验证通过：文件行数门禁、ESLint、Python Pylint（10.00/10）、esbuild 构建、Node 464/464、Python 58/58（1 skip）。`npm run verify` 全绿。
+
 ## 2026-07-15 - Codex
 
 - 通过 Chrome 现场状态与本地 OCR JSON 定位分段根因：`그런 / 의미에서 / 이름이에요.` 属于同一个 `caption_panel`，而同一行的 `고른` 被区域检测误标为一个嵌套的 `speech_bubble`。该小区域约 93% 被外层区域包含，但旧的区域兼容规则禁止不同区域类型合并，最终把一句话拆成两个翻译段。

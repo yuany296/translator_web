@@ -46,17 +46,15 @@ local-ocr-service/*.png
 local-ocr-service/debug
 .local-data/
 
-# === Local AI instructions / work logs ===
+# === Local AI context (not source code) ===
 AGENTS.md
-CLAUDE.md
-operations-log.md
 plans.md
 problems.md
 verification*.md
 
+# === Glossary database (not committed) ===
+glossary.db
+local-ocr-service/glossary.db
+
 # === Debug snapshots ===
 debug_before/
-
-image/
-mobile-userscript/
-docs/

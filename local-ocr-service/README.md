@@ -109,15 +109,24 @@ cd C:\homework\AI_work\translator\local-ocr-service
 
 ## 扩展配置
 
-- Provider：`local_paddle_deepseek`
-- Model：`deepseek-chat`
-- API Key：DeepSeek API Key
-- Base URL：`https://api.deepseek.com`
+扩展的 OCR 和翻译配置已拆分为独立卡片：
+
+### OCR 配置
+- Provider：`local_paddle`
 - 本地 OCR 服务地址：`http://127.0.0.1:8765`
-- 本地 OCR 语言：
+- 语言：
   - `auto`：日文和韩文都跑一遍并按重叠框去重
   - `japan`：只跑日文
   - `korean`：只跑韩文
+- 模式：`fast`（快速）或 `enhanced`（增强）
+
+### 翻译配置
+- Provider：`openai_compatible`
+- Model：`deepseek-chat`
+- API Key：DeepSeek API Key
+- Base URL：`https://api.deepseek.com`
+
+OCR 和翻译使用独立缓存。修改翻译配置不会触发 OCR 重新识别。
 
 首次启动 PaddleOCR 会下载模型，耗时取决于网络和机器性能。
 

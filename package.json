@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build -- --watch",
+    "dev": "node scripts/build-extension.mjs --watch",
     "build": "node scripts/build-extension.mjs",
     "check:lines": "node scripts/check-file-lengths.mjs",
     "lint:js": "eslint extension/src",

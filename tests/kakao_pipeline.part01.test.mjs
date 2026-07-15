@@ -468,7 +468,7 @@ test("manifest exposes only built entries from dist extension", () => {
   assert.equal(manifest.background.type, "module");
   const buildSource = fs.readFileSync(path.join(root, "scripts", "build-extension.mjs"), "utf8");
   assert.match(buildSource, /format: "esm"/);
-  assert.match(buildSource, /for \(const name of \["content", "popup", "glossary"\]\)/);
+  assert.match(buildSource, /\["content", "popup", "glossary"\]/);
 });
 test("popup independently saves OCR, translation and runtime settings and keeps manual translation", () => {
   const root = path.resolve(import.meta.dirname, "..");

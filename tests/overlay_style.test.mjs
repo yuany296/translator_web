@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
+
+function readContentModules(pattern) {
+  const modulesDir = path.join(projectRoot, "extension", "src", "content", "modules");
+  const files = readdirSync(modulesDir).filter((name) => name.endsWith(".js")).sort();
+  const sources = files.map((name) => readFileSync(path.join(modulesDir, name), "utf8"));
+  const matching = sources.filter((src) => pattern.test(src));
+  return matching.length > 0;
+}
 
 test("根目录覆盖层的原图模式会彻底隐藏译文及其描边", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
@@ -76,7 +84,6 @@ test("seam composite is clipped only by its two page-local windows", () => {
 
 test("overlay bubbles support source alignment without clipping long translations", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
-  const content = readFileSync(path.resolve(projectRoot, "content.js"), "utf8");
   const bubbleRule = css.match(/\.mt-bubble\s*\{([^}]+)\}/)?.[1] ?? "";
   const leftRule = css.match(/\.mt-bubble\.mt-align-left\s*\{([^}]+)\}/)?.[1] ?? "";
   const rightRule = css.match(/\.mt-bubble\.mt-align-right\s*\{([^}]+)\}/)?.[1] ?? "";
@@ -89,12 +96,12 @@ test("overlay bubbles support source alignment without clipping long translation
   assert.match(leftRule, /align-items:\s*flex-start/);
   assert.match(rightRule, /text-align:\s*right/);
   assert.match(css, /\.mt-measure-probe\s*\{[\s\S]*?justify-content:\s*flex-start\s*!important/);
-  assert.match(content, /function applyBubbleAnchorStyle\(/);
-  assert.match(content, /shouldUseCenterRotationAnchor/);
-  assert.match(content, /translate\(-50%, -50%\) rotate/);
-  assert.match(content, /--mt-font-weight/);
-  assert.match(content, /rotate\(\$\{angle\.toFixed\(2\)\}deg\)/);
-  assert.match(content, /function expandBubbleForTextOverflow\(/);
-  assert.match(content, /--mt-fill-width", "100%"/);
-  assert.doesNotMatch(content, /text-overflow:\s*ellipsis/);
+  assert.ok(readContentModules(/function applyBubbleAnchorStyle\(/), "applyBubbleAnchorStyle not found in content modules");
+  assert.ok(readContentModules(/shouldUseCenterRotationAnchor/), "shouldUseCenterRotationAnchor not found in content modules");
+  assert.ok(readContentModules(/translate\(-50%, -50%\) rotate/), "translate(-50%, -50%) rotate not found in content modules");
+  assert.ok(readContentModules(/--mt-font-weight/), "--mt-font-weight not found in content modules");
+  assert.ok(readContentModules(/rotate\(\$\{angle\.toFixed\(2\)\}deg\)/), "rotate template not found in content modules");
+  assert.ok(readContentModules(/function expandBubbleForTextOverflow\(/), "expandBubbleForTextOverflow not found in content modules");
+  assert.ok(readContentModules(/--mt-fill-width", "100%"/), "--mt-fill-width 100% not found in content modules");
+  assert.ok(!readContentModules(/text-overflow:\s*ellipsis/), "text-overflow:ellipsis should not appear in content modules");
 });

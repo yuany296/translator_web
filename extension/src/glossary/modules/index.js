@@ -1,19 +1,15 @@
-import { installGlossary01 } from "./01-editor.js";
-import { installGlossary02 } from "./02-pending.js";
-import { installGlossary03 } from "./03-storage.js";
-import { installGlossary04 } from "./04-editor.js";
-import { installGlossary05 } from "./05-editor.js";
+import { installGlossaryEditor } from "./glossary-editor.js";
+import { installGlossaryPending } from "./glossary-pending.js";
+import { installGlossaryStorage } from "./glossary-storage.js";
 
 export const glossaryInstallers = Object.freeze([
-  installGlossary01,
-  installGlossary02,
-  installGlossary03,
-  installGlossary04,
-  installGlossary05
+  installGlossaryEditor,
+  installGlossaryPending,
+  installGlossaryStorage
 ]);
 
 export const glossaryPhases = Object.freeze({
-  functions: Object.freeze([installGlossary01, installGlossary02, installGlossary03]),
-  state: Object.freeze([installGlossary04]),
-  startup: Object.freeze([installGlossary05])
+  functions: Object.freeze([installGlossaryEditor, installGlossaryPending, installGlossaryStorage]),
+  state: Object.freeze([]),
+  startup: Object.freeze([])
 });

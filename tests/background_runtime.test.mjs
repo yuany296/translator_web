@@ -343,6 +343,22 @@ test("single chat rows align left while ordinary bubble rows remain centered", (
   assert.equal(background.inferTextAlignmentFromBoxes([box], imageSize, "speech_bubble"), "center");
 });
 
+test("nested speech-bubble rows prefer their shared center over loose edge tolerance", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 720, height: 1100 };
+  const centeredRows = [
+    { left: 310, top: 370, right: 490, bottom: 450, centerX: 400, width: 180, height: 80 },
+    { left: 220, top: 470, right: 580, bottom: 552, centerX: 400, width: 360, height: 82 }
+  ];
+  const leftAlignedRows = [
+    { left: 100, top: 620, right: 280, bottom: 670, centerX: 190, width: 180, height: 50 },
+    { left: 104, top: 684, right: 450, bottom: 736, centerX: 277, width: 346, height: 52 }
+  ];
+
+  assert.equal(background.inferTextAlignmentFromBoxes(centeredRows, imageSize, "speech_bubble"), "center");
+  assert.equal(background.inferTextAlignmentFromBoxes(leftAlignedRows, imageSize, "speech_bubble"), "left");
+});
+
 test("rotated two-line candidate coalescing preserves visual top-to-bottom order", () => {
   const background = context.__backgroundTest;
   const lower = {

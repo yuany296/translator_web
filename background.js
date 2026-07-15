@@ -3977,6 +3977,13 @@ function inferTextAlignmentFromBoxes(boxes, imageSize, regionType = "") {
   const widthSpread = spread(widths);
   const edgeTolerance = Math.max(avgHeight * 1.15, imageWidth * 0.012);
   const centerTolerance = Math.max(avgHeight * 1.2, imageWidth * 0.018);
+  const closestEdgeSpread = Math.min(leftSpread, rightSpread);
+
+  // 气泡中常见“短行嵌在长行中间”的排版。此时左右边缘可能仍落入按字高放宽的
+  // 对齐容差，但中心线会明显更稳定，必须先于宽松的边缘规则判为居中。
+  if (centerSpread <= centerTolerance && centerSpread <= closestEdgeSpread * 0.6) {
+    return "center";
+  }
 
   if (leftSpread <= edgeTolerance && (rightSpread > leftSpread * 1.35 || widthSpread > avgHeight * 0.75)) {
     return "left";

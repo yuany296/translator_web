@@ -71,7 +71,7 @@ SOLID_BACKGROUND_MAX_DELTA_E_P90 = 20.0
 SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE = 0.78
 VERTICAL_ORIENTATION_TIE_MARGIN = 0.08
 VERTICAL_CROP_MIN_ASPECT_RATIO = 1.4
-OCR_GEOMETRY_CONTRACT_VERSION = "orientation-v2"
+OCR_GEOMETRY_CONTRACT_VERSION = "appearance-layout-v3"
 DEBUG_DIR = Path(__file__).resolve().parent / "debug-ocr"
 SERVICE_DEBUG_ROOT = Path(__file__).resolve().parent / "debug"
 
@@ -1296,11 +1296,10 @@ def apply_visual_style_to_item(item: dict[str, Any], image: Any, region: dict[st
     box = item.get("box") or {}
     polygon = item.get("polygon") or []
     bg_color = str(region.get("bg_color") if region else sample_box_background_color(image, box))
-    if region:
-        ink_color = sample_text_ink_color(image, polygon, box, bg_color)
-        text_color, stroke_color = choose_readable_text_colors(ink_color, bg_color)
-    else:
-        text_color, stroke_color = "#000000", "#ffffff"
+    # 区域检测失败并不代表原字一定是黑色。聊天截图和效果字经常没有视觉区域，
+    # 仍须从原图采样字色；只有对比度不足时才回退到可读的黑白色。
+    ink_color = sample_text_ink_color(image, polygon, box, bg_color)
+    text_color, stroke_color = choose_readable_text_colors(ink_color, bg_color)
     item["region_id"] = str(region.get("id") if region else "")
     item["region_type"] = str(region.get("region_type") if region else "effect_text")
     item["region_polygon"] = region.get("polygon") if region else None
@@ -2120,7 +2119,7 @@ def are_duplicate_ocr_items(first: dict[str, Any], second: dict[str, Any]) -> bo
 
     overlap = intersection_ratio(first_box, second_box)
     iou = box_iou(first_box, second_box)
-    if overlap < 0.55 and iou < 0.42:
+    if overlap < 0.55 and iou < 0.42 and not are_conflicting_ocr_reads(first, second):
         return False
 
     first_text = normalize_text_for_similarity(first.get("text"))
@@ -2133,7 +2132,61 @@ def are_duplicate_ocr_items(first: dict[str, Any], second: dict[str, Any]) -> bo
     shorter, longer = sorted((first_text, second_text), key=len)
     contains = len(shorter) >= 2 and shorter in longer
     similarity = normalized_text_similarity(first_text, second_text)
-    return (contains and overlap >= 0.62) or (similarity >= 0.82 and (overlap >= 0.6 or iou >= 0.45))
+    return (
+        (contains and overlap >= 0.62)
+        or (similarity >= 0.82 and (overlap >= 0.6 or iou >= 0.45))
+        or are_conflicting_ocr_reads(first, second)
+    )
+
+
+def are_conflicting_ocr_reads(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """识别同一视觉行的互斥读法，交由质量排序保留更可信的一项。"""
+    first_box = first.get("box")
+    second_box = second.get("box")
+    if not isinstance(first_box, dict) or not isinstance(second_box, dict):
+        return False
+    first_region = str(first.get("region_id") or "")
+    second_region = str(second.get("region_id") or "")
+    if first_region and second_region and first_region != second_region:
+        return False
+
+    first_text = normalize_text_for_similarity(first.get("text"))
+    second_text = normalize_text_for_similarity(second.get("text"))
+    if min(len(first_text), len(second_text)) < 2:
+        return False
+    length_ratio = min(len(first_text), len(second_text)) / max(len(first_text), len(second_text))
+    if length_ratio < 0.72:
+        return False
+
+    first_score = float(first.get("score") or 0.0)
+    second_score = float(second.get("score") or 0.0)
+    if abs(first_score - second_score) < 0.12:
+        return False
+    first_rotation = float(first.get("rotation_deg") or 0.0)
+    second_rotation = float(second.get("rotation_deg") or 0.0)
+    if abs(first_rotation - second_rotation) > 4.0:
+        return False
+
+    first_left = float(first_box.get("left") or 0.0)
+    second_left = float(second_box.get("left") or 0.0)
+    first_width = max(1.0, float(first_box.get("width") or 0.0))
+    second_width = max(1.0, float(second_box.get("width") or 0.0))
+    horizontal_overlap = max(
+        0.0,
+        min(first_left + first_width, second_left + second_width) - max(first_left, second_left),
+    ) / min(first_width, second_width)
+    first_height = max(1.0, float(first_box.get("height") or 0.0))
+    second_height = max(1.0, float(second_box.get("height") or 0.0))
+    height_ratio = min(first_height, second_height) / max(first_height, second_height)
+    first_center_y = float(first_box.get("top") or 0.0) + first_height / 2
+    second_center_y = float(second_box.get("top") or 0.0) + second_height / 2
+    center_y_distance = abs(first_center_y - second_center_y)
+    return (
+        intersection_ratio(first_box, second_box) >= 0.50
+        and horizontal_overlap >= 0.85
+        and height_ratio >= 0.65
+        and center_y_distance <= ((first_height + second_height) / 2) * 0.85
+    )
 
 
 def normalize_text_for_similarity(value: Any) -> str:

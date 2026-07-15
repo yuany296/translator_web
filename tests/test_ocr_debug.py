@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -337,7 +338,7 @@ def test_visual_region_analysis_rejects_patterned_effect_background() -> None:
     assert regions == []
     assert items[0]["region_id"] == ""
     assert items[0]["region_type"] == "effect_text"
-    assert items[0]["text_color"] == "#000000"
+    assert server.relative_luminance(items[0]["text_color"]) < 0.02
     assert items[0]["stroke_color"] == "#ffffff"
 
 
@@ -588,7 +589,7 @@ def test_visual_region_analysis_rejects_page_spanning_background() -> None:
 
     assert regions == []
     assert items[0]["region_type"] == "effect_text"
-    assert items[0]["text_color"] == "#000000"
+    assert server.relative_luminance(items[0]["text_color"]) < 0.02
     assert items[0]["stroke_color"] == "#ffffff"
 
 def test_problem_screenshots_distinguish_panels_from_effect_text() -> None:
@@ -608,8 +609,8 @@ def test_problem_screenshots_distinguish_panels_from_effect_text() -> None:
     black_regions = server.annotate_visual_regions(required[0].read_bytes(), black_items)
     assert black_regions == []
     assert black_items[0]["region_type"] == "effect_text"
-    assert black_items[0]["text_color"] == "#000000"
-    assert black_items[0]["stroke_color"] == "#ffffff"
+    assert server.relative_luminance(black_items[0]["text_color"]) > 0.9
+    assert black_items[0]["stroke_color"] == "#000000"
 
     beige_items = [
         {"text": "line-1", "box": {"left": 110, "top": 135, "width": 400, "height": 48}},
@@ -619,7 +620,7 @@ def test_problem_screenshots_distinguish_panels_from_effect_text() -> None:
     beige_regions = server.annotate_visual_regions(required[1].read_bytes(), beige_items)
     assert beige_regions == []
     assert {item["region_type"] for item in beige_items} == {"effect_text"}
-    assert {item["text_color"] for item in beige_items} == {"#000000"}
+    assert all(server.relative_luminance(item["text_color"]) < 0.02 for item in beige_items)
     assert {item["stroke_color"] for item in beige_items} == {"#ffffff"}
 
     effect_items = [{"text": "effect", "box": {"left": 35, "top": 25, "width": 675, "height": 175}}]
@@ -1026,6 +1027,65 @@ def test_dedupe_items_keeps_separate_repeated_dialogue() -> None:
     items = [
         {"text": "안녕", "score": 0.95, "box": {"left": 10, "top": 10, "width": 50, "height": 20}},
         {"text": "안녕", "score": 0.94, "box": {"left": 10, "top": 60, "width": 50, "height": 20}},
+    ]
+
+    assert len(server.dedupe_items(items)) == 2
+
+
+def test_visual_style_samples_light_ink_without_a_detected_region() -> None:
+    import server
+
+    image = np.full((80, 180, 3), (52, 52, 52), dtype=np.uint8)
+    image[28:52, 48:132] = (244, 244, 244)
+    item = {
+        "box": {"left": 30, "top": 18, "width": 120, "height": 44},
+        "polygon": [[30, 18], [150, 18], [150, 62], [30, 62]],
+    }
+
+    server.apply_visual_style_to_item(item, image, None)
+
+    assert server.relative_luminance(item["text_color"]) > 0.7
+    assert item["bg_color"] == ""
+
+
+def test_visual_style_preserves_brown_ink_on_a_light_background() -> None:
+    import server
+
+    image = np.full((80, 180, 3), (248, 248, 248), dtype=np.uint8)
+    image[28:52, 48:132] = (36, 84, 132)
+    item = {
+        "box": {"left": 30, "top": 18, "width": 120, "height": 44},
+        "polygon": [[30, 18], [150, 18], [150, 62], [30, 62]],
+    }
+
+    server.apply_visual_style_to_item(item, image, None)
+
+    red, green, blue = server.hex_to_bgr(item["text_color"])[::-1]
+    assert red > green > blue
+    assert item["text_color"] != "#000000"
+
+
+def test_dedupe_items_drops_a_lower_confidence_conflicting_read_of_the_same_row() -> None:
+    import server
+
+    items = [
+        {"text": "맛있는", "score": 0.999, "region_id": "region-a", "rotation_deg": 0,
+         "box": {"left": 388, "top": 343, "width": 94, "height": 32}},
+        {"text": "벗었는", "score": 0.820, "region_id": "region-a", "rotation_deg": 0,
+         "box": {"left": 392, "top": 363, "width": 86, "height": 22}},
+    ]
+
+    assert [item["text"] for item in server.dedupe_items(items)] == ["맛있는"]
+
+
+def test_dedupe_items_keeps_adjacent_rows_with_similar_confidence() -> None:
+    import server
+
+    items = [
+        {"text": "첫째줄", "score": 0.97, "region_id": "region-a", "rotation_deg": -8,
+         "box": {"left": 100, "top": 100, "width": 110, "height": 30}},
+        {"text": "둘째줄", "score": 0.94, "region_id": "region-a", "rotation_deg": -8,
+         "box": {"left": 102, "top": 124, "width": 108, "height": 30}},
     ]
 
     assert len(server.dedupe_items(items)) == 2

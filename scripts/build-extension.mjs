@@ -18,19 +18,22 @@ const extensionFiles = [
   "glossary-core.js",
   "term-discovery-core.js",
   "glossary.js",
-  "styles.css"
+  "styles.css",
+  "core/utils.js",
 ];
 
 // src/ 是源码；构建负责校验并生成可加载副本到 dist/。
 JSON.parse(await readFile(path.join(src, "manifest.json"), "utf8"));
-for (const file of ["background.js", "kakao-reconciler.js", "kakao-pipeline.js", "content.js", "popup.js", "glossary-core.js", "term-discovery-core.js", "glossary.js"]) {
+for (const file of ["background.js", "kakao-reconciler.js", "kakao-pipeline.js", "content.js", "popup.js", "glossary-core.js", "term-discovery-core.js", "glossary.js", "core/utils.js"]) {
   execFileSync(process.execPath, ["--check", path.join(src, file)], { stdio: "inherit" });
 }
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
 for (const file of extensionFiles) {
-  await copyFile(path.join(src, file), path.join(dist, file));
+  const dest = path.join(dist, file);
+  await mkdir(path.dirname(dest), { recursive: true });
+  await copyFile(path.join(src, file), dest);
 }
 
 console.log(`已从 src/ 生成扩展副本：${dist}`);

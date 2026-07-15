@@ -8260,16 +8260,12 @@
     while (angle >= 90) angle -= 180;
     while (angle < -90) angle += 180;
 
-    const type = String(regionType || "").toLowerCase().trim();
-
-    // Chat and UI regions: never rotate
-    if (type === "chat" || type === "ui") return 0;
-
     // Near-horizontal text: ignore tiny rotation noise
     if (Math.abs(angle) < BUBBLE_ROTATION_NEAR_HORIZONTAL) return 0;
 
-    // 保留 OCR 的真实倾斜角。垂直排版由 writing-mode 单独处理，不能把
-    // 大于某个经验阈值的合法斜体一律压成水平文字。
+    // 聊天、UI 与正文都保留同一组内的可靠倾角；超过 25° 的值更可能来自
+    // 方向误判，垂直排版仍由 writing-mode 单独处理。
+    if (Math.abs(angle) > 25) return 0;
     return clamp(angle, -BUBBLE_ROTATION_MAX, BUBBLE_ROTATION_MAX);
   }
 

@@ -536,6 +536,41 @@ test("a cross-page seam joins a geometrically aligned fragment with one OCR subs
   ].sort());
 });
 
+test("a corrected seam supersedes page-edge Hangul final-consonant crop errors", () => {
+  const upper = page("cropped-upper", 0, { width: 760 });
+  const lower = page("cropped-lower", 1, { width: 760 });
+  const upperText = pageObservation(
+    upper,
+    "그럼 0.5초 만에 팍넣고 다시",
+    { x: 16, y: 84, w: 60, h: 16 },
+    { regionType: "speech_bubble", confidence: 0.98 }
+  );
+  const badCrop = pageObservation(
+    lower,
+    "인다문어",
+    { x: 18, y: 0, w: 42, h: 10 },
+    { regionType: "speech_bubble", confidence: 0.71 }
+  );
+  const correctedSeam = seamObservation(
+    upper,
+    lower,
+    "딱넣고 다시 입다물어",
+    { x: 17, y: 88, w: 56, h: 12 },
+    { x: 18, y: 0, w: 45, h: 12 },
+    { regionType: "speech_bubble", upperOverlapRatio: 0.55, lowerOverlapRatio: 0.45, confidence: 0.99 }
+  );
+
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperText, badCrop, correctedSeam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.canonicals.length, 1);
+  assert.match(result.canonicals[0].originalText, /입다물어/);
+  assert.doesNotMatch(result.canonicals[0].originalText, /인다문어/);
+});
+
 test("fuzzy seam fragments preserve semantic symbols instead of erasing them", () => {
   const upper = page("symbol-upper", 0);
   const lower = page("symbol-lower", 1);
@@ -1051,12 +1086,24 @@ test("seam-only projections remap geometry-bearing visual fields into each page 
         pageId: upper.pageId,
         box: { x: 20, y: 90, w: 50, h: 10 },
         polygon: [[20, 90], [70, 90], [70, 100], [20, 100]],
+        visual: {
+          textBox: { x: 20, y: 90, w: 50, h: 10 },
+          fillBox: { x: 16, y: 88, w: 58, h: 12 },
+          polygon: [[20, 90], [70, 90], [70, 100], [20, 100]],
+          regionPolygon: [[16, 88], [74, 88], [74, 100], [16, 100]]
+        },
         coordinateSpace: "percent"
       },
       {
         pageId: lower.pageId,
         box: { x: 25, y: 0, w: 45, h: 12 },
         polygon: [[25, 0], [70, 0], [70, 12], [25, 12]],
+        visual: {
+          textBox: { x: 25, y: 0, w: 45, h: 12 },
+          fillBox: { x: 21, y: 0, w: 53, h: 15 },
+          polygon: [[25, 0], [70, 0], [70, 12], [25, 12]],
+          regionPolygon: [[21, 0], [74, 0], [74, 15], [21, 15]]
+        },
         coordinateSpace: "percent"
       }
     ],
@@ -1077,10 +1124,14 @@ test("seam-only projections remap geometry-bearing visual fields into each page 
     const expected = projection.pageId === upper.pageId
       ? { left: 20, top: 90, width: 50, height: 10 }
       : { left: 25, top: 0, width: 45, height: 12 };
-    assert.deepEqual(projection.visual.fillBox, expected);
+    const expectedFill = projection.pageId === upper.pageId
+      ? { left: 16, top: 88, width: 58, height: 12 }
+      : { left: 21, top: 0, width: 53, height: 15 };
+    assert.deepEqual(projection.visual.fillBox, expectedFill);
     assert.notDeepEqual(projection.visual.fillBox, { x: 5, y: 40, w: 90, h: 20 });
     assert.equal(projection.visual.bgType, "solid");
     assert.deepEqual(projection.visual.polygon[0], { x: expected.left, y: expected.top });
+    assert.notDeepEqual(projection.visual.regionPolygon, projection.visual.polygon);
   }
 });
 
@@ -1128,4 +1179,68 @@ test("Canonical Store preserves stale revision evidence, serializes transactions
   assert.equal(first, second);
   assert.equal(await first, "ok");
   assert.equal(calls, 1);
+});
+
+test("final projection arbitration keeps one text layer for related overlapping canonicals", () => {
+  const current = page("single", 0);
+  const geometry = (observationId, text, box) => ({
+    observationId,
+    sourceType: "page",
+    confidence: 0.95,
+    originalText: text,
+    box,
+    polygon: [],
+    overlapRatio: 1,
+    coordinateSpace: "percent",
+    regionType: "speech_bubble",
+    visual: { regionId: "region-one", regionType: "speech_bubble", bgType: "solid" }
+  });
+  const projections = R.buildRenderProjections({
+    pages: [current],
+    canonicals: [
+      {
+        id: "complete",
+        revision: 1,
+        originalText: "그럼 팍 넣고 다시 입다물어",
+        geometryByPage: { single: [geometry("complete-page", "그럼 팍 넣고 다시 입다물어", { left: 20, top: 20, width: 55, height: 30 })] }
+      },
+      {
+        id: "fragment",
+        revision: 1,
+        originalText: "팍 넣고 다시",
+        geometryByPage: { single: [geometry("fragment-page", "팍 넣고 다시", { left: 25, top: 23, width: 45, height: 24 })] }
+      }
+    ],
+    translations: { complete: "那么，放进去后闭嘴", fragment: "放进去后" }
+  });
+
+  assert.equal(projections.filter((projection) => projection.activeText).length, 1);
+  assert.equal(projections.find((projection) => projection.activeText).canonicalId, "complete");
+  const cleanup = projections.find((projection) => projection.canonicalId === "fragment");
+  assert.equal(cleanup.coverOnly, true);
+  assert.equal(cleanup.translated_text, "");
+});
+
+test("projection arbitration does not merge independent bubbles of the same type", () => {
+  const current = page("single-independent", 0);
+  const canonical = (id, text, left) => ({
+    id,
+    revision: 1,
+    originalText: text,
+    geometryByPage: {
+      "single-independent": [{
+        observationId: `${id}-page`, sourceType: "page", confidence: 0.95, originalText: text,
+        box: { left, top: 20, width: 25, height: 12 }, polygon: [], overlapRatio: 1,
+        coordinateSpace: "percent", regionType: "speech_bubble",
+        visual: { regionType: "speech_bubble", bgType: "solid" }
+      }]
+    }
+  });
+  const projections = R.buildRenderProjections({
+    pages: [current],
+    canonicals: [canonical("left", "기다려", 5), canonical("right", "기다려", 65)],
+    translations: { left: "等等", right: "等等" }
+  });
+
+  assert.equal(projections.filter((projection) => projection.activeText).length, 2);
 });

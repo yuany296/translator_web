@@ -108,7 +108,7 @@ test("Korean source text stays horizontal after translation even in a tall rotat
   };
   assert.equal(runtime.__test.shouldUseVerticalJapaneseLayout(node, "这不就是小嘛！"), false);
   node.dataset.rotationDeg = "-89";
-  assert.equal(runtime.__test.shouldUseVerticalJapaneseLayout(node, "竖排文字"), true);
+  assert.equal(runtime.__test.shouldUseVerticalJapaneseLayout(node, "竖排文字"), false);
 });
 
 test("Kakao page identity ignores CDN signing changes but tracks actual image bytes", async () => {
@@ -2091,11 +2091,19 @@ test("solid background clip is expressed relative to the translated box", () => 
   assert.equal(clip, "polygon(-100.00% -50.00%, 200.00% -50.00%, 200.00% 150.00%, -100.00% 150.00%)");
 });
 
+test("solid cleanup keeps the full detected region instead of shrinking to the text box", () => {
+  const fill = runtime.__test.buildSolidBackgroundBox(
+    { x: 16, y: 64, w: 24, h: 6.8 },
+    { x: 8, y: 60, w: 40, h: 20 }
+  );
+  assert.deepEqual(fill, { x: 8, y: 60, w: 40, h: 20 });
+});
+
 test("translation keeps the requested approximate source line count", () => {
   const formatted = runtime.__test.formatTranslationForOriginalLines("为什么没有把东西拿出来", 3);
   assert.equal(formatted.split("\n").length, 3);
   assert.equal(formatted.replace(/\n/g, ""), "为什么没有把东西拿出来");
-  assert.equal(runtime.__test.normalizeBubbleRotation(95), -85);
+  assert.equal(runtime.__test.normalizeBubbleRotation(95), 0);
 });
 
 test("translation line balancing avoids isolated CJK characters", () => {
@@ -2112,7 +2120,10 @@ test("translation line balancing avoids isolated CJK characters", () => {
 
 test("moderate OCR tilt is preserved while vertical noise is rejected", () => {
   assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(8) - 8) < 0.01);
-  assert.equal(runtime.__test.normalizeBubbleRotation(95), -85);
+  assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(-13, "chat") + 13) < 0.01);
+  assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(-13, "ui") + 13) < 0.01);
+  assert.equal(runtime.__test.normalizeBubbleRotation(95), 0);
+  assert.equal(runtime.__test.normalizeBubbleRotation(32), 0);
 });
 
 test("transparent backgrounds default to black text with a white outline", () => {

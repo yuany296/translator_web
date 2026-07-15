@@ -186,10 +186,17 @@
   function normalizePageSpan(span) {
     const polygon = normalizePolygon(span?.polygon);
     const box = normalizeBox(span?.box || polygonBox(polygon));
+    const spanVisual = span?.visual && typeof span.visual === "object" ? span.visual : {};
     return {
       pageId: String(span?.pageId || ""),
       box,
       polygon,
+      visual: {
+        textBox: spanVisual.textBox ? normalizeBox(spanVisual.textBox) : null,
+        fillBox: spanVisual.fillBox ? normalizeBox(spanVisual.fillBox) : null,
+        polygon: normalizePolygon(spanVisual.polygon),
+        regionPolygon: normalizePolygon(spanVisual.regionPolygon)
+      },
       overlapRatio: roundTo(clamp(span?.overlapRatio, 0, 1)),
       coordinateSpace: String(span?.coordinateSpace || span?.box?.coordinateSpace || "auto"),
       regionType: String(span?.regionType || "")
@@ -510,7 +517,7 @@
 
   function fuzzyFragmentSimilarity(leftText, rightText) {
     const normalizeFragment = (value) => Array.from(
-      normalizeComparableText(value).replace(FUZZY_OCR_QUOTE_RE, "")
+      normalizeComparableText(value).replace(FUZZY_OCR_QUOTE_RE, "").normalize("NFD")
     );
     const left = normalizeFragment(leftText);
     const right = normalizeFragment(rightText);
@@ -548,6 +555,19 @@
       }
     }
     return clamp(best, 0, 1);
+  }
+
+  function fuzzyBoundaryFragmentSimilarity(pageText, seamText, edge) {
+    const page = Array.from(normalizeComparableText(pageText));
+    if (page.length < 2) return 0;
+    const minimum = Math.min(4, page.length);
+    const maximum = Math.min(14, page.length);
+    let best = 0;
+    for (let length = minimum; length <= maximum; length += 1) {
+      const fragment = edge === "prefix" ? page.slice(0, length) : page.slice(page.length - length);
+      best = Math.max(best, fuzzyFragmentSimilarity(fragment.join(""), seamText));
+    }
+    return best;
   }
 
   function suffixPrefixOverlap(leftText, rightText) {
@@ -677,9 +697,15 @@
     const upperSimilarity = textSimilarity(seamText, upperText);
     const lowerSimilarity = textSimilarity(seamText, lowerText);
     const combinedSimilarity = textSimilarity(seamText, combined);
-    const upperSupported = hasStrongTextRelation(seamText, upperText) || upperSimilarity >= 0.45;
-    const lowerSupported = hasStrongTextRelation(seamText, lowerText) || lowerSimilarity >= 0.45;
-    const text = Math.max(combinedSimilarity, Math.min(upperSimilarity, lowerSimilarity));
+    const upperBoundarySimilarity = fuzzyBoundaryFragmentSimilarity(upperText, seamText, "suffix");
+    const lowerBoundarySimilarity = fuzzyBoundaryFragmentSimilarity(lowerText, seamText, "prefix");
+    const upperSupported = hasStrongTextRelation(seamText, upperText) || upperSimilarity >= 0.45 || upperBoundarySimilarity >= 0.78;
+    const lowerSupported = hasStrongTextRelation(seamText, lowerText) || lowerSimilarity >= 0.45 || lowerBoundarySimilarity >= 0.78;
+    const text = Math.max(
+      combinedSimilarity,
+      Math.min(upperSimilarity, lowerSimilarity),
+      Math.min(upperBoundarySimilarity, lowerBoundarySimilarity)
+    );
     // 接缝文本必须能解释两侧，而不是只复述其中一页。
     const textSupported = upperSupported && lowerSupported
       && (combinedSimilarity >= 0.35
@@ -1062,6 +1088,7 @@
           confidence: observation.confidence,
           originalText: observation.originalText,
           visual: observation.visual,
+          spanVisual: span.visual,
           box: span.box,
           polygon: span.polygon,
           overlapRatio: span.overlapRatio,
@@ -1505,6 +1532,20 @@
     const mappedPolygon = Array.isArray(evidence?.polygon) && evidence.polygon.length
       ? evidence.polygon.map((point) => ({ x: point.x, y: point.y }))
       : null;
+    const spanVisual = evidence?.spanVisual && typeof evidence.spanVisual === "object" ? evidence.spanVisual : {};
+    const mappedTextPolygon = Array.isArray(spanVisual.polygon) && spanVisual.polygon.length
+      ? spanVisual.polygon.map((point) => ({ x: point.x, y: point.y }))
+      : mappedPolygon;
+    const rawRegionPolygon = normalizePolygon(raw.regionPolygon ?? raw.region_polygon);
+    const rawTextPolygon = normalizePolygon(raw.polygon);
+    const sameRawPolygon = rawRegionPolygon.length > 0 && rawTextPolygon.length > 0 &&
+      stableSerialize(rawRegionPolygon) === stableSerialize(rawTextPolygon);
+    const mappedRegionPolygon = Array.isArray(spanVisual.regionPolygon) && spanVisual.regionPolygon.length
+      ? spanVisual.regionPolygon.map((point) => ({ x: point.x, y: point.y }))
+      : sameRawPolygon ? mappedTextPolygon : null;
+    const mappedFillBox = spanVisual.fillBox && Number(spanVisual.fillBox.width) > 0
+      ? normalizeBox(spanVisual.fillBox)
+      : mappedBox;
     // seam visual 的 fillBox/polygon 属于接缝画布；只继承非几何样式，
     // 几何一律替换为已经映射回页面的 pageSpan。
     return {
@@ -1531,12 +1572,76 @@
       rotation_deg: raw.rotation_deg ?? raw.rotationDeg,
       sourceLineCount: raw.sourceLineCount ?? raw.source_line_count,
       source_line_count: raw.source_line_count ?? raw.sourceLineCount,
-      fillBox: mappedBox,
-      fill_box: mappedBox,
-      polygon: mappedPolygon,
-      regionPolygon: mappedPolygon,
-      region_polygon: mappedPolygon
+      textBox: spanVisual.textBox && Number(spanVisual.textBox.width) > 0 ? normalizeBox(spanVisual.textBox) : mappedBox,
+      fillBox: mappedFillBox,
+      fill_box: mappedFillBox,
+      polygon: mappedTextPolygon,
+      regionPolygon: mappedRegionPolygon,
+      region_polygon: mappedRegionPolygon
     };
+  }
+
+  function projectionRegionFamily(projection) {
+    const visual = projection?.visual || {};
+    const regionId = String(visual.regionId || visual.region_id || "").trim();
+    if (regionId) return `id:${regionId}`;
+    return `type:${String(visual.regionType || visual.region_type || "plain_text").trim().toLowerCase()}`;
+  }
+
+  function projectionsShareOneVisualTextLayer(left, right) {
+    if (!left?.activeText || !right?.activeText || left.pageId !== right.pageId) return false;
+    if (projectionRegionFamily(left) !== projectionRegionFamily(right)) return false;
+    const leftBox = normalizeBox(left.geometry || left.box);
+    const rightBox = normalizeBox(right.geometry || right.box);
+    const verticalOverlap = Math.max(0,
+      Math.min(leftBox.top + leftBox.height, rightBox.top + rightBox.height) - Math.max(leftBox.top, rightBox.top)) /
+      Math.max(0.0001, Math.min(leftBox.height, rightBox.height));
+    const horizontalOverlap = Math.max(0,
+      Math.min(leftBox.left + leftBox.width, rightBox.left + rightBox.width) - Math.max(leftBox.left, rightBox.left)) /
+      Math.max(0.0001, Math.min(leftBox.width, rightBox.width));
+    return verticalOverlap >= 0.72 && horizontalOverlap >= 0.45 &&
+      hasStrongTextRelation(left.originalText, right.originalText);
+  }
+
+  function projectionAuthorityScore(projection) {
+    const textLength = Array.from(normalizeComparableText(projection?.originalText)).length;
+    const geometries = Array.isArray(projection?.geometries) ? projection.geometries : [];
+    const confidence = Math.max(0, ...geometries.map((item) => Number(item?.confidence) || 0));
+    const hasPageEvidence = geometries.some((item) => item?.sourceType === "page");
+    return textLength * 100 + confidence * 10 + (hasPageEvidence ? 1 : 0);
+  }
+
+  function arbitrateActiveTextProjections(projections) {
+    const suppressed = new Map();
+    const active = (Array.isArray(projections) ? projections : [])
+      .filter((projection) => projection?.activeText)
+      .sort((left, right) => projectionAuthorityScore(right) - projectionAuthorityScore(left)
+        || String(left.projectionId || "").localeCompare(String(right.projectionId || "")));
+    const kept = [];
+    for (const projection of active) {
+      const winner = kept.find((candidate) => projectionsShareOneVisualTextLayer(projection, candidate));
+      if (winner) suppressed.set(projection.projectionId, winner.projectionId);
+      else kept.push(projection);
+    }
+    return projections.map((projection) => {
+      const winnerId = suppressed.get(projection.projectionId);
+      if (!winnerId) return projection;
+      return deepFreeze({
+        ...projection,
+        role: "cover",
+        activeText: false,
+        coverOnly: true,
+        translatedText: "",
+        translated_text: "",
+        suppressedByProjectionId: winnerId,
+        bubble: {
+          ...projection.bubble,
+          translated_text: "",
+          projection_role: "cover",
+          cover_only: true
+        }
+      });
+    });
   }
 
   function readTranslation(translations, canonical) {
@@ -1643,7 +1748,7 @@
         addProjection(pageId, "standby", pageId === activePageId, pageId === activePageId, false);
       }
     }
-    return deepFreeze(projections.sort((left, right) =>
+    return deepFreeze(arbitrateActiveTextProjections(projections).sort((left, right) =>
       (pageIndex.get(left.pageId) ?? 0) - (pageIndex.get(right.pageId) ?? 0)
       || left.geometry.top - right.geometry.top
       || left.geometry.left - right.geometry.left

@@ -27,7 +27,7 @@ const context = vm.createContext({
   clearTimeout
 });
 vm.runInContext(
-  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, deepFreezeObservationResult, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType, isMeaningfulOcrText, inferTextAlignmentFromBoxes, sortOcrCandidatesByReadingOrder, composeRotatedClusterWords, estimateRotatedClusterLineCount };`,
+  `${glossarySource}\n${termDiscoverySource}\n${source}\nglobalThis.__backgroundTest = { buildLocalPaddleBubbleItems, clusterLocalPaddleWords, shouldMergeLocalPaddleSameLine, shouldMergeLocalPaddleParagraphLines, coalesceOverlappingOcrCandidates, collectSourceImageOcrPayload, buildBlockTranslationCacheKey, buildCanonicalTranslationFingerprint, buildOpenAICompatibleTranslationPrompt, buildOcrCacheKey, buildProviderNeutralObservationResult, filterSeamOcrCandidates, stableHash128, normalizeProvider, normalizeBaiduOcrItem, buildLocalSolidPaintBox, mergeOcrCandidateGroup, collapseDuplicateLocalPaddleTranslations, getDefaultOcrTuning, getOcrWordDropReason, getFinalCandidateDropReason, setCache, isTranslationCacheKey, isStorageQuotaError, buildCacheSafeTranslationResult, buildCacheSafeOcrResult, translationResultNeedsCleanedImage, buildCacheKey, buildLocalOcrDebugId, normalizeImageMeta, normalizeCleanedMasks, buildCleanedMasksFingerprint, deepFreezeObservationResult, handleOcrDataUrl, handleTranslateTextBlocks, requestCanonicalTextTranslations, requestLegacyTranslatedResultFromOcr, requestLocalPaddleOcr, sendOpenAICompatibleTranslationRequest, sendOpenAICompatibleOnce, setBackgroundTestHooks, isTermExtractorCoolingDown, markTermExtractorOffline, markTermExtractorOnline, getTermExtractorStatusSnapshot, handleConfirmTermCandidates, handleDiscoverTerms, detectLocalPaddleRegionType, isMeaningfulOcrText, inferTextAlignmentFromBoxes, sortOcrCandidatesByReadingOrder, composeRotatedClusterWords, estimateRotatedClusterLineCount, buildRotatedClusterGeometry };`,
   context,
   { filename: "background.js" }
 );
@@ -2569,7 +2569,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
   }
 
   assert.equal(requestBodies.length, 3);
-  assert.equal(requestBodies[0].ocr_geometry_version, "orientation-v2");
+  assert.equal(requestBodies[0].ocr_geometry_version, "appearance-layout-v3");
   assert.equal(requestBodies[0].return_cleaned_image, false);
   assert.equal(requestBodies[0].cleaned_mask_token, "");
   assert.equal(requestBodies[1].return_cleaned_image, true);
@@ -2966,7 +2966,10 @@ test("forced cleaned-image requests with different canonical masks do not share 
 
   assert.equal(results.every((result) => result.ok), true);
   assert.equal(receivedMasks.length, 2);
-  assert.deepEqual(JSON.parse(JSON.stringify(receivedMasks)), [firstMasks, secondMasks]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(receivedMasks)).map((masks) => JSON.stringify(masks)).sort(),
+    [firstMasks, secondMasks].map((masks) => JSON.stringify(masks)).sort()
+  );
 });
 
 test("equivalent cleaned masks share one artifact request after normalization", async () => {
@@ -3036,4 +3039,137 @@ test("equivalent cleaned masks share one artifact request after normalization", 
 
   assert.equal(results.every((result) => result.ok), true);
   assert.equal(providerCalls, 1);
+});
+
+test("multi-line brown lettering does not inherit an anomalous black first-line color", async () => {
+  const region = {
+    region_id: "brown-panel",
+    region_type: "caption_panel",
+    region_box: { left: 80, top: 80, width: 420, height: 260 },
+    region_polygon: [[80, 80], [500, 80], [500, 340], [80, 340]],
+    bg_color: "#fff8ef",
+    region_confidence: 0.97,
+    score: 0.98
+  };
+  const row = (text, top, textColor) => ({
+    ...region,
+    text,
+    text_color: textColor,
+    stroke_color: "#ffffff",
+    box: { left: 150, top, width: 260, height: 46 }
+  });
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: 600,
+    imageHeight: 500,
+    items: [
+      row("그런", 120, "#000000"),
+      row("의미에서", 170, "#845424"),
+      row("고른", 220, "#84543c"),
+      row("이름이에요", 270, "#6c3c24")
+    ]
+  }, { width: 600, height: 500 }, "", false);
+
+  assert.equal(result.length, 1);
+  assert.notEqual(result[0].textColor, "#000000");
+  assert.match(result[0].textColor, /^#(?:6c3c24|845424|84543c)$/i);
+});
+
+test("conflicting lower-confidence OCR read is removed but a real adjacent row remains", () => {
+  const result = context.__backgroundTest.clusterLocalPaddleWords([
+    { words: "맛있는", confidence: 0.999, region_id: "same", location: { left: 388, top: 343, width: 94, height: 32 } },
+    { words: "벗었는", confidence: 0.820, region_id: "same", location: { left: 392, top: 363, width: 86, height: 22 } },
+    { words: "치킨타임", confidence: 0.95, region_id: "same", location: { left: 390, top: 410, width: 120, height: 30 } }
+  ], { width: 760, height: 900 }, null, null);
+
+  const text = result.map((item) => item.words).join("\n");
+  assert.match(text, /맛있는/);
+  assert.doesNotMatch(text, /벗었는/);
+  assert.match(text, /치킨타임/);
+});
+
+test("isolated Latin marks stay in raw debug data but never become a translated overlay", async () => {
+  const ocrDebug = {};
+  const payloadItems = [
+    { text: "치킨은", score: 0.99, box: { left: 300, top: 520, width: 160, height: 48 } },
+    { text: "먹어도 되나요?", score: 0.99, box: { left: 250, top: 575, width: 260, height: 52 } },
+    { text: "TOTN", score: 0.98, box: { left: 310, top: 690, width: 150, height: 70 } }
+  ];
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: 760,
+    imageHeight: 900,
+    items: payloadItems,
+    rawItems: payloadItems
+  }, { width: 760, height: 900 }, "", false, null, undefined, ocrDebug);
+
+  assert.equal(ocrDebug.rawItems.some((item) => item.text === "TOTN"), true);
+  assert.equal(result.some((item) => /TOTN/.test(item.words)), false);
+  assert.equal(result.some((item) => /치킨은/.test(item.words)), true);
+});
+
+test("Korean relative time splits nickname, time and body without overlapping roles", async () => {
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: 760,
+    imageHeight: 900,
+    items: [
+      { text: "hoyami 3분 전", score: 0.98, box: { left: 90, top: 100, width: 210, height: 22 } },
+      { text: "오늘도 기다릴게", score: 0.98, box: { left: 90, top: 132, width: 280, height: 44 } }
+    ]
+  }, { width: 760, height: 900 }, "", false);
+
+  assert.deepEqual(
+    Array.from(result, (row) => row.translation_role).sort(),
+    ["chat_body", "chat_nickname", "chat_time"]
+  );
+  const boxes = result.map((row) => row.location);
+  for (let left = 0; left < boxes.length; left += 1) {
+    for (let right = left + 1; right < boxes.length; right += 1) {
+      const overlapX = Math.max(0, Math.min(boxes[left].left + boxes[left].width, boxes[right].left + boxes[right].width) - Math.max(boxes[left].left, boxes[right].left));
+      const overlapY = Math.max(0, Math.min(boxes[left].top + boxes[left].height, boxes[right].top + boxes[right].height) - Math.max(boxes[left].top, boxes[right].top));
+      assert.equal(overlapX * overlapY, 0);
+    }
+  }
+});
+
+test("slanted chat rows share one reliable angle and size from polygon thickness", async () => {
+  const slanted = (text, box, polygon, rotation) => ({ text, score: 0.98, box, polygon, rotation_deg: rotation });
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: 1000,
+    imageHeight: 1100,
+    items: [
+      slanted("milkyway 오후 7:14", { left: 72, top: 90, width: 300, height: 101 }, [[72, 150], [360, 82], [372, 123], [84, 191]], -13.1),
+      slanted("오늘 라이브 진짜 재밌었어요", { left: 280, top: 115, width: 528, height: 170 }, [[280, 230], [790, 104], [808, 159], [298, 285]], -13.9)
+    ]
+  }, { width: 1000, height: 1100 }, "", false);
+
+  assert.ok(result.length >= 2);
+  assert.equal(new Set(result.map((row) => row.rotation_deg.toFixed(1))).size, 1);
+  assert.equal(result.every((row) => Math.abs(row.rotation_deg) <= 25), true);
+  assert.equal(result.every((row) => row.fontHeight < 65), true, JSON.stringify(result.map((row) => row.fontHeight)));
+  assert.equal(result.every((row) => row.location.height < 90), true, JSON.stringify(result.map((row) => row.location)));
+});
+
+test("reliable solid speech regions use the full cleanup box independently of text geometry", async () => {
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: 500,
+    imageHeight: 500,
+    items: [{
+      text: "엥잠만",
+      score: 0.99,
+      region_id: "panel",
+      region_type: "speech_bubble",
+      region_box: { left: 40, top: 300, width: 200, height: 100 },
+      region_polygon: [[40, 300], [240, 300], [240, 400], [40, 400]],
+      region_confidence: 0.96,
+      bg_color: "#ffffff",
+      box: { left: 80, top: 320, width: 120, height: 34 },
+      polygon: [[80, 320], [200, 320], [200, 354], [80, 354]]
+    }]
+  }, { width: 500, height: 500 }, "", false);
+  const candidate = context.__backgroundTest.normalizeBaiduOcrItem(result[0], 0, { width: 500, height: 500 });
+
+  assert.deepEqual({ ...candidate.fill_box }, { x: 8, y: 60, w: 40, h: 20 });
+  assert.deepEqual(JSON.parse(JSON.stringify(candidate.polygon)), [
+    { x: 16, y: 64 }, { x: 40, y: 64 }, { x: 40, y: 70.8 }, { x: 16, y: 70.8 }
+  ]);
+  assert.notDeepEqual(candidate.fill_box, { x: candidate.x, y: candidate.y, w: candidate.w, h: candidate.h });
 });

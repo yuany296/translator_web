@@ -9,38 +9,6 @@ export function installReaderApi(runtime) {
     onReady: runtime.queuePageAutoTranslate
   });
   runtime.kakaoRetryScheduler = kakaoRetryScheduler;
-  const kakaoLegacyPipeline = runtime.KP && typeof runtime.KP.createPipeline === "function" ? runtime.KP.createPipeline({
-    store: runtime.state.kakaoStore,
-    extractTargetPayload: (target, scopedKey) => runtime.extractTargetPayload(target, scopedKey, {
-      skipKakaoStitch: true,
-      forceLegacyKakao: true
-    }),
-    requestTranslationForPayload: runtime.requestTranslationForPayload,
-    renderTranslationResult: runtime.renderTranslationResult,
-    clearRenderedTarget: runtime.clearRenderedTarget,
-    renderOverlay: runtime.renderOverlay,
-    computeTargetKey: runtime.computeTargetKey,
-    getQuickSourceToken: runtime.getQuickSourceToken,
-    buildTargetSourceCacheKey: runtime.buildTargetSourceCacheKey,
-    captureTargetSnapshot: runtime.captureTargetSnapshot,
-    isTargetSnapshotStillValid: runtime.isTargetSnapshotStillValid,
-    shouldUseKakaoStitchedOcr: runtime.shouldUseKakaoStitchedOcr,
-    buildKakaoStitchedPayload: runtime.buildKakaoStitchedPayload,
-    mapStitchedResult: runtime.mapKakaoStitchedResultForPipeline,
-    dedupeResult: runtime.dedupeKakaoResultByPageCoordinates,
-    renderLoadingOverlay: runtime.renderLoadingOverlay,
-    renderPipelineResult: runtime.renderKakaoPipelineResult,
-    renderCachedPipelineResult: runtime.renderCachedKakaoPipelineResult,
-    releaseAttachedShortPagesOnError: runtime.releaseKakaoPipelineErrorAttachments,
-    reportPipelineError: runtime.reportKakaoPipelineError,
-    findTargetByScopedKey: runtime.findTargetByScopedKey,
-    queueTranslate: runtime.queueTranslate,
-    queuePageAutoTranslate: runtime.queuePageAutoTranslate,
-    scheduleAutoTranslateRetry: runtime.scheduleAutoTranslateRetry,
-    tracePipeline: runtime.tracePipeline,
-    state: runtime.state
-  }) : null;
-  runtime.kakaoLegacyPipeline = kakaoLegacyPipeline;
   const kakaoCanonicalPipeline = runtime.KP && runtime.KR && typeof runtime.KP.createCanonicalPipeline === "function" ? runtime.KP.createCanonicalPipeline({
     store: runtime.state.kakaoStore,
     reconciler: runtime.KR,
@@ -76,7 +44,7 @@ export function installReaderApi(runtime) {
     edgeWaitTimeoutMs: 8000
   }) : null;
   runtime.kakaoCanonicalPipeline = kakaoCanonicalPipeline;
-  const kakaoPipeline = runtime.kakaoCanonicalPipeline || runtime.kakaoLegacyPipeline;
+  const kakaoPipeline = runtime.kakaoCanonicalPipeline;
   runtime.kakaoPipeline = kakaoPipeline;
   const api = {
     invalidated: false,
@@ -98,9 +66,6 @@ export function installReaderApi(runtime) {
       },
       get kakaoCanonicalPipeline() {
         return runtime.kakaoCanonicalPipeline;
-      },
-      get kakaoLegacyPipeline() {
-        return runtime.kakaoLegacyPipeline;
       },
       mapKakaoStitchedResult: runtime.mapKakaoStitchedResult,
       dedupeKakaoResultByPageCoordinates: runtime.dedupeKakaoResultByPageCoordinates,

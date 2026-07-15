@@ -1,5 +1,15 @@
 # Operations Log
 
+## 2026-07-16 - Codex (清理 legacy pipeline 死代码)
+
+- 从 content 模块中移除所有 `kakaoLegacyPipeline` 死代码引用：
+  - `recognition-workflow.js`：删除 canonical→legacy 回退块（3 处），`kakaoLegacyPipeline` 已被 `completeContentRuntime` 设为 `null`，回退永不执行
+  - `reader-api.js`：删除 `kakaoLegacyPipeline` 构造（~30 行）及 `|| runtime.kakaoLegacyPipeline` 回退逻辑；测试 API 中移除 `kakaoLegacyPipeline` getter
+  - `configure.js`：删除 `runtime.kakaoLegacyPipeline = null` 赋值
+- 重命名 `removeLegacySeamCrossPageOverlays` → `removeSeamCrossPageOverlays`：该函数仍被 canonical seam 渲染链路使用（`scene-crosspage.js`、`lifecycle-font-fit.js`、`renderer-overlay.js`），"Legacy" 前缀有误导性
+- `pipeline-factory/pipeline-legacy-*.js` 和 `pipeline-bridge.js` 保留：18 个测试文件通过 `P.createPipeline()` 使用，添加注释说明仅用于测试兼容
+- 验证通过：`npm run verify` 全绿（Node 464/464，Python 58/58）
+
 ## 2026-07-16 - Codex (小文件合并)
 
 - 将 8 个极小的模块文件（6~78 行）合并到其语义归属的大文件中，减少碎片化：

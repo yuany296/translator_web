@@ -1,3 +1,5 @@
+// Legacy pipeline factory — kept only for test compatibility (P.createPipeline).
+// Production code uses createCanonicalPipeline via canonical-bridge.js.
 import { installPipelineLegacySetup } from "../pipeline-factory/pipeline-legacy-setup.js";
 import { installPipelineLegacyExec } from "../pipeline-factory/pipeline-legacy-exec.js";
 

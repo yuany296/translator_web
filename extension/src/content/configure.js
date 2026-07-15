@@ -92,7 +92,6 @@ export function prepareContentRuntime(runtime) {
 }
 
 export function completeContentRuntime(runtime) {
-  runtime.kakaoLegacyPipeline = null;
   runtime.api.readerProfile = runtime.readerProfile;
   runtime.api.__test.shouldUseKakaoCanonicalPipeline = runtime.shouldUseKakaoCanonicalPipeline;
   runtime.api.__test.getRenderScenes = () => runtime.renderScenesByPage || new Map();

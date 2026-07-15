@@ -1,23 +1,7 @@
 export function installRecognitionWorkflow(runtime) {
   async function runKakaoCanonicalTarget(target, options, cached = false) {
     try {
-      let result = cached ? await runtime.kakaoCanonicalPipeline.runCached(target, null, options) : await runtime.kakaoCanonicalPipeline.run(target, options);
-      if (result && result.fallbackLegacy === true && runtime.kakaoLegacyPipeline) {
-        runtime.tracePipeline("canonical-legacy-fallback", target, {
-          reason: result.reason || "non-authoritative-page-payload",
-          source: String(result.payload && result.payload.source || "")
-        });
-        const targetKey = runtime.computeTargetKey(target);
-        const scopedTargetKey = runtime.buildTargetSourceCacheKey(targetKey, runtime.getQuickSourceToken(target));
-        // Canonical FETCH 已缓存了未经旧截图归一化的 payload；委托旧链路前移除它，
-        // 让截图/裁剪模式完整走原有提取与坐标适配流程。
-        runtime.state.payloadCacheByTargetKey.delete(scopedTargetKey);
-        runtime.state.payloadCacheByTargetKey.delete(runtime.buildKakaoCanonicalPayloadCacheKey(scopedTargetKey, target));
-        result = await runtime.kakaoLegacyPipeline.run(target, {
-          ...options,
-          reason: options && options.reason ? `${options.reason}:canonical-payload-fallback` : "canonical-payload-fallback"
-        });
-      }
+      const result = cached ? await runtime.kakaoCanonicalPipeline.runCached(target, null, options) : await runtime.kakaoCanonicalPipeline.run(target, options);
       if (result && result.ok) {
         await runtime.reportStatus("info", "translation done", {
           reason: options && options.reason,
@@ -137,9 +121,6 @@ export function installRecognitionWorkflow(runtime) {
           if (runtime.shouldUseKakaoCanonicalPipeline(target) && runtime.kakaoCanonicalPipeline) {
             return await runtime.runKakaoCanonicalTarget(target, options, true);
           }
-          if (runtime.IS_KAKAOPAGE_READER && runtime.kakaoLegacyPipeline) {
-            return await runtime.kakaoLegacyPipeline.runCached(target, localCachedResult, options);
-          }
           const dedupedCachedResult = await runtime.dedupeKakaoResultByPageCoordinates(localCachedResult, target, targetKey);
           runtime.state.localResultCache.set(scopedTargetKey, dedupedCachedResult);
           if (dedupedCachedResult.bubbles.length > 0) {
@@ -160,10 +141,6 @@ export function installRecognitionWorkflow(runtime) {
         if (runtime.shouldUseKakaoCanonicalPipeline(target) && runtime.kakaoCanonicalPipeline) {
           return await runtime.runKakaoCanonicalTarget(target, options, false);
         }
-        if (runtime.IS_KAKAOPAGE_READER && runtime.kakaoLegacyPipeline) {
-          return await runtime.kakaoLegacyPipeline.run(target, options);
-        }
-
         // Stale result defense: capture snapshot before translation
         const preTranslateSnapshot = runtime.captureTargetSnapshot(target);
         runtime.renderLoadingOverlay(target, targetKey, "OCR + 翻译中...");

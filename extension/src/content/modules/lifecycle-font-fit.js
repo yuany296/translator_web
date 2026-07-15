@@ -237,7 +237,7 @@ export function installLifecycleFontFit(runtime) {
     return Number(bubbleHeightPx) / Math.max(1, Number(node && node.dataset && node.dataset.sourceLineCount) || 1);
   }
   runtime.getBubbleOriginalTextHeight = getBubbleOriginalTextHeight;
-  function removeLegacySeamCrossPageOverlays(target = null) {
+  function removeSeamCrossPageOverlays(target = null) {
     if (runtime.state.seamCrossPages && runtime.state.seamCrossPages.size > 0) {
       for (const [renderKey, entry] of runtime.state.seamCrossPages) {
         if (target && entry && entry.targetA !== target && entry.targetB !== target) continue;
@@ -254,7 +254,7 @@ export function installLifecycleFontFit(runtime) {
       runtime.state.seamCrossPages.clear();
     }
   }
-  runtime.removeLegacySeamCrossPageOverlays = removeLegacySeamCrossPageOverlays;
+  runtime.removeSeamCrossPageOverlays = removeSeamCrossPageOverlays;
   function removeSeamSurfaceEntriesForTarget(target) {
     const pageId = String(runtime.state.kakaoPageIdByTarget.get(target) || runtime.state.kakaoStore && typeof runtime.state.kakaoStore.getPageHandleForTarget === "function" && (runtime.state.kakaoStore.getPageHandleForTarget(target) || {}).pageId || "");
     if (!pageId) return;
@@ -284,7 +284,7 @@ export function installLifecycleFontFit(runtime) {
   }
   runtime.removeSeamSurfaceEntriesForTarget = removeSeamSurfaceEntriesForTarget;
   function removeOverlayForTarget(target) {
-    runtime.removeLegacySeamCrossPageOverlays(target);
+    runtime.removeSeamCrossPageOverlays(target);
     runtime.removeSeamSurfaceEntriesForTarget(target);
     const targetId = runtime.state.targetIdByElement.get(target);
     if (!targetId) {

@@ -28,7 +28,7 @@ export function installRendererOverlay(runtime) {
 
     // 旧版 seam renderer 可能在扩展热更新后留下不受 overlaysById 管理的根节点。
     // canonical renderer 是唯一跨页渲染入口，新的页面结果到达时应立即清理旧根。
-    runtime.removeLegacySeamCrossPageOverlays(target);
+    runtime.removeSeamCrossPageOverlays(target);
     if (bubbles.length === 0 && seamSurfaces.length === 0 && !runtime.hasRenderableOcrDebug(result)) {
       runtime.removeOverlayForTarget(target);
       return;

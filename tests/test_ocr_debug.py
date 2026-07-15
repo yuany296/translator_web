@@ -44,6 +44,18 @@ def test_local_ocr_request_limits_supplemental_cleaned_masks() -> None:
         server.OcrRequest(image="placeholder", cleaned_masks=[mask] * 201)
 
 
+def test_local_ocr_rejects_a_mismatched_geometry_contract_before_inference() -> None:
+    import server
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(server.ocr(server.OcrRequest(
+            image="placeholder",
+            ocr_geometry_version="outdated-orientation-contract",
+        )))
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+
+
 def test_ocr_request_forwards_cleaned_masks_without_adding_ocr_items(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -87,6 +99,7 @@ def test_ocr_request_forwards_cleaned_masks_without_adding_ocr_items(
     )
 
     assert response["items"] == recognized
+    assert response["ocrGeometryVersion"] == server.OCR_GEOMETRY_CONTRACT_VERSION
     assert response["cleanedMaskToken"] == "mask-token-a"
     assert captured == {"image_bytes": b"image", "items": recognized, "masks": masks}
 

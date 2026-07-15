@@ -111,7 +111,8 @@ const OVERWRITE_PREVIEW_MODES = new Set(["full", "cover", "text"]);
 const CACHE_PREFIX = "mt_cache_v21:";
 const OCR_CACHE_PREFIX = "mt_cache_v22:ocr:";
 const CANONICAL_TRANSLATION_CACHE_PREFIX = "mt_cache_v22:translation:";
-const OCR_COORDINATE_MODEL_VERSION = "page-percent-v2-rotated-reading";
+const LOCAL_OCR_GEOMETRY_VERSION = "orientation-v2";
+const OCR_COORDINATE_MODEL_VERSION = "page-percent-v3-orientation-aware";
 const CANONICAL_TRANSLATION_PROMPT_VERSION = "canonical-zh-cn-v1";
 const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -2717,6 +2718,7 @@ async function requestLocalPaddleOcr({
           text_rec_score_thresh: normalizeLocalOcrNumber(params && params.text_rec_score_thresh, 0),
           debug: debug === true,
           debug_id: debugId || "",
+          ocr_geometry_version: LOCAL_OCR_GEOMETRY_VERSION,
           return_cleaned_image: returnCleanedImage === true,
           cleaned_masks: normalizedCleanedMasks,
           cleaned_mask_token: cleanedMaskToken
@@ -2733,6 +2735,9 @@ async function requestLocalPaddleOcr({
     }
     if (!payload || typeof payload !== "object") {
       throw new Error("本地 OCR 服务返回了无效 JSON");
+    }
+    if (String(payload.ocrGeometryVersion || "") !== LOCAL_OCR_GEOMETRY_VERSION) {
+      throw new Error("本地 OCR 服务版本过旧，请重启 local-ocr-service 后重试");
     }
     if (cleanedMaskToken && String(payload.cleanedMaskToken || "") !== cleanedMaskToken) {
       throw new Error("本地 OCR 服务未确认跨页清理范围，请重启 local-ocr-service 后重试");

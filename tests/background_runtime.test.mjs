@@ -2436,6 +2436,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
         items: [],
         imageWidth: 1,
         imageHeight: 1,
+        ocrGeometryVersion: body.ocr_geometry_version,
         ...(body.cleaned_mask_token ? { cleanedMaskToken: body.cleaned_mask_token } : {})
       })
     };
@@ -2466,6 +2467,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
   }
 
   assert.equal(requestBodies.length, 3);
+  assert.equal(requestBodies[0].ocr_geometry_version, "orientation-v2");
   assert.equal(requestBodies[0].return_cleaned_image, false);
   assert.equal(requestBodies[0].cleaned_mask_token, "");
   assert.equal(requestBodies[1].return_cleaned_image, true);
@@ -2477,6 +2479,36 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
   ]);
   assert.match(requestBodies[2].cleaned_mask_token, /^[a-f0-9]{32}$/);
   assert.notEqual(requestBodies[1].cleaned_mask_token, requestBodies[2].cleaned_mask_token);
+});
+
+test("local OCR rejects an outdated geometry service before accepting plain OCR", async () => {
+  const originalFetch = context.fetch;
+  context.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    json: async () => ({
+      items: [],
+      imageWidth: 1,
+      imageHeight: 1
+    })
+  });
+  try {
+    await assert.rejects(
+      context.__backgroundTest.requestLocalPaddleOcr({
+        dataUrl: "data:image/png;base64,AQID",
+        baseUrl: "http://127.0.0.1:8765",
+        lang: "korean",
+        mode: "fast",
+        params: {},
+        debug: false,
+        debugId: "outdated-geometry-service-test"
+      }),
+      /OCR.*版本.*重启.*local-ocr-service/
+    );
+  } finally {
+    context.fetch = originalFetch;
+  }
 });
 
 test("local OCR rejects a cleaned artifact when an old service does not acknowledge artifact support", async () => {
@@ -2504,7 +2536,7 @@ test("local OCR rejects a cleaned artifact when an old service does not acknowle
         debugId: "old-service-artifact-test",
         returnCleanedImage: true
       }),
-      /重启 local-ocr-service/
+      /local-ocr-service/
     );
   } finally {
     context.fetch = originalFetch;

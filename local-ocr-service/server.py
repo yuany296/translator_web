@@ -71,6 +71,7 @@ SOLID_BACKGROUND_MAX_DELTA_E_P90 = 20.0
 SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE = 0.78
 VERTICAL_ORIENTATION_TIE_MARGIN = 0.08
 VERTICAL_CROP_MIN_ASPECT_RATIO = 1.4
+OCR_GEOMETRY_CONTRACT_VERSION = "orientation-v2"
 DEBUG_DIR = Path(__file__).resolve().parent / "debug-ocr"
 SERVICE_DEBUG_ROOT = Path(__file__).resolve().parent / "debug"
 
@@ -96,6 +97,7 @@ class OcrRequest(BaseModel):
     text_rec_score_thresh: float | None = None
     debug: bool = False
     debug_id: str = ""
+    ocr_geometry_version: str = Field(default="", max_length=64)
     return_cleaned_image: bool = False
     cleaned_masks: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
     cleaned_mask_token: str = Field(default="", max_length=128)
@@ -193,6 +195,7 @@ def health() -> dict[str, Any]:
     return {
         "ok": PADDLE_IMPORT_ERROR is None and not device_error,
         "engine": "paddleocr",
+        "ocrGeometryVersion": OCR_GEOMETRY_CONTRACT_VERSION,
         "device": device,
         "cuda": is_cuda_available(),
         "cv2_available": CV2_AVAILABLE,
@@ -357,6 +360,11 @@ def glossary_pending_count() -> dict[str, Any]:
 
 @app.post("/ocr")
 async def ocr(payload: OcrRequest) -> dict[str, Any]:
+    if payload.ocr_geometry_version and payload.ocr_geometry_version != OCR_GEOMETRY_CONTRACT_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail="OCR geometry contract mismatch; restart local-ocr-service",
+        )
     if PADDLE_IMPORT_ERROR is not None:
         raise HTTPException(status_code=500, detail=f"PaddleOCR import failed: {PADDLE_IMPORT_ERROR}")
 
@@ -380,6 +388,7 @@ async def ocr(payload: OcrRequest) -> dict[str, Any]:
         "regions": result.get("regions", []),
         "lang": lang,
         "mode": mode,
+        "ocrGeometryVersion": OCR_GEOMETRY_CONTRACT_VERSION,
         "imageWidth": result["imageWidth"],
         "imageHeight": result["imageHeight"],
         "debug": result.get("debug", {}),

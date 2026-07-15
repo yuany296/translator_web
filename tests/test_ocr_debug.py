@@ -633,6 +633,17 @@ def test_polygon_rotation_and_perspective_crop_support_arbitrary_tilt() -> None:
         assert warped.width >= 110
 
 
+def test_near_square_hangul_geometry_keeps_its_horizontal_text_axis() -> None:
+    import server
+
+    # 真实现场中的单个方形韩文字形：上边仅轻微倾斜，侧边更长但不代表阅读方向。
+    polygon = [[522, 986], [556, 981], [562, 1025], [529, 1030]]
+
+    assert -15 < server.polygon_rotation_deg(polygon) < 0
+    assert server.is_confident_vertical_crop(40, 49) is False
+    assert server.is_confident_vertical_crop(40, 80) is True
+
+
 def test_fast_perspective_pipeline_tries_both_vertical_directions_and_keeps_polygon(monkeypatch: pytest.MonkeyPatch) -> None:
     import server
 
@@ -669,6 +680,23 @@ def test_fast_perspective_pipeline_tries_both_vertical_directions_and_keeps_poly
     assert result["items"][0]["text"] == "덤벼라"
     assert result["items"][0]["polygon"] == polygon
     assert result["items"][0]["orientation_applied"] == -90
+
+
+def test_vertical_orientation_uses_geometry_only_for_close_plausible_recognition() -> None:
+    import server
+
+    detection = {"rotation_deg": -90.0}
+    close_rows = [
+        {"orientation": 90, "text": "잘못된", "score": 0.97, "lang": "korean"},
+        {"orientation": -90, "text": "올바른", "score": 0.94, "lang": "korean"},
+    ]
+    clear_winner_rows = [
+        {"orientation": 90, "text": "정답문장", "score": 0.99, "lang": "korean"},
+        {"orientation": -90, "text": "오답", "score": 0.72, "lang": "korean"},
+    ]
+
+    assert server.select_best_recognition(close_rows, detection)["orientation"] == -90
+    assert server.select_best_recognition(clear_winner_rows, detection)["orientation"] == 90
 
 
 def test_fast_perspective_pipeline_keeps_raw_detection_boxes_when_final_items_are_filtered(

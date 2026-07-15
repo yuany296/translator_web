@@ -272,6 +272,55 @@ test("debug and loading overlays never count as reusable translated results", ()
   assert.equal(runtime.__test.isReusableRenderedState({ mode: "embedded", bubbleCount: 1 }, true), true);
 });
 
+test("loading preserves translated bubbles but replaces a debug-only overlay", () => {
+  const targetKey = "direct|page";
+
+  assert.equal(runtime.__test.shouldPreserveOverlayDuringLoading({
+    targetKey,
+    mode: "bubbles",
+    bubbleCount: 2
+  }, targetKey), true);
+  assert.equal(runtime.__test.shouldPreserveOverlayDuringLoading({
+    targetKey,
+    mode: "debug",
+    bubbleCount: 0
+  }, targetKey), false);
+  assert.equal(runtime.__test.shouldPreserveOverlayDuringLoading({
+    targetKey: "direct|old-page",
+    mode: "bubbles",
+    bubbleCount: 2
+  }, targetKey), false);
+
+  const originalDocument = globalThis.document;
+  const root = {
+    loadingCard: null,
+    querySelector() { return this.loadingCard; },
+    appendChild(node) { this.loadingCard = node; }
+  };
+  globalThis.document = {
+    createElement() {
+      return {
+        className: "",
+        textContent: "",
+        dataset: {},
+        classList: { add() {} }
+      };
+    }
+  };
+  try {
+    const overlay = { root };
+    const card = runtime.__test.ensureLoadingStatusCard(overlay, "处理跨页...");
+    assert.equal(root.loadingCard, card);
+    assert.equal(card.textContent, "处理跨页...");
+    assert.equal(overlay.loadingCard, card);
+    assert.equal(runtime.__test.ensureLoadingStatusCard(overlay, "渲染结果..."), card);
+    assert.equal(card.textContent, "渲染结果...");
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+});
+
 test("extension-owned seam composites never reenter Kakao OCR target selection", () => {
   const target = new globalThis.HTMLImageElement();
   target.dataset = { mangaTranslatorOverlay: "true" };

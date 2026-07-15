@@ -361,6 +361,8 @@
       hasPendingTranslationMarkerState,
       isTranslationRecoveryDue,
       isReusableRenderedState,
+      shouldPreserveOverlayDuringLoading,
+      ensureLoadingStatusCard,
       isReusableKakaoReadyPageBinding,
       isCurrentKakaoPageBinding,
       buildOverlayRenderSignature,
@@ -4396,6 +4398,28 @@
       Number(renderedState.bubbleCount || 0) > 0;
   }
 
+  function shouldPreserveOverlayDuringLoading(oldOverlay, targetKey) {
+    return Boolean(
+      oldOverlay &&
+      oldOverlay.targetKey === targetKey &&
+      isReusableRenderedState(oldOverlay, true)
+    );
+  }
+
+  function ensureLoadingStatusCard(overlayState, text) {
+    if (!overlayState || !overlayState.root) return null;
+    let card = overlayState.loadingCard || overlayState.root.querySelector(".mt-loading-card-status");
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "mt-loading-card mt-loading-card-status";
+      card.dataset.mangaTranslatorOverlay = "true";
+      overlayState.root.appendChild(card);
+    }
+    card.textContent = String(text || "OCR + 翻译中...");
+    overlayState.loadingCard = card;
+    return card;
+  }
+
   function isReusableKakaoReadyPageBinding(target, handle, terminal, boundPageId, boundRevision) {
     if (!target || target.isConnected === false || !handle || !terminal) return false;
     const pageId = String(handle.pageId || "");
@@ -5553,9 +5577,10 @@
       syncOverlayPosition(oldOverlay);
       return;
     }
-    if (oldOverlay && oldOverlay.targetKey === targetKey && oldOverlay.mode !== "loading") {
-      // 单页译文或 OCR debug 已经可见时，后续 seam/投影阶段只在后台继续，
-      // loading 不得删掉稳定内容制造闪烁。
+    if (shouldPreserveOverlayDuringLoading(oldOverlay, targetKey)) {
+      // 已有译文可继续显示，后续 seam/投影阶段在后台完成，避免稳定内容闪烁。
+      // 同时保留独立的进度胶囊，避免后台仍在运行时 loading 从画面消失。
+      ensureLoadingStatusCard(oldOverlay, text);
       syncOverlayPosition(oldOverlay);
       return;
     }
@@ -5627,11 +5652,11 @@
       return;
     }
     const overlayState = state.overlaysById.get(targetId);
-    if (!overlayState || overlayState.mode !== "loading" || overlayState.targetKey !== targetKey) {
+    if (!overlayState || overlayState.targetKey !== targetKey) {
       return;
     }
 
-    const node = overlayState.root.querySelector(".mt-loading-card");
+    const node = overlayState.loadingCard || overlayState.root.querySelector(".mt-loading-card");
     if (!node) {
       return;
     }
@@ -6505,7 +6530,14 @@
     const targetId = state.targetIdByElement.get(target);
     if (!targetId) return false;
     const overlayState = state.overlaysById.get(targetId);
-    if (!overlayState || overlayState.mode !== "loading") return false;
+    if (!overlayState) return false;
+    if (overlayState.mode !== "loading") {
+      const card = overlayState.loadingCard || overlayState.root.querySelector(".mt-loading-card-status");
+      if (!card) return false;
+      card.remove();
+      overlayState.loadingCard = null;
+      return true;
+    }
     removeOverlayForTarget(target);
     return true;
   }

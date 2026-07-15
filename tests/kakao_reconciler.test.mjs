@@ -385,6 +385,37 @@ test("an unrelated aligned seam remains standalone instead of replacing a single
   assert.notEqual(result.ledger[authoritative.id].canonicalId, result.ledger[unrelatedSeam.id].canonicalId);
 });
 
+test("a late unrelated seam cannot steal the stable ID of an existing page canonical", () => {
+  const upper = page("a", 0);
+  const lower = page("b", 1);
+  const clippedPageBox = { x: 36.91, y: 98.45, w: 26.88, h: 1.55 };
+  const seamUpperBox = { x: 8.75, y: 98.55, w: 54.58, h: 1.45 };
+  const seamLowerBox = { x: 8.75, y: 0, w: 54.58, h: 2 };
+  const authoritative = pageObservation(upper, "그자고자하니는", clippedPageBox);
+  const completeSeam = seamObservation(
+    upper,
+    lower,
+    "다준이ㅋㅋㅋㅋ작곡 잘하네",
+    seamUpperBox,
+    seamLowerBox,
+    { confidence: 0.99 }
+  );
+  const initial = R.reconcile({ pages: [upper, lower], observations: [authoritative] });
+  const revised = R.reconcile({
+    pages: [upper, lower],
+    observations: [authoritative, completeSeam],
+    previousCanonicals: initial.canonicals
+  });
+
+  assert.equal(revised.canonicals.length, 2);
+  assert.equal(new Set(revised.canonicals.map((canonical) => canonical.id)).size, 2);
+  assert.equal(
+    revised.canonicals.find((canonical) => canonical.memberObservationIds.includes(authoritative.id)).id,
+    initial.canonicals[0].id
+  );
+  assert.notEqual(revised.ledger[authoritative.id].canonicalId, revised.ledger[completeSeam.id].canonicalId);
+});
+
 test("an unrelated aligned seam cannot supply the 25% support needed to merge page halves", () => {
   const upper = page("a", 0);
   const lower = page("b", 1);

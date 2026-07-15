@@ -1166,13 +1166,17 @@
       .filter((canonical) => canonical && canonical.id)
       .map((canonical) => ({ ...canonical }));
     const unusedPrevious = new Set(previous.map((canonical) => canonical.id));
+    const exactDraftIds = new Set(drafts.map((draft) => String(draft && draft.id || "")).filter(Boolean));
     const retired = [];
     const output = [];
     for (const draft of drafts) {
       let matched = previous.find((canonical) => unusedPrevious.has(canonical.id) && canonical.id === draft.id) || null;
       if (!matched) {
         matched = previous
-          .filter((canonical) => unusedPrevious.has(canonical.id))
+          // 只要当前批次仍有同 ID 的直接后继，就为它保留历史 ID。
+          // 否则先排序的相邻 seam 可能凭几何相似度抢走页面 canonical 的 ID，
+          // 后续 Map 落库会静默覆盖其中一个完整语义项。
+          .filter((canonical) => unusedPrevious.has(canonical.id) && !exactDraftIds.has(canonical.id))
           .map((canonical) => ({
             canonical,
             memberOverlap: canonical.memberObservationIds?.filter((id) => draft.memberObservationIds.includes(id)).length || 0,
@@ -1217,6 +1221,8 @@
   function assertCoverageInvariants({ observations = [], canonicals = [], ledger = {} } = {}) {
     const errors = [];
     const ids = observations.map((observation) => observation.id);
+    const canonicalIds = canonicals.map((canonical) => String(canonical && canonical.id || "")).filter(Boolean);
+    if (new Set(canonicalIds).size !== canonicalIds.length) errors.push("duplicate_canonical_id");
     for (const id of ids) {
       const resolution = ledger[id];
       if (!resolution) errors.push(`unresolved:${id}`);

@@ -69,6 +69,8 @@ DEFAULT_TEXT_DET_UNCLIP_RATIO = 1.2
 SOLID_BACKGROUND_MAX_LAB_VARIANCE = 90.0
 SOLID_BACKGROUND_MAX_DELTA_E_P90 = 20.0
 SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE = 0.78
+VERTICAL_ORIENTATION_TIE_MARGIN = 0.08
+VERTICAL_CROP_MIN_ASPECT_RATIO = 1.4
 DEBUG_DIR = Path(__file__).resolve().parent / "debug-ocr"
 SERVICE_DEBUG_ROOT = Path(__file__).resolve().parent / "debug"
 
@@ -2702,13 +2704,22 @@ def polygon_rotation_deg(polygon: list[list[float]]) -> float:
     pts = _order_polygon_points(np.asarray(polygon, dtype=np.float32))
     top_vector = pts[1] - pts[0]
     side_vector = pts[3] - pts[0]
-    vector = top_vector if np.linalg.norm(top_vector) >= np.linalg.norm(side_vector) else side_vector
+    top_length = float(np.linalg.norm(top_vector))
+    side_length = float(np.linalg.norm(side_vector))
+    aspect_ratio = max(top_length, side_length) / max(1.0, min(top_length, side_length))
+    # 单个中日韩方块字的检测框经常略高于略宽；此时长边没有足够证据代表
+    # 阅读轴，必须保留上边方向，避免横排字形被突然翻成约 90 度。
+    vector = top_vector if aspect_ratio < VERTICAL_CROP_MIN_ASPECT_RATIO or top_length >= side_length else side_vector
     angle = math.degrees(math.atan2(float(vector[1]), float(vector[0])))
     while angle >= 90:
         angle -= 180
     while angle < -90:
         angle += 180
     return float(angle)
+
+
+def is_confident_vertical_crop(width: int, height: int) -> bool:
+    return height >= max(1, width) * VERTICAL_CROP_MIN_ASPECT_RATIO
 
 
 def recognize_candidate_rows(rows: list[dict[str, Any]], languages: list[str]) -> list[dict[str, Any]]:
@@ -2757,6 +2768,46 @@ def recognition_quality(row: dict[str, Any]) -> float:
     return float(row.get("score") or 0.0) + min(script_chars, 12) * 0.025 + min(meaningful, 20) * 0.003
 
 
+def select_best_recognition(
+    rows: list[dict[str, Any]],
+    detection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """识别质量接近时用检测几何稳定竖排方向，明显更优的结果仍优先。"""
+    candidates = [row for row in rows if isinstance(row, dict)]
+    if not candidates:
+        return {}
+    best = max(candidates, key=recognition_quality)
+    rotation = float((detection or {}).get("rotation_deg") or 0.0)
+    if abs(rotation) < 45:
+        return best
+    preferred_orientation = 90 if rotation > 0 else -90
+    preferred_rows = [
+        row
+        for row in candidates
+        if int(row.get("orientation") or 0) == preferred_orientation
+    ]
+    if not preferred_rows:
+        return best
+    preferred = max(preferred_rows, key=recognition_quality)
+    if preferred is best:
+        return best
+    best_script_chars = count_target_script_chars(
+        str(best.get("text") or ""),
+        str(best.get("lang") or ""),
+    )
+    preferred_script_chars = count_target_script_chars(
+        str(preferred.get("text") or ""),
+        str(preferred.get("lang") or ""),
+    )
+    if (
+        best_script_chars > 0
+        and preferred_script_chars > 0
+        and recognition_quality(best) - recognition_quality(preferred) <= VERTICAL_ORIENTATION_TIE_MARGIN
+    ):
+        return preferred
+    return best
+
+
 def _run_slice_ocr_pipeline(
     image_bytes: bytes,
     lang: str,
@@ -2793,7 +2844,7 @@ def _run_slice_ocr_pipeline(
                 (90, cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)),
                 (-90, cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)),
             ]
-            if height > width * 1.15
+            if is_confident_vertical_crop(width, height)
             else [(0, crop)]
         )
         for orientation, candidate in orientations:
@@ -2815,11 +2866,14 @@ def _run_slice_ocr_pipeline(
 
     languages = ["japan", "korean"] if lang == "auto" else [lang]
     recognized = recognize_candidate_rows(candidate_rows, languages)
-    primary_best: dict[int, dict[str, Any]] = {}
-    for row in recognized:
-        current = primary_best.get(row["detection_index"])
-        if current is None or recognition_quality(row) > recognition_quality(current):
-            primary_best[row["detection_index"]] = row
+    primary_best = {
+        det_index: select_best_recognition(
+            [row for row in recognized if row["detection_index"] == det_index],
+            detections[det_index],
+        )
+        for det_index in range(len(detections))
+    }
+    primary_best = {index: row for index, row in primary_best.items() if row}
     weak_indexes = {
         detection_index
         for detection_index, row in primary_best.items()
@@ -2833,11 +2887,14 @@ def _run_slice_ocr_pipeline(
     ]
     recognized.extend(recognize_candidate_rows(retry_rows, languages))
 
-    best_by_detection: dict[int, dict[str, Any]] = {}
-    for row in recognized:
-        current = best_by_detection.get(row["detection_index"])
-        if current is None or recognition_quality(row) > recognition_quality(current):
-            best_by_detection[row["detection_index"]] = row
+    best_by_detection = {
+        det_index: select_best_recognition(
+            [row for row in recognized if row["detection_index"] == det_index],
+            detections[det_index],
+        )
+        for det_index in range(len(detections))
+    }
+    best_by_detection = {index: row for index, row in best_by_detection.items() if row}
 
     raw_items: list[dict[str, Any]] = []
     for det_index, det in enumerate(detections):

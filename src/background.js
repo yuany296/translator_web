@@ -147,6 +147,8 @@ const SEAM_CROSS_MIN_HORIZONTAL_OVERLAP = 0.25;
 const SEAM_CROSS_MIN_HEIGHT_RATIO = 0.5;
 const SEAM_CROSS_MAX_ROTATION_DELTA_DEG = 20;
 const SEAM_CROSS_MAX_BAND_COVERAGE = 1.5;
+const SEAM_CROSS_MAX_VISUAL_WIDTH_COVERAGE = 0.9;
+const SEAM_CROSS_MAX_VISUAL_AREA_COVERAGE = 0.6;
 const CHAT_TIME_RE = /(?:(?:\uC624\uC804|\uC624\uD6C4)\s*)?\d{1,2}:\d{2}/u;
 const CHAT_TRANSLATION_ROLES = Object.freeze({
   nickname: "chat_nickname",
@@ -1427,15 +1429,13 @@ function buildProviderNeutralObservation(provider, request, candidate, imageSize
 }
 
 function buildObservationPageSpans(request, candidate, imageSize) {
-  const rawBox = normalizeObservationPixelBox(candidate && candidate.rawBox) || {
+  const textBox = normalizeObservationPixelBox(candidate && candidate.rawBox) || {
     left: Number(candidate && candidate.x || 0) / 100 * imageSize.width,
     top: Number(candidate && candidate.y || 0) / 100 * imageSize.height,
     width: Number(candidate && candidate.w || 0) / 100 * imageSize.width,
     height: Number(candidate && candidate.h || 0) / 100 * imageSize.height
   };
-  const configured = request && request.imageMeta && Array.isArray(request.imageMeta.pageSpans)
-    ? request.imageMeta.pageSpans
-    : [];
+  const configured = normalizeObservationPageSpanMeta(request && request.imageMeta && request.imageMeta.pageSpans);
   if (configured.length === 0) {
     return request.pageIds.map((pageId) => ({
       pageId,
@@ -1443,6 +1443,19 @@ function buildObservationPageSpans(request, candidate, imageSize) {
       polygon: quantizeObservationPolygon(candidate && candidate.polygon),
       overlapRatio: quantizeObservationNumber(1 / request.pageIds.length, 0.001)
     }));
+  }
+  let rawBox = textBox;
+  if (request && request.sourceType === "seam" && configured.length === 2) {
+    const maxCrossHeight = Math.max(
+      SEAM_CROSS_EDGE_WINDOW_PX * 2,
+      Math.min(configured[0].canvasBox.height, configured[1].canvasBox.height) * SEAM_CROSS_MAX_BAND_COVERAGE
+    );
+    const visualBox = getSeamCandidateVisualContributionBox(candidate, imageSize, maxCrossHeight);
+    if (visualBox && configured.every((entry) => intersectObservationBoxes(visualBox, entry.canvasBox))) {
+      // 跨页气泡可能只有背景轮廓越过分页线，文字像素仍全部落在其中一页。
+      // 页面贡献必须覆盖完整视觉容器，后续才能建立双页渲染面。
+      rawBox = unionObservationBoxes(textBox, visualBox);
+    }
   }
   const spans = [];
   configured.forEach((entry) => {
@@ -1572,12 +1585,22 @@ function describeSeamOcrCandidate(candidate, index, upperSegment, lowerSegment, 
   const lowerIntersection = intersectObservationBoxes(rawBox, lowerSegment.canvasBox);
   const upperBottom = upperSegment.canvasBox.top + upperSegment.canvasBox.height;
   const lowerTop = lowerSegment.canvasBox.top;
-  const crossesBoundary = Boolean(
+  const textCrossesBoundary = Boolean(
     upperIntersection &&
     lowerIntersection &&
     rawBox.top < lowerTop &&
     rawBox.top + rawBox.height > upperBottom &&
     rawBox.height <= maxCrossHeight
+  );
+  const visualBox = getSeamCandidateVisualContributionBox(candidate, imageSize, maxCrossHeight);
+  const visualCrossesBoundary = Boolean(
+    visualBox &&
+    intersectObservationBoxes(visualBox, upperSegment.canvasBox) &&
+    intersectObservationBoxes(visualBox, lowerSegment.canvasBox) &&
+    (
+      upperIntersection && rawBox.top + rawBox.height >= upperBottom - SEAM_CROSS_EDGE_WINDOW_PX ||
+      lowerIntersection && rawBox.top <= lowerTop + SEAM_CROSS_EDGE_WINDOW_PX
+    )
   );
   return {
     candidate,
@@ -1585,7 +1608,7 @@ function describeSeamOcrCandidate(candidate, index, upperSegment, lowerSegment, 
     rawBox,
     upperIntersection,
     lowerIntersection,
-    crossesBoundary,
+    crossesBoundary: textCrossesBoundary || visualCrossesBoundary,
     upperEdgeOnly: Boolean(
       upperIntersection &&
       !lowerIntersection &&
@@ -3368,6 +3391,75 @@ function splitLocalPaddleChatRoleClusters(entries) {
     group.nonTranslate = false;
     return group;
   });
+}
+
+function getSeamCandidateVisualContributionBox(candidate, imageSize, maxCrossHeight) {
+  if (String(candidate && candidate.bg_type || "").trim().toLowerCase() !== "solid") {
+    return null;
+  }
+  const regionType = String(candidate && candidate.region_type || "").trim().toLowerCase();
+  if (regionType !== "speech_bubble" && regionType !== "caption_panel") {
+    return null;
+  }
+  const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  const textBox = getSeamCandidateRawBox(candidate, imageSize);
+  const visualBoxes = [
+    percentPolygonToObservationPixelBox(candidate && candidate.region_polygon, imageSize),
+    percentBoxToObservationPixelBox(candidate && candidate.fill_box, imageSize)
+  ].filter(Boolean);
+  for (const visualBox of visualBoxes) {
+    const overlapsText = Boolean(textBox && intersectObservationBoxes(textBox, visualBox));
+    const bounded = visualBox.width <= imageWidth * SEAM_CROSS_MAX_VISUAL_WIDTH_COVERAGE &&
+      visualBox.height <= maxCrossHeight &&
+      visualBox.width * visualBox.height <= imageWidth * imageHeight * SEAM_CROSS_MAX_VISUAL_AREA_COVERAGE;
+    if (overlapsText && bounded) {
+      return visualBox;
+    }
+  }
+  return null;
+}
+
+function percentBoxToObservationPixelBox(value, imageSize) {
+  if (!value || typeof value !== "object") return null;
+  const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
+  const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
+  const x = Number(value.x ?? value.left);
+  const y = Number(value.y ?? value.top);
+  const width = Number(value.w ?? value.width);
+  const height = Number(value.h ?? value.height);
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+  const left = clamp(x, 0, 100) / 100 * imageWidth;
+  const top = clamp(y, 0, 100) / 100 * imageHeight;
+  const right = clamp(x + width, 0, 100) / 100 * imageWidth;
+  const bottom = clamp(y + height, 0, 100) / 100 * imageHeight;
+  return right > left && bottom > top
+    ? { left, top, width: right - left, height: bottom - top }
+    : null;
+}
+
+function percentPolygonToObservationPixelBox(value, imageSize) {
+  if (!Array.isArray(value) || value.length < 3) return null;
+  const points = value.map((point) => ({
+    x: Number(Array.isArray(point) ? point[0] : point && point.x),
+    y: Number(Array.isArray(point) ? point[1] : point && point.y)
+  })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (points.length < 3) return null;
+  const left = Math.min(...points.map((point) => point.x));
+  const top = Math.min(...points.map((point) => point.y));
+  const right = Math.max(...points.map((point) => point.x));
+  const bottom = Math.max(...points.map((point) => point.y));
+  return percentBoxToObservationPixelBox({ x: left, y: top, w: right - left, h: bottom - top }, imageSize);
+}
+
+function unionObservationBoxes(left, right) {
+  if (!left) return right || null;
+  if (!right) return left;
+  const boxLeft = Math.min(left.left, right.left);
+  const boxTop = Math.min(left.top, right.top);
+  const boxRight = Math.max(left.left + left.width, right.left + right.width);
+  const boxBottom = Math.max(left.top + left.height, right.top + right.height);
+  return { left: boxLeft, top: boxTop, width: boxRight - boxLeft, height: boxBottom - boxTop };
 }
 
 function inferLocalPaddleChatEntryRole(entry, entries) {

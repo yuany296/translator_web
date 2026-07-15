@@ -1786,6 +1786,123 @@ test("seam OCR can join only compatible fragments immediately above and below th
   assert.equal(result.rejected[0].reason, "seam_not_cross_boundary");
 });
 
+test("seam OCR keeps boundary text when its reliable speech region crosses both pages", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 720, height: 192 };
+  const request = {
+    sourceType: "seam",
+    pageIds: ["page-upper", "page-lower"],
+    imageRevisionByPage: {
+      "page-upper": "revision-upper",
+      "page-lower": "revision-lower"
+    },
+    imageDigest: "digest-live-boundary-bubble",
+    imageMeta: {
+      pageSpans: [
+        {
+          pageId: "page-upper",
+          canvasBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageBox: { x: 0, y: 1004, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        },
+        {
+          pageId: "page-lower",
+          canvasBox: { x: 0, y: 96, w: 720, h: 96 },
+          pageBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        }
+      ]
+    }
+  };
+  const result = background.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request,
+    imageSize,
+    normalized: [{
+      original_text: "밥이요?\n네, 먹었죠.",
+      x: 61.94,
+      y: 0.52,
+      w: 21.11,
+      h: 48.96,
+      rawBox: { left: 446, top: 1, width: 152, height: 94 },
+      fill_box: { x: 58, y: 4, w: 28, h: 58 },
+      region_polygon: [
+        { x: 57.08, y: 0 },
+        { x: 87.78, y: 0 },
+        { x: 87.78, y: 66.15 },
+        { x: 57.08, y: 66.15 }
+      ],
+      confidence: 0.96,
+      bg_type: "solid",
+      bg_confidence: 0.98,
+      region_type: "speech_bubble"
+    }],
+    ocrTuning: background.getDefaultOcrTuning(),
+    ocrDebug: { filterReasons: [] },
+    ignoreSimplifiedChinese: false,
+    debug: false
+  });
+
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.filteredObservations.length, 0);
+  assert.equal(result.observations[0].originalText, "밥이요? 네, 먹었죠.");
+  assert.deepEqual(
+    Array.from(result.observations[0].pageSpans, (span) => span.pageId),
+    ["page-upper", "page-lower"]
+  );
+  assert.equal(result.observations[0].pageSpans.every((span) => span.overlapRatio > 0), true);
+});
+
+test("seam OCR does not use oversized visual regions to promote one-page text", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 720, height: 192 };
+  const request = {
+    sourceType: "seam",
+    imageMeta: {
+      pageSpans: [
+        {
+          pageId: "page-upper",
+          canvasBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageBox: { x: 0, y: 1004, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        },
+        {
+          pageId: "page-lower",
+          canvasBox: { x: 0, y: 96, w: 720, h: 96 },
+          pageBox: { x: 0, y: 0, w: 720, h: 96 },
+          pageWidth: 720,
+          pageHeight: 1100
+        }
+      ]
+    }
+  };
+  const rawBox = { left: 220, top: 64, width: 220, height: 24 };
+  const result = background.filterSeamOcrCandidates([{
+    original_text: "ordinary upper-page text",
+    x: rawBox.left / imageSize.width * 100,
+    y: rawBox.top / imageSize.height * 100,
+    w: rawBox.width / imageSize.width * 100,
+    h: rawBox.height / imageSize.height * 100,
+    rawBox,
+    region_polygon: [
+      { x: 1, y: 0 },
+      { x: 99, y: 0 },
+      { x: 99, y: 100 },
+      { x: 1, y: 100 }
+    ],
+    confidence: 0.99,
+    bg_type: "solid",
+    bg_confidence: 0.99,
+    region_type: "speech_bubble"
+  }], request, imageSize);
+
+  assert.equal(result.retained.length, 0);
+  assert.equal(result.rejected[0].reason, "seam_not_cross_boundary");
+});
+
 test("visual fill regions trigger seam evidence even when the OCR text box is interior", () => {
   const result = context.__backgroundTest.buildProviderNeutralObservationResult({
     provider: "local_paddle",

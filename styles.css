@@ -106,6 +106,15 @@
   animation: mt-loading-pulse 1.05s ease-in-out infinite;
 }
 
+.mt-loading-card-status {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
 .mt-bubble {
   position: absolute;
   box-sizing: border-box;

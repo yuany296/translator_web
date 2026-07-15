@@ -4,8 +4,23 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/sync-to-root.mjs",
+    "dev": "npm run build -- --watch",
     "build": "node scripts/build-extension.mjs",
-    "test": "node --test tests/kakao_reconciler.test.mjs tests/kakao_pipeline.test.mjs tests/content_runtime.test.mjs tests/background_runtime.test.mjs tests/glossary_core.test.mjs tests/term_discovery_core.test.mjs tests/overlay_style.test.mjs"
+    "check:lines": "node scripts/check-file-lengths.mjs",
+    "lint:js": "eslint extension/src",
+    "lint:python": "node scripts/run-python-tool.mjs -m pylint --rcfile=.pylintrc local-ocr-service/server.py local-ocr-service/glossary_db.py local-ocr-service/glossary_store local-ocr-service/ocr_service local-ocr-service/term_extractor.py",
+    "test:node": "node scripts/run-node-tests.mjs",
+    "test:python": "node scripts/run-python-tool.mjs -m pytest tests -q",
+    "test": "npm run test:node",
+    "verify": "npm run check:lines && npm run lint:js && npm run lint:python && npm run build && npm run test:node && npm run test:python"
+  },
+  "devDependencies": {
+    "@babel/generator": "^8.0.0",
+    "@babel/parser": "^8.0.4",
+    "@babel/traverse": "^8.0.4",
+    "@babel/types": "^8.0.4",
+    "@eslint/js": "^10.0.1",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.7.0"
   }
 }

@@ -1,0 +1,37 @@
+export function installReconciler09(runtime) {
+  const RECONCILE_MODEL_VERSION = "kakao-canonical-v1";
+  runtime.RECONCILE_MODEL_VERSION = RECONCILE_MODEL_VERSION;
+  const GEOMETRY_WEIGHT = 0.35;
+  runtime.GEOMETRY_WEIGHT = GEOMETRY_WEIGHT;
+  const VISUAL_WEIGHT = 0.30;
+  runtime.VISUAL_WEIGHT = VISUAL_WEIGHT;
+  const SEAM_WEIGHT = 0.25;
+  runtime.SEAM_WEIGHT = SEAM_WEIGHT;
+  const TEXT_WEIGHT = 0.10;
+  runtime.TEXT_WEIGHT = TEXT_WEIGHT;
+  const MERGE_THRESHOLD = 0.75;
+  runtime.MERGE_THRESHOLD = MERGE_THRESHOLD;
+  const REVIEW_THRESHOLD = 0.60;
+  runtime.REVIEW_THRESHOLD = REVIEW_THRESHOLD;
+  const MAX_COMPONENT_PAGES = 3;
+  runtime.MAX_COMPONENT_PAGES = MAX_COMPONENT_PAGES;
+  const DEFAULT_EDGE_WAIT_MS = 8000;
+  runtime.DEFAULT_EDGE_WAIT_MS = DEFAULT_EDGE_WAIT_MS;
+  const MIN_SEAM_PAGE_CONTRIBUTION = 0.08;
+  // seam 仅用于确认真正跨页的文字；大范围取样会把完整气泡和阅读器 UI 再次送入 OCR。
+  runtime.MIN_SEAM_PAGE_CONTRIBUTION = MIN_SEAM_PAGE_CONTRIBUTION;
+  const SEAM_BAND_WIDTH_RATIO = 0.15;
+  runtime.SEAM_BAND_WIDTH_RATIO = SEAM_BAND_WIDTH_RATIO;
+  const SEAM_BAND_MIN_PX = 64;
+  runtime.SEAM_BAND_MIN_PX = SEAM_BAND_MIN_PX;
+  const SEAM_BAND_MAX_PX = 96;
+  runtime.SEAM_BAND_MAX_PX = SEAM_BAND_MAX_PX;
+  const FUZZY_SEAM_FRAGMENT_MIN_LENGTH = 5;
+  runtime.FUZZY_SEAM_FRAGMENT_MIN_LENGTH = FUZZY_SEAM_FRAGMENT_MIN_LENGTH;
+  const FUZZY_SEAM_FRAGMENT_THRESHOLD = 0.80;
+  runtime.FUZZY_SEAM_FRAGMENT_THRESHOLD = FUZZY_SEAM_FRAGMENT_THRESHOLD;
+  const FUZZY_OCR_QUOTE_RE = /['"‘’“”＇＂]/gu;
+  runtime.FUZZY_OCR_QUOTE_RE = FUZZY_OCR_QUOTE_RE;
+  const AUTH_QUERY_PARAM_RE = /^(?:signature|credential|expires|policy|token|key-pair-id|x-amz-(?:algorithm|credential|date|expires|security-token|signature|signedheaders))$/i;
+  runtime.AUTH_QUERY_PARAM_RE = AUTH_QUERY_PARAM_RE;
+}

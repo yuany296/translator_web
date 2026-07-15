@@ -35,6 +35,8 @@ test.py
 *.jpg
 *.jpeg
 !tests/fixtures/visual/*.png
+!tests/fixtures/ocr/
+!tests/fixtures/ocr/*.png
 !tests/fixtures/kakao-canonical/
 !tests/fixtures/kakao-canonical/*.png
 
@@ -42,6 +44,7 @@ test.py
 local-ocr-service/__pycache__/
 local-ocr-service/*.png
 local-ocr-service/debug
+.local-data/
 
 # === Local AI instructions / work logs ===
 AGENTS.md

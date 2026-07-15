@@ -1,0 +1,36 @@
+export function installReconciler10(runtime) {
+  const api = Object.freeze({
+    RECONCILE_MODEL_VERSION: runtime.RECONCILE_MODEL_VERSION,
+    GEOMETRY_WEIGHT: runtime.GEOMETRY_WEIGHT,
+    VISUAL_WEIGHT: runtime.VISUAL_WEIGHT,
+    SEAM_WEIGHT: runtime.SEAM_WEIGHT,
+    TEXT_WEIGHT: runtime.TEXT_WEIGHT,
+    MERGE_THRESHOLD: runtime.MERGE_THRESHOLD,
+    REVIEW_THRESHOLD: runtime.REVIEW_THRESHOLD,
+    MAX_COMPONENT_PAGES: runtime.MAX_COMPONENT_PAGES,
+    DEFAULT_EDGE_WAIT_MS: runtime.DEFAULT_EDGE_WAIT_MS,
+    MIN_SEAM_PAGE_CONTRIBUTION: runtime.MIN_SEAM_PAGE_CONTRIBUTION,
+    clamp: runtime.clamp,
+    normalizeText: runtime.normalizeText,
+    stableHash: runtime.stableHash,
+    normalizeStableImageSource: runtime.normalizeStableImageSource,
+    buildChapterId: runtime.buildChapterId,
+    buildPageId: runtime.buildPageId,
+    createObservation: runtime.createObservation,
+    calculateSeamBandHeight: runtime.calculateSeamBandHeight,
+    computeSeamBandHeight: runtime.calculateSeamBandHeight,
+    buildSeamPairKey: runtime.buildSeamPairKey,
+    buildSeamPlan: runtime.buildSeamPlan,
+    evaluateSeamEvidence: runtime.evaluateSeamEvidence,
+    shouldRunSeamOcr: input => runtime.evaluateSeamEvidence(input).shouldRun,
+    textSimilarity: runtime.textSimilarity,
+    joinContinuationText: runtime.joinContinuationText,
+    createCoverageLedger: runtime.createCoverageLedger,
+    assertCoverageInvariants: runtime.assertCoverageInvariants,
+    reconcileObservations: runtime.reconcileObservations,
+    reconcile: runtime.reconcileObservations,
+    buildRenderProjections: runtime.buildRenderProjections,
+    createCanonicalStore: runtime.createCanonicalStore
+  });
+  runtime.api = api;
+}

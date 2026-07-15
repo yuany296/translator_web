@@ -164,15 +164,6 @@ def extract_term_candidates(
             if candidate.get("kind") == "person":
                 register_confirmed_person_aliases(kiwi, [source])
 
-    # 频率过滤："title" 类型（NNG-only）候选词需要至少跨 3 个证据块出现才保留
-    filtered: dict[str, dict[str, Any]] = {}
-    for key, candidate in merged.items():
-        if candidate["kind"] in ("person", "proper_noun", "latin_name", "latin_title"):
-            filtered[key] = candidate
-        elif candidate["kind"] == "title" and len(candidate["evidenceIds"]) >= 2:
-            filtered[key] = candidate
-    merged = filtered
-
     return sorted(
         merged.values(),
         key=lambda item: (-float(item["score"]), -len(str(item["source"])), str(item["source"])),
@@ -244,14 +235,10 @@ def extract_korean_candidates(text: str, tokens: list[dict[str, Any]]) -> list[d
             continue
         # 平衡模式允许完整 OCR 块中的短名词短语进入人工确认，但不接受普通单个名词。
         if is_full_block and 2 <= len(group) <= 4 and " " in surface and len(compact) >= 4:
-            # 纯 NNG 组的停用词检查：任意组成词为停用词则丢弃
+            # 纯 NNG 短语只有在全部由停用词组成时才丢弃；“연습 시간”这类
+            # 含通用词但整体有术语意义的短语仍应进入人工确认。
             if "NNP" not in tags:
-                has_stop = False
-                for token in group:
-                    if token["form"] in KOREAN_STOP_WORDS:
-                        has_stop = True
-                        break
-                if not has_stop:
+                if not all(token["form"] in KOREAN_STOP_WORDS for token in group):
                     candidates.append({"source": surface, "kind": "title", "score": 0.72})
             else:
                 candidates.append({"source": surface, "kind": "title", "score": 0.72})
@@ -300,6 +287,21 @@ def is_korean_person_name(value: str, tokens: list[dict[str, Any]] | None = None
         return True
     has_nnp = any(token.get("tag") == "NNP" for token in tokens)
     all_unseen = all(not token.get("baseForm") for token in tokens)
+    if len(tokens) == 1 and tokens[0].get("tag") == "NNP":
+        # Kiwi 的词典中也包含真实姓名；有 baseForm 不代表它是普通名词。
+        return True
+    surname_length = 2 if has_compound_surname_shape else 1
+    first = tokens[0] if tokens else {}
+    final = tokens[-1] if tokens else {}
+    recovered_ending_name = (
+        first.get("tag") == "NNP"
+        and str(first.get("surface") or first.get("form") or "") == value[:surname_length]
+        and str(final.get("tag") or "").startswith("E")
+        and all(token.get("tag") in NOUN_TAGS or str(token.get("tag") or "").startswith("E") for token in tokens)
+    )
+    if recovered_ending_name:
+        # OCR 人名末字偶尔被分析成语尾（例如 김/NNP+솔/NNG+음/EF）。
+        return True
     # 排除"김밥"(김/NNP+밥/NNG)等混合标签的常见名词：如果前 1~2 字是姓氏且剩余部分
     # 有 baseForm（即词典已知），则不是人名。
     tokens_by_tag = {}

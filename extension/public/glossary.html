@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>漫画翻译术语库</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
+        color: #172033;
+        background: #f4f7fb;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 720px;
+      }
+
+      main {
+        width: min(1120px, calc(100% - 40px));
+        margin: 32px auto 48px;
+      }
+
+      .page-header,
+      .toolbar,
+      .summary,
+      .dialog-actions,
+      .row-actions {
+        display: flex;
+        align-items: center;
+      }
+
+      .page-header {
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 20px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        margin-bottom: 8px;
+        font-size: 28px;
+      }
+
+      .subtitle,
+      .summary,
+      .empty-state {
+        color: #64748b;
+      }
+
+      .panel {
+        overflow: hidden;
+        border: 1px solid #dce4ef;
+        border-radius: 16px;
+        background: #ffffff;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      }
+
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .tab-button {
+        border-color: transparent;
+        color: #475569;
+        background: transparent;
+      }
+
+      .tab-button.active {
+        border-color: #bfdbfe;
+        color: #1d4ed8;
+        background: #dbeafe;
+        font-weight: 700;
+      }
+
+      .toolbar {
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 16px;
+        border-bottom: 1px solid #e5eaf1;
+      }
+
+      .search {
+        flex: 1 1 280px;
+        min-width: 220px;
+      }
+
+      input[type="search"],
+      input[type="text"],
+      textarea {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 9px;
+        padding: 9px 11px;
+        font: inherit;
+        background: #ffffff;
+      }
+
+      textarea {
+        min-height: 88px;
+        resize: vertical;
+      }
+
+      input:focus,
+      textarea:focus {
+        border-color: #2563eb;
+        outline: 3px solid rgba(37, 99, 235, 0.12);
+      }
+
+      button {
+        border: 1px solid #cbd5e1;
+        border-radius: 9px;
+        padding: 9px 13px;
+        font: inherit;
+        color: #263247;
+        background: #ffffff;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #f8fafc;
+      }
+
+      .primary {
+        border-color: #2563eb;
+        color: #ffffff;
+        background: #2563eb;
+      }
+
+      .primary:hover {
+        background: #1d4ed8;
+      }
+
+      .danger {
+        color: #b42318;
+      }
+
+      .summary {
+        justify-content: space-between;
+        min-height: 44px;
+        gap: 16px;
+        padding: 10px 16px;
+        border-bottom: 1px solid #e5eaf1;
+        font-size: 13px;
+      }
+
+      #statusText[data-error="true"],
+      #pendingStatusText[data-error="true"] {
+        color: #b42318;
+      }
+
+      #statusText[data-error="false"],
+      #pendingStatusText[data-error="false"] {
+        color: #047857;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+
+      th,
+      td {
+        padding: 13px 12px;
+        border-bottom: 1px solid #edf1f6;
+        text-align: left;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+      }
+
+      th {
+        color: #475569;
+        font-size: 12px;
+        font-weight: 600;
+        background: #f8fafc;
+      }
+
+      th:first-child,
+      td:first-child {
+        width: 74px;
+        text-align: center;
+      }
+
+      th:nth-child(2),
+      th:nth-child(3) {
+        width: 24%;
+      }
+
+      th:last-child,
+      td:last-child {
+        width: 132px;
+      }
+
+      td.note {
+        color: #64748b;
+      }
+
+      .row-actions {
+        gap: 6px;
+      }
+
+      .row-actions button {
+        padding: 5px 9px;
+        font-size: 12px;
+      }
+
+      .empty-state {
+        padding: 56px 20px;
+        text-align: center;
+      }
+
+      dialog {
+        width: min(560px, calc(100% - 40px));
+        border: 0;
+        border-radius: 16px;
+        padding: 0;
+        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.28);
+      }
+
+      dialog::backdrop {
+        background: rgba(15, 23, 42, 0.45);
+      }
+
+      .dialog-content {
+        padding: 22px;
+      }
+
+      .field {
+        margin-bottom: 15px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+        color: #334155;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .enabled-field {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .enabled-field label {
+        margin: 0;
+        font-weight: 400;
+      }
+
+      .dialog-actions {
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 20px;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      .pending-list {
+        padding: 0 16px 18px;
+      }
+
+      .pending-chapter {
+        padding: 18px 0 4px;
+        border-bottom: 1px solid #e5eaf1;
+      }
+
+      .pending-chapter:last-child {
+        border-bottom: 0;
+      }
+
+      .chapter-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+
+      .chapter-heading h2 {
+        margin-bottom: 0;
+        font-size: 18px;
+      }
+
+      .chapter-url {
+        max-width: 64%;
+        color: #64748b;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .candidate-card {
+        margin-bottom: 12px;
+        border: 1px solid #dce4ef;
+        border-radius: 12px;
+        padding: 14px;
+        background: #fbfdff;
+      }
+
+      .candidate-heading,
+      .pending-actions,
+      .ignored-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .candidate-heading {
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+
+      .candidate-source {
+        margin-right: 4px;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .badge {
+        border-radius: 999px;
+        padding: 3px 7px;
+        color: #475569;
+        background: #e2e8f0;
+        font-size: 11px;
+      }
+
+      .badge.warning {
+        color: #9a3412;
+        background: #ffedd5;
+      }
+
+      .candidate-grid {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+        gap: 10px;
+      }
+
+      .contexts {
+        margin: 10px 0;
+        padding: 9px 11px;
+        border-radius: 9px;
+        color: #475569;
+        background: #f1f5f9;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .context-row + .context-row {
+        margin-top: 6px;
+        padding-top: 6px;
+        border-top: 1px dashed #cbd5e1;
+      }
+
+      .pending-actions {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .pending-actions button {
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
+      .ignored-panel {
+        margin: 0 16px 18px;
+        border-top: 1px solid #e5eaf1;
+        padding-top: 16px;
+      }
+
+      .ignored-row {
+        justify-content: space-between;
+        padding: 8px 0;
+      }
+
+      @media (max-width: 800px) {
+        .candidate-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .chapter-heading {
+          display: block;
+        }
+
+        .chapter-url {
+          max-width: none;
+          margin-top: 5px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="page-header">
+        <div>
+          <h1>术语库</h1>
+          <p class="subtitle">统一角色名、地名和专有词译法；已启用术语会应用到所有网站。</p>
+        </div>
+        <button id="addBtn" class="primary" type="button">新增术语</button>
+      </header>
+
+      <nav class="tabs" aria-label="术语库分区">
+        <button id="officialTabBtn" class="tab-button active" type="button">正式术语</button>
+        <button id="pendingTabBtn" class="tab-button" type="button">待确认（0）</button>
+      </nav>
+
+      <section id="officialPanel" class="panel">
+        <div class="toolbar">
+          <input id="searchInput" class="search" type="search" placeholder="搜索原文、译文或备注" />
+          <button id="importBtn" type="button">导入 JSON/CSV</button>
+          <button id="exportJsonBtn" type="button">导出 JSON</button>
+          <button id="exportCsvBtn" type="button">导出 CSV</button>
+          <button id="clearBtn" class="danger" type="button">清空全部</button>
+          <button id="migrateBtn" class="secondary" type="button" title="将浏览器存储中的术语迁移到 OCR 服务端 SQLite 数据库">迁移到服务端</button>
+          <div id="migrateStatus" class="status-text" style="display:inline-block;margin-left:8px"></div>
+          <input id="fileInput" class="hidden" type="file" accept=".json,.csv,application/json,text/csv" />
+        </div>
+
+        <div class="summary">
+          <span id="countText">正在读取术语...</span>
+          <span id="statusText" aria-live="polite"></span>
+        </div>
+
+        <div id="tableContainer">
+          <table>
+            <thead>
+              <tr>
+                <th>启用</th>
+                <th>原文术语</th>
+                <th>固定译文</th>
+                <th>备注</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="termRows"></tbody>
+          </table>
+          <div id="emptyState" class="empty-state hidden">暂无术语，点击“新增术语”开始建立词库。</div>
+        </div>
+      </section>
+
+      <section id="pendingPanel" class="panel hidden">
+        <div class="toolbar">
+          <button id="confirmFilledBtn" class="primary" type="button">加入所有已填写</button>
+          <span id="extractorStatus" class="subtitle">Kiwi 状态：读取中...</span>
+        </div>
+        <div class="summary">
+          <span id="pendingCountText">正在读取待确认术语...</span>
+          <span id="pendingStatusText" aria-live="polite"></span>
+        </div>
+        <div id="pendingChapters" class="pending-list"></div>
+        <div id="pendingEmptyState" class="empty-state hidden">本话翻译后发现的新术语会出现在这里。</div>
+        <div id="ignoredPanel" class="ignored-panel hidden">
+          <h2>永久忽略项</h2>
+          <div id="ignoredRows"></div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="termDialog">
+      <form id="termForm" class="dialog-content">
+        <h2 id="dialogTitle">新增术语</h2>
+        <input id="termIdInput" type="hidden" />
+        <div class="field">
+          <label for="sourceInput">原文术语</label>
+          <input id="sourceInput" type="text" maxlength="120" required />
+        </div>
+        <div class="field">
+          <label for="targetInput">固定译文</label>
+          <input id="targetInput" type="text" maxlength="120" required />
+        </div>
+        <div class="field">
+          <label for="noteInput">备注（可选，会作为翻译上下文）</label>
+          <textarea id="noteInput" maxlength="240"></textarea>
+        </div>
+        <div class="enabled-field">
+          <input id="enabledInput" type="checkbox" checked />
+          <label for="enabledInput">立即启用</label>
+        </div>
+        <div class="dialog-actions">
+          <button id="cancelBtn" type="button">取消</button>
+          <button class="primary" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="glossary-core.js"></script>
+    <script src="term-discovery-core.js"></script>
+    <script src="glossary.js"></script>
+  </body>
+</html>

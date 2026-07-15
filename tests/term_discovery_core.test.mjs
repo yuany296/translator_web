@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-const root = path.resolve(import.meta.dirname, "..");
-const source = fs.readFileSync(path.join(root, "term-discovery-core.js"), "utf8");
-const context = vm.createContext({ URL });
-vm.runInContext(`${source}\nglobalThis.__termDiscoveryTest = MangaTermDiscovery;`, context);
-const core = context.__termDiscoveryTest;
+import core from "../extension/src/shared/term-discovery.js";
 
 test("chapter identity removes hash but keeps query parameters", () => {
   assert.equal(

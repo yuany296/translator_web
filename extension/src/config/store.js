@@ -1,0 +1,61 @@
+import {
+  CONFIG_KEYS, OCR_PROVIDERS, normalizeOcrConfig,
+  normalizeRuntimeConfig, normalizeTranslationConfig
+} from "./schema.js";
+
+export function createConfigurationStore({ storageGet, storageSet, glossaryCore }) {
+  async function load() {
+    const raw = await storageGet([CONFIG_KEYS.ocr, CONFIG_KEYS.translation, CONFIG_KEYS.runtime, glossaryCore.STORAGE_KEY]);
+    const glossary = glossaryCore.normalizeGlossary(raw[glossaryCore.STORAGE_KEY]);
+    return {
+      ocr: normalizeOcrConfig(raw[CONFIG_KEYS.ocr]),
+      translation: normalizeTranslationConfig(raw[CONFIG_KEYS.translation]),
+      runtime: normalizeRuntimeConfig(raw[CONFIG_KEYS.runtime]),
+      glossary,
+      glossaryFingerprint: glossaryCore.getFingerprint(glossary)
+    };
+  }
+
+  async function ensure() {
+    const config = await load();
+    await storageSet({
+      [CONFIG_KEYS.ocr]: config.ocr,
+      [CONFIG_KEYS.translation]: config.translation,
+      [CONFIG_KEYS.runtime]: config.runtime
+    });
+    return config;
+  }
+
+  async function save(section, value) {
+    const normalizers = { ocr: normalizeOcrConfig, translation: normalizeTranslationConfig, runtime: normalizeRuntimeConfig };
+    if (!normalizers[section]) throw new Error(`Unknown configuration section: ${section}`);
+    const normalized = normalizers[section](value);
+    await storageSet({ [CONFIG_KEYS[section]]: normalized });
+    return normalized;
+  }
+  return Object.freeze({ load, ensure, save });
+}
+
+export function toLegacySettings(config) {
+  const { ocr, translation, runtime, glossary, glossaryFingerprint } = config;
+  const local = ocr.localPaddle;
+  const tuning = ocr.tuning;
+  const vision = ocr.visionRepair;
+  return {
+    provider: ocr.provider,
+    ocrProvider: ocr.provider, translationProvider: translation.provider,
+    model: translation.model, apiKey: translation.apiKey, baseUrl: translation.baseUrl,
+    baiduApiKey: ocr.baidu.apiKey, baiduSecretKey: ocr.baidu.secretKey,
+    localOcrBaseUrl: local.baseUrl, localOcrLang: local.lang, localOcrMode: local.mode,
+    localOcrDetThresh: local.detThresh, localOcrDetBoxThresh: local.detBoxThresh,
+    localOcrDetUnclipRatio: local.detUnclipRatio, localOcrDebug: local.debug,
+    ocrConfidenceThreshold: tuning.confidenceThreshold, ocrMinBoxArea: tuning.minBoxArea,
+    ocrMaxBoxArea: tuning.maxBoxArea, ocrMinBoxWidth: tuning.minBoxWidth,
+    ocrMinBoxHeight: tuning.minBoxHeight, ocrMaxAspectRatio: tuning.maxAspectRatio,
+    ocrMergeLineGap: tuning.mergeLineGap,
+    visionOcrEnabled: vision.enabled, visionOcrApiKey: vision.apiKey,
+    visionOcrBaseUrl: vision.baseUrl, visionOcrModel: vision.model,
+    ...runtime, glossary, glossaryEntries: glossary.entries, glossaryFingerprint,
+    ocrConfig: ocr, translationConfig: translation, runtimeConfig: runtime
+  };
+}

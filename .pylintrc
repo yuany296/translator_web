@@ -1,0 +1,9 @@
+[MAIN]
+ignore-patterns=^test_.*\.py$
+
+[MESSAGES CONTROL]
+disable=all
+enable=too-many-lines
+
+[FORMAT]
+max-module-lines=400

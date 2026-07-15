@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>漫画实时翻译</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+    body { width: 410px; margin: 0; padding: 14px; color: #172033; background: #f3f6fb; }
+    h1 { margin: 0 0 12px; font-size: 18px; } h2 { margin: 0; font-size: 14px; }
+    .card { margin-bottom: 10px; padding: 12px; border: 1px solid #dce3ef; border-radius: 12px; background: white; }
+    .card-head, .actions, .toggle { display: flex; align-items: center; gap: 8px; }
+    .card-head { justify-content: space-between; margin-bottom: 10px; }
+    .field { margin: 8px 0; } label { display: block; margin-bottom: 4px; font-size: 11px; color: #526078; }
+    input, select { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 7px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+    .toggle { justify-content: space-between; margin: 8px 0; font-size: 12px; } .toggle input { width: auto; }
+    button { padding: 7px 10px; border: 0; border-radius: 7px; cursor: pointer; background: #e5eaf2; }
+    button.primary { color: white; background: #2563eb; } button.run { color: white; background: #059669; }
+    .status { min-height: 16px; margin-top: 7px; font-size: 11px; color: #526078; } .status.error { color: #b42318; }
+    details { margin-top: 8px; } summary { cursor: pointer; font-size: 12px; color: #334155; }
+    .footer { display: flex; gap: 8px; } .footer button { flex: 1; } .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>漫画实时翻译</h1>
+  <section class="card" id="ocrCard">
+    <div class="card-head"><h2>OCR 配置</h2><span>独立识别与缓存</span></div>
+    <div class="field"><label for="ocrProvider">OCR Provider</label><select id="ocrProvider"><option value="local_paddle">Local Paddle</option><option value="baidu">百度 OCR</option></select></div>
+    <div id="localPaddleFields">
+      <div class="field"><label for="ocrBaseUrl">本地服务地址</label><input id="ocrBaseUrl" type="text" /></div>
+      <div class="grid">
+        <div class="field"><label for="ocrLang">语言</label><select id="ocrLang"><option value="auto">auto</option><option value="japan">japan</option><option value="korean">korean</option></select></div>
+        <div class="field"><label for="ocrMode">模式</label><select id="ocrMode"><option value="fast">fast</option><option value="enhanced">enhanced</option></select></div>
+      </div>
+      <div class="toggle"><span>OCR 调试</span><input id="ocrDebug" type="checkbox" /></div>
+      <details><summary>Vision 弱结果修复</summary>
+        <div class="toggle"><span>启用（不改变几何）</span><input id="visionEnabled" type="checkbox" /></div>
+        <div class="field"><label for="visionKey">API Key</label><input id="visionKey" type="password" /></div>
+        <div class="field"><label for="visionUrl">Base URL</label><input id="visionUrl" type="text" /></div>
+        <div class="field"><label for="visionModel">Model</label><input id="visionModel" type="text" /></div>
+      </details>
+    </div>
+    <div id="baiduFields" class="hidden">
+      <div class="field"><label for="baiduAk">百度 AK</label><input id="baiduAk" type="password" /></div>
+      <div class="field"><label for="baiduSk">百度 SK</label><input id="baiduSk" type="password" /></div>
+    </div>
+    <div class="actions"><button class="primary" data-save="ocr">保存 OCR</button><button data-test="ocr">测试 OCR</button></div>
+    <div id="ocrStatus" class="status"></div>
+  </section>
+  <section class="card">
+    <div class="card-head"><h2>翻译配置</h2><span>OpenAI-compatible</span></div>
+    <div class="field"><label for="translationModel">Model</label><input id="translationModel" type="text" /></div>
+    <div class="field"><label for="translationKey">API Key</label><input id="translationKey" type="password" /></div>
+    <div class="field"><label for="translationUrl">Base URL</label><input id="translationUrl" type="text" /></div>
+    <div class="actions"><button class="primary" data-save="translation">保存翻译</button><button data-test="translation">测试翻译</button></div>
+    <div id="translationStatus" class="status"></div>
+  </section>
+  <section class="card">
+    <div class="card-head"><h2>运行设置</h2><span>阅读与渲染</span></div>
+    <div class="grid">
+      <div class="field"><label for="captureMode">取图</label><select id="captureMode"><option value="direct">直接读取</option><option value="screenshot">可视区截图</option></select></div>
+      <div class="field"><label for="renderMode">渲染</label><select id="renderMode"><option value="overlay">DOM 覆盖</option><option value="embedded">嵌入图片</option></select></div>
+    </div>
+    <div class="toggle"><span>启用翻译</span><input id="runtimeEnabled" type="checkbox" /></div>
+    <div class="toggle"><span>显示悬浮球</span><input id="showBall" type="checkbox" /></div>
+    <div class="toggle"><span>自动发现候选术语</span><input id="termDiscoveryEnabled" type="checkbox" /></div>
+    <div class="actions"><button class="primary" data-save="runtime">保存运行设置</button></div>
+    <div id="runtimeStatus" class="status"></div>
+  </section>
+  <div class="footer"><button id="translateBtn" class="run">翻译当前可视区</button><button id="glossaryBtn">术语表</button><button id="clearCacheBtn">清缓存</button></div>
+  <div id="globalStatus" class="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -2,15 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
+import glossary from "../extension/src/shared/glossary.js";
 
 const root = path.resolve(import.meta.dirname, "..");
-const source = fs.readFileSync(path.join(root, "glossary-core.js"), "utf8");
-const context = vm.createContext({});
-vm.runInContext(`${source}\nglobalThis.__glossaryTest = MangaGlossary;`, context, {
-  filename: "glossary-core.js"
-});
-const glossary = context.__glossaryTest;
 
 test("glossary normalization rejects invalid and duplicate source terms", () => {
   const normalized = glossary.normalizeGlossary({
@@ -60,20 +54,28 @@ test("effective glossary changes produce a different fingerprint", () => {
 });
 
 test("extension exposes the glossary page and removes direct vision providers", () => {
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
-  const popup = fs.readFileSync(path.join(root, "popup.html"), "utf8");
-  const popupScript = fs.readFileSync(path.join(root, "popup.js"), "utf8");
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension", "public", "manifest.json"), "utf8"));
+  const popup = fs.readFileSync(path.join(root, "extension", "public", "popup.html"), "utf8");
+  const popupScript = fs.readFileSync(path.join(root, "extension", "src", "popup", "controller.js"), "utf8");
 
   assert.equal(manifest.options_ui.page, "glossary.html");
   assert.ok(!manifest.host_permissions.includes("https://api.anthropic.com/*"));
-  assert.doesNotMatch(popup, /value="anthropic"|value="openai_compatible"/);
-  assert.doesNotMatch(popupScript, /safe === "anthropic"|safe === "openai_compatible"/);
+  assert.match(popup, /value="baidu"/);
+  assert.match(popup, /value="local_paddle"/);
+  assert.doesNotMatch(popup, /baidu_deepseek|local_paddle_deepseek|value="anthropic"/);
+  assert.doesNotMatch(popupScript, /baidu_deepseek|local_paddle_deepseek|anthropic/);
 });
 
 test("glossary and popup expose pending-term confirmation controls", () => {
-  const glossaryPage = fs.readFileSync(path.join(root, "glossary.html"), "utf8");
-  const glossaryScript = fs.readFileSync(path.join(root, "glossary.js"), "utf8");
-  const popup = fs.readFileSync(path.join(root, "popup.html"), "utf8");
+  const glossaryPage = fs.readFileSync(path.join(root, "extension", "public", "glossary.html"), "utf8");
+  const glossarySource = path.join(root, "extension", "src", "glossary");
+  const glossaryScript = [
+    fs.readFileSync(path.join(glossarySource, "index.js"), "utf8"),
+    ...fs.readdirSync(path.join(glossarySource, "modules"))
+      .filter((name) => name.endsWith(".js"))
+      .map((name) => fs.readFileSync(path.join(glossarySource, "modules", name), "utf8"))
+  ].join("\n");
+  const popup = fs.readFileSync(path.join(root, "extension", "public", "popup.html"), "utf8");
 
   assert.match(glossaryPage, /id="pendingTabBtn"/);
   assert.match(glossaryPage, /id="confirmFilledBtn"/);
@@ -82,6 +84,6 @@ test("glossary and popup expose pending-term confirmation controls", () => {
   assert.match(glossaryScript, /RESTORE_IGNORED_TERM/);
   assert.match(glossaryScript, /candidate-source-input/);
   assert.match(glossaryScript, /candidateSource/);
-  assert.match(popup, /id="termDiscoverySwitch"/);
-  assert.match(popup, /id="termDiscoveryStatus"/);
+  assert.match(popup, /id="glossaryBtn"/);
+  assert.match(popup, /id="termDiscoveryEnabled"/);
 });

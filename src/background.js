@@ -3847,10 +3847,92 @@ function areLocalPaddleRegionsCompatible(left, right) {
   if (!leftContainer || !rightContainer) {
     return true;
   }
+  if (leftContainer.id === rightContainer.id) {
+    return true;
+  }
   if (leftContainer.type === "caption_panel" && rightContainer.type === "caption_panel") {
     return true;
   }
-  return leftContainer.id === rightContainer.id;
+  return areNestedLocalPaddleRegionFragments(left, right);
+}
+
+function areNestedLocalPaddleRegionFragments(left, right) {
+  const leftContainer = left && left.container;
+  const rightContainer = right && right.container;
+  if (!leftContainer || !rightContainer || !leftContainer.box || !rightContainer.box) {
+    return false;
+  }
+  const leftType = String(leftContainer.type || "").toLowerCase();
+  const rightType = String(rightContainer.type || "").toLowerCase();
+  const isCaptionSpeechPair = (
+    leftType === "caption_panel" && rightType === "speech_bubble"
+  ) || (
+    leftType === "speech_bubble" && rightType === "caption_panel"
+  );
+  if (!isCaptionSpeechPair) {
+    return false;
+  }
+  if (Number(leftContainer.confidence || 0) < 0.75 || Number(rightContainer.confidence || 0) < 0.75) {
+    return false;
+  }
+  if (rotationDistance(left.rotation, right.rotation) > 4) {
+    return false;
+  }
+
+  const leftBox = left.box;
+  const rightBox = right.box;
+  const avgHeight = Math.max(1, (leftBox.height + rightBox.height) / 2);
+  const heightRatio = Math.min(leftBox.height, rightBox.height) / Math.max(leftBox.height, rightBox.height);
+  const verticalOverlap = Math.max(
+    0,
+    Math.min(leftBox.bottom, rightBox.bottom) - Math.max(leftBox.top, rightBox.top)
+  );
+  if (
+    heightRatio < 0.78 ||
+    verticalOverlap < Math.min(leftBox.height, rightBox.height) * 0.7 ||
+    Math.abs(leftBox.bottom - rightBox.bottom) > avgHeight * 0.25 ||
+    getHorizontalGap(leftBox, rightBox) > avgHeight * 0.35
+  ) {
+    return false;
+  }
+
+  const leftRegion = leftContainer.box;
+  const rightRegion = rightContainer.box;
+  const overlapWidth = Math.max(0, Math.min(leftRegion.right, rightRegion.right) - Math.max(leftRegion.left, rightRegion.left));
+  const overlapHeight = Math.max(0, Math.min(leftRegion.bottom, rightRegion.bottom) - Math.max(leftRegion.top, rightRegion.top));
+  const overlapArea = overlapWidth * overlapHeight;
+  const leftArea = Math.max(1, leftRegion.width * leftRegion.height);
+  const rightArea = Math.max(1, rightRegion.width * rightRegion.height);
+  const smallerArea = Math.min(leftArea, rightArea);
+  const largerArea = Math.max(leftArea, rightArea);
+  if (overlapArea / smallerArea < 0.85 || smallerArea / largerArea > 0.55) {
+    return false;
+  }
+
+  return getLocalPaddleRegionColorDistance(leftContainer.color, rightContainer.color) <= 24;
+}
+
+function getLocalPaddleRegionColorDistance(left, right) {
+  const parse = (value) => {
+    const match = String(value || "").trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (!match) {
+      return null;
+    }
+    const hex = match[1].length === 3
+      ? Array.from(match[1], (char) => char + char).join("")
+      : match[1];
+    return [0, 2, 4].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
+  };
+  const leftRgb = parse(left);
+  const rightRgb = parse(right);
+  if (!leftRgb || !rightRgb) {
+    return Infinity;
+  }
+  return Math.hypot(
+    leftRgb[0] - rightRgb[0],
+    leftRgb[1] - rightRgb[1],
+    leftRgb[2] - rightRgb[2]
+  );
 }
 
 function areLocalPaddleLineRegionsCompatible(left, right) {

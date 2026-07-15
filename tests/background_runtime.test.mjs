@@ -575,6 +575,108 @@ test("fragmented caption regions and unassigned words merge into complete paragr
   assert.equal(result[0].localOcrContainerId, "");
 });
 
+test("a nested false speech region cannot split one caption sentence", async () => {
+  const region = (id, type, box, color) => ({
+    region_id: id,
+    region_type: type,
+    region_box: box,
+    region_polygon: [
+      [box.left, box.top],
+      [box.left + box.width, box.top],
+      [box.left + box.width, box.top + box.height],
+      [box.left, box.top + box.height]
+    ],
+    bg_color: color,
+    text_color: "#6c3c24",
+    stroke_color: "#ffffff",
+    region_confidence: 0.94,
+    score: 0.98,
+    det_score: 0.95,
+    rotation_deg: 0
+  });
+  const panel = region(
+    "caption-parent",
+    "caption_panel",
+    { left: 354.61, top: 848.16, width: 215.66, height: 179.47 },
+    "#fef9f0"
+  );
+  const nestedFalseBubble = region(
+    "nested-false-bubble",
+    "speech_bubble",
+    { left: 492.11, top: 903.16, width: 83.95, height: 70.92 },
+    "#fef8f4"
+  );
+  const payload = {
+    imageWidth: 720,
+    imageHeight: 1100,
+    items: [
+      { ...panel, text: "그런", box: { left: 439, top: 864, width: 64, height: 41 } },
+      { ...panel, text: "의미에서", box: { left: 377, top: 919, width: 121, height: 40 } },
+      { ...nestedFalseBubble, text: "고른", box: { left: 502, top: 919, width: 64, height: 40 } },
+      { ...panel, text: "이름이에요.", box: { left: 391, top: 973, width: 157, height: 40 } }
+    ]
+  };
+
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    payload,
+    { width: 720, height: 1100 },
+    "",
+    false
+  );
+
+  assert.equal(result.length, 1);
+  assert.match(result[0].words, /의미에서 고른/);
+  assert.equal(result[0].sourceLineCount, 3);
+});
+
+test("adjacent independent caption and speech regions remain separate", async () => {
+  const item = (text, id, type, regionBox, box) => ({
+    text,
+    box,
+    score: 0.98,
+    det_score: 0.95,
+    rotation_deg: 0,
+    region_id: id,
+    region_type: type,
+    region_box: regionBox,
+    region_polygon: [
+      [regionBox.left, regionBox.top],
+      [regionBox.left + regionBox.width, regionBox.top],
+      [regionBox.left + regionBox.width, regionBox.top + regionBox.height],
+      [regionBox.left, regionBox.top + regionBox.height]
+    ],
+    bg_color: "#fffaf2",
+    region_confidence: 0.96
+  });
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems(
+    {
+      imageWidth: 720,
+      imageHeight: 1100,
+      items: [
+        item(
+          "왼쪽 문장",
+          "left-caption",
+          "caption_panel",
+          { left: 80, top: 300, width: 220, height: 120 },
+          { left: 120, top: 340, width: 150, height: 40 }
+        ),
+        item(
+          "오른쪽 문장",
+          "right-speech",
+          "speech_bubble",
+          { left: 310, top: 300, width: 220, height: 120 },
+          { left: 274, top: 340, width: 150, height: 40 }
+        )
+      ]
+    },
+    { width: 720, height: 1100 },
+    "",
+    false
+  );
+
+  assert.equal(result.length, 2);
+});
+
 test("global OCR line dedupe keeps the strongest overlapping recognition", () => {
   const debug = {};
   const result = context.__backgroundTest.clusterLocalPaddleWords([

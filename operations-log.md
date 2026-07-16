@@ -12,6 +12,7 @@
 - 自动验证通过：文件长度门禁通过；ESLint 通过；Pylint `10.00/10`；扩展构建成功；Node `468/468`；Python `58 passed, 1 skipped`。
 - 重启本地 OCR 服务后 `/health` 返回 `ok=true`、`device=gpu:0`、`ocrGeometryVersion=detect-crop-recognize-appearance-layout-v2`。浏览器扩展管理页属于受保护 URL，自动控制无法替用户点击重载；需用户在扩展页手动重载 `dist/extension/` 后再继续普通漫画页的现场检查。
 - 为避免与旧版扩展混淆，将扩展、弹窗和术语库标题统一为 `Manga OCR Translator · Next` / `漫画 OCR 翻译器 · Next`，版本提升为 `1.1.0`。使用内置 imagegen 生成紫色漫画气泡、青色 OCR 取景角与翻译箭头组合图标，移除色键背景后输出 16/32/48/128px PNG 并接入 manifest。
+- 根据工具栏实机反馈，将透明底图标调整为高饱和绿色渐变圆角底板并增加深绿色边线；四角仍保留透明像素，16px 下形成完整醒目色块，主体气泡和 OCR 取景标记不变。
 
 ## 2026-07-16 - Codex (清理 legacy pipeline 死代码)
 

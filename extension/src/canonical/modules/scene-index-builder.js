@@ -69,6 +69,18 @@ export function installSceneIndexBuilder(runtime) {
           });
           continue;
         }
+        const seamGeometry = runtime.inspectCanonicalSeamGeometry(canonical, observationsById, segments);
+        if (!seamGeometry.represented) {
+          candidateDiagnostics.push({
+            canonicalId,
+            reason: "canonical_geometry_outside_capture",
+            stateMemberIds,
+            canonicalPageIds,
+            outsideObservationIds: seamGeometry.outsideObservationIds,
+            missingObservationIds: seamGeometry.missingObservationIds
+          });
+          continue;
+        }
         const linked = stateMemberIds.map(id => stateObservationsById.get(String(id)) || observationsById.get(String(id))).filter(observation => runtime.observationHasTrueSeamContribution(observation, pageIds));
         if (!linked.length) {
           candidateDiagnostics.push({
@@ -125,25 +137,31 @@ export function installSceneIndexBuilder(runtime) {
       if (!candidates.length && !hasDebug) continue;
       const cleanedImage = runtime.isDataUrlValue(state.cleanedImage) ? state.cleanedImage : null;
       const renderable = candidates.filter(candidate => !runtime.seamBubbleRequiresCleanedImage(candidate.bubble) || !!cleanedImage);
+      const candidatePlan = runtime.resolveSeamSurfaceCandidates(renderable);
+      const selected = candidatePlan.selected;
+      const overlapSuppressedIds = new Map(candidatePlan.suppressed.map(item => [String(item.candidate.canonical.id || ""), String(item.winner.canonical.id || "")]));
       const renderableIds = new Set(renderable.map(candidate => String(candidate.canonical.id || "")));
       for (const candidate of candidates) {
         const canonicalId = String(candidate.canonical.id || "");
         const diagnostic = candidateDiagnostics.find(item => item.canonicalId === canonicalId && item.reason === "candidate");
         if (!diagnostic) continue;
-        diagnostic.reason = renderableIds.has(canonicalId) ? "accepted" : "missing_cleaned_image";
+        const winnerCanonicalId = overlapSuppressedIds.get(canonicalId);
+        diagnostic.reason = winnerCanonicalId ? "overlap_suppressed" : renderableIds.has(canonicalId) ? "accepted" : "missing_cleaned_image";
+        if (winnerCanonicalId) diagnostic.winnerCanonicalId = winnerCanonicalId;
       }
-      if (!renderable.length && !hasDebug) continue;
-      renderable.sort((left, right) => left.bubble.y - right.bubble.y || left.bubble.x - right.bubble.x || String(left.canonical.id).localeCompare(String(right.canonical.id)));
-      const bubbles = Object.freeze(renderable.map(candidate => candidate.bubble));
-      const handledIds = Object.freeze(renderable.map(candidate => String(candidate.canonical.id)).sort());
-      const cleanedImageToken = String(state.cleanedImageToken || (cleanedImage ? `derived-${runtime.hashFnv1a(cleanedImage)}` : ""));
-      const canonicalRevisionById = Object.fromEntries(renderable.map(candidate => [String(candidate.canonical.id), Math.max(1, Number(candidate.canonical.revision) || 1)]));
-      const translationFingerprintByCanonicalId = Object.fromEntries(renderable.map(candidate => [String(candidate.canonical.id), String(candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) || runtime.hashFnv1a(candidate.bubble.translated_text))]));
+      if (!selected.length && !hasDebug) continue;
+      const bubbles = Object.freeze(selected.map(candidate => candidate.bubble));
+      const handledCandidates = [...selected, ...candidatePlan.suppressed.map(item => item.candidate)].sort((left, right) => String(left.canonical.id).localeCompare(String(right.canonical.id)));
+      const handledIds = Object.freeze(handledCandidates.map(candidate => String(candidate.canonical.id)));
+      const requiresCleanedImage = runtime.seamSurfaceRequiresCleanedImage(bubbles);
+      const cleanedImageToken = requiresCleanedImage ? String(state.cleanedImageToken || (cleanedImage ? `derived-${runtime.hashFnv1a(cleanedImage)}` : "")) : "";
+      const canonicalRevisionById = Object.fromEntries(handledCandidates.map(candidate => [String(candidate.canonical.id), Math.max(1, Number(candidate.canonical.revision) || 1)]));
+      const translationFingerprintByCanonicalId = Object.fromEntries(handledCandidates.map(candidate => [String(candidate.canonical.id), String(candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) || runtime.hashFnv1a(candidate.bubble.translated_text))]));
       const layoutFingerprint = JSON.stringify({
         pairKey: state.pairKey,
         canvasWidth,
         canvasHeight,
-        bubbles: renderable.map(candidate => ({
+        bubbles: selected.map(candidate => ({
           id: candidate.canonical.id,
           revision: candidate.canonical.revision,
           translationFingerprint: String(candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) || runtime.hashFnv1a(candidate.bubble.translated_text)),
@@ -171,10 +189,10 @@ export function installSceneIndexBuilder(runtime) {
         translationFingerprintByCanonicalId,
         artifactFingerprint: cleanedImageToken,
         segments,
-        cleanedImage: renderable.length > 0 ? cleanedImage : null,
+        cleanedImage: requiresCleanedImage ? cleanedImage : null,
         cleanedImageToken,
         bubbles,
-        debug: state.debug || null,
+        debug: runtime.buildSeamSurfaceDebug(state.debug || null, bubbles),
         diagnostics: Object.freeze(candidateDiagnostics.map(item => Object.freeze({
           ...item
         }))),

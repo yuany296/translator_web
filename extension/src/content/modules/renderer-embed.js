@@ -92,7 +92,15 @@ export function installRendererEmbed(runtime) {
     if (!baseDataUrl) {
       throw new Error("Background image is unavailable for embedded rendering");
     }
-    const outputDataUrl = cachedDataUrl || (await runtime.composeEmbeddedImageDataUrl(baseDataUrl, bubbles));
+    const outputDataUrl = cachedDataUrl || (await runtime.composeEmbeddedImageDataUrl(baseDataUrl, bubbles, {
+      heightUsage: 0.86,
+      maxFont: 44,
+      minFont: 9,
+      paddingScale: 3,
+      textScale: 1.55,
+      widthUsage: 0.9,
+      boxScale: 1.28
+    }));
     if (!cachedDataUrl) {
       runtime.rememberEmbeddedImageCache(targetKey, outputDataUrl);
     }
@@ -170,7 +178,118 @@ export function installRendererEmbed(runtime) {
     return canvas.toDataURL("image/jpeg", runtime.EMBEDDED_JPEG_QUALITY);
   }
   runtime.imageElementToEmbeddedDataUrl = imageElementToEmbeddedDataUrl;
-  async function composeEmbeddedImageDataUrl(baseDataUrl, bubbles) {
+  function drawEmbeddedBubbles(ctx, canvasWidth, canvasHeight, bubbles, options = {}) {
+    const textOptions = options && typeof options === "object" ? options : {};
+    bubbles.forEach(bubble => {
+      const rawText = runtime.cleanRenderableText(bubble.translated_text || bubble.original_text || "");
+      const text = runtime.formatTranslationForOriginalLines(
+        rawText,
+        Number(bubble.source_line_count) || 1
+      );
+      if (!text) return;
+      let x = runtime.clamp(Number(bubble.x), 0, 100) / 100 * canvasWidth;
+      let y = runtime.clamp(Number(bubble.y), 0, 100) / 100 * canvasHeight;
+      let w = runtime.clamp(Number(bubble.w), 0, 100) / 100 * canvasWidth;
+      let h = runtime.clamp(Number(bubble.h), 0, 100) / 100 * canvasHeight;
+      const polygon = runtime.getEmbeddedPolygonGeometry(bubble.polygon, canvasWidth, canvasHeight);
+      const rotation = runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
+      if (polygon) {
+        x = polygon.centerX - polygon.width / 2;
+        y = polygon.centerY - polygon.height / 2;
+        w = polygon.width;
+        h = polygon.height;
+      }
+      if (w < 2 || h < 2) return;
+
+      const boxScale = Math.max(1, Number(textOptions.boxScale || 1));
+      if (boxScale > 1) {
+        const centerX = x + w / 2;
+        const centerY = y + h / 2;
+        w = Math.min(canvasWidth, w * boxScale);
+        h = Math.min(canvasHeight, h * boxScale);
+        x = runtime.clamp(centerX - w / 2, 0, Math.max(0, canvasWidth - w));
+        y = runtime.clamp(centerY - h / 2, 0, Math.max(0, canvasHeight - h));
+      }
+      const padding = Math.max(1, Number(textOptions.paddingScale || 1));
+      const boxX = Math.max(0, x - padding);
+      const boxY = Math.max(0, y - padding);
+      const box = {
+        x: boxX,
+        y: boxY,
+        w: Math.min(canvasWidth - boxX, w + padding * 2),
+        h: Math.min(canvasHeight - boxY, h + padding * 2)
+      };
+      const bgType = runtime.normalizeBgType(bubble.bg_type);
+      const sourceFillBox = runtime.getCanvasFillBox(bubble.fill_box, canvasWidth, canvasHeight);
+      let fillBox = runtime.unionRenderBoxes(box, sourceFillBox);
+      const bubbleArea = Math.max(1, box.w * box.h);
+      const fillArea = Math.max(1, fillBox.w * fillBox.h);
+      const regionType = String(bubble.region_type || "");
+      if ((regionType === "chat" || regionType === "ui") && fillArea > bubbleArea * 3) {
+        fillBox = box;
+      }
+      if (bgType === "solid") {
+        ctx.save();
+        if (Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3) {
+          ctx.beginPath();
+          bubble.region_polygon.forEach((point, index) => {
+            const pointX = Number(point?.x) / 100 * canvasWidth;
+            const pointY = Number(point?.y) / 100 * canvasHeight;
+            if (index === 0) ctx.moveTo(pointX, pointY);
+            else ctx.lineTo(pointX, pointY);
+          });
+          ctx.closePath();
+          ctx.clip();
+        }
+        ctx.fillStyle = String(bubble.bg_color || "#ffffff");
+        ctx.fillRect(fillBox.x, fillBox.y, fillBox.w, fillBox.h);
+        ctx.restore();
+      }
+      ctx.save();
+      const centerX = box.x + box.w / 2;
+      const centerY = box.y + box.h / 2;
+      ctx.translate(centerX, centerY);
+      ctx.rotate(rotation * Math.PI / 180);
+      const renderColors = runtime.getBubbleRenderColors(bubble, bgType);
+      runtime.drawFittedText(ctx, text, {
+        x: -box.w / 2,
+        y: -box.h / 2,
+        w: box.w,
+        h: box.h
+      }, bgType, {
+        ...textOptions,
+        textColor: renderColors.textColor,
+        strokeColor: renderColors.strokeColor
+      });
+      ctx.restore();
+    });
+  }
+  runtime.drawEmbeddedBubbles = drawEmbeddedBubbles;
+
+  function getCanvasFillBox(value, canvasWidth, canvasHeight) {
+    if (!value || typeof value !== "object") return null;
+    const box = {
+      x: Number(value.x) / 100 * canvasWidth,
+      y: Number(value.y) / 100 * canvasHeight,
+      w: Number(value.w) / 100 * canvasWidth,
+      h: Number(value.h) / 100 * canvasHeight
+    };
+    return Object.values(box).every(Number.isFinite) && box.w > 0 && box.h > 0 ? box : null;
+  }
+  runtime.getCanvasFillBox = getCanvasFillBox;
+
+  function unionRenderBoxes(primary, secondary) {
+    if (!secondary) return primary;
+    if (!primary) return secondary;
+    const left = Math.min(primary.x, secondary.x);
+    const top = Math.min(primary.y, secondary.y);
+    const right = Math.max(primary.x + primary.w, secondary.x + secondary.w);
+    const bottom = Math.max(primary.y + primary.h, secondary.y + secondary.h);
+    return { x: left, y: top, w: right - left, h: bottom - top };
+  }
+  runtime.unionRenderBoxes = unionRenderBoxes;
+
+  async function composeEmbeddedImageDataUrl(baseDataUrl, bubbles, options = {}) {
     const image = await runtime.loadImageFromDataUrl(baseDataUrl);
     const width = image.naturalWidth || image.width;
     const height = image.naturalHeight || image.height;
@@ -187,7 +306,7 @@ export function installRendererEmbed(runtime) {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(image, 0, 0, width, height);
-    runtime.drawEmbeddedBubbles(ctx, width, height, bubbles);
+    runtime.drawEmbeddedBubbles(ctx, width, height, bubbles, options);
     return canvas.toDataURL("image/jpeg", runtime.EMBEDDED_JPEG_QUALITY);
   }
   runtime.composeEmbeddedImageDataUrl = composeEmbeddedImageDataUrl;

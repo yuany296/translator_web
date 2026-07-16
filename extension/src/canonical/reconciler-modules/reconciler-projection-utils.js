@@ -1,4 +1,12 @@
 export function installReconcilerProjectionUtils(runtime) {
+  function pageCoverIsEligible(geometries) {
+    const values = Array.isArray(geometries) ? geometries : [];
+    if (values.some(geometry => geometry && geometry.sourceType !== "seam")) return true;
+    const evidence = runtime.chooseProjectionEvidence(values);
+    const visual = evidence && evidence.visual && typeof evidence.visual === "object" ? evidence.visual : {};
+    const bgType = String(visual.bgType || visual.bg_type || "none").trim().toLowerCase();
+    return bgType !== "solid";
+  }
   function buildRenderProjections({
     pages: pageInputs = [],
     canonicals = [],
@@ -21,6 +29,7 @@ export function installReconcilerProjectionUtils(runtime) {
       const translatedText = runtime.readTranslation(translations, canonical);
       function addProjection(pageId, role, activeText, active, coverOnly) {
         const geometries = canonical.geometryByPage[pageId];
+        const coverEligible = pageCoverIsEligible(geometries);
         const box = runtime.unionGeometry(geometries);
         const evidence = runtime.chooseProjectionEvidence(geometries);
         const visualBox = evidence?.box ? runtime.normalizeBox(evidence.box) : box;
@@ -38,6 +47,7 @@ export function installReconcilerProjectionUtils(runtime) {
           active,
           activeText,
           coverOnly,
+          coverEligible,
           originalText: canonical.originalText,
           original_text: canonical.originalText,
           translatedText: activeText ? translatedText : "",
@@ -79,8 +89,9 @@ export function installReconcilerProjectionUtils(runtime) {
           addProjection(pageId, "primary", pageId === activePageId, pageId === activePageId, false);
           continue;
         }
-        // 非主页面始终保留 cover；standby 只在主页面缺席时接管文本。
-        addProjection(pageId, "cover", false, available.has(pageId), true);
+        // seam-only 几何没有该页自己的 OCR 权威证据；它由 seam surface 负责，
+        // 不得在普通页面通道额外绘制一个可能落在空白处的纯色 cover。
+        if (pageCoverIsEligible(canonical.geometryByPage[pageId])) addProjection(pageId, "cover", false, available.has(pageId), true);
         addProjection(pageId, "standby", pageId === activePageId, pageId === activePageId, false);
       }
     }

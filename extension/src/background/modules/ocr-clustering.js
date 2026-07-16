@@ -1,9 +1,13 @@
 export function installOcrClustering(runtime) {
-  function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debug) {
-    const rawEntries = words.map((item, index) => runtime.buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, debug)).filter(entry => entry && entry.kind !== "noise");
+  function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debugEnabled = false, ocrDebug = null) {
+    // 兼容直接调用聚类器的测试/诊断入口；生产链路显式分离布尔开关与可写会话对象。
+    const legacyDebug = debugEnabled && typeof debugEnabled === "object" ? debugEnabled : null;
+    const debugSession = ocrDebug && typeof ocrDebug === "object" ? ocrDebug : legacyDebug;
+    const debugMode = debugEnabled === true || Boolean(legacyDebug);
+    const rawEntries = words.map((item, index) => runtime.buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, debugMode)).filter(entry => entry && entry.kind !== "noise");
     // 独立的拉丁标志属于画面装饰，不进入蓝框、翻译或覆盖层；原始候选仍由
     // ocrDebug.rawItems 保留，因此调试红框不会丢失。
-    const contentEntries = rawEntries.filter(entry => !runtime.isDecorativeLatinMarkEntry(entry, rawEntries));
+    const contentEntries = rawEntries.filter(entry => !runtime.isDecorativeLatinMarkEntry(entry, rawEntries) && !runtime.isLikelyLocalPaddleUiArtifactEntry(entry, rawEntries, imageSize));
     const expandedEntries = runtime.expandLocalPaddleChatTimeEntries(contentEntries);
     const dedupeResult = runtime.dedupeLocalPaddleEntries(expandedEntries);
     const entries = dedupeResult.entries;
@@ -29,18 +33,20 @@ export function installOcrClustering(runtime) {
         return item;
       });
     }).filter(item => item && item.words && item.location).sort(runtime.compareBaiduWordItems);
-    if (debug) {
-      debug.dedupedItems = entries.map((entry, index) => runtime.toDebugOcrItem(entry.item, index, imageSize, "deduped"));
-      debug.lineItems = lineGroups.map((line, index) => runtime.toDebugOcrItem({
+    if (debugSession) {
+      debugSession.dedupedItems = entries.map((entry, index) => runtime.toDebugOcrItem(entry.item, index, imageSize, "deduped"));
+      debugSession.lineItems = lineGroups.map((line, index) => runtime.toDebugOcrItem({
         words: line.text,
         confidence: line.confidence,
         location: line.box
       }, index, imageSize, "line"));
-      debug.duplicateItems = dedupeResult.duplicates.map((duplicate, index) => ({
+      debugSession.duplicateItems = dedupeResult.duplicates.map((duplicate, index) => ({
         ...runtime.toDebugOcrItem(duplicate.entry.item, index, imageSize, "duplicate"),
         duplicateOf: duplicate.kept.text,
         isDuplicate: true
       }));
+    }
+    if (debugMode) {
       console.debug("[MangaTranslator] Local OCR clustering:", {
         containers: [...new Map(entries.filter(entry => entry.container).map(entry => [entry.container.id, entry.container])).values()],
         entries: entries.map(entry => ({
@@ -56,6 +62,25 @@ export function installOcrClustering(runtime) {
     return merged;
   }
   runtime.clusterLocalPaddleWords = clusterLocalPaddleWords;
+  function isLikelyLocalPaddleUiArtifactEntry(entry, allEntries, imageSize) {
+    if (!entry || !entry.box || runtime.normalizeChatTranslationRole(entry.translationRole)) return false;
+    const text = String(entry.item && entry.item.words || entry.text || "").normalize("NFKC").replace(/\s+/g, "");
+    if (/^\d{1,3}$/.test(text)) return true;
+    if (runtime.countScriptChars(text) !== 1 || Array.from(text).length > 2) return false;
+    const confidence = Number(entry.item && entry.item.confidence) || 0;
+    const container = entry.container;
+    const region = container && container.box;
+    if (confidence >= 0.72 || !container || !region) return false;
+    const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
+    const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
+    const panelLike = region.width >= imageWidth * 0.45 && region.width * region.height >= imageWidth * imageHeight * 0.16;
+    const footerLike = entry.box.centerY >= region.top + region.height * 0.72;
+    if (!panelLike || !footerLike) return false;
+    const peers = (Array.isArray(allEntries) ? allEntries : []).filter(candidate => candidate && candidate !== entry && candidate.container && candidate.container.id === container.id && candidate.box && runtime.countScriptChars(candidate.text) >= 4 && Number(candidate.item && candidate.item.confidence) >= 0.8);
+    const peerBottom = peers.length > 0 ? Math.max(...peers.map(candidate => candidate.box.bottom)) : Infinity;
+    return peers.length > 0 && entry.box.top - peerBottom >= entry.box.height * 0.72;
+  }
+  runtime.isLikelyLocalPaddleUiArtifactEntry = isLikelyLocalPaddleUiArtifactEntry;
   function getReliableSharedClusterRotation(cluster, regionType = "", allClusters = [], regionTypes = []) {
     if (!runtime.isChatRegionType(regionType)) {
       return null;
@@ -94,7 +119,8 @@ export function installOcrClustering(runtime) {
         return false;
       }
       const avgHeight = Math.max(1, (box.height + candidate.box.height) / 2);
-      return runtime.areLocalPaddleBoxesOnSameVisualLine(box, candidate.box) && runtime.getHorizontalGap(box, candidate.box) <= avgHeight * 3;
+      const geometry = runtime.getLocalPaddlePairGeometry(entry, candidate);
+      return runtime.areLocalPaddleEntriesOnSameVisualLine(entry, candidate) && geometry && geometry.inlineGap <= avgHeight * 3;
     });
   }
   runtime.isDecorativeLatinMarkEntry = isDecorativeLatinMarkEntry;
@@ -159,16 +185,24 @@ export function installOcrClustering(runtime) {
     if (!item || !item.box || !previous || previous.type !== "chat" || !previous.box) {
       return false;
     }
-    const box = item.box;
-    const previousBox = previous.box;
-    const avgHeight = Math.max(1, (box.height + previousBox.height) / 2);
-    const verticalGap = runtime.getVerticalGap(previousBox, box);
-    const overlapX = Math.max(0, Math.min(previousBox.right, box.right) - Math.max(previousBox.left, box.left));
-    const overlapRatio = overlapX / Math.max(1, Math.min(previousBox.width, box.width));
-    const leftAligned = Math.abs(previousBox.left - box.left) <= avgHeight * 1.8;
-    const lower = box.centerY >= previousBox.centerY;
-    const larger = box.height >= previousBox.height * 1.25 || box.height >= avgHeight * 1.08;
-    return lower && larger && verticalGap <= avgHeight * 1.05 && (leftAligned || overlapRatio >= 0.2);
+    const currentEntry = {
+      entries: item.cluster,
+      box: item.box,
+      rotation: runtime.medianRotation(item.cluster.map(entry => entry.rotation))
+    };
+    const previousEntry = {
+      entries: previous.cluster,
+      box: previous.box,
+      rotation: runtime.medianRotation(previous.cluster.map(entry => entry.rotation))
+    };
+    const geometry = runtime.getLocalPaddlePairGeometry(previousEntry, currentEntry);
+    if (!geometry) return false;
+    const avgHeight = Math.max(1, (geometry.left.height + geometry.right.height) / 2);
+    const overlapRatio = geometry.inlineOverlap / Math.max(1, Math.min(geometry.left.width, geometry.right.width));
+    const leftAligned = Math.abs(geometry.left.left - geometry.right.left) <= avgHeight * 1.8;
+    const lower = geometry.right.centerY >= geometry.left.centerY;
+    const larger = geometry.right.height >= geometry.left.height * 1.25 || geometry.right.height >= avgHeight * 1.08;
+    return lower && larger && geometry.lineGap <= avgHeight * 1.65 && (leftAligned || overlapRatio >= 0.2);
   }
   runtime.isLocalPaddleLikelyChatBodyCluster = isLocalPaddleLikelyChatBodyCluster;
   function isChatTimeText(text) {

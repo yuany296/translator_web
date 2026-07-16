@@ -174,14 +174,16 @@
 }
 
 .mt-bubble.mt-text-layer {
-  background: transparent;
-  background-image: none;
-  border-color: transparent;
-  box-shadow: none;
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 .mt-bubble.mt-text-layer::before {
-  content: none;
+  content: none !important;
 }
 
 .mt-measure-probe {
@@ -292,11 +294,18 @@
   height: 50px;
   pointer-events: none;
 }
-
+.mt-floating-feedback {
+  position: absolute; right: 58px; bottom: 0; width: max-content; max-width: min(360px, calc(100vw - 96px));
+  padding: 9px 12px; border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 10px;
+  color: #fff; background: rgba(15, 23, 42, 0.96); box-shadow: 0 8px 24px rgba(15, 23, 42, 0.3);
+  font: 500 13px/1.45 system-ui, sans-serif; text-align: left; overflow-wrap: anywhere; pointer-events: none;
+}
+.mt-floating-feedback.mt-error { background: rgba(153, 27, 27, 0.97); }
+.mt-floating-feedback.mt-success { background: rgba(21, 128, 61, 0.97); }
+.mt-floating-feedback[hidden] { display: none; }
 .mt-floating-ball-wrap.mt-hidden {
   display: none;
 }
-
 .mt-floating-ball {
   position: absolute;
   left: 0;
@@ -318,12 +327,10 @@
   box-shadow: 0 10px 22px rgba(239, 68, 68, 0.35);
   transition: transform 0.16s ease, opacity 0.16s ease, box-shadow 0.16s ease;
 }
-
 .mt-floating-ball:hover {
   transform: translateY(-1px) scale(1.03);
   box-shadow: 0 13px 26px rgba(239, 68, 68, 0.42);
 }
-
 .mt-floating-ball.mt-working {
   animation: mt-ball-pulse 1s ease-in-out infinite;
 }

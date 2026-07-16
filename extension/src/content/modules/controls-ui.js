@@ -63,6 +63,7 @@ export function installControlsUi(runtime) {
       runtime.state.floatingBallWrap = null;
       runtime.state.floatingBall = null;
       runtime.state.floatingBallClose = null;
+      runtime.state.floatingBallFeedback = null;
       runtime.createFloatingBall();
     }
     if (runtime.state.overlayHideDepth === 0 && runtime.state.floatingBallWrap && runtime.state.floatingBallWrap.isConnected && runtime.state.floatingBallWrap.style.visibility === "hidden") {
@@ -98,6 +99,12 @@ export function installControlsUi(runtime) {
     wrap.addEventListener("mouseup", runtime.stopExtensionUiPropagation);
     wrap.addEventListener("pointerdown", runtime.stopExtensionUiPropagation);
     wrap.addEventListener("pointerup", runtime.stopExtensionUiPropagation);
+    const feedback = document.createElement("div");
+    feedback.className = "mt-floating-feedback";
+    feedback.dataset.mangaTranslatorOverlay = "true";
+    feedback.setAttribute("role", "status");
+    feedback.setAttribute("aria-live", "polite");
+    feedback.hidden = true;
     const ball = document.createElement("button");
     ball.type = "button";
     ball.className = "mt-floating-ball";
@@ -128,12 +135,14 @@ export function installControlsUi(runtime) {
       event.stopPropagation();
       await runtime.closeFloatingBall();
     });
+    wrap.appendChild(feedback);
     wrap.appendChild(ball);
     wrap.appendChild(closeBtn);
     document.documentElement.appendChild(wrap);
     runtime.state.floatingBallWrap = wrap;
     runtime.state.floatingBall = ball;
     runtime.state.floatingBallClose = closeBtn;
+    runtime.state.floatingBallFeedback = feedback;
     runtime.updateFloatingBallState();
   }
   runtime.createFloatingBall = createFloatingBall;
@@ -155,6 +164,32 @@ export function installControlsUi(runtime) {
     runtime.state.floatingBall.classList.toggle("mt-working", !!working);
   }
   runtime.setFloatingBallWorking = setFloatingBallWorking;
+  function showFloatingBallFeedback(message, level = "info") {
+    const feedback = runtime.state.floatingBallFeedback;
+    if (!feedback) return;
+    feedback.textContent = String(message || "");
+    feedback.className = `mt-floating-feedback mt-${level === "error" ? "error" : level === "success" ? "success" : "info"}`;
+    feedback.hidden = !feedback.textContent;
+  }
+  runtime.showFloatingBallFeedback = showFloatingBallFeedback;
+  function clearFloatingBallFeedback() {
+    runtime.showFloatingBallFeedback("");
+  }
+  runtime.clearFloatingBallFeedback = clearFloatingBallFeedback;
+  function buildManualTranslateFeedback(result) {
+    const visibleCount = Math.max(0, Number(result?.visibleCount || 0));
+    const successCount = Math.max(0, Number(result?.successCount || 0));
+    const failCount = Math.max(0, Number(result?.failCount || 0));
+    const skippedCount = Math.max(0, Number(result?.skippedCount || 0));
+    const firstError = String(result?.errors?.[0] || "").trim();
+    const firstSkipped = String(result?.skippedReasons?.[0] || "").trim();
+    if (/extension context invalidated/iu.test(firstError)) return { level: "error", message: "扩展已重新加载，请刷新漫画页后重试" };
+    if (failCount > 0) return { level: "error", message: `翻译失败：${firstError || `${failCount} 个目标处理失败`}` };
+    if (visibleCount === 0) return { level: "info", message: "当前视口未找到可翻译的漫画图片" };
+    if (successCount === 0 && skippedCount > 0) return { level: "info", message: `本次未执行：${firstSkipped || "目标已离开可视区域，请稍后重试"}` };
+    return { level: "success", message: `翻译完成：${successCount}/${visibleCount} 张` };
+  }
+  runtime.buildManualTranslateFeedback = buildManualTranslateFeedback;
   async function closeFloatingBall() {
     runtime.state.showFloatingBall = false;
     runtime.updateFloatingBallState();
@@ -167,13 +202,17 @@ export function installControlsUi(runtime) {
   runtime.closeFloatingBall = closeFloatingBall;
   async function manualTranslateVisible() {
     if (runtime.state.invalidated) {
-      return {
+      const result = {
         visibleCount: 0,
         successCount: 0,
         failCount: 0,
         errors: ["Extension context invalidated"]
       };
+      const feedback = runtime.buildManualTranslateFeedback(result);
+      runtime.showFloatingBallFeedback(feedback.message, feedback.level);
+      return result;
     }
+    runtime.clearFloatingBallFeedback();
     runtime.setFloatingBallWorking(true);
     try {
       let targets = runtime.collectVisibleTargets();
@@ -186,16 +225,21 @@ export function installControlsUi(runtime) {
         await runtime.reportStatus("info", "no visible manga target", {
           pageUrl: location.href
         });
-        return {
+        const result = {
           visibleCount: 0,
           successCount: 0,
           failCount: 0,
           errors: []
         };
+        const feedback = runtime.buildManualTranslateFeedback(result);
+        runtime.showFloatingBallFeedback(feedback.message, feedback.level);
+        return result;
       }
       let successCount = 0;
       let failCount = 0;
+      let skippedCount = 0;
       const errors = [];
+      const skippedReasons = [];
       const tasks = targets.map(target => async () => runtime.translateTarget(target, {
         manual: true,
         reason: "manual"
@@ -206,6 +250,8 @@ export function installControlsUi(runtime) {
           successCount += 1;
         } else if (result && result.skipped) {
           // 滚动或虚拟列表会让截图目标在执行前离屏，此类目标不计为失败。
+          skippedCount += 1;
+          if (result.reason) skippedReasons.push(result.reason);
         } else {
           failCount += 1;
           if (result && result.error) {
@@ -214,19 +260,30 @@ export function installControlsUi(runtime) {
         }
       }
       const uniqueErrors = [...new Set(errors)].slice(0, 3);
+      const uniqueSkippedReasons = [...new Set(skippedReasons)].slice(0, 3);
+      const result = { visibleCount: targets.length, successCount, failCount, skippedCount, errors: uniqueErrors, skippedReasons: uniqueSkippedReasons };
+      const feedback = runtime.buildManualTranslateFeedback(result);
+      runtime.showFloatingBallFeedback(feedback.message, feedback.level);
+      if (feedback.level === "error") console.warn("[MangaTranslator] manual translation failed", result);
       const summaryMessage = failCount > 0 ? `manual translate finished (${successCount}/${targets.length}), first error: ${uniqueErrors[0] || "unknown"}` : `manual translate finished (${successCount}/${targets.length})`;
       await runtime.reportStatus(failCount > 0 ? "error" : "info", summaryMessage, {
         visibleCount: targets.length,
         successCount,
         failCount,
+        skippedCount,
         firstError: uniqueErrors[0] || ""
       });
-      return {
-        visibleCount: targets.length,
-        successCount,
-        failCount,
-        errors: uniqueErrors
-      };
+      return result;
+    } catch (error) {
+      const reason = runtime.getErrorMessage(error);
+      const result = { visibleCount: 0, successCount: 0, failCount: 1, skippedCount: 0, errors: [reason], skippedReasons: [] };
+      const feedback = runtime.buildManualTranslateFeedback(result);
+      runtime.showFloatingBallFeedback(feedback.message, feedback.level);
+      console.warn("[MangaTranslator] manual translation crashed", error);
+      await runtime.reportStatus("error", reason, {
+        reason: "manual-translate-crash"
+      });
+      return result;
     } finally {
       runtime.setFloatingBallWorking(false);
     }

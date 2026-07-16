@@ -6,7 +6,8 @@ export function installOcrRegions(runtime) {
    */
   function detectLocalPaddleRegionType(entries) {
     if (!Array.isArray(entries) || entries.length < 3) return null;
-    const boxes = entries.map(e => e.box).filter(Boolean);
+    const rotation = runtime.medianRotation(entries.map(entry => entry && entry.rotation));
+    const boxes = entries.map(entry => runtime.getLocalPaddleProjectedBounds(entry, rotation)).filter(Boolean);
     const texts = entries.map(e => e.text).filter(Boolean);
     if (boxes.length < 3 || texts.length < 3) return null;
     const CHAT_LEFT_ALIGN_TOLERANCE = 0.15;
@@ -49,11 +50,14 @@ export function installOcrRegions(runtime) {
     const containsChatRegion = entries.some(e => e.container && (e.container.type === "chat" || e.container.type === "ui" || e.container.type === "comment"));
     const hasStackedMetadata = entries.some(upper => entries.some(lower => {
       if (upper === lower || !upper.box || !lower.box) return false;
-      const small = upper.box.height <= lower.box.height ? upper : lower;
+      const geometry = runtime.getLocalPaddlePairGeometry(upper, lower);
+      if (!geometry) return false;
+      const small = geometry.left.height <= geometry.right.height ? upper : lower;
       const large = small === upper ? lower : upper;
-      const overlapX = Math.max(0, Math.min(small.box.right, large.box.right) - Math.max(small.box.left, large.box.left));
-      const overlapRatio = overlapX / Math.max(1, Math.min(small.box.width, large.box.width));
-      return small.box.top <= large.box.top && large.box.height >= small.box.height * runtime.OCR_STYLE_SPLIT_HEIGHT_RATIO && runtime.getVerticalGap(small.box, large.box) <= large.box.height * 0.65 && overlapRatio >= 0.3;
+      const smallBox = small === upper ? geometry.left : geometry.right;
+      const largeBox = small === upper ? geometry.right : geometry.left;
+      const overlapRatio = geometry.inlineOverlap / Math.max(1, Math.min(smallBox.width, largeBox.width));
+      return smallBox.centerY <= largeBox.centerY && largeBox.height >= smallBox.height * runtime.OCR_STYLE_SPLIT_HEIGHT_RATIO && geometry.lineGap <= largeBox.height * 0.65 && overlapRatio >= 0.3;
     }));
 
     // Scoring
@@ -74,7 +78,9 @@ export function installOcrRegions(runtime) {
   }
   runtime.normalizeOcrTextAlignment = normalizeOcrTextAlignment;
   function inferLocalPaddleClusterAlignment(cluster, imageSize, regionType = "") {
-    const boxes = (Array.isArray(cluster) ? cluster : []).map(entry => entry && entry.box).filter(Boolean);
+    const entries = (Array.isArray(cluster) ? cluster : []).filter(Boolean);
+    const rotation = runtime.medianRotation(entries.map(entry => entry && entry.rotation));
+    const boxes = entries.map(entry => runtime.getLocalPaddleProjectedBounds(entry, rotation)).filter(Boolean);
     return runtime.inferTextAlignmentFromBoxes(boxes, imageSize, regionType);
   }
   runtime.inferLocalPaddleClusterAlignment = inferLocalPaddleClusterAlignment;

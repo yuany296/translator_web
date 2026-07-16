@@ -480,12 +480,18 @@ test("manifest exposes only built entries from dist extension", () => {
 test("popup independently saves OCR, translation and runtime settings and keeps manual translation", () => {
   const root = path.resolve(import.meta.dirname, "..");
   const popupSource = fs.readFileSync(path.join(root, "extension", "src", "popup", "controller.js"), "utf8");
+  const popupHtml = fs.readFileSync(path.join(root, "extension", "public", "popup.html"), "utf8");
   assert.match(popupSource, /SAVE_CONFIGURATION", section, value: collect\(section, configuration\)/);
   assert.match(popupSource, /section === "ocr"/);
   assert.match(popupSource, /section === "translation"/);
   assert.match(popupSource, /TEST_OCR_CONFIGURATION/);
   assert.match(popupSource, /TEST_TRANSLATION_CONFIGURATION/);
   assert.match(popupSource, /type: "MANUAL_TRANSLATE_VISIBLE"/);
+  assert.match(popupSource, /pretranslateMode: value\("pretranslateMode"\)/);
+  assert.match(popupSource, /runtime\.pretranslateMode/);
+  assert.match(popupHtml, /value="manual">手动翻译/);
+  assert.match(popupHtml, /value="ahead">领先预翻译/);
+  assert.match(popupHtml, /value="continuous">连续预翻译/);
   assert.doesNotMatch(popupSource, /TRANSLATE_DATA_URL|baidu_deepseek|local_paddle_deepseek/);
 });
 

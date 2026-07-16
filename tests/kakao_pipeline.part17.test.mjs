@@ -682,3 +682,38 @@ test("a permanently pending page OCR times out and the same revision can retry",
   assert.equal(pageOcrAttempts, 2);
   assert.equal(harness.store.getPageTerminal("page-a").state, "ready");
 });
+test("canonical deadline timers retain the browser global receiver", async () => {
+  const originalSetTimer = globalThis.setTimeout;
+  const originalClearTimer = globalThis.clearTimeout;
+  const pendingTimers = new Set();
+  let setCalls = 0;
+  let clearCalls = 0;
+  globalThis.setTimeout = function browserSetTimeout(callback, delay, ...args) {
+    if (this !== globalThis) throw new TypeError("Illegal invocation");
+    setCalls += 1;
+    const timer = originalSetTimer.call(globalThis, callback, delay, ...args);
+    pendingTimers.add(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = function browserClearTimeout(timer) {
+    if (this !== globalThis) throw new TypeError("Illegal invocation");
+    clearCalls += 1;
+    pendingTimers.delete(timer);
+    return originalClearTimer.call(globalThis, timer);
+  };
+  try {
+    const harness = createCanonicalHarness({
+      adapterOverrides: {
+        findAdjacentKakaoPageTargets: () => ({})
+      }
+    });
+    const result = await harness.pipeline.run(harness.targets.a);
+    assert.equal(result.ok, true);
+    assert.ok(setCalls > 0);
+    assert.equal(clearCalls, setCalls);
+  } finally {
+    pendingTimers.forEach(timer => originalClearTimer.call(globalThis, timer));
+    globalThis.setTimeout = originalSetTimer;
+    globalThis.clearTimeout = originalClearTimer;
+  }
+});

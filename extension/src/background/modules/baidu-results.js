@@ -45,8 +45,7 @@ export function installBaiduResults(runtime) {
     // 本地 OCR 的 displayBox 已经包含全部原文字框和安全边距，纯色背景无需再次向外扩张。
     const expandSolidPaintBox = !clusterKind;
     const regionType = item.region_type || item.localOcrRegionType || clusterKind;
-    const regionConfidence = Number(item.region_confidence || item.regionConfidence || 0);
-    const solidPaintBox = bgType === "solid" ? runtime.buildLocalSolidPaintBox(rawDisplayBox, regionBox, imageSize, expandSolidPaintBox, regionType, regionConfidence) : null;
+    const solidPaintBox = bgType === "solid" ? runtime.buildLocalSolidPaintBox(rawDisplayBox, regionBox, imageSize, expandSolidPaintBox, regionType) : null;
     if (bgType === "solid" && !solidPaintBox) {
       bgType = "none";
     }
@@ -110,24 +109,12 @@ export function installBaiduResults(runtime) {
     };
   }
   runtime.normalizeBaiduOcrItem = normalizeBaiduOcrItem;
-  function buildLocalSolidPaintBox(rawBox, regionBox, imageSize, expand = true, regionType, regionConfidence = 0) {
+  function buildLocalSolidPaintBox(rawBox, regionBox, imageSize, expand = true, regionType) {
     if (!rawBox || !(rawBox.width > 0) || !(rawBox.height > 0)) {
       return null;
     }
     const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
     const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
-    const isSpeechBubble = String(regionType || "").toLowerCase() === "speech_bubble";
-    if (isSpeechBubble && regionBox && Number(regionConfidence) >= 0.75) {
-      const regionLeft = Number(regionBox.left) || 0;
-      const regionTop = Number(regionBox.top) || 0;
-      const regionWidth = Math.max(0, Number(regionBox.width) || 0);
-      const regionHeight = Math.max(0, Number(regionBox.height) || 0);
-      if (regionWidth > rawBox.width * 1.15 && regionHeight > rawBox.height * 1.15) {
-        // 清理范围与文字排版框相互独立。可靠的纯色气泡必须覆盖完整区域，
-        // 否则 OCR 漏掉的下沿字形会从译文层下面露出。
-        return runtime.buildBaiduBox(Math.max(0, regionLeft), Math.max(0, regionTop), Math.min(imageWidth, regionLeft + regionWidth), Math.min(imageHeight, regionTop + regionHeight));
-      }
-    }
     const isCompactRegion = String(regionType || "") === "chat" || String(regionType || "") === "ui";
     let expandX, expandY;
     if (expand) {

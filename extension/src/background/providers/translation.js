@@ -25,7 +25,7 @@ export function createTranslationProviders(runtime, registry) {
       }
     },
     translateBatch(args) {
-      return runtime.requestOpenAICompatibleTextTranslations(args);
+      return runtime.requestOpenAICompatibleCanonicalTranslationBatch(args);
     },
     fingerprint(config) {
       const normalized = normalizeTranslationConfig(config);

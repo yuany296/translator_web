@@ -1,4 +1,102 @@
 export function installRendererCanvas(runtime) {
+  function getEmbeddedPolygonGeometry(value, canvasWidth, canvasHeight) {
+    if (!Array.isArray(value) || value.length < 4) return null;
+    const points = value.slice(0, 4).map(point => ({
+      x: Number(point?.x) / 100 * canvasWidth,
+      y: Number(point?.y) / 100 * canvasHeight
+    }));
+    if (!points.every(point => Number.isFinite(point.x) && Number.isFinite(point.y))) return null;
+    const edges = points.map((point, index) => {
+      const next = points[(index + 1) % points.length];
+      return Math.hypot(next.x - point.x, next.y - point.y);
+    });
+    return {
+      centerX: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+      centerY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+      width: Math.max(8, (edges[0] + edges[2]) / 2),
+      height: Math.max(8, (edges[1] + edges[3]) / 2)
+    };
+  }
+  runtime.getEmbeddedPolygonGeometry = getEmbeddedPolygonGeometry;
+
+  function drawFittedText(ctx, text, box, bgType, options = {}) {
+    const textScale = Number(options.textScale || 1);
+    const minFont = Number(options.minFont || 6);
+    const maxFont = Number(options.maxFont || 30);
+    const maxWidth = Math.max(6, box.w * Number(options.widthUsage || 0.82));
+    const maxHeight = Math.max(6, box.h * Number(options.heightUsage || 0.68));
+    const family = '"Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    let best = { size: minFont, lines: [text] };
+    let low = minFont;
+    let high = Math.max(minFont + 1, Math.min(
+      maxFont,
+      box.h * 0.42 * textScale,
+      box.w * 0.22 * textScale
+    ));
+    for (let index = 0; index < 9; index += 1) {
+      const size = (low + high) / 2;
+      ctx.font = `600 ${size}px ${family}`;
+      const lines = runtime.wrapCanvasText(ctx, text, maxWidth);
+      const lineHeight = size * 1.22;
+      const widest = lines.reduce((max, line) => Math.max(max, ctx.measureText(line).width), 0);
+      if (lines.length * lineHeight <= maxHeight && widest <= maxWidth) {
+        best = { size, lines };
+        low = size;
+      } else high = size;
+    }
+    ctx.save();
+    ctx.font = `500 ${best.size}px ${family}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    if (bgType === "none") {
+      ctx.strokeStyle = String(options.strokeColor || "#ffffff");
+      ctx.lineWidth = runtime.getDynamicStrokeWidth(best.size);
+    }
+    const lineHeight = best.size * 1.22;
+    const startY = box.y + box.h / 2 - (best.lines.length - 1) * lineHeight / 2;
+    const centerX = box.x + box.w / 2;
+    best.lines.forEach((line, index) => {
+      const lineY = startY + index * lineHeight;
+      if (bgType === "none") ctx.strokeText(line, centerX, lineY);
+      ctx.fillStyle = String(options.textColor || "#111827");
+      ctx.fillText(line, centerX, lineY);
+    });
+    ctx.restore();
+  }
+  runtime.drawFittedText = drawFittedText;
+
+  function wrapCanvasText(ctx, text, maxWidth) {
+    const paragraphs = String(text || "").split(/\n+/).map(item => item.trim()).filter(Boolean);
+    const lines = [];
+    paragraphs.forEach(paragraph => {
+      const tokens = runtime.segmentCanvasText(paragraph);
+      const joiner = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(paragraph) ? "" : " ";
+      let current = "";
+      tokens.forEach(token => {
+        const next = current ? `${current}${joiner}${token}` : token;
+        if (ctx.measureText(next).width <= maxWidth || !current) current = next;
+        else {
+          lines.push(current);
+          current = token;
+        }
+      });
+      if (current) lines.push(current);
+    });
+    return lines.length > 0 ? lines : [String(text || "")];
+  }
+  runtime.wrapCanvasText = wrapCanvasText;
+
+  function segmentCanvasText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return [];
+    if (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(raw)) {
+      return Array.from(raw.replace(/\s+/g, ""));
+    }
+    return raw.split(/(\s+)/).filter(token => token && !/^\s+$/.test(token));
+  }
+  runtime.segmentCanvasText = segmentCanvasText;
+
   function loadImageFromDataUrl(dataUrl) {
     return new Promise((resolve, reject) => {
       const image = new Image();

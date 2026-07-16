@@ -49,6 +49,10 @@ export function installStorePipelineContext(runtime) {
     maxDelayMs = 20000,
     maxAttempts = 5
   }) {
+    const requiredStoreMethods = ["getRetryState", "setRetryState", "clearRetryState", "clearRetryStates"];
+    if (!store || requiredStoreMethods.some(method => typeof store[method] !== "function")) {
+      throw new TypeError("Retry scheduler requires a canonical Store with retry-state methods");
+    }
     function schedule(target) {
       const current = store.getRetryState(target);
       if (current && current.timer || isPlaceholder(target)) {

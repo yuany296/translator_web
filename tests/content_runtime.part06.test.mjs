@@ -460,7 +460,7 @@ test("seam source mode toggles every window sharing one render key", () => {
     enabled: true
   }]);
 });
-test("seam resize only updates the composite transform and never refits text", () => {
+test("seam text is fitted once in intrinsic composite coordinates and resize only scales it", () => {
   const positionStart = contentSource.indexOf("function syncOverlayPosition(");
   const positionEnd = contentSource.indexOf("function compareOverlayViewportRects", positionStart);
   const positionSource = contentSource.slice(positionStart, positionEnd);
@@ -469,6 +469,10 @@ test("seam resize only updates the composite transform and never refits text", (
   const seamSource = contentSource.slice(seamStart, seamEnd);
   assert.match(positionSource, /syncSeamOverlayTransforms\(overlayState/);
   assert.doesNotMatch(seamSource, /applySeamBubbleLayout|fitBubbleFontSize/);
+  const createStart = contentSource.indexOf("function createSeamWindowNode(");
+  const createEnd = contentSource.indexOf("function syncSeamOverlayTransforms", createStart);
+  const createSource = contentSource.slice(createStart, createEnd);
+  assert.match(createSource, /applySeamBubbleLayout\(surface, bubbleNodes\)/);
 });
 test("seam surface validation is atomic across targets and image revisions", () => {
   const targets = {

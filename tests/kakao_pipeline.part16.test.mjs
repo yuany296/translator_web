@@ -533,6 +533,10 @@ test("a non-primary cross-page projection keeps standby metadata and adds a cove
   assert.deepEqual(cover.visual, standby.visual);
   assert.equal(cover.bubble.translated_text, "");
   assert.equal(cover.bubble.projection_role, "cover_only");
+  assert.deepEqual(P.buildStandbyCoverProjections({
+    ...standby,
+    coverEligible: false
+  }), []);
 });
 test("A/B page OCR completion order does not change canonical or projection sets", async () => {
   const forward = createCanonicalHarness();

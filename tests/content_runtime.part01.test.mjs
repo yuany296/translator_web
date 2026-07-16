@@ -80,6 +80,15 @@ test("Kakao image runtime requests and error overlays have bounded recovery wiri
   assert.match(contentSource, /image-fetch-fallback[\s\S]*captureVisibleTargetPayload\(img, imageFetchError \|\| error/);
   assert.match(contentSource, /reportKakaoPipelineError[\s\S]*clearKakaoLoadingOverlay\(target\)[\s\S]*pipeline-error-restore/);
 });
+test("content retry scheduler and canonical pipeline share one initialized Store", () => {
+  const store = runtime.__test.kakaoStore;
+  assert.equal(typeof store?.getRetryState, "function");
+  assert.equal(runtime.__test.kakaoCanonicalPipeline.store, store);
+  const storeInit = contentSource.indexOf("const kakaoStore =");
+  const retryInit = contentSource.indexOf("runtime.KP.createRetryScheduler");
+  const pipelineInit = contentSource.indexOf("const kakaoCanonicalPipeline =");
+  assert.ok(storeInit >= 0 && storeInit < retryInit && retryInit < pipelineInit);
+});
 test("rotated aligned bubbles use a center transform anchor without changing text alignment", () => {
   const style = {
     setProperty(name, value) {

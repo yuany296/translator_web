@@ -193,7 +193,7 @@ test("local paragraph display box stays tight and its solid background uses the 
   assert.ok(Math.abs(fillRight - (block.location.left + block.location.width)) < 1e-9);
   assert.ok(Math.abs(fillBottom - (block.location.top + block.location.height)) < 1e-9);
 });
-test("high-confidence speech bubbles use their interior region for layout and paint", async () => {
+test("high-confidence speech bubbles keep the blue display box close to the text", async () => {
   const regionBox = {
     left: 120,
     top: 160,
@@ -224,14 +224,19 @@ test("high-confidence speech bubbles use their interior region for layout and pa
     height: 900
   }, "", false);
   assert.equal(result.length, 1);
-  assert.ok(result[0].location.width > 200, JSON.stringify(result[0].location));
+  assert.ok(result[0].location.left >= 241 && result[0].location.left < 245, JSON.stringify(result[0].location));
+  assert.ok(result[0].location.top >= 243 && result[0].location.top < 245, JSON.stringify(result[0].location));
+  assert.ok(result[0].location.width >= 110 && result[0].location.width < 120, JSON.stringify(result[0].location));
+  assert.ok(result[0].location.height >= 40 && result[0].location.height <= 44, JSON.stringify(result[0].location));
+  assert.ok(result[0].location.width < regionBox.width * 0.4, JSON.stringify(result[0].location));
+  assert.ok(result[0].location.height < regionBox.height * 0.25, JSON.stringify(result[0].location));
   const candidate = context.__backgroundTest.normalizeBaiduOcrItem(result[0], 0, {
     width: 760,
     height: 900
   });
   assert.equal(candidate.bg_type, "solid");
-  assert.ok(candidate.fill_box.w > 20, JSON.stringify(candidate.fill_box));
-  assert.ok(candidate.fill_box.h > 15, JSON.stringify(candidate.fill_box));
+  assert.ok(candidate.fill_box.w < 16, JSON.stringify(candidate.fill_box));
+  assert.ok(candidate.fill_box.h < 5, JSON.stringify(candidate.fill_box));
 });
 test("shifted multi-line paragraphs stay separate through final candidate coalescing", async () => {
   const item = (text, left, top, width, height) => ({

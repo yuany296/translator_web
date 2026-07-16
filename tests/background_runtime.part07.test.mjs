@@ -497,12 +497,79 @@ test("slanted chat rows share one reliable angle and size from polygon thickness
     height: 1100
   }, "", false);
   assert.ok(result.length >= 2);
-  assert.equal(new Set(result.map(row => row.rotation_deg.toFixed(1))).size, 1);
+  assert.equal(new Set(result.map(row => row.rotation_deg.toFixed(1))).size, 1, JSON.stringify(result.map(row => ({ text: row.words, rotation: row.rotation_deg, role: row.translation_role }))));
   assert.equal(result.every(row => Math.abs(row.rotation_deg) <= 25), true);
   assert.equal(result.every(row => row.fontHeight < 65), true, JSON.stringify(result.map(row => row.fontHeight)));
   assert.equal(result.every(row => row.location.height < 90), true, JSON.stringify(result.map(row => row.location)));
 });
-test("reliable solid speech regions use the full cleanup box independently of text geometry", async () => {
+test("strongly slanted equal-size rows group by their text axes instead of AABB height", async () => {
+  const angle = -14 * Math.PI / 180;
+  const axis = { x: Math.cos(angle), y: Math.sin(angle) };
+  const normal = { x: -axis.y, y: axis.x };
+  const row = (text, line, length) => {
+    const start = { x: 100 + normal.x * line * 58, y: 160 + normal.y * line * 58 };
+    const end = { x: start.x + axis.x * length, y: start.y + axis.y * length };
+    const polygon = [start, end, { x: end.x + normal.x * 40, y: end.y + normal.y * 40 }, { x: start.x + normal.x * 40, y: start.y + normal.y * 40 }];
+    const left = Math.min(...polygon.map(point => point.x));
+    const top = Math.min(...polygon.map(point => point.y));
+    const right = Math.max(...polygon.map(point => point.x));
+    const bottom = Math.max(...polygon.map(point => point.y));
+    return {
+      text,
+      score: 0.98,
+      rotation_deg: -14,
+      polygon: polygon.map(point => [point.x, point.y]),
+      box: { left, top, width: right - left, height: bottom - top }
+    };
+  };
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: 1000,
+    imageHeight: 900,
+    items: [row("첫 번째 긴 문장입니다", 0, 620), row("두 번째 줄", 1, 280), row("세 번째 문장도 이어집니다", 2, 540)]
+  }, { width: 1000, height: 900 }, "", false);
+  assert.equal(result.length, 1, JSON.stringify(result.map(item => item.words)));
+  assert.equal(result[0].sourceLineCount, 3);
+  assert.equal(result[0].words, "첫 번째 긴 문장입니다\n두 번째 줄\n세 번째 문장도 이어집니다");
+  assert.ok(Math.abs(result[0].rotation_deg + 14) < 0.1);
+});
+test("comment footer glyphs cannot enlarge or contaminate a body cluster", async () => {
+  const panel = {
+    region_id: "large-white-card",
+    region_type: "speech_bubble",
+    region_box: { left: 69, top: 17, width: 850, height: 501 },
+    region_polygon: [[69, 17], [919, 17], [919, 518], [69, 518]],
+    region_confidence: 0.956,
+    bg_color: "#ffffff"
+  };
+  const item = (text, left, top, width, height, score = 0.98, overrides = {}) => ({
+    ...panel,
+    text,
+    score,
+    box: { left, top, width, height },
+    polygon: [[left, top], [left + width, top], [left + width, top + height], [left, top + height]],
+    ...overrides
+  });
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: 919,
+    imageHeight: 568,
+    items: [
+      item("벌써 3시간이 넘어가고 있다", 245, 170, 560, 56),
+      item("치킨은 시킨거니", 247, 239, 321, 53),
+      item("애들 왜 이렇게 팬사랑이 넘쳐", 244, 306, 588, 56),
+      item("그", 507, 416, 43, 44, 0.672),
+      item("1", 841, 435, 17, 26, 0.952, {
+        region_id: "footer-count",
+        region_type: "caption_panel",
+        region_box: { left: 834, top: 408, width: 31, height: 81 },
+        region_polygon: [[834, 408], [865, 408], [865, 489], [834, 489]]
+      })
+    ]
+  }, { width: 919, height: 568 }, "", false);
+  assert.equal(result.length, 1, JSON.stringify(result.map(row => row.words)));
+  assert.equal(result[0].words, "벌써 3시간이 넘어가고 있다\n치킨은 시킨거니\n애들 왜 이렇게 팬사랑이 넘쳐");
+  assert.ok(result[0].location.top + result[0].location.height < 400, JSON.stringify(result[0].location));
+});
+test("reliable solid speech regions keep cleanup on the final blue text box", async () => {
   const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
     imageWidth: 500,
     imageHeight: 500,
@@ -536,14 +603,13 @@ test("reliable solid speech regions use the full cleanup box independently of te
     width: 500,
     height: 500
   });
-  assert.deepEqual({
-    ...candidate.fill_box
-  }, {
-    x: 8,
-    y: 60,
-    w: 40,
-    h: 20
+  assert.deepEqual(JSON.parse(JSON.stringify(candidate.fill_box)), {
+    x: candidate.x,
+    y: candidate.y,
+    w: candidate.w,
+    h: candidate.h
   });
+  assert.ok(candidate.fill_box.w < 40 && candidate.fill_box.h < 20, JSON.stringify(candidate.fill_box));
   assert.deepEqual(JSON.parse(JSON.stringify(candidate.polygon)), [{
     x: 16,
     y: 64
@@ -557,10 +623,4 @@ test("reliable solid speech regions use the full cleanup box independently of te
     x: 16,
     y: 70.8
   }]);
-  assert.notDeepEqual(candidate.fill_box, {
-    x: candidate.x,
-    y: candidate.y,
-    w: candidate.w,
-    h: candidate.h
-  });
 });

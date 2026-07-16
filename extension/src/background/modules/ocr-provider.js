@@ -173,7 +173,7 @@ export function installOcrProvider(runtime) {
     const imageAnalysis = await runtime.analyzeLocalOcrImage(dataUrl, ocrImageSize);
     // 跨图窗口聚类全部 OCR 行；归属判断统一由 content.js 在 mapKakaoStitchedResult() 中处理。
     // 不在此处用 isOcrItemOwnedByStitch 过滤，避免按单行中心误拆跨页框。
-    const clustered = runtime.clusterLocalPaddleWords(words, ocrImageSize, imageAnalysis, debug);
+    const clustered = runtime.clusterLocalPaddleWords(words, ocrImageSize, imageAnalysis, debug, ocrDebug);
     // Stitch ownership filtering is now handled exclusively by content.js mapKakaoStitchedResult()
     if (imageMeta && imageMeta.stitch) {
       if (debug) {

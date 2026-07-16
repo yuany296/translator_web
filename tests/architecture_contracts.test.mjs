@@ -14,6 +14,7 @@ import { applyDomTextLayer } from "../extension/src/rendering/dom-renderer.js";
 import { renderEmbeddedScene } from "../extension/src/rendering/embedded-renderer.js";
 import { buildRenderSceneForBubbles } from "../extension/src/rendering/scene-builder.js";
 import { detectReaderProfile } from "../extension/src/readers/profile.js";
+import { configureBackgroundRuntime } from "../extension/src/background/configure.js";
 import { ProviderRegistry } from "../extension/src/background/providers/registry.js";
 
 function orientedPolygon(center, axisLength, thickness, angleDeg) {
@@ -239,6 +240,40 @@ test("translation configuration saves independently without changing OCR configu
   assert.deepEqual(Object.keys(writes[0]), ["mt_translation_config_v1"]);
   assert.equal((await store.load()).ocr.provider, "baidu");
   assert.equal((await store.load()).translation.apiKey, "new");
+});
+
+test("configured translation provider preserves the canonical batch array contract", async () => {
+  const stored = {
+    mt_ocr_config_v1: {},
+    mt_translation_config_v1: {
+      provider: "openai_compatible",
+      apiKey: "translation-key",
+      baseUrl: "https://api.example.test",
+      model: "model-a"
+    },
+    mt_runtime_config_v1: {},
+    [glossaryCore.STORAGE_KEY]: { entries: [] }
+  };
+  const calls = [];
+  const runtime = {
+    glossaryCore,
+    storageGet: async (keys) => Object.fromEntries(keys.map((key) => [key, stored[key]])),
+    storageSet: async (value) => Object.assign(stored, value),
+    handleMessage: async () => ({ ok: false }),
+    requestOpenAICompatibleCanonicalTranslationBatch: async (args) => {
+      calls.push(args);
+      return args.items.map((item) => ({ id: item.id, translated_text: `translated:${item.original_text}` }));
+    }
+  };
+  configureBackgroundRuntime(runtime);
+  const rows = await runtime.requestCanonicalTranslationBatch({
+    items: [{ id: "canonical-request-0", original_text: "안녕" }],
+    apiKey: "translation-key",
+    baseUrl: "https://api.example.test",
+    model: "model-a"
+  });
+  assert.deepEqual(rows, [{ id: "canonical-request-0", translated_text: "translated:안녕" }]);
+  assert.equal(calls.length, 1);
 });
 
 test("provider registry rejects combined or incomplete provider contracts", () => {

@@ -361,6 +361,28 @@ test("global OCR line dedupe keeps the strongest overlapping recognition", () =>
   assert.equal(debug.duplicateItems.length, 1);
   assert.equal(result[0].confidence, 0.96);
 });
+test("enabled local OCR debug keeps its boolean flag separate from the writable debug session", async () => {
+  const imageSize = { width: 720, height: 1100 };
+  const tuning = context.__backgroundTest.getDefaultOcrTuning();
+  const debugSession = context.__backgroundTest.createOcrDebugSession(
+    "local_paddle",
+    imageSize,
+    tuning
+  );
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: imageSize.width,
+    imageHeight: imageSize.height,
+    items: [{
+      text: "\ud14c\uc2a4\ud2b8",
+      score: 0.98,
+      det_score: 0.96,
+      box: { left: 100, top: 120, width: 180, height: 42 }
+    }]
+  }, imageSize, "", true, null, tuning, debugSession);
+  assert.equal(result.length, 1);
+  assert.equal(debugSession.dedupedItems.length, 1);
+  assert.equal(debugSession.lineItems.length, 1);
+});
 test("same-line merge accepts emphasis colors but rejects a title-sized fragment", () => {
   const box = (left, top, width, height) => ({
     left,

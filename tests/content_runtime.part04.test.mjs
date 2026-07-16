@@ -148,6 +148,26 @@ test("floating ball click follows configured pretranslation mode before manual v
   assert.doesNotMatch(contentSource, /runtime\.togglePageAutoTranslate\(!runtime\.state\.autoTranslatePageEnabled\)/);
   assert.match(contentSource, /runtime\.state\.autoTranslatePageEnabled && runtime\.state\.enabled/);
 });
+test("manual translation exposes actionable floating feedback", () => {
+  assert.deepEqual(runtime.__test.buildManualTranslateFeedback({ visibleCount: 2, successCount: 2 }), {
+    level: "success",
+    message: "翻译完成：2/2 张"
+  });
+  assert.deepEqual(runtime.__test.buildManualTranslateFeedback({ visibleCount: 2, failCount: 2, errors: ["OCR offline"] }), {
+    level: "error",
+    message: "翻译失败：OCR offline"
+  });
+  assert.deepEqual(runtime.__test.buildManualTranslateFeedback({ visibleCount: 2, skippedCount: 2, skippedReasons: ["target changed"] }), {
+    level: "info",
+    message: "本次未执行：target changed"
+  });
+  assert.deepEqual(runtime.__test.buildManualTranslateFeedback({ errors: ["Extension context invalidated"] }), {
+    level: "error",
+    message: "扩展已重新加载，请刷新漫画页后重试"
+  });
+  assert.match(contentSource, /mt-floating-feedback[\s\S]*aria-live[\s\S]*showFloatingBallFeedback/);
+  assert.match(contentSource, /manual translation crashed[\s\S]*manual-translate-crash/);
+});
 test("page auto toggle queues visible and ahead targets without blocking on manual OCR", () => {
   const match = contentSource.match(/async function togglePageAutoTranslate\(enabled\) \{[\s\S]*?\n  function getPageAutoTranslateStatus\(\)/);
   assert.ok(match, "togglePageAutoTranslate source should be present");
@@ -630,6 +650,32 @@ test("solid background covers both the original fill and translated text boxes",
     y: 20,
     w: 30,
     h: 20
+  });
+});
+test("canonical final blue box controls the cleanup cover instead of the observation union", () => {
+  const bubble = {
+    x: 28.33,
+    y: 0,
+    w: 43.19,
+    h: 20.04,
+    fill_box: {
+      left: 31.5,
+      top: 2.1,
+      width: 36.8,
+      height: 18.4
+    }
+  };
+  assert.deepEqual(runtime.__test.normalizeFillBox(bubble.fill_box), {
+    x: 31.5,
+    y: 2.1,
+    w: 36.8,
+    h: 18.4
+  });
+  assert.deepEqual(runtime.__test.resolveBubbleCoverBox(bubble), {
+    x: 31.5,
+    y: 2.1,
+    w: 36.8,
+    h: 18.4
   });
 });
 test("stitched solid background can extend upward into the previous page", () => {

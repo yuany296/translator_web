@@ -16,6 +16,7 @@ import { installRendererEmbed } from "./renderer-embed.js";
 import { installRendererCanvas } from "./renderer-canvas.js";
 import { installLifecycleBubble } from "./lifecycle-bubble.js";
 import { installLifecyclePosition } from "./lifecycle-position.js";
+import { installLifecycleFontFit } from "./lifecycle-font-fit.js";
 import { installLifecycleOverlayCleanup } from "./lifecycle-overlay-cleanup.js";
 import { installLifecycleRestore } from "./lifecycle-restore.js";
 import { installControlsUi } from "./controls-ui.js";
@@ -49,6 +50,7 @@ export const contentInstallers = Object.freeze([
   installRendererCanvas,
   installLifecycleBubble,
   installLifecyclePosition,
+  installLifecycleFontFit,
   installLifecycleOverlayCleanup,
   installLifecycleRestore,
   installControlsUi,
@@ -84,6 +86,7 @@ export const contentPhases = Object.freeze({
     installRendererCanvas,
     installLifecycleBubble,
     installLifecyclePosition,
+    installLifecycleFontFit,
     installLifecycleOverlayCleanup,
     installLifecycleRestore,
     installControlsUi,

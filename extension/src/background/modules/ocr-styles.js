@@ -12,13 +12,15 @@ export function installOcrStyles(runtime) {
     if (entries.length < 2) {
       return [cluster];
     }
+    const rotation = runtime.medianRotation(entries.map(entry => entry.rotation));
+    const heightOf = entry => runtime.getLocalPaddleProjectedBounds(entry, rotation)?.height || entry.box.height;
     if (runtime.isChatRegionType(regionType)) {
       const chatClusters = runtime.splitLocalPaddleChatRoleClusters(entries);
       if (chatClusters.length > 0) {
         return chatClusters;
       }
     }
-    const heights = entries.map(entry => Number(entry.box.height)).sort((left, right) => left - right);
+    const heights = entries.map(heightOf).sort((left, right) => left - right);
     const minHeight = heights[0];
     const maxHeight = heights[heights.length - 1];
     const heightRatio = maxHeight / Math.max(1, minHeight);
@@ -28,14 +30,15 @@ export function installOcrStyles(runtime) {
     const hasTimestamp = entries.some(entry => runtime.CHAT_TIME_RE.test(String(entry.text || "")));
     const hasStackedStylePair = entries.some(left => entries.some(right => {
       if (left === right) return false;
-      const small = left.box.height <= right.box.height ? left : right;
+      const geometry = runtime.getLocalPaddlePairGeometry(left, right);
+      if (!geometry) return false;
+      const small = geometry.left.height <= geometry.right.height ? left : right;
       const large = small === left ? right : left;
-      const upper = small.box.top <= large.box.top ? small : large;
-      const lower = upper === small ? large : small;
-      const overlapX = Math.max(0, Math.min(small.box.right, large.box.right) - Math.max(small.box.left, large.box.left));
-      const overlapRatio = overlapX / Math.max(1, Math.min(small.box.width, large.box.width));
-      const gap = runtime.getVerticalGap(small.box, large.box);
-      return upper === small && gap <= Math.max(small.box.height, large.box.height) * 0.65 && overlapRatio >= 0.3;
+      const smallBox = small === left ? geometry.left : geometry.right;
+      const largeBox = small === left ? geometry.right : geometry.left;
+      const upper = smallBox.centerY <= largeBox.centerY ? small : large;
+      const overlapRatio = geometry.inlineOverlap / Math.max(1, Math.min(smallBox.width, largeBox.width));
+      return upper === small && geometry.lineGap <= Math.max(smallBox.height, largeBox.height) * 0.65 && overlapRatio >= 0.3;
     }));
 
     // A reliable container already describes one comic bubble. Only split it
@@ -62,13 +65,13 @@ export function installOcrStyles(runtime) {
       return [cluster];
     }
     const threshold = Math.sqrt(heights[splitIndex - 1] * heights[splitIndex]);
-    const small = cluster.filter(entry => Number(entry && entry.box && entry.box.height) <= threshold);
-    const large = cluster.filter(entry => Number(entry && entry.box && entry.box.height) > threshold);
+    const small = cluster.filter(entry => heightOf(entry) <= threshold);
+    const large = cluster.filter(entry => heightOf(entry) > threshold);
     return small.length > 0 && large.length > 0 ? [small, large] : [cluster];
   }
   runtime.splitLocalPaddleVisualStyleClusters = splitLocalPaddleVisualStyleClusters;
   function splitLocalPaddleChatRoleClusters(entries) {
-    const usable = (Array.isArray(entries) ? entries : []).filter(entry => entry && entry.box && String(entry.text || entry.item && entry.item.words || "").trim()).sort((left, right) => left.box.top - right.box.top || left.box.left - right.box.left);
+    const usable = (Array.isArray(entries) ? entries : []).filter(entry => entry && entry.box && String(entry.text || entry.item && entry.item.words || "").trim()).sort(runtime.compareLocalPaddleReadingOrder);
     if (usable.length === 0) {
       return [];
     }
@@ -180,19 +183,26 @@ export function installOcrStyles(runtime) {
     if (runtime.isChatTimeText(text)) {
       return runtime.CHAT_TRANSLATION_ROLES.time;
     }
-    const boxes = (Array.isArray(entries) ? entries : []).map(item => item && item.box).filter(Boolean);
-    const heights = boxes.map(box => Number(box.height) || 0).filter(height => height > 0);
+    const usable = (Array.isArray(entries) ? entries : []).filter(item => item && item.box);
+    const rotation = runtime.medianRotation(usable.map(item => item.rotation));
+    const heights = usable.map(item => runtime.getLocalPaddleProjectedBounds(item, rotation)?.height || Number(item.box.height) || 0).filter(height => height > 0);
     const maxHeight = Math.max(1, ...heights);
-    const height = Math.max(1, Number(entry && entry.box && entry.box.height) || 1);
-    const timePeers = (Array.isArray(entries) ? entries : []).filter(item => item !== entry && runtime.isChatTimeText(item && (item.item && item.item.words || item.text)));
-    const sameLineTime = timePeers.find(item => runtime.areLocalPaddleBoxesOnSameVisualLine(entry.box, item.box));
-    if (sameLineTime && entry.box.centerX <= sameLineTime.box.centerX) {
+    const entryBounds = runtime.getLocalPaddleProjectedBounds(entry, rotation);
+    const height = Math.max(1, entryBounds?.height || Number(entry && entry.box && entry.box.height) || 1);
+    const timePeers = usable.filter(item => item !== entry && runtime.isChatTimeText(item && (item.item && item.item.words || item.text)));
+    const sameLineTime = timePeers.find(item => runtime.areLocalPaddleEntriesOnSameVisualLine(entry, item));
+    const timeBounds = sameLineTime && runtime.getLocalPaddleProjectedBounds(sameLineTime, rotation);
+    if (sameLineTime && entryBounds && timeBounds && entryBounds.centerX <= timeBounds.centerX) {
       return runtime.CHAT_TRANSLATION_ROLES.nickname;
     }
     if (height >= maxHeight * 0.72) {
       return runtime.CHAT_TRANSLATION_ROLES.body;
     }
-    const hasLargeBelow = (Array.isArray(entries) ? entries : []).some(item => item !== entry && item.box && item.box.height >= height * runtime.OCR_STYLE_SPLIT_HEIGHT_RATIO && item.box.top >= entry.box.top && runtime.getVerticalGap(entry.box, item.box) <= item.box.height * 1.25);
+    const hasLargeBelow = usable.some(item => {
+      if (item === entry) return false;
+      const geometry = runtime.getLocalPaddlePairGeometry(entry, item);
+      return geometry && geometry.right.height >= height * runtime.OCR_STYLE_SPLIT_HEIGHT_RATIO && geometry.right.centerY >= geometry.left.centerY && geometry.lineGap <= geometry.right.height * 1.25;
+    });
     return hasLargeBelow ? runtime.CHAT_TRANSLATION_ROLES.aux : runtime.CHAT_TRANSLATION_ROLES.nickname;
   }
   runtime.inferLocalPaddleChatEntryRole = inferLocalPaddleChatEntryRole;
@@ -209,6 +219,11 @@ export function installOcrStyles(runtime) {
     return overlap >= Math.min(left.height, right.height) * 0.45;
   }
   runtime.areLocalPaddleBoxesOnSameVisualLine = areLocalPaddleBoxesOnSameVisualLine;
+  function areLocalPaddleEntriesOnSameVisualLine(left, right) {
+    const geometry = runtime.getLocalPaddlePairGeometry(left, right);
+    return Boolean(geometry && geometry.lineOverlap >= Math.min(geometry.left.height, geometry.right.height) * 0.45);
+  }
+  runtime.areLocalPaddleEntriesOnSameVisualLine = areLocalPaddleEntriesOnSameVisualLine;
   function shouldJoinLocalPaddleChatRoleGroup(group, entry, role) {
     if (!Array.isArray(group) || group.length === 0 || !entry || !entry.box) {
       return false;
@@ -217,19 +232,23 @@ export function installOcrStyles(runtime) {
       return false;
     }
     const groupBox = group.map(item => item.box).reduce(runtime.unionLocalPaddleBoxes);
-    const box = entry.box;
-    const avgHeight = Math.max(1, (groupBox.height + box.height) / 2);
-    if (runtime.areLocalPaddleBoxesOnSameVisualLine(groupBox, box)) {
-      return runtime.getHorizontalGap(groupBox, box) <= avgHeight * 2.4;
+    const groupEntry = {
+      entries: group,
+      box: groupBox,
+      rotation: runtime.medianRotation(group.map(item => item.rotation))
+    };
+    const geometry = runtime.getLocalPaddlePairGeometry(groupEntry, entry);
+    if (!geometry) return false;
+    const avgHeight = Math.max(1, (geometry.left.height + geometry.right.height) / 2);
+    if (geometry.lineOverlap >= Math.min(geometry.left.height, geometry.right.height) * 0.45) {
+      return geometry.inlineGap <= avgHeight * 2.4;
     }
     if (role !== runtime.CHAT_TRANSLATION_ROLES.body) {
       return false;
     }
-    const verticalGap = runtime.getVerticalGap(groupBox, box);
-    const leftAligned = Math.abs(groupBox.left - box.left) <= avgHeight * 1.35;
-    const overlapX = Math.max(0, Math.min(groupBox.right, box.right) - Math.max(groupBox.left, box.left));
-    const overlapRatio = overlapX / Math.max(1, Math.min(groupBox.width, box.width));
-    return verticalGap <= avgHeight * 0.85 && (leftAligned || overlapRatio >= 0.35);
+    const leftAligned = Math.abs(geometry.left.left - geometry.right.left) <= avgHeight * 1.35;
+    const overlapRatio = geometry.inlineOverlap / Math.max(1, Math.min(geometry.left.width, geometry.right.width));
+    return geometry.lineGap <= avgHeight * 0.85 && (leftAligned || overlapRatio >= 0.35);
   }
   runtime.shouldJoinLocalPaddleChatRoleGroup = shouldJoinLocalPaddleChatRoleGroup;
   function dedupeLocalPaddleEntries(entries) {

@@ -621,7 +621,7 @@ test("a cleaned artifact retry timer cannot refresh a newer page revision", asyn
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(harness.ocrMetas.filter(meta => meta.forceCleanedImageArtifact === true).length, 1);
 });
-test("canonical cleaned masks cover the full outer projection box for active cross-page outline projections", () => {
+test("canonical cleaned masks use the final blue projection box for every active outline projection", () => {
   const projections = [{
     canonicalId: "canonical-cross-page",
     pageId: "page-a",
@@ -666,6 +666,14 @@ test("canonical cleaned masks cover the full outer projection box for active cro
       h: 15
     }
   }]);
-  assert.deepEqual(P.buildCanonicalCleanMasks(projections, new Set()), []);
+  assert.deepEqual(P.buildCanonicalCleanMasks(projections, new Set()), [{
+    coordinateSpace: "percent",
+    box: {
+      x: 20,
+      y: 85,
+      w: 58,
+      h: 15
+    }
+  }]);
   assert.notEqual(P.buildCleanedArtifactKey("revision-a", []), P.buildCleanedArtifactKey("revision-a", P.buildCanonicalCleanMasks(projections, new Set(["canonical-cross-page"]))));
 });

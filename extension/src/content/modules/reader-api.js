@@ -1,6 +1,10 @@
 export function installReaderApi(runtime) {
+  const canCreateStore = runtime.KP && typeof runtime.KP.createStore === "function";
+  const kakaoStore = runtime.state.kakaoStore || (canCreateStore ? runtime.KP.createStore() : null);
+  if (!kakaoStore) throw new Error("Kakao canonical Store is unavailable");
+  runtime.state.kakaoStore = kakaoStore;
   const kakaoRetryScheduler = runtime.KP.createRetryScheduler({
-    store: runtime.state.kakaoStore,
+    store: kakaoStore,
     setTimer: (callback, delay) => window.setTimeout(callback, delay),
     clearTimer: timer => window.clearTimeout(timer),
     isPlaceholder: target => target instanceof HTMLImageElement && runtime.isDataUrl(runtime.resolveImageUrl(target)),
@@ -10,7 +14,7 @@ export function installReaderApi(runtime) {
   });
   runtime.kakaoRetryScheduler = kakaoRetryScheduler;
   const kakaoCanonicalPipeline = runtime.KP && runtime.KR && typeof runtime.KP.createCanonicalPipeline === "function" ? runtime.KP.createCanonicalPipeline({
-    store: runtime.state.kakaoStore,
+    store: kakaoStore,
     reconciler: runtime.KR,
     extractTargetPayload: (target, scopedKey) => runtime.extractTargetPayload(target, runtime.buildKakaoCanonicalPayloadCacheKey(scopedKey, target), {
       skipKakaoStitch: true
@@ -107,6 +111,7 @@ export function installReaderApi(runtime) {
       getRenderableOcrDebugStages: runtime.getRenderableOcrDebugStages,
       normalizeDebugCoordinateItems: runtime.normalizeDebugCoordinateItems,
       normalizePretranslateMode: runtime.normalizePretranslateMode,
+      buildManualTranslateFeedback: runtime.buildManualTranslateFeedback,
       matchesTargetMarker: runtime.matchesTargetMarker,
       hasSettledTranslatedMarker: runtime.hasSettledTranslatedMarker,
       hasSettledNoTextMarker: runtime.hasSettledNoTextMarker,
@@ -137,7 +142,9 @@ export function installReaderApi(runtime) {
       getBubbleRenderColors: runtime.getBubbleRenderColors,
       getDynamicStrokeWidth: runtime.getDynamicStrokeWidth,
       getCleanedPatchStyle: runtime.getCleanedPatchStyle,
+      normalizeFillBox: runtime.normalizeFillBox,
       buildSolidBackgroundBox: runtime.buildSolidBackgroundBox,
+      resolveBubbleCoverBox: runtime.resolveBubbleCoverBox,
       buildAheadTranslationOptions: runtime.buildAheadTranslationOptions,
       compareOverlayViewportRects: runtime.compareOverlayViewportRects,
       getOverlayPositionRect: runtime.getOverlayPositionRect,
@@ -182,8 +189,4 @@ export function installReaderApi(runtime) {
   };
   runtime.api = api;
 
-  // 初始化 Kakao 管线 Store（如可用）
-  if (runtime.KP && typeof runtime.KP.createStore === "function") {
-    runtime.state.kakaoStore = runtime.KP.createStore();
-  }
 }

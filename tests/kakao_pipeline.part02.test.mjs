@@ -590,6 +590,17 @@ test("Store owns short-page attachment state and expires it through the gate", (
   });
   assert.equal(store.getShortPageAttachment(target).ownerKey, "");
 });
+test("retry scheduler rejects a missing canonical Store during initialization", () => {
+  assert.throws(() => P.createRetryScheduler({
+    store: null,
+    setTimer: () => 0,
+    clearTimer: () => undefined,
+    isPlaceholder: () => false,
+    isTargetUsable: () => true,
+    isTargetReady: () => true,
+    onReady: () => undefined
+  }), /requires a canonical Store/);
+});
 test("retry scheduler stores timers and coalesces duplicate schedules", () => {
   const store = P.createStore();
   const target = {

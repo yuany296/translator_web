@@ -1,12 +1,11 @@
 export function installCanonicalRender(runtime, scope) {
   async function refreshRequiredCleanedArtifacts(projectionsByPage) {
     const tasks = [];
-    const crossPageCanonicalIds = runtime.collectCrossPageCanonicalIds(projectionsByPage, scope.store.getCanonicalSnapshot());
     for (const [pageId, projections] of projectionsByPage instanceof Map ? projectionsByPage.entries() : []) {
       if (!runtime.projectionsRequireCleanedImage(projections)) continue;
       const handle = scope.store.getPageHandle(pageId);
       if (!handle || !handle.payload) continue;
-      const cleanedMasks = runtime.buildCanonicalCleanMasks(projections, crossPageCanonicalIds);
+      const cleanedMasks = runtime.buildCanonicalCleanMasks(projections);
       const artifactKey = runtime.buildCleanedArtifactKey(handle.imageRevision, cleanedMasks);
       if (handle.cleanedImageArtifactKey === artifactKey && runtime.isDataUrlValue(handle.cleanedImage)) continue;
       if (handle.artifactRefreshAttemptedKey === artifactKey) continue;
@@ -142,6 +141,7 @@ export function installCanonicalRender(runtime, scope) {
       // 这类页面的空 projections 只是“尚未产出”，不能交给渲染层结算为无文字。
       if (!scope.isReadyPageRecord(handle)) continue;
       const seamSurfaces = seamSurfaceIndex.byPage.get(String(handle.pageId)) || Object.freeze([]);
+      const pageDebug = runtime.resolvePageDebugForSeamSurfaces(handle.ocrDebug || null, seamSurfaces, handle.pageId);
       const handledCanonicalIds = new Set(seamSurfaces.flatMap(surface => surface.handledCanonicalIds || []));
       if (options.debugOnly === true && !handle.ocrDebug && !seamSurfaces.some(surface => surface.debug)) continue;
       if (options.debugOnly === true && focusPageIds.size > 0 && !focusPageIds.has(String(handle.pageId)) && seamSurfaces.length === 0) continue;
@@ -165,6 +165,7 @@ export function installCanonicalRender(runtime, scope) {
         projections,
         fallbackProjections: fallbackProjectionMap.get(String(handle.pageId)) || projections,
         seamSurfaces,
+        debug: pageDebug,
         activeBubbles,
         translationComplete,
         authoritativeEmpty
@@ -189,11 +190,11 @@ export function installCanonicalRender(runtime, scope) {
       result: {
         bubbles: descriptor.activeBubbles,
         cleanedImage: descriptor.handle.cleanedImage || null,
-        debug: descriptor.handle.ocrDebug || null
+        debug: descriptor.debug
       },
       payload: descriptor.handle.payload,
       cleanedImage: descriptor.handle.cleanedImage || null,
-      debug: descriptor.handle.ocrDebug || null,
+      debug: descriptor.debug,
       debugOnly: options.debugOnly === true,
       translationComplete: descriptor.translationComplete,
       authoritativeEmpty: descriptor.authoritativeEmpty,
@@ -211,7 +212,7 @@ export function installCanonicalRender(runtime, scope) {
         fallbackProjectionsByPage: mapByPage(descriptor => descriptor.fallbackProjections),
         payloadByPage: mapByPage(descriptor => descriptor.handle.payload),
         cleanedImageByPage: mapByPage(descriptor => descriptor.handle.cleanedImage || null),
-        debugByPage: mapByPage(descriptor => descriptor.handle.ocrDebug || null),
+        debugByPage: mapByPage(descriptor => descriptor.debug),
         translationCompleteByPage: mapByPage(descriptor => descriptor.translationComplete),
         authoritativeEmptyByPage: mapByPage(descriptor => descriptor.authoritativeEmpty)
       });

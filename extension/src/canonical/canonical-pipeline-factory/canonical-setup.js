@@ -22,9 +22,12 @@ export function installCanonicalSetup(runtime, scope) {
   scope.getTargetForPageId = getTargetForPageId;
   const isAuthoritativePagePayload = typeof scope.adapters.isAuthoritativePagePayload === "function" ? scope.adapters.isAuthoritativePagePayload : runtime.defaultIsAuthoritativePagePayload;
   scope.isAuthoritativePagePayload = isAuthoritativePagePayload;
-  const setTimer = scope.adapters.setTimer || globalThis.setTimeout;
+  // Window 的计时器方法需要以 Window 为 receiver；脱离对象裸调用会在浏览器抛出 Illegal invocation。
+  const defaultSetTimer = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout.bind(globalThis) : null;
+  const defaultClearTimer = typeof globalThis.clearTimeout === "function" ? globalThis.clearTimeout.bind(globalThis) : null;
+  const setTimer = scope.adapters.setTimer || defaultSetTimer;
   scope.setTimer = setTimer;
-  const clearTimer = scope.adapters.clearTimer || globalThis.clearTimeout;
+  const clearTimer = scope.adapters.clearTimer || defaultClearTimer;
   scope.clearTimer = clearTimer;
   const now = typeof scope.adapters.now === "function" ? scope.adapters.now : () => Date.now();
   scope.now = now;
@@ -78,8 +81,8 @@ export function installCanonicalSetup(runtime, scope) {
   scope.targetIsUsable = targetIsUsable;
   function withCanonicalTimeout(promise, timeoutMs, message) {
     if (!(timeoutMs > 0)) return Promise.resolve(promise);
-    const deadlineSetTimer = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout : scope.setTimer;
-    const deadlineClearTimer = typeof globalThis.clearTimeout === "function" ? globalThis.clearTimeout : scope.clearTimer;
+    const deadlineSetTimer = defaultSetTimer || scope.setTimer;
+    const deadlineClearTimer = defaultClearTimer || scope.clearTimer;
     return new Promise((resolve, reject) => {
       let settled = false;
       const timer = deadlineSetTimer(() => {

@@ -48,6 +48,14 @@ test("OCR 调试框不会参与页面命中测试", () => {
   assert.match(css, /\.mt-debug-block/);
 });
 
+test("悬浮球直接显示翻译成功和失败反馈", () => {
+  const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
+  assert.match(css, /\.mt-floating-feedback\s*\{[\s\S]*?pointer-events:\s*none/);
+  assert.match(css, /\.mt-floating-feedback\.mt-error\s*\{/);
+  assert.match(css, /\.mt-floating-feedback\.mt-success\s*\{/);
+  assert.match(css, /\.mt-floating-feedback\[hidden\]\s*\{\s*display:\s*none/);
+});
+
 test("Kakao 覆盖层使用页面坐标系跟随原图滚动", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
   const layerRule = css.match(/\.mt-overlay-layer\.mt-overlay-document-flow\s*\{([^}]+)\}/)?.[1] ?? "";
@@ -82,7 +90,23 @@ test("seam composite is clipped only by its two page-local windows", () => {
   assert.match(sourceBubbleRule, /opacity:\s*0/);
 });
 
-test("overlay bubbles keep source alignment while scene text stays inside immutable placement", () => {
+test("cleanup cover keeps final blue geometry separate from raw text placement", () => {
+  const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
+  const lifecycle = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "lifecycle-bubble.js"), "utf8");
+  const overlay = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "renderer-overlay.js"), "utf8");
+  const seam = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "scene-dispatch.js"), "utf8");
+
+  assert.match(lifecycle, /function createBubbleRenderNodes\(/);
+  assert.match(lifecycle, /const coverBox = resolveBubbleCoverBox\(bubble\)/);
+  assert.match(lifecycle, /x:\s*coverBox\.x[\s\S]*?y:\s*coverBox\.y[\s\S]*?w:\s*coverBox\.w[\s\S]*?h:\s*coverBox\.h/);
+  assert.match(lifecycle, /projection_role:\s*"cover_only"[\s\S]*?polygon:\s*null[\s\S]*?fill_box:\s*null[\s\S]*?region_polygon:\s*null/);
+  assert.match(overlay, /createBubbleRenderNodes\([\s\S]*?appendChild\(coverNode\)[\s\S]*?appendChild\(textNode\)/);
+  assert.match(seam, /createBubbleRenderNodes\(/);
+  assert.match(css, /\.mt-bubble\.mt-text-layer\s*\{[\s\S]*?background-image:\s*none\s*!important/);
+  assert.match(css, /\.mt-bubble\.mt-text-layer::before\s*\{[\s\S]*?content:\s*none\s*!important/);
+});
+
+test("overlay bubbles keep source alignment and restore measured font fitting", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
   const bubbleRule = css.match(/\.mt-bubble\s*\{([^}]+)\}/)?.[1] ?? "";
   const leftRule = css.match(/\.mt-bubble\.mt-align-left\s*\{([^}]+)\}/)?.[1] ?? "";
@@ -101,7 +125,9 @@ test("overlay bubbles keep source alignment while scene text stays inside immuta
   assert.ok(readContentModules(/translate\(-50%, -50%\) rotate/), "translate(-50%, -50%) rotate not found in content modules");
   assert.ok(readContentModules(/--mt-font-weight/), "--mt-font-weight not found in content modules");
   assert.ok(readContentModules(/rotate\(\$\{angle\.toFixed\(2\)\}deg\)/), "rotate template not found in content modules");
-  assert.ok(!readContentModules(/function expandBubbleForTextOverflow\(/), "overflow expansion must not exist");
+  assert.ok(readContentModules(/function fitBubbleFontSize\(/), "measured font fitting must exist");
+  assert.ok(readContentModules(/function expandBubbleForTextOverflow\(/), "overflow recovery must exist");
+  assert.ok(readContentModules(/BUBBLE_FONT_ORIGINAL_SCALE/), "source font-height cap must exist");
   const domRenderer = readFileSync(path.resolve(projectRoot, "extension", "src", "rendering", "dom-renderer.js"), "utf8");
   assert.match(domRenderer, /overflow:\s*"hidden"/);
   const sceneBuilder = readFileSync(path.resolve(projectRoot, "extension", "src", "rendering", "scene-builder.js"), "utf8");

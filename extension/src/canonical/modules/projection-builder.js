@@ -310,12 +310,11 @@ export function installProjectionBuilder(runtime) {
   runtime.hasRenderableSeamDebug = hasRenderableSeamDebug;
   function seamObservationCaptureBox(observation, canvasWidth, canvasHeight) {
     const visual = observation && observation.visual && typeof observation.visual === "object" ? observation.visual : {};
-    const bgType = String(visual.bgType || visual.bg_type || "none").trim().toLowerCase();
+    const finalBox = runtime.normalizeSeamPercentBox(visual.box);
     const regionBounds = runtime.seamPercentPolygonBounds(visual.regionPolygon || visual.region_polygon);
     const fillBox = runtime.normalizeSeamPercentBox(visual.fillBox || visual.fill_box);
-    // 纯色 caption/speech panel 的区域多边形才是单页最终呈现使用的完整清理边界；
-    // OCR 文字 union 只覆盖字形，会在跨缝处留下用户看到的半截原文。
-    return (bgType === "solid" ? regionBounds || fillBox : fillBox || regionBounds) || runtime.normalizeSeamPercentBox(visual.box) || runtime.seamPercentPolygonBounds(visual.polygon) || runtime.rawSeamBoxToPercent(visual.rawBox || visual.raw_box, canvasWidth, canvasHeight);
+    // seam 也必须以最终蓝框为权威几何；完整气泡区域只用于背景判断，不能再次放大遮盖。
+    return finalBox || fillBox || runtime.seamPercentPolygonBounds(visual.polygon) || regionBounds || runtime.rawSeamBoxToPercent(visual.rawBox || visual.raw_box, canvasWidth, canvasHeight);
   }
   runtime.seamObservationCaptureBox = seamObservationCaptureBox;
   function selectSeamVisualObservation(observations) {

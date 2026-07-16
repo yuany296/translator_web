@@ -471,6 +471,10 @@ def test_cleaned_image_applies_supplemental_cross_page_mask() -> None:
     binary_mask = server.build_complex_text_inpaint_mask((100, 160), [], masks)
     assert binary_mask is not None
     assert int(binary_mask[46, 80]) == 255
+    assert int(binary_mask[27, 80]) == 0
+    assert int(binary_mask[65, 80]) == 0
+    assert int(binary_mask[46, 29]) == 0
+    assert int(binary_mask[46, 131]) == 0
     assert int(binary_mask[5, 5]) == 0
 
     boundary_mask = server.build_complex_text_inpaint_mask((100, 160), [], [
@@ -489,7 +493,7 @@ def test_cleaned_image_applies_supplemental_cross_page_mask() -> None:
     assert int(decoded[46, 80].sum()) > 100
     assert decoded[5, 5].tolist() == [0x22, 0x3B, 0xC3]
 
-def test_supplemental_polygon_unions_with_existing_ocr_mask() -> None:
+def test_final_supplemental_polygon_replaces_provisional_raw_ocr_mask() -> None:
     import server
 
     if not server.CV2_AVAILABLE:
@@ -508,7 +512,7 @@ def test_supplemental_polygon_unions_with_existing_ocr_mask() -> None:
     binary_mask = server.build_complex_text_inpaint_mask((100, 100), items, supplemental_masks)
 
     assert binary_mask is not None
-    assert int(binary_mask[30, 25]) == 255
+    assert int(binary_mask[30, 25]) == 0
     assert int(binary_mask[60, 75]) == 255
     assert int(binary_mask[5, 5]) == 0
 

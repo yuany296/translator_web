@@ -202,10 +202,12 @@ export function installTargetResolve(runtime) {
     if (!value || typeof value !== "object") {
       return null;
     }
-    const rawX = Number(value.x);
-    const rawY = Number(value.y);
-    const rawW = Number(value.w);
-    const rawH = Number(value.h);
+    // canonical 层使用 left/top/width/height，旧渲染结果使用 x/y/w/h；
+    // 两种格式在内容层入口统一，避免合法的最终蓝框被误判为空。
+    const rawX = Number(value.x ?? value.left);
+    const rawY = Number(value.y ?? value.top);
+    const rawW = Number(value.w ?? value.width);
+    const rawH = Number(value.h ?? value.height);
     if (![rawX, rawY, rawW, rawH].every(Number.isFinite) || rawW <= 0 || rawH <= 0) {
       return null;
     }

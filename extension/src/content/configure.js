@@ -1,7 +1,6 @@
 import { CONFIG_KEYS, normalizeOcrConfig, normalizeRuntimeConfig } from "../config/schema.js";
 import { detectReaderProfile } from "../readers/profile.js";
 import { applyDomTextLayer, renderDomScene } from "../rendering/dom-renderer.js";
-import { drawEmbeddedBubbleScene } from "../rendering/embedded-scene-adapter.js";
 import { renderEmbeddedScene } from "../rendering/embedded-renderer.js";
 import { buildBubbleTextLayer, buildRenderSceneForBubbles } from "../rendering/scene-builder.js";
 
@@ -57,8 +56,6 @@ export function prepareContentRuntime(runtime) {
   });
   runtime.renderDomScene = renderDomScene;
   runtime.renderEmbeddedScene = renderEmbeddedScene;
-  runtime.drawEmbeddedBubbles = (context, width, height, bubbles) =>
-    drawEmbeddedBubbleScene(runtime, context, width, height, bubbles);
   runtime.applyDomTextLayer = applyDomTextLayer;
 
   const renderCanonical = runtime.renderCanonicalProjections;

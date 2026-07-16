@@ -69,47 +69,31 @@ export function installRendererOverlay(runtime) {
     const seamEntries = seamSurfaces.map(surface => runtime.createSeamWindowNode(surface, seamPageId)).filter(Boolean);
     root.dataset.seamSliceKeys = seamEntries.map(entry => runtime.buildSeamSurfaceSliceKey(entry.surface && entry.surface.renderKey, entry.pageId)).filter(Boolean).join(" ");
     seamEntries.forEach(entry => root.appendChild(entry.windowNode));
-    const seamBubbleCount = seamEntries.reduce((count, entry) => count + entry.bubbleNodes.length, 0);
+    const seamBubbleCount = seamEntries.reduce((count, entry) => count + Number(entry.logicalBubbleCount || entry.bubbleNodes.length), 0);
     const seamDebugNodeCount = seamEntries.reduce((count, entry) => count + entry.debugNodeCount, 0);
     const bubbleNodes = [];
+    const coverNodes = [];
+    let logicalBubbleCount = 0;
     const backgroundTarget = runtime.IS_PIXIV_COMIC_VIEWER && runtime.isBackgroundImageTarget(target);
-    const targetRect = target.getBoundingClientRect();
-    const scene = runtime.buildRenderSceneForBubbles({
-      id: `page:${targetId}`,
-      surface: { id: targetId, type: "page", width: targetRect.width, height: targetRect.height },
-      bubbles
+    bubbles.forEach((bubble, index) => {
+      const { coverNode, textNode } = runtime.createBubbleRenderNodes(bubble, index, { backgroundTarget });
+      if (!coverNode && !textNode) return;
+      logicalBubbleCount += 1;
+      if (coverNode) {
+        coverNodes.push(coverNode);
+        root.appendChild(coverNode);
+      }
+      if (textNode && stream) {
+        const delayMs = Math.min(index * 34, 320);
+        textNode.classList.add("mt-stream-enter");
+        textNode.style.setProperty("--mt-stream-delay", `${delayMs}ms`);
+      }
+      if (textNode) {
+        bubbleNodes.push(textNode);
+        root.appendChild(textNode);
+      }
     });
-    let sceneNodeIndex = 0;
-    const sceneNodes = runtime.renderDomScene(scene, {
-      drawCover(layer) {
-        const bubble = layer.content?.bubble;
-        const node = runtime.createBubbleNode({ ...bubble, projection_role: "cover_only" }, sceneNodeIndex++);
-        if (node) {
-          node.classList.add("mt-cover-layer");
-          node.dataset.sceneFamily = String(layer.canonicalId || layer.id);
-        }
-        return node;
-      },
-      createTextNode(layer) {
-        const node = runtime.createBubbleNode(layer.content?.bubble, sceneNodeIndex++, { textOnly: true });
-        if (node) {
-          node.dataset.sceneTextLayer = "true";
-          node.dataset.sceneFamily = String(layer.canonicalId || layer.id);
-          node.mtSceneBubble = layer.content?.bubble;
-          if (stream) {
-            const delayMs = Math.min(sceneNodeIndex * 34, 320);
-            node.classList.add("mt-stream-enter");
-            node.style.setProperty("--mt-stream-delay", `${delayMs}ms`);
-          }
-        }
-        return node;
-      },
-      drawDebug() { return null; },
-      drawLoading() { return null; }
-    });
-    bubbleNodes.push(...sceneNodes);
-    sceneNodes.forEach((node) => root.appendChild(node));
-    if (bubbleNodes.length === 0 && seamBubbleCount === 0 && debugNodeCount + seamDebugNodeCount === 0) {
+    if (logicalBubbleCount === 0 && seamBubbleCount === 0 && debugNodeCount + seamDebugNodeCount === 0) {
       return;
     }
     const overlayState = {
@@ -119,11 +103,11 @@ export function installRendererOverlay(runtime) {
       sourceToken: currentSourceToken,
       root,
       bubbleNodes,
-      renderScene: scene,
+      coverNodes,
       seamEntries,
-      bubbleCount: scene.layers.filter(layer => layer.type === "text").length + seamBubbleCount,
+      bubbleCount: logicalBubbleCount + seamBubbleCount,
       isBackgroundTarget: backgroundTarget,
-      mode: bubbleNodes.length + seamBubbleCount > 0 ? "bubbles" : "debug",
+      mode: logicalBubbleCount + seamBubbleCount > 0 ? "bubbles" : "debug",
       debugNodeCount: debugNodeCount + seamDebugNodeCount,
       renderSignature,
       cleanedImage,
@@ -171,7 +155,7 @@ export function installRendererOverlay(runtime) {
       });
     }
     runtime.tracePipeline("rendered", target, {
-      bubbleCount: bubbleNodes.length + seamBubbleCount,
+      bubbleCount: logicalBubbleCount + seamBubbleCount,
       debugNodeCount: debugNodeCount + seamDebugNodeCount,
       targetKey: String(targetKey).slice(0, 80)
     });

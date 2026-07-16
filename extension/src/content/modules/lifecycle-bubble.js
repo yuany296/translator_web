@@ -145,6 +145,36 @@ export function installLifecycleBubble(runtime) {
     return node;
   }
   runtime.createBubbleNode = createBubbleNode;
+  function resolveBubbleCoverBox(bubble) {
+    const allowVerticalOverflow = bubble && bubble.stitch_overflow === true;
+    return runtime.normalizeFillBox(bubble && bubble.fill_box, allowVerticalOverflow) || runtime.normalizeFillBox(bubble, allowVerticalOverflow);
+  }
+  runtime.resolveBubbleCoverBox = resolveBubbleCoverBox;
+  function createBubbleRenderNodes(bubble, index, options = {}) {
+    const role = String(bubble && bubble.projection_role || "text_primary");
+    const coverBox = resolveBubbleCoverBox(bubble) || {};
+    const coverBubble = {
+      ...bubble,
+      x: coverBox.x,
+      y: coverBox.y,
+      w: coverBox.w,
+      h: coverBox.h,
+      projection_role: "cover_only",
+      original_text: "",
+      translated_text: "",
+      polygon: null,
+      fill_box: null,
+      region_polygon: null,
+      rotation_deg: 0
+    };
+    const coverNode = createBubbleNode(coverBubble, index, options);
+    const textNode = role === "cover_only" ? null : createBubbleNode(bubble, index, {
+      ...options,
+      textOnly: true
+    });
+    return { coverNode, textNode };
+  }
+  runtime.createBubbleRenderNodes = createBubbleRenderNodes;
   function applyBubbleAnchorStyle(node, {
     alignment = "center",
     x = 0,

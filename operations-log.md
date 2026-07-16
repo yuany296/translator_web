@@ -1,5 +1,129 @@
 # Operations Log
 
+## 2026-07-16 - Codex（倾斜文本按自身坐标轴分组，并在聚类前剔除评论区 UI 伪字）
+
+- 用户提供的倾斜直播聊天页显示：服务端已返回约 `-14°` 的可靠 polygon/rotation，但前端 OCR 聚类仍用屏幕水平 AABB 的高度、上下间距和对齐关系判断同行/同段。同字号长行会因倾斜而得到远大于短行的 AABB 高度，继而被误判成不同字号或不同段；最终渲染即使保留旋转角，也无法补救已经错误的分组。
+- 将 OCR 同行、段落、段落边界、阅读顺序、聊天区域识别、样式拆分、昵称/时间/正文角色及对齐推断统一改为文字轴/法线投影几何。polygon 可靠时使用真实厚度和轴向间距，缺失 polygon 时才回退 AABB；聊天正文还会继承附近元数据组的可靠公共角度。
+- 对用户提供的干净评论卡截图直接调用正在运行的本地 OCR 服务复现：三行正文坐标为约 `y=170/239/306`，底部转发图标被误读为低置信度单字 `그`（`score≈0.672`、`y≈416`），点赞计数为独立数字 `1`。此前二者先进入段落聚类，后置 final 过滤只能看到“正文+伪字”，因此生成正文框、截断正文框及正文+图标大框三层覆盖。
+- 新增聚类前 UI 伪字门禁：纯 1–3 位数字在进入段落前剔除；低置信度单字只有同时位于大面板底部、与同容器高置信度长正文存在明显间隔时才判为页脚控件伪识别。合法的独立短气泡和高置信度短句仍由原有保护规则保留。这样跨页截断最多留下上/下正文片段，图标不再形成第三个大蓝框，后续既有 seam/page 重叠仲裁可去掉重复下半片段。
+- 新增两项通用回归：强倾斜三行同字号文字按自身坐标轴合成一个旋转段落；三行评论正文旁的低置信度页脚伪字和数字计数不得污染正文或扩大蓝框。文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `488/488` 均通过，构建已写入 `dist/extension/`。完整 Python 测试在受限沙箱中有 `53 passed, 1 skipped`，另 5 项 GPU/视觉基线测试仅因无法读取 `C:\Users\yuanying\.paddlex` 模型缓存而失败；申请该权限又被当前 Codex 用量限制拒绝。本轮未改 Python 代码，且同一运行中通过本地 OCR HTTP 服务实际复现了两张用户截图的识别结果。
+- Chrome 已连接到 Kakao 标签页与扩展管理页，但 Kakao DOM 和 `edge://extensions/` 都被浏览器安全策略禁止读取；未绕过限制。新构建需要用户在扩展管理页手动点击一次“重新加载”，再刷新漫画页复核。
+
+## 2026-07-16 - Codex（跨页 surface 与页面内部投影统一重叠仲裁）
+
+- 用户报告评论卡正文同时出现三个最终蓝框。截图显示上方 `t9` 与下方区域互不重叠，应独立保留；下方 seam `c0` 大框完整覆盖一个普通页小框，后两者应按覆盖关系只保留大框，因此该组应从三个正文框收敛为两个；若剩余框继续满足同类覆盖条件，才进一步收敛为一个。
+- 根因是 seam surface 内部候选已按“覆盖较多的大框优先”仲裁，但 surface 与普通页面投影之间的第二阶段抑制额外要求框位于页面顶部/底部 6% 内。短页、评论卡或 seam 捕获覆盖页面内部时，被大框覆盖的普通页小框会绕过总调度重新显示。
+- 移除固定页边百分比前置条件，统一依据实际 page-local 投影判断：同区域族、覆盖较小框至少 72%，且小框面积不超过大框 1.35 倍时，surface 大框抑制普通页小框；互不重叠的独立评论继续保留。最终调试蓝框沿用同一 surface coverage 过滤。
+- 新增页面内部 seam 大框只抑制重叠小框、保留独立框的回归。完整自动验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `486/486`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。Chrome 已能发现用户指定的 Kakao 标签页，但站点权限策略拒绝读取页面 DOM，未绕过该限制进行现场提取。
+
+## 2026-07-16 - Codex（移除 seam-only 次要页的孤立纯色白带）
+
+- 用户刷新新构建后主白底已跟随最终蓝框收紧，但气泡上方仍残留一条独立白带。结合上一轮 Chrome 现场数据确认，同一 canonical 在相邻页底部还存在 `y=97.27%`、`h=2.73%` 的 `cover_only` 投影；它与当前页主蓝框不是同一节点。
+- 根因位于跨页投影总调度：canonical 的次要页只有 seam 推测几何、没有该页自己的 page OCR 证据时，仍被无条件生成纯色 cover；当完整正文已经回退当前页渲染时，这个次要 cover 会单独落在空白处。
+- 新增 `coverEligible` 调度约束：明确为 seam-only 且 `bgType=solid` 的次要页不再生成普通页面 cover，也禁止后续从 standby 补造 cover；含 page OCR 证据的真实跨页正文保持原遮盖行为。复杂背景 `bgType=none` 仍保留两页清理 artifact 请求，standby 在主页面缺失时也仍可接管文本与自身遮盖。
+- 新增 seam-only 纯色孤立 cover、standby 补造门禁及复杂背景 artifact 保留回归。完整自动验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `485/485`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（白底覆盖严格跟随最终蓝框）
+
+- Chrome 现场测量确认同一 canonical 的译文层约为 `247×187px`，白底覆盖层却达到约 `311×220px`；白底使用了多次观测合并后的 canonical 外接框，而最终蓝框保存在 `fill_box`，两者并不相同。
+- 根因是 canonical `fill_box` 使用 `{left, top, width, height}`，内容层归一化仅接受旧的 `{x, y, w, h}`，导致合法蓝框被当成空值丢弃；拆分后的 cover 节点随后回退到较大的 canonical 外接框。
+- 内容层现同时兼容两种矩形格式；cover 节点先解析 `fill_box`，并直接以该最终蓝框作为自身几何，文本层仍独立使用原有 placement/polygon，避免白底超出蓝框或被译文字号反向扩张。
+- 新增“canonical 总外接框大于最终蓝框”回归。完整自动验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `484/484`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（完整 canonical 超出 seam 捕获带时回退页面渲染）
+
+- Chrome 现场测量确认“完整三行译文挤在气泡上半部”是文本与几何错配：seam 最终框 `c0` 约 `213×58px`，几乎等于 `raw-0 | 안녕하세요!` 的 `199×54px` 第一行框；但该节点携带的 canonical 原文是三行完整句子“안녕하세요! 떠오르는 새벽! 더 던입니다!”。其余页面正文位于 `raw-7/raw-8/raw-6`，最后一行已经超出 96+96px seam 画布。
+- 根因是 surface 构造只使用属于当前 seam state 的 observation 合并几何，却使用完整 canonical 的文本和译文；跨页证据只覆盖第一行时，完整译文会被错误装入第一行框。
+- 新增 `inspectCanonicalSeamGeometry()` 可表达性门禁：逐一检查 canonical 的所有 page observation 是否完整落在对应 segment `sourceCrop` 内。任一正文框越出捕获带时，候选以 `canonical_geometry_outside_capture` 退出 seam surface，并且不写入 `handledCanonicalIds`；seam observation 仍保留用于 reconciliation，最终由页面侧 canonical union 大蓝框接管渲染。
+- seam final 调试框现严格由最终选中的 surface bubbles 重建；surface 没有选中候选时清空旧 final 蓝框，只保留 raw 红框，避免已回退页面渲染后仍显示过期 `t0/c0` 小蓝框。
+- 新增纯几何门禁和完整 pipeline 接管回归，覆盖“第一行在 top seam band、正文延伸到 band 外”的三行 canonical。完整自动验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `483/483`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（统一跨页 surface 内蓝框仲裁与清理图挂载）
+
+- Chrome 现场确认当前“多个蓝框”并非仅是 seam 与普通页面投影重复：同一个 `seam-render-v1:b3d69aed` surface 内同时存在完整 canonical“밥이요? 네, 먹었죠.”与被其覆盖的残片 canonical“먹었죠 먹었죠.”，面积约相差 3.1 倍；旧的 seam→page 移交仲裁无法处理 surface 内部冲突。
+- 将跨页最终选择规则集中到 `projection-utils.js`：同一 surface 内、同区域类型且覆盖较小框至少 72% 的候选按面积降序仲裁，只渲染覆盖更大的蓝框；被淘汰 canonical 仍写入 `handledCanonicalIds`，避免它从普通页面投影再次激活。互不重叠的多个蓝框和不同类型的特效文字继续独立保留。
+- OCR final 调试层现在跟随仲裁后的 seam 蓝框生成，普通页面中与 seam 最终框重叠的 final 蓝框会隐藏；raw 红框仍完整保留用于对比，避免逻辑已经淘汰残片但调试层继续显示 `t0/t4` 双蓝框。
+- Chrome 同时确认衣服 `NICT` 没有 final 蓝框，却被 seam 的整张 `cleanedImage` 擦除。surface 现在仅在仲裁后的气泡确实存在 `bgType!=solid` 时挂载 cleaned image；纯色译文即使 OCR 响应携带清理产物，也会清空 surface 的 `cleanedImage`、token 与 fingerprint，避免无关衣服文字进入渲染结果。
+- 新增重叠大框优先、独立多框保留、调试蓝框同步、纯色 seam 不消费无关清理图等回归。完整自动验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `481/481`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（跨页蓝框覆盖仲裁改为移交后重算）
+
+- 使用 Chrome 复核用户所示 Kakao 接缝现场：完整跨页蓝框对应 canonical `canonical_2b646...`，原文为“많이 와 주셔서 감사해요”；与其重叠的单页蓝框对应 `canonical_5eef...`，只包含残片“많이 와주셔서”。前者覆盖跨页完整文字，后者却仍被普通投影通道同时渲染，因而出现两份蓝框和两份中文。
+- 根因是投影仲裁顺序：第一轮普通投影中，完整 canonical 已把残片降成 cover；完整 canonical 随后移交给 seam surface，普通投影重新构建时残片恢复 active，但 seam 抑制仍使用移交前的第一轮结果，无法看到重新激活的残片。
+- 新增统一的两阶段 `resolveSeamProjectionPlan()`：先从普通投影移除已由 seam surface 接管的 canonical，再对重新构建的 active 候选按页面映射覆盖率做抑制，最后带着 seam handled 与 suppressed 集合重建最终投影；正常翻译与翻译失败回退共用同一顺序。多个 seam 蓝框仍逐一参与覆盖判断，独立且不重叠的普通文本不受影响。
+- 新增与现场 `720×1100` 页面、`720×192` 接缝画布相同几何的回归，锁定“完整跨页 canonical 移交后，单页残片不得重新激活”。完整自动验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `477/477`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。
+- Chrome 刷新普通漫画页后仍运行旧 content script，现场 DOM 继续包含残片 canonical，确认 unpacked 扩展进程不会热读取本次构建。需在扩展管理页手动点一次“重新加载”，再刷新漫画页进行最终现场复核。
+
+## 2026-07-16 - Codex（修复 seam 再次用完整气泡区域扩框）
+
+- 使用 Chrome 复核当前 Kakao 页面并直接比较 DOM 几何：可见 seam 蓝色 final 框约为 158×107，但同一 canonical 的 cover/text 节点达到约 232×182；普通单页节点已经与蓝框一致，证明扩张发生在跨页 surface 构造，而不是 OCR 蓝框生成或字体溢出阶段。
+- 根因是 seam 专用 `seamObservationCaptureBox()` 对纯色区域强制优先采用 `regionPolygon`，`buildSeamSurfaceBubble()` 又把纯色文字 polygon 替换成完整区域 polygon。因此正确的 `visual.box` 被覆盖，跨页遮盖与文字层同时退回整气泡面积。
+- seam 现与单页遵循同一几何契约：最终遮盖以 `visual.box` 蓝框为第一优先级，`fillBox` 和原始文字 polygon 依次回退，完整 `regionPolygon` 仅作为缺失最终几何时的兼容回退；文字层保留原始文字 polygon，区域 polygon 只保留背景识别语义。
+- 更新 seam 原子渲染回归，明确断言蓝框、文字 polygon 和区域 polygon 互不替代。完整自动验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `476/476`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（收紧气泡蓝框与实际遮盖范围）
+
+- 定位“蓝框扩展过大”为两条高置信度气泡特例共同造成：显示几何直接采用几乎整个 `region_box`，纯色填充又采用完整气泡区域；单句 110×40 的文字框因此可被放大到约 302×185，嵌入图片模式也会按大框填充。
+- 移除整气泡铺满特例。最终蓝框现统一取 OCR 文字框并集，只保留约 2–4px 的受限留边，并由气泡区域裁剪边界；`region_box` / `region_polygon` 继续用于区域归属、背景类型和颜色判断，不再决定蓝框或填充面积。
+- DOM 覆盖、复杂背景修复蒙版和嵌入图片纯色填充现在都跟随同一个最终蓝框。新增/更新回归锁定高置信度单句气泡不得回退为完整气泡范围，同时保留多行、斜排、跨页和背景判断行为。
+- 完整自动验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `476/476`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（统一蓝框清理并排除衣服英文误遮）
+
+- 使用 Chrome 现场复核当前 Kakao 页面：衣服上的 `NICT` 只有红色 raw OCR 框、没有蓝色 final 框，却已出现在清理图中；普通复杂背景译文节点的初始几何是蓝框，但 `syncOverlayPosition()` 随后用 raw polygon 将同一个节点缩回红框；服务端还对 supplemental 蓝框执行 2–8px 二次膨胀。这三条链路分别对应“误遮衣服英文”“仍按红框覆盖”“蓝框外继续扩张”。
+- DOM 覆盖层重新拆分为两个同源节点：无文字的 cover 节点固定使用 canonical 最终蓝框，清理图/实色背景只绘制在该节点；text 节点继续使用原始 polygon 做角度、位置和字体拟合，但强制透明背景。普通页面与 seam 页面共用 `createBubbleRenderNodes()`，避免 cover 再被文字 polygon 或溢出拟合改变。
+- OCR 服务在收到有效最终 `cleanedMasks` 时将其视为权威清理范围：不再混入 raw OCR 多边形，也不再对蓝框二次膨胀；只有缺少最终 mask 的首轮兼容路径才保留原始 OCR 的 2–8px 膨胀。因此像 `NICT` 这类只有红框、被最终候选过滤掉的服装文字不会进入最终清理图。
+- 新增回归覆盖蓝框/文字层分离、seam 共用路径、蓝框像素边界不膨胀、最终 mask 排除 provisional raw OCR。自动验证通过：文件长度门禁、ESLint、扩展构建、Node `476/476`、Pylint `10.00/10`、Python `58 passed, 1 skipped`。本地 OCR 服务已重启，`/health` 返回 `ok=true`、`device=gpu:0`、`cuda=true`；新扩展已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（复杂背景清理改用最终蓝框）
+
+- 根据“单句只覆盖红框、边缘笔画残留”的现象复核清理链路：红框是原始 OCR 字形多边形，蓝框是合并、留边后的最终 canonical 投影。此前普通单页复杂背景只把红框交给修复服务，蓝框补充蒙版仅限跨页文本，因此单句外围线条可能没有进入清理范围。
+- `buildCanonicalCleanMasks()` 现为每个启用且 `bgType=none` 的投影生成最终蓝框百分比蒙版，不再要求 canonical 必须跨页；实色气泡仍走可靠气泡区域填充。清理几何与译文 placement 保持分离，因此只扩大原文清除范围，不会放大或移动译文排版。
+- 清理产物键继续包含归一化蒙版：后续 seam 证据没有改变蓝框时复用已有清理图，蓝框变化时仍会生成不同产物键。新增/更新回归覆盖“原始红框小于蓝框时使用完整蓝框”和“相同蓝框不重复刷新”。
+- 自动验证通过：文件长度门禁、ESLint、扩展构建、定向测试 `10/10`、Node `475/475`、Pylint `10.00/10`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（修复 OCR 调试布尔值被当作会话对象）
+
+- 根据现场错误 `Cannot create property 'dedupedItems' on boolean 'true'` 定位到 Local Paddle OCR 聚类：`buildLocalPaddleBubbleItems()` 同时接收调试开关布尔值和可写 `ocrDebug` 会话，但聚类调用只传了布尔值；开启“OCR 调试”后，聚类器会向 `true.dedupedItems` 写值并中止 OCR。
+- 将聚类器契约拆分为 `debugEnabled` 与 `ocrDebug`，布尔值仅控制噪声保留及控制台日志，会话对象单独承载 `dedupedItems`、`lineItems`、`duplicateItems`；保留直接诊断入口对旧对象参数的兼容。
+- 新增“调试开关为 true + 可写调试会话”回归，锁定真实浏览器失败路径。红/蓝框仍只由“OCR 调试”控制：关闭该开关只隐藏诊断框，不会关闭 OCR。
+- 验证通过：文件长度门禁、ESLint、扩展构建、定向测试 `13/13`、Node `475/475`、Python `58 passed, 1 skipped`；新产物已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（以 e93b783 恢复翻译模式与旧版渲染质量）
+
+- 用户纠正重构前基线为 `e93b78374406e61a8e2ea8eeeb8d4e5f47b8ee5f`。对比确认旧版有两种渲染方式（DOM 覆盖、嵌入图片）和三种翻译模式（手动、当前位置及后续 6 张、连续到章节末尾）；新配置模型和调度器仍支持三种翻译模式，但重构后的 popup 丢失了选择入口。
+- Chrome 现场确认视觉回归不是 OCR 或译文内容问题：统一 RenderScene 把同一个气泡拆成独立 cover/text 节点，两者使用不同几何；DOM 文本直接采用 scene 字号，绕过旧版实测缩字、原文字高上限和溢出恢复，造成白色遮盖块与译文错位、36–48px 异常大字。
+- 保留新 OCR → canonical → translation 链路，恢复 e93b783 的渲染行为：普通页面使用单气泡节点同时完成遮盖与译文；DOM 通过隐藏测量节点二分拟合字号，并以原文字高限制放大；确有溢出时扩展气泡及实色填充；跨页 seam 在固定合并画布坐标中拟合一次，滚动缩放时只变换整体；嵌入模式恢复 Canvas 自动换行、二分字号拟合、旋转、区域裁剪和背景填充。
+- popup 恢复“翻译模式”选择器及状态说明，保存到现有 `mt_runtime_config_v1.pretranslateMode`，保持手动按钮、领先 6 张和连续到章节末尾三种行为。
+- 自动验证通过：文件长度门禁、ESLint、Pylint `10.00/10`、扩展构建、Node `474/474`、Python `58 passed, 1 skipped`；构建产物已更新到 `dist/extension/`。Python 沙箱内首次运行因无权读取用户 PaddleOCR 模型缓存失败，允许访问既有本机模型后同一套测试全绿。
+
+## 2026-07-16 - Codex（修复浏览器计时器 Illegal invocation）
+
+- 在当前 Kakao 漫画页现场复现 `翻译失败：Illegal invocation`：悬浮按钮与 OCR 总开关正常，错误发生在 canonical pipeline 首次为页面抓取设置超时保护时。
+- 根因是 canonical setup 将 `globalThis.setTimeout` / `globalThis.clearTimeout` 取出后作为普通函数调用；Chromium 的 Window 原生计时器要求保留 Window receiver，因此 Node 测试正常而浏览器抛出 `Illegal invocation`。默认计时器现统一绑定 `globalThis`，canonical deadline 和边缘重试共用安全包装；显式注入的测试计时器保持原协议。
+- 新增浏览器 receiver 回归，旧实现会稳定触发同名异常。文件长度门禁、ESLint、Pylint `10.00/10`、扩展构建、Node `474/474`、Python `58 passed, 1 skipped` 均通过；构建产物已更新到 `dist/extension/`。
+
+## 2026-07-16 - Codex（修复 canonical Store 初始化顺序）
+
+- 根据页面错误 `Cannot read properties of null (reading 'getRetryState')` 定位到初始化顺序回归：`reader-api` 在创建 canonical Store 之前就构造了重试调度器；同时 canonical pipeline 因缺少外部 Store 静默创建了自己的 Store，造成内容运行时与流水线持有两套状态。
+- 调整为先创建并保存唯一的 canonical Store，再将同一实例注入重试调度器和 canonical pipeline；重试调度器在构造期校验四个 retry-state 方法，使依赖缺失立即暴露，不再延迟到用户点击翻译后才崩溃。
+- 新增运行时同实例回归与空 Store 构造失败回归。文件长度门禁、ESLint、扩展构建和 Node `473/473` 均通过；本轮已有 Python `58 passed, 1 skipped`、Pylint `10.00/10` 结果保持通过，构建产物已更新到 `dist/extension/`。
+
+## 2026-07-16 - Codex（恢复手动翻译页面反馈）
+
+- 现场确认本地 OCR 服务与扩展总开关均已开启；首次“点击无反应”的直接原因是重新加载扩展后漫画页仍保留失效的旧 content script，控制台明确记录 `Extension context invalidated`，旧悬浮球仍可见却无法向后台发送 OCR 请求。
+- 修复新架构的静默失败回归：悬浮球旁新增页面内状态提示，手动翻译失败直接展示首个真实错误；扩展热重载失效时提示“请刷新漫画页”，无可见目标、全部目标因滚动失效、成功完成分别给出明确结果，不再只恢复为“译”而没有说明。
+- 手动批处理结果新增 `skippedCount` / `skippedReasons`，区分失败与可重试跳过；错误结果同时写入控制台，后台状态保留原有汇总，便于页面与弹窗两条诊断路径一致追踪。
+- 新增反馈文案与样式回归；文件长度门禁、ESLint、扩展构建、Node `471/471`、Python `58 passed, 1 skipped` 均通过。沙箱内 Python 实图用例因 Paddle 模型目录权限失败，允许访问本机模型缓存后复跑全绿；新构建已写入 `dist/extension/`。
+
+## 2026-07-16 - Codex（修复 canonical 翻译 provider 误接线）
+
+- 以 `419bea3` 为基线在现有 Kakao 漫画页复现不可用问题：扩展与悬浮球均已加载，但 canonical 刷新持续报 `Translation response omitted 3 item(s)`，页面无法生成译文。
+- 根因是 translation provider 注册表把 canonical 批量翻译误接到旧的图片块翻译函数；该函数返回 `Map`，而 canonical 链路要求保留请求 ID 的数组，因此所有返回项都被判定为漏译。
+- 将 OpenAI-compatible canonical 批量请求命名为独立的 `requestOpenAICompatibleCanonicalTranslationBatch`，provider 明确调用该接口；配置层的 `requestCanonicalTranslationBatch` 继续只负责 provider 选择、配置校验和测试 hook，避免同名覆盖再次混淆协议。
+- 新增真实配置包装器回归，锁定 provider 返回 canonical ID 数组的契约；文件长度门禁、ESLint、构建、Node `469/469`、Python `58 passed, 1 skipped` 均通过，`/health` 返回 `ok=true`、`device=gpu:0`、`ocrGeometryVersion=detect-crop-recognize-appearance-layout-v2`。
+- 新构建已写入 `dist/extension/`。浏览器安全策略禁止自动操作 `edge://extensions/`，需要用户手动重载该目录后刷新漫画页，才能完成新版现场复核。
+
 ## 2026-07-16 - Codex（完成 OCR / 翻译 / 渲染统一架构）
 
 - 在用户后续重构提交之上继续完成迁移，不回退既有提交；旧仓库继续保留，当前唯一开发与构建目录为 `C:\homework\translator`，Chrome 唯一加载目录为 `dist/extension/`。

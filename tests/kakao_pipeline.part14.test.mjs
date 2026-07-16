@@ -690,3 +690,74 @@ test("seam OCR is evidence-triggered and skipped for ordinary interior pages", a
   assert.equal(harness.calls.some(call => call.startsWith("ocr:seam:")), false);
   assert.equal(harness.store.getSeamStates()[0].status, "skipped");
 });
+test("solid seam rendering leaves unrelated pixels out of the cleaned artifact", async () => {
+  const options = boundaryMergeHarnessOptions();
+  options.seamCleanedImage = "data:image/png;base64,dW5yZWxhdGVk";
+  options.seamCleanedImageToken = "unrelated-artifact";
+  options.seamObservations[0].visual = {
+    ...options.seamObservations[0].visual,
+    box: { x: 24, y: 42, w: 52, h: 20 },
+    fillBox: { x: 24, y: 42, w: 52, h: 20 }
+  };
+  options.seamPayload = {
+    dataUrl: "data:image/png;base64,c2VhbQ==",
+    width: 800,
+    height: 600,
+    coordinateSpace: "kakao-seam-v1",
+    seam: {
+      canvasWidth: 800,
+      canvasHeight: 600,
+      segments: [{
+        pageId: "page-a",
+        drawRect: { x: 0, y: 0, w: 800, h: 300 },
+        sourceCrop: { x: 0, y: 1700, w: 800, h: 300 },
+        naturalWidth: 800,
+        naturalHeight: 2000
+      }, {
+        pageId: "page-b",
+        drawRect: { x: 0, y: 300, w: 800, h: 300 },
+        sourceCrop: { x: 0, y: 0, w: 800, h: 300 },
+        naturalWidth: 800,
+        naturalHeight: 2000
+      }]
+    }
+  };
+  const harness = createCanonicalHarness(options);
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+  const surface = harness.renderInputs.findLast(input => input.seamSurfaces?.some(item => item.bubbles.length > 0)).seamSurfaces[0];
+  assert.equal(harness.store.getSeamStates().find(state => state.status === "completed").cleanedImage, options.seamCleanedImage);
+  assert.equal(surface.bubbles[0].bg_type, "solid");
+  assert.equal(surface.cleanedImage, null);
+  assert.equal(surface.cleanedImageToken, "");
+  assert.equal(surface.artifactFingerprint, "");
+});
+test("a full page box outside the seam band keeps page-local rendering authority", async () => {
+  const options = boundaryMergeHarnessOptions();
+  options.pageObservations.b[0].originalText = "A tail B head";
+  options.pageObservations.b[0].pageSpans[0].box.h = 22;
+  options.seamPayload = {
+    dataUrl: "data:image/png;base64,c2VhbQ==",
+    width: 800,
+    height: 600,
+    coordinateSpace: "kakao-seam-v1",
+    seam: {
+      canvasWidth: 800,
+      canvasHeight: 600,
+      segments: [{
+        pageId: "page-a", drawRect: { x: 0, y: 0, w: 800, h: 300 }, sourceCrop: { x: 0, y: 1700, w: 800, h: 300 }, naturalWidth: 800, naturalHeight: 2000
+      }, {
+        pageId: "page-b", drawRect: { x: 0, y: 300, w: 800, h: 300 }, sourceCrop: { x: 0, y: 0, w: 800, h: 300 }, naturalWidth: 800, naturalHeight: 2000
+      }]
+    }
+  };
+  const harness = createCanonicalHarness(options);
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+  const canonical = harness.store.getCanonicalSnapshot().find(item => item.memberObservationIds.includes("merge-seam"));
+  const projection = harness.store.getProjections("page-b").find(item => item.canonicalId === canonical.id && item.activeText);
+  assert.ok(projection);
+  assert.equal(projection.original_text, "A tail B head");
+  assert.ok(projection.geometry.height >= 22);
+  assert.equal(harness.renderInputs.some(input => input.seamSurfaces?.some(surface => surface.handledCanonicalIds.includes(canonical.id))), false);
+});

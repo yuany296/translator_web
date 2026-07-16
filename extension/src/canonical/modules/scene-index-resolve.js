@@ -230,7 +230,7 @@ export function installSceneIndexResolve(runtime) {
   }
   runtime.projectionToBubble = projectionToBubble;
   function buildStandbyCoverProjections(projection) {
-    if (!projection || projection.role !== "standby") return [];
+    if (!projection || projection.role !== "standby" || projection.coverEligible === false) return [];
     return [Object.freeze({
       ...projection,
       id: `${String(projection.id || projection.canonicalId || "projection")}:cover`,
@@ -316,14 +316,13 @@ export function installSceneIndexResolve(runtime) {
     };
   }
   runtime.normalizeCanonicalCleanMaskGeometry = normalizeCanonicalCleanMaskGeometry;
-  function buildCanonicalCleanMasks(projections, crossPageCanonicalIds = new Set()) {
-    const crossPageIds = crossPageCanonicalIds instanceof Set ? crossPageCanonicalIds : new Set(Array.from(crossPageCanonicalIds || [], String));
+  function buildCanonicalCleanMasks(projections) {
     const byKey = new Map();
     for (const projection of Array.isArray(projections) ? projections : []) {
       const canonicalId = String(projection && projection.canonicalId || "");
-      if (!canonicalId || !crossPageIds.has(canonicalId) || !runtime.projectionRequiresCleanedImage(projection)) continue;
-      // 跨页漏字往往恰好落在单页 OCR 多边形之外；清理范围必须采用渲染蓝框
-      // 对应的 canonical union，而不能退回某一行文字或某个 seam 字框。
+      if (!canonicalId || !runtime.projectionRequiresCleanedImage(projection)) continue;
+      // 原始红框只覆盖 OCR 字形，容易残留笔画；清理范围统一采用最终渲染蓝框。
+      // 文字排版仍使用 placement，清理几何不会放大译文布局。
       const mask = runtime.normalizeCanonicalCleanMaskGeometry(projection.geometry || projection.box);
       if (mask) byKey.set(JSON.stringify(mask), mask);
     }

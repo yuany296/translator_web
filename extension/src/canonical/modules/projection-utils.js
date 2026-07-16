@@ -14,7 +14,7 @@ export function installProjectionUtils(runtime) {
     const regionId = String(rawVisual.regionId || rawVisual.region_id || "");
     const regionType = String(rawVisual.regionType || rawVisual.region_type || "plain_text");
     const regionPolygon = rawVisual.regionPolygon || rawVisual.region_polygon || null;
-    const polygon = bgType.trim().toLowerCase() === "solid" ? regionPolygon || null : rawVisual.polygon || null;
+    const polygon = rawVisual.polygon || null;
     const textColor = String(rawVisual.textColor || rawVisual.text_color || "");
     const strokeColor = String(rawVisual.strokeColor || rawVisual.stroke_color || "");
     const alignment = runtime.normalizeTextAlignment(rawVisual.alignment);
@@ -91,6 +91,47 @@ export function installProjectionUtils(runtime) {
     return bgType !== "solid";
   }
   runtime.seamBubbleRequiresCleanedImage = seamBubbleRequiresCleanedImage;
+  function seamSurfaceRequiresCleanedImage(bubbles) {
+    return (Array.isArray(bubbles) ? bubbles : []).some(runtime.seamBubbleRequiresCleanedImage);
+  }
+  runtime.seamSurfaceRequiresCleanedImage = seamSurfaceRequiresCleanedImage;
+  function inspectCanonicalSeamGeometry(canonical, observationsById, segments) {
+    const segmentByPage = new Map((Array.isArray(segments) ? segments : []).map(segment => [String(segment && segment.pageId || ""), segment]));
+    const outsideObservationIds = [];
+    const missingObservationIds = [];
+    let pageObservationCount = 0;
+    for (const observationId of Array.isArray(canonical && canonical.memberObservationIds) ? canonical.memberObservationIds : []) {
+      const observation = observationsById instanceof Map ? observationsById.get(String(observationId)) : null;
+      if (!observation) {
+        missingObservationIds.push(String(observationId));
+        continue;
+      }
+      if (observation.sourceType === "seam") continue;
+      pageObservationCount += 1;
+      const spans = (Array.isArray(observation.pageSpans) ? observation.pageSpans : []).filter(span => segmentByPage.has(String(span && span.pageId || "")));
+      const represented = spans.length > 0 && spans.every(span => {
+        const segment = segmentByPage.get(String(span.pageId));
+        const sourceCrop = runtime.normalizeSeamGeometryRect(segment && segment.sourceCrop);
+        const naturalWidth = Number(segment && segment.naturalWidth) || 0;
+        const naturalHeight = Number(segment && segment.naturalHeight) || 0;
+        const box = runtime.normalizeSpanBoxPixels(span && span.box, {
+          width: naturalWidth,
+          height: naturalHeight
+        });
+        if (!sourceCrop || !box || !(naturalWidth > 0 && naturalHeight > 0)) return false;
+        const tolerance = Math.max(2, Math.min(naturalWidth, naturalHeight) * 0.002);
+        return box.left >= sourceCrop.x - tolerance && box.top >= sourceCrop.y - tolerance && box.left + box.width <= sourceCrop.x + sourceCrop.w + tolerance && box.top + box.height <= sourceCrop.y + sourceCrop.h + tolerance;
+      });
+      if (!represented) outsideObservationIds.push(String(observationId));
+    }
+    return {
+      represented: missingObservationIds.length === 0 && outsideObservationIds.length === 0,
+      pageObservationCount,
+      outsideObservationIds: outsideObservationIds.sort(),
+      missingObservationIds: missingObservationIds.sort()
+    };
+  }
+  runtime.inspectCanonicalSeamGeometry = inspectCanonicalSeamGeometry;
   function seamProjectionRegionFamily(value) {
     const visual = value && value.visual && typeof value.visual === "object" ? value.visual : {};
     const bubble = value && value.bubble && typeof value.bubble === "object" ? value.bubble : value || {};
@@ -158,6 +199,78 @@ export function installProjectionUtils(runtime) {
     return intersectionWidth * intersectionHeight / Math.max(0.0001, Math.min(left.w * left.h, right.w * right.h));
   }
   runtime.seamBoxOverlapOverSmaller = seamBoxOverlapOverSmaller;
+  function resolveSeamSurfaceCandidates(candidates) {
+    const ranked = [...(Array.isArray(candidates) ? candidates : [])].sort((left, right) => {
+      const leftBox = runtime.normalizeSeamPercentBox(left && left.bubble);
+      const rightBox = runtime.normalizeSeamPercentBox(right && right.bubble);
+      const areaDifference = (rightBox ? rightBox.w * rightBox.h : 0) - (leftBox ? leftBox.w * leftBox.h : 0);
+      if (Math.abs(areaDifference) > 0.0001) return areaDifference;
+      const lineDifference = Number(right && right.bubble && right.bubble.source_line_count || 1) - Number(left && left.bubble && left.bubble.source_line_count || 1);
+      if (lineDifference) return lineDifference;
+      const textDifference = String(right && right.bubble && right.bubble.original_text || "").length - String(left && left.bubble && left.bubble.original_text || "").length;
+      return textDifference || String(left && left.canonical && left.canonical.id || "").localeCompare(String(right && right.canonical && right.canonical.id || ""));
+    });
+    const selected = [];
+    const suppressed = [];
+    for (const candidate of ranked) {
+      const box = runtime.normalizeSeamPercentBox(candidate && candidate.bubble);
+      if (!box) continue;
+      const winner = selected.find(item => runtime.seamProjectionRegionFamily(item.candidate.bubble) === runtime.seamProjectionRegionFamily(candidate.bubble) && runtime.seamBoxOverlapOverSmaller(item.box, box) >= 0.72);
+      if (winner) {
+        suppressed.push({
+          candidate,
+          winner: winner.candidate,
+          overlap: runtime.seamBoxOverlapOverSmaller(winner.box, box)
+        });
+      } else {
+        selected.push({ candidate, box });
+      }
+    }
+    return {
+      selected: selected.map(item => item.candidate).sort((left, right) => left.bubble.y - right.bubble.y || left.bubble.x - right.bubble.x || String(left.canonical.id).localeCompare(String(right.canonical.id))),
+      suppressed
+    };
+  }
+  runtime.resolveSeamSurfaceCandidates = resolveSeamSurfaceCandidates;
+  function buildSeamSurfaceDebug(debug, bubbles) {
+    if (!debug || typeof debug !== "object") return debug;
+    const finalBubbles = (Array.isArray(bubbles) ? bubbles : []).map((bubble, index) => ({
+      id: `c${index}`,
+      blockId: `c${index}`,
+      text: String(bubble && (bubble.original_text || bubble.originalText) || ""),
+      translatedText: String(bubble && (bubble.translated_text || bubble.translatedText) || ""),
+      percent: {
+        x: Number(bubble.x) || 0,
+        y: Number(bubble.y) || 0,
+        w: Number(bubble.w) || 0,
+        h: Number(bubble.h) || 0
+      }
+    }));
+    return {
+      ...debug,
+      finalBubbles,
+      items: finalBubbles
+    };
+  }
+  runtime.buildSeamSurfaceDebug = buildSeamSurfaceDebug;
+  function resolvePageDebugForSeamSurfaces(debug, surfaces, pageId) {
+    if (!debug || typeof debug !== "object" || !Array.isArray(debug.finalBubbles)) return debug;
+    const coverage = (Array.isArray(surfaces) ? surfaces : []).flatMap(surface => (Array.isArray(surface && surface.bubbles) ? surface.bubbles : []).map(bubble => runtime.projectSeamBubbleToPage(surface, bubble, pageId))).filter(Boolean);
+    if (!coverage.length) return debug;
+    const imageWidth = Math.max(1, Number(debug.imageWidth) || 1);
+    const imageHeight = Math.max(1, Number(debug.imageHeight) || 1);
+    const finalBubbles = debug.finalBubbles.filter(item => {
+      const box = runtime.normalizeSeamPercentBox(runtime.getDebugItemPercent(item, imageWidth, imageHeight));
+      return !box || !coverage.some(seamBox => runtime.seamBoxOverlapOverSmaller(box, seamBox) >= 0.72);
+    });
+    if (finalBubbles.length === debug.finalBubbles.length) return debug;
+    return {
+      ...debug,
+      finalBubbles,
+      items: finalBubbles
+    };
+  }
+  runtime.resolvePageDebugForSeamSurfaces = resolvePageDebugForSeamSurfaces;
   function collectSeamSuppressedCanonicalIds(surface, projectionsByPage) {
     const suppressed = new Set();
     if (!surface || !Array.isArray(surface.bubbles) || surface.bubbles.length === 0) return suppressed;
@@ -165,14 +278,14 @@ export function installProjectionUtils(runtime) {
       const coverages = surface.bubbles.map(bubble => ({
         bubble,
         box: runtime.projectSeamBubbleToPage(surface, bubble, pageId)
-      })).filter(item => item.box && (item.box.y <= 6 || item.box.y + item.box.h >= 94));
+      })).filter(item => item.box);
       if (!coverages.length) continue;
       for (const projection of projectionsByPage instanceof Map ? projectionsByPage.get(pageId) || [] : []) {
         const canonicalId = String(projection && projection.canonicalId || "");
         const role = String(projection && projection.role || "");
         if (!canonicalId || role === "cover" || projection.activeText === false) continue;
         const box = runtime.seamProjectionBox(projection);
-        if (!box || !(box.y <= 6 || box.y + box.h >= 94)) continue;
+        if (!box) continue;
         const regionFamily = runtime.seamProjectionRegionFamily(projection);
         const covered = coverages.some(coverage => runtime.seamProjectionRegionFamily(coverage.bubble) === regionFamily && runtime.seamBoxOverlapOverSmaller(box, coverage.box) >= 0.72 && box.w * box.h <= coverage.box.w * coverage.box.h * 1.35);
         if (covered) suppressed.add(canonicalId);
@@ -206,4 +319,23 @@ export function installProjectionUtils(runtime) {
     return new Set((Array.isArray(index && index.surfaces) ? index.surfaces : []).flatMap(surface => Array.isArray(surface && surface.suppressedCanonicalIds) ? surface.suppressedCanonicalIds.map(String) : []));
   }
   runtime.getSeamSuppressedCanonicalIds = getSeamSuppressedCanonicalIds;
+  function resolveSeamProjectionPlan(index, buildProjections) {
+    if (!index || typeof buildProjections !== "function") return {
+      seamSurfaceIndex: index,
+      handledCanonicalIds: new Set(),
+      projections: new Map()
+    };
+    // 先移除已经交给 seam surface 的 canonical，再判断普通投影是否与 seam 蓝框重复。
+    // 否则第一轮被完整 canonical 压成 cover 的残片，会在完整 canonical 移交后重新变成 active。
+    const seamHandledIds = new Set(Array.from(index.handledCanonicalIds || [], String));
+    const candidatesAfterHandoff = buildProjections(seamHandledIds);
+    const seamSurfaceIndex = runtime.addSeamProjectionSuppressions(index, candidatesAfterHandoff);
+    const handledCanonicalIds = new Set([...seamHandledIds, ...runtime.getSeamSuppressedCanonicalIds(seamSurfaceIndex)]);
+    return {
+      seamSurfaceIndex,
+      handledCanonicalIds,
+      projections: buildProjections(handledCanonicalIds)
+    };
+  }
+  runtime.resolveSeamProjectionPlan = resolveSeamProjectionPlan;
 }

@@ -465,7 +465,7 @@ test("seam composite is cleaned once and atomically replaces both page projectio
   const options = boundaryMergeHarnessOptions();
   options.seamObservations[0].visual = {
     ...options.seamObservations[0].visual,
-    bgType: "solid",
+    bgType: "none",
     fillBox: {
       x: 24,
       y: 42,
@@ -478,6 +478,19 @@ test("seam composite is cleaned once and atomically replaces both page projectio
       w: 52,
       h: 20
     },
+    polygon: [{
+      x: 26,
+      y: 44
+    }, {
+      x: 74,
+      y: 44
+    }, {
+      x: 74,
+      y: 60
+    }, {
+      x: 26,
+      y: 60
+    }],
     regionPolygon: [{
       x: 18,
       y: 38
@@ -590,11 +603,13 @@ test("seam composite is cleaned once and atomically replaces both page projectio
     w: surface.bubbles[0].w,
     h: surface.bubbles[0].h
   }, {
-    x: 18,
-    y: 38,
-    w: 64,
-    h: 28
-  }, "solid captions must use the full region polygon instead of the inner OCR text union");
+    x: 24,
+    y: 42,
+    w: 52,
+    h: 20
+  }, "seam rendering must keep the final blue box instead of expanding to the full region polygon");
+  assert.deepEqual(surface.bubbles[0].polygon, options.seamObservations[0].visual.polygon);
+  assert.deepEqual(surface.bubbles[0].region_polygon, options.seamObservations[0].visual.regionPolygon);
   assert.ok(surface.bubbles[0].y < 50 && surface.bubbles[0].y + surface.bubbles[0].h > 50);
   assert.deepEqual(surface.handledCanonicalIds, Object.keys(surface.canonicalRevisionById));
   for (const projections of atomic.projectionsByPage.values()) {
@@ -680,6 +695,57 @@ test("translated seam geometry suppresses a smaller conflicting page-edge projec
     translated_text: "那个想睡觉的人"
   }]]]);
   assert.deepEqual([...P.collectSeamSuppressedCanonicalIds(surface, projections)], ["canonical-small-wrong"]);
+});
+test("seam suppression is recomputed after surface handoff before a page fragment can reactivate", () => {
+  const surface = {
+    renderKey: "live-seam",
+    canvasWidth: 720,
+    canvasHeight: 192,
+    pageIds: ["page-a", "page-b"],
+    segments: [{
+      pageId: "page-a",
+      drawRect: { x: 0, y: 0, w: 720, h: 96 },
+      sourceCrop: { x: 0, y: 1004, w: 720, h: 96 },
+      naturalWidth: 720,
+      naturalHeight: 1100
+    }, {
+      pageId: "page-b",
+      drawRect: { x: 0, y: 96, w: 720, h: 96 },
+      sourceCrop: { x: 0, y: 0, w: 720, h: 96 },
+      naturalWidth: 720,
+      naturalHeight: 1100
+    }],
+    bubbles: [{
+      x: 20.44,
+      y: 5.88,
+      w: 28.98,
+      h: 52.31,
+      region_type: "speech_bubble",
+      original_text: "많이 와 주셔서 감사해요"
+    }],
+    handledCanonicalIds: ["canonical-complete"]
+  };
+  const index = {
+    surfaces: [surface],
+    byPage: new Map([["page-a", [surface]], ["page-b", [surface]]]),
+    handledCanonicalIds: new Set(surface.handledCanonicalIds)
+  };
+  const fragment = {
+    canonicalId: "canonical-fragment",
+    role: "primary",
+    activeText: true,
+    originalText: "많이 와주셔서",
+    geometry: { left: 20.29, top: 92.09, width: 29.43, height: 4.36 },
+    bubble: { region_type: "speech_bubble" }
+  };
+  const handledCalls = [];
+  const plan = P.resolveSeamProjectionPlan(index, handledIds => {
+    handledCalls.push([...handledIds].sort());
+    return new Map([["page-a", handledIds.has("canonical-fragment") ? [] : [fragment]]]);
+  });
+  assert.deepEqual(handledCalls, [["canonical-complete"], ["canonical-complete", "canonical-fragment"]]);
+  assert.deepEqual(plan.seamSurfaceIndex.surfaces[0].suppressedCanonicalIds, ["canonical-fragment"]);
+  assert.deepEqual(plan.projections.get("page-a"), []);
 });
 test("canonical pipeline translates interior observations while edge candidates wait", async () => {
   const harness = createCanonicalHarness({

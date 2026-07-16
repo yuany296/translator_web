@@ -151,24 +151,32 @@ export function installLifecyclePosition(runtime) {
 
     // 字号按气泡高度比例计算，并使用 clamp 限制上下界。
     overlayState.bubbleNodes.forEach(node => {
-      if (node.dataset.sceneTextLayer === "true" && node.mtSceneBubble) {
-        const layer = runtime.buildBubbleTextLayer(node.mtSceneBubble, {
-          id: overlayState.targetId,
-          type: "page",
-          width: rect.width,
-          height: rect.height
+      const polygonGeometry = runtime.getOverlayPolygonGeometry(node, rect);
+      const bubbleWidthPercent = Number(node.dataset.wPercent || "0");
+      const bubbleHeightPercent = Number(node.dataset.hPercent || "0");
+      const bubbleWidthPx = polygonGeometry ? polygonGeometry.width : rect.width * bubbleWidthPercent / 100;
+      const bubbleHeightPx = polygonGeometry ? polygonGeometry.height : rect.height * bubbleHeightPercent / 100;
+      if (polygonGeometry) {
+        node.style.width = `${polygonGeometry.width}px`;
+        node.style.height = `${polygonGeometry.height}px`;
+        runtime.applyBubbleAnchorStyle(node, {
+          alignment: node.dataset.alignment,
+          x: polygonGeometry.left,
+          y: polygonGeometry.top,
+          w: polygonGeometry.width,
+          h: polygonGeometry.height,
+          centerX: polygonGeometry.centerX,
+          centerY: polygonGeometry.centerY,
+          rotation: Number(node.dataset.rotationDeg || 0),
+          unit: "px",
+          allowVerticalOverflow: true
         });
-        const family = String(node.dataset.sceneFamily || "");
-        const familyNodes = family ? overlayState.root.querySelectorAll(`[data-scene-family="${CSS.escape(family)}"]`) : [node];
-        if (layer.type !== "text") {
-          familyNodes.forEach(item => { item.style.display = "none"; });
-          return;
-        }
-        familyNodes.forEach(item => { item.style.removeProperty("display"); });
-        runtime.applyDomTextLayer(node, layer);
-        node.style.setProperty("--mt-stroke-width", `${runtime.getDynamicStrokeWidth(layer.layout.fontSize).toFixed(1)}px`);
-        return;
       }
+      const fittedSize = runtime.fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, {
+        backgroundTarget: overlayState.isBackgroundTarget
+      }, runtime.getBubbleOriginalTextHeight(node, bubbleHeightPx, rect.height));
+      node.style.fontSize = `${fittedSize.toFixed(1)}px`;
+      node.style.setProperty("--mt-stroke-width", `${runtime.getDynamicStrokeWidth(fittedSize).toFixed(1)}px`);
     });
   }
   runtime.syncOverlayPosition = syncOverlayPosition;

@@ -18,6 +18,7 @@
     button { padding: 7px 10px; border: 0; border-radius: 7px; cursor: pointer; background: #e5eaf2; }
     button.primary { color: white; background: #2563eb; } button.run { color: white; background: #059669; }
     .status { min-height: 16px; margin-top: 7px; font-size: 11px; color: #526078; } .status.error { color: #b42318; }
+    .mode-status { margin-top: 5px; font-size: 11px; line-height: 1.45; color: #2563eb; }
     details { margin-top: 8px; } summary { cursor: pointer; font-size: 12px; color: #334155; }
     .footer { display: flex; gap: 8px; } .footer button { flex: 1; } .hidden { display: none; }
   </style>
@@ -61,6 +62,15 @@
     <div class="grid">
       <div class="field"><label for="captureMode">取图</label><select id="captureMode"><option value="direct">直接读取</option><option value="screenshot">可视区截图</option></select></div>
       <div class="field"><label for="renderMode">渲染</label><select id="renderMode"><option value="overlay">DOM 覆盖</option><option value="embedded">嵌入图片</option></select></div>
+    </div>
+    <div class="field">
+      <label for="pretranslateMode">翻译模式</label>
+      <select id="pretranslateMode">
+        <option value="manual">手动翻译</option>
+        <option value="ahead">领先预翻译：当前位置及后续 6 张</option>
+        <option value="continuous">连续预翻译：从当前位置到章节末尾</option>
+      </select>
+      <div id="pretranslateModeStatus" class="mode-status"></div>
     </div>
     <div class="toggle"><span>启用翻译</span><input id="runtimeEnabled" type="checkbox" /></div>
     <div class="toggle"><span>显示悬浮球</span><input id="showBall" type="checkbox" /></div>

@@ -57,18 +57,16 @@ export function installCanonicalTranslate(runtime, scope) {
       if (guardAllows()) {
         try {
           const ordinaryFallbackProjections = scope.buildCanonicalProjections(scope.store);
-          const fallbackSurfaces = runtime.addSeamProjectionSuppressions(runtime.buildSeamRenderSurfaceIndex(scope.store, {
+          const fallbackPlan = runtime.resolveSeamProjectionPlan(runtime.buildSeamRenderSurfaceIndex(scope.store, {
             isPageAvailable: scope.isPageAvailable
-          }), ordinaryFallbackProjections);
-          const fallbackHandledIds = new Set([...fallbackSurfaces.handledCanonicalIds, ...runtime.getSeamSuppressedCanonicalIds(fallbackSurfaces)]);
-          const fallbackProjections = scope.buildCanonicalProjections(scope.store, fallbackHandledIds);
-          scope.store.setProjections(fallbackProjections);
-          await scope.refreshRequiredCleanedArtifacts(fallbackProjections);
+          }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds));
+          scope.store.setProjections(fallbackPlan.projections);
+          await scope.refreshRequiredCleanedArtifacts(fallbackPlan.projections);
           if (guardAllows()) {
             // 每页是否完整由当前 canonical revision 和 provisional projection 独立判断。
             // 不能用一个失败项把全章其他已完成页面也降级成 pending。
             await scope.renderAllCanonicalPages(`${reason}:translation-fallback`, guardAllows, {
-              seamSurfaceIndex: fallbackSurfaces,
+              seamSurfaceIndex: fallbackPlan.seamSurfaceIndex,
               fallbackProjectionsByPage: ordinaryFallbackProjections
             });
           }
@@ -88,13 +86,11 @@ export function installCanonicalTranslate(runtime, scope) {
     });
     for (const pageId of focusPageIds) scope.store.setCanonicalPagePhase(pageId, runtime.CanonicalPhase.PROJECTING);
     const ordinaryFallbackProjections = scope.buildCanonicalProjections(scope.store);
-    const seamSurfaceIndex = runtime.addSeamProjectionSuppressions(runtime.buildSeamRenderSurfaceIndex(scope.store, {
+    const projectionPlan = runtime.resolveSeamProjectionPlan(runtime.buildSeamRenderSurfaceIndex(scope.store, {
       isPageAvailable: scope.isPageAvailable
-    }), ordinaryFallbackProjections);
-    const seamHandledIds = new Set([...seamSurfaceIndex.handledCanonicalIds, ...runtime.getSeamSuppressedCanonicalIds(seamSurfaceIndex)]);
-    const projections = scope.buildCanonicalProjections(scope.store, seamHandledIds);
-    scope.store.setProjections(projections);
-    await scope.refreshRequiredCleanedArtifacts(projections);
+    }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds));
+    scope.store.setProjections(projectionPlan.projections);
+    await scope.refreshRequiredCleanedArtifacts(projectionPlan.projections);
     if (!guardAllows()) return {
       aborted: true
     };
@@ -103,7 +99,7 @@ export function installCanonicalTranslate(runtime, scope) {
     });
     for (const pageId of focusPageIds) scope.store.setCanonicalPagePhase(pageId, runtime.CanonicalPhase.RENDERING);
     await scope.renderAllCanonicalPages(reason, guardAllows, {
-      seamSurfaceIndex,
+      seamSurfaceIndex: projectionPlan.seamSurfaceIndex,
       fallbackProjectionsByPage: ordinaryFallbackProjections
     });
     if (!guardAllows()) return {

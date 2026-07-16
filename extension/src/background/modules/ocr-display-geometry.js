@@ -1,5 +1,5 @@
 export function installOcrDisplayGeometry(runtime) {
-  function buildLocalPaddleDisplayBox(cluster, regionBox, imageSize, regionType = "", regionConfidence = 0, geometry = null) {
+  function buildLocalPaddleDisplayBox(cluster, regionBox, imageSize, regionType = "", geometry = null) {
     const boxes = (Array.isArray(cluster) ? cluster : []).map(entry => entry && entry.box).filter(Boolean);
     if (boxes.length === 0) {
       return null;
@@ -8,22 +8,6 @@ export function installOcrDisplayGeometry(runtime) {
     const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
     const union = boxes.reduce(runtime.unionLocalPaddleBoxes);
     const avgHeight = Math.max(1, boxes.reduce((sum, box) => sum + box.height, 0) / boxes.length);
-    const isReliableSpeechBubble = String(regionType || "").toLowerCase() === "speech_bubble" && Number(regionConfidence) >= 0.75 && regionBox && Number(regionBox.width) > union.width * 1.15 && Number(regionBox.height) > union.height * 1.15;
-    if (isReliableSpeechBubble) {
-      // 气泡的 OCR 文字框通常只覆盖一行，排版应使用气泡内部可用区域。
-      const regionLeft = Number(regionBox.left) || 0;
-      const regionTop = Number(regionBox.top) || 0;
-      const regionWidth = Math.max(0, Number(regionBox.width) || 0);
-      const regionHeight = Math.max(0, Number(regionBox.height) || 0);
-      const insetX = Math.min(regionWidth * 0.08, avgHeight * 1.5);
-      const insetY = Math.min(regionHeight * 0.08, avgHeight * 1.5);
-      return {
-        left: Math.max(0, regionLeft + insetX),
-        top: Math.max(0, regionTop + insetY),
-        width: Math.min(imageWidth, Math.max(1, regionWidth - insetX * 2)),
-        height: Math.min(imageHeight, Math.max(1, regionHeight - insetY * 2))
-      };
-    }
     if (geometry && Math.abs(Number(geometry.rotation) || 0) >= 3 && geometry.inlineWidth > 0 && geometry.normalHeight > 0) {
       const lineThicknesses = cluster.map(entry => runtime.getProjectedPolygonLineThickness(entry && entry.item && entry.item.polygon, geometry.rotation)).filter(value => value > 0).sort((left, right) => left - right);
       const medianThickness = lineThicknesses[Math.floor(lineThicknesses.length / 2)] || avgHeight;
@@ -39,7 +23,7 @@ export function installOcrDisplayGeometry(runtime) {
         height
       };
     }
-    // 文字排版框只保留少量呼吸空间；擦除原文所需的更大范围由 fill_box 单独负责。
+    // 蓝框只围绕最终文字并集保留小幅留边；气泡区域只用于边界约束和背景判断。
     const compact = runtime.isChatRegionType(regionType);
     const marginX = compact ? 0 : Math.max(2, Math.min(union.width * 0.035, avgHeight * 0.25));
     const marginY = compact ? 0 : Math.max(2, Math.min(union.height * 0.04, avgHeight * 0.15));

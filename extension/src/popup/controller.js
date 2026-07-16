@@ -21,6 +21,16 @@ function showOcrProvider() {
   byId("baiduFields").classList.toggle("hidden", local);
 }
 
+function updatePretranslateModeStatus() {
+  const mode = value("pretranslateMode");
+  const messages = {
+    manual: "手动模式：仅在点击翻译时处理当前可视区域",
+    ahead: "已开启：自动处理当前位置及后续 6 张图片",
+    continuous: "已开启：从当前位置连续处理到本章末尾"
+  };
+  byId("pretranslateModeStatus").textContent = messages[mode] || messages.manual;
+}
+
 function fill(configuration) {
   const { ocr, translation, runtime } = configuration;
   byId("ocrProvider").value = ocr.provider;
@@ -39,10 +49,12 @@ function fill(configuration) {
   byId("translationUrl").value = translation.baseUrl;
   byId("captureMode").value = runtime.captureMode;
   byId("renderMode").value = runtime.renderMode;
+  byId("pretranslateMode").value = runtime.pretranslateMode;
   byId("runtimeEnabled").checked = runtime.enabled;
   byId("showBall").checked = runtime.showBall;
   byId("termDiscoveryEnabled").checked = runtime.termDiscoveryEnabled;
   showOcrProvider();
+  updatePretranslateModeStatus();
 }
 
 function collect(section, current) {
@@ -66,7 +78,8 @@ function collect(section, current) {
   return {
     ...current.runtime, enabled: checked("runtimeEnabled"), showBall: checked("showBall"),
     termDiscoveryEnabled: checked("termDiscoveryEnabled"),
-    captureMode: value("captureMode"), renderMode: value("renderMode")
+    captureMode: value("captureMode"), renderMode: value("renderMode"),
+    pretranslateMode: value("pretranslateMode")
   };
 }
 
@@ -122,4 +135,5 @@ document.addEventListener("click", async (event) => {
 });
 
 byId("ocrProvider").addEventListener("change", showOcrProvider);
+byId("pretranslateMode").addEventListener("change", updatePretranslateModeStatus);
 load().catch((error) => setStatus("global", error.message, true));

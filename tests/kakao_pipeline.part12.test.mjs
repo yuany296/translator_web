@@ -543,7 +543,7 @@ test("seam-only complex evidence can request page artifacts after warm page OCR"
   assert.equal(harness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
   assert.equal(harness.store.getPageHandle("page-b").cleanedImage, "data:image/png;base64,Y2xlYW4=");
 });
-test("late seam masks refresh a cleaned artifact again on the same image revision", async () => {
+test("late seam evidence reuses a cleaned artifact when the final blue mask is unchanged", async () => {
   const options = boundaryMergeHarnessOptions();
   options.artifactCleanedImage = "data:image/png;base64,Y2xlYW4=";
   options.pageObservations.a[0].visual = {
@@ -565,9 +565,8 @@ test("late seam masks refresh a cleaned artifact again on the same image revisio
   await new Promise(resolve => setImmediate(resolve));
   await harness.pipeline.run(harness.targets.b);
   const pageAArtifacts = harness.ocrMetas.filter(meta => meta.sourceType === "page" && meta.pageIds[0] === "page-a" && meta.forceCleanedImageArtifact === true);
-  assert.equal(pageAArtifacts.length, 2);
-  assert.deepEqual(pageAArtifacts[0].cleanedMasks, []);
-  assert.deepEqual(pageAArtifacts[1].cleanedMasks, [{
+  assert.equal(pageAArtifacts.length, 1);
+  assert.deepEqual(pageAArtifacts[0].cleanedMasks, [{
     coordinateSpace: "percent",
     box: {
       x: 20,
@@ -576,5 +575,5 @@ test("late seam masks refresh a cleaned artifact again on the same image revisio
       h: 6
     }
   }]);
-  assert.equal(harness.store.getPageHandle("page-a").cleanedImageArtifactKey, P.buildCleanedArtifactKey("rev-a", pageAArtifacts[1].cleanedMasks));
+  assert.equal(harness.store.getPageHandle("page-a").cleanedImageArtifactKey, P.buildCleanedArtifactKey("rev-a", pageAArtifacts[0].cleanedMasks));
 });

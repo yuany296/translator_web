@@ -143,7 +143,7 @@ export function installTranslationProvider(runtime) {
     return runtime.stableHash128(source);
   }
   runtime.buildCanonicalTranslationFingerprint = buildCanonicalTranslationFingerprint;
-  async function requestCanonicalTranslationBatch({
+  async function requestOpenAICompatibleCanonicalTranslationBatch({
     items,
     apiKey,
     baseUrl,
@@ -190,7 +190,7 @@ export function installTranslationProvider(runtime) {
     const parsed = runtime.parseModelJson(runtime.extractOpenAIMessageText(payload).trim());
     return parsed && Array.isArray(parsed.translations) ? parsed.translations : [];
   }
-  runtime.requestCanonicalTranslationBatch = requestCanonicalTranslationBatch;
+  runtime.requestOpenAICompatibleCanonicalTranslationBatch = requestOpenAICompatibleCanonicalTranslationBatch;
   async function requestOpenAICompatibleTextTranslations({
     items,
     apiKey,

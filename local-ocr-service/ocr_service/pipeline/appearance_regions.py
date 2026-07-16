@@ -292,9 +292,20 @@ def build_cleaned_image_data_url(image_bytes: bytes, items: list[dict[str, runti
 runtime.build_cleaned_image_data_url = build_cleaned_image_data_url
 
 def build_complex_text_inpaint_mask(shape: tuple[int, int], items: list[dict[str, runtime.Any]], supplemental_masks: list[dict[str, runtime.Any]] | None=None) -> runtime.Any | None:
-    """合并 OCR 文字框与额外百分比几何，生成 2-8px 膨胀后的擦除掩膜。"""
+    """优先使用最终百分比几何；仅在其缺失时使用原始 OCR 膨胀掩膜。"""
     image_height, image_width = shape
     mask = runtime.np.zeros((image_height, image_width), dtype=runtime.np.uint8)
+    masks = supplemental_masks if isinstance(supplemental_masks, list) else []
+    final_polygons = [
+        points for value in masks[:200]
+        if len(points := runtime.normalize_percent_mask_polygon(value, image_width, image_height)) >= 3
+    ]
+    if final_polygons:
+        for points in final_polygons:
+            # 最终蓝框已经包含布局留边，不能再次膨胀，也不能混入被过滤的原始文字框。
+            mask = runtime.union_dilated_mask_polygon(mask, points, 0)
+        return mask
+
     changed = False
     for item in items:
         if str(item.get('region_id') or '').strip():
@@ -308,15 +319,6 @@ def build_complex_text_inpaint_mask(shape: tuple[int, int], items: list[dict[str
         if len(points) < 3:
             continue
         radius = int(max(2, min(8, round(box_height * 0.08))))
-        mask = runtime.union_dilated_mask_polygon(mask, points, radius)
-        changed = True
-    masks = supplemental_masks if isinstance(supplemental_masks, list) else []
-    for value in masks[:200]:
-        points = runtime.normalize_percent_mask_polygon(value, image_width, image_height)
-        if len(points) < 3:
-            continue
-        polygon_height = max((point[1] for point in points)) - min((point[1] for point in points))
-        radius = int(max(2, min(8, round(max(1, polygon_height) * 0.08))))
         mask = runtime.union_dilated_mask_polygon(mask, points, radius)
         changed = True
     return mask if changed else None

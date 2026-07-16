@@ -464,6 +464,41 @@ test("seam-only projections remap geometry-bearing visual fields into each page 
     assert.notDeepEqual(projection.visual.regionPolygon, projection.visual.polygon);
   }
 });
+test("seam-only secondary geometry does not paint an orphan page cover", () => {
+  const upper = page("upper", 0);
+  const lower = page("lower", 1);
+  const projections = R.buildRenderProjections({
+    pages: [upper, lower],
+    canonicals: [{
+      id: "canonical-seam-secondary",
+      revision: 1,
+      originalText: "complete dialogue",
+      geometryByPage: {
+        upper: [{
+          observationId: "seam-only-upper",
+          sourceType: "seam",
+          confidence: 0.95,
+          box: { x: 28, y: 97, w: 44, h: 3 },
+          coordinateSpace: "percent",
+          visual: { bgType: "solid", bgColor: "#ffffff" }
+        }],
+        lower: [{
+          observationId: "page-lower",
+          sourceType: "page",
+          confidence: 0.98,
+          box: { x: 29, y: 0, w: 43, h: 20 },
+          coordinateSpace: "percent",
+          visual: { bgType: "solid", bgColor: "#ffffff" }
+        }]
+      }
+    }],
+    translations: { "canonical-seam-secondary@1": "完整译文" }
+  });
+  const upperProjections = projections.filter(projection => projection.pageId === "upper");
+  assert.deepEqual(upperProjections.map(projection => projection.role), ["standby"]);
+  assert.equal(upperProjections[0].coverEligible, false);
+  assert.equal(projections.find(projection => projection.pageId === "lower").role, "primary");
+});
 test("projection area ties select the earlier reading-order page", () => {
   const pages = [page("a", 0), page("b", 1)];
   const projections = R.buildRenderProjections({

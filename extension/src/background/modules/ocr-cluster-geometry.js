@@ -206,7 +206,7 @@ export function installOcrClusterGeometry(runtime) {
     const representativeContainer = representative.container || null;
     const containerIds = new Set(cluster.map(entry => entry.container && entry.container.id).filter(Boolean));
     const hasSingleCompleteContainer = containerIds.size === 1 && cluster.every(entry => entry.container);
-    const displayBox = runtime.buildLocalPaddleDisplayBox(cluster, hasSingleCompleteContainer ? representativeContainer.box : null, imageSize, regionType || (representativeContainer ? representativeContainer.type : ""), representativeContainer ? representativeContainer.confidence : 0, geometry);
+    const displayBox = runtime.buildLocalPaddleDisplayBox(cluster, hasSingleCompleteContainer ? representativeContainer.box : null, imageSize, regionType || (representativeContainer ? representativeContainer.type : ""), geometry);
     if (displayBox) {
       merged.location = displayBox;
       merged.rawBox = displayBox;

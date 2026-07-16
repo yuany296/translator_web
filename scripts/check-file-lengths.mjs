@@ -3,7 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const excluded = new Set([".git", ".local-data", "dist", "node_modules", "__pycache__"]);
+const excluded = new Set([
+  ".git", ".local-data", ".pytest_cache", ".ruff_cache",
+  "dist", "node_modules", "__pycache__"
+]);
 const entrypoints = new Set([
   "extension/src/background/index.js", "extension/src/content/index.js",
   "extension/src/popup/index.js", "extension/src/glossary/index.js",

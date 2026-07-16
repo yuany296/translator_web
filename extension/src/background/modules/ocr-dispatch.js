@@ -56,10 +56,10 @@ export function installOcrDispatch(runtime) {
   }
   runtime.normalizeObservationPixelBox = normalizeObservationPixelBox;
   function validateOcrOnlySettings(settings) {
-    if (settings.provider === runtime.PROVIDERS.baiduDeepSeek) {
+    if (settings.provider === runtime.PROVIDERS.baidu) {
       return settings.baiduApiKey && settings.baiduSecretKey ? "" : "Baidu OCR AK/SK is missing. Please configure it in popup.";
     }
-    if (settings.provider === runtime.PROVIDERS.localPaddleDeepSeek) {
+    if (settings.provider === runtime.PROVIDERS.localPaddle) {
       if (!settings.localOcrBaseUrl) {
         return "Local OCR service URL is missing. Please configure it in popup.";
       }
@@ -147,13 +147,13 @@ export function installOcrDispatch(runtime) {
         settings
       });
     }
-    if (settings.provider === runtime.PROVIDERS.baiduDeepSeek) {
+    if (settings.provider === runtime.PROVIDERS.baidu) {
       return runtime.requestBaiduOcrObservations({
         request,
         settings
       });
     }
-    if (settings.provider === runtime.PROVIDERS.localPaddleDeepSeek) {
+    if (settings.provider === runtime.PROVIDERS.localPaddle) {
       return runtime.requestLocalPaddleOcrObservations({
         request,
         settings

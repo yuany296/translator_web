@@ -11,8 +11,12 @@ export function renderEmbeddedScene(scene, context, adapter) {
       context.rotate(placement.rotationDeg * Math.PI / 180);
       context.font = adapter.font(layer, fontSize);
       context.fillStyle = layer.appearance?.color || "#000000";
-      const firstY = -((lines.length - 1) * lineHeight) / 2;
-      lines.forEach((line, index) => adapter.drawText(context, line, 0, firstY + index * lineHeight, layer));
+      if (placement.writingMode === "vertical" && typeof adapter.drawVerticalText === "function") {
+        adapter.drawVerticalText(context, lines, layer);
+      } else {
+        const firstY = -((lines.length - 1) * lineHeight) / 2;
+        lines.forEach((line, index) => adapter.drawText(context, line, 0, firstY + index * lineHeight, layer));
+      }
       context.restore();
     }
   } finally {

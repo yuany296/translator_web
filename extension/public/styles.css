@@ -173,6 +173,17 @@
   text-shadow: none !important;
 }
 
+.mt-bubble.mt-text-layer {
+  background: transparent;
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.mt-bubble.mt-text-layer::before {
+  content: none;
+}
+
 .mt-measure-probe {
   position: fixed !important;
   left: -200vw !important;

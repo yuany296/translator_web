@@ -118,61 +118,6 @@ export function installReaderInit(runtime) {
     });
   }
   runtime.bindRuntimeMessages = bindRuntimeMessages;
-  function bindStorageListener() {
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== "local") {
-        return;
-      }
-      if (changes.mt_enabled) {
-        runtime.state.enabled = changes.mt_enabled.newValue !== false;
-        if (!runtime.state.enabled) {
-          runtime.state.autoTranslatePageEnabled = false;
-          runtime.clearAllRenderedTargets();
-        } else {
-          runtime.rescan();
-          runtime.scheduleAheadPretranslation("enabled");
-        }
-      }
-      if (changes.mt_show_ball) {
-        runtime.state.showFloatingBall = changes.mt_show_ball.newValue !== false;
-      }
-      if (changes.mt_capture_mode) {
-        const nextMode = runtime.normalizeCaptureMode(changes.mt_capture_mode.newValue);
-        if (nextMode !== runtime.state.captureMode) {
-          runtime.state.captureMode = nextMode;
-          runtime.state.payloadCacheByTargetKey.clear();
-          runtime.clearAllRenderedTargets();
-          if (runtime.state.enabled) {
-            runtime.rescan();
-          }
-        }
-      }
-      if (changes.mt_render_mode) {
-        const nextMode = runtime.normalizeRenderMode(changes.mt_render_mode.newValue);
-        if (nextMode !== runtime.state.renderMode) {
-          runtime.state.renderMode = nextMode;
-          runtime.clearAllRenderedTargets();
-          if (runtime.state.enabled) {
-            runtime.rescan();
-          }
-        }
-      }
-      if (changes.mt_pretranslate_mode) {
-        runtime.state.pretranslateMode = runtime.normalizePretranslateMode(changes.mt_pretranslate_mode.newValue);
-        if (runtime.shouldSchedulePagePretranslation()) {
-          runtime.scheduleAheadPretranslation("setting-change");
-        }
-      }
-      if (changes.mt_local_ocr_debug) {
-        runtime.ENABLE_PIPELINE_TRACE = changes.mt_local_ocr_debug.newValue === true;
-        if (!runtime.ENABLE_PIPELINE_TRACE) {
-          globalThis.__MT_PIPELINE_TRACE__ = [];
-        }
-      }
-      runtime.updateFloatingBallState();
-    });
-  }
-  runtime.bindStorageListener = bindStorageListener;
   function bindViewportSync() {
     const scheduleSync = () => {
       if (runtime.state.syncRaf) {
@@ -208,7 +153,6 @@ export function installReaderInit(runtime) {
     for (const overlayState of runtime.state.overlaysById.values()) {
       runtime.syncOverlayPosition(overlayState);
     }
-    runtime.syncSeamCrossPageOverlays();
     runtime.syncKakaoVisualDuplicateBubbles();
     if (runtime.state.overlaysById.size > 0) {
       runtime.state.overlayFrameRaf = window.requestAnimationFrame(runtime.overlayFrameSyncTick);

@@ -13,12 +13,16 @@ const normalizeAngle = (value) => {
 
 export function buildPlacementGeometry(memberRegions, options = {}) {
   if (!Array.isArray(memberRegions) || memberRegions.length === 0) throw new TypeError("Placement needs detected members");
+  const writingMode = options.writingMode === "vertical" ? "vertical" : "horizontal";
   const reliableAngles = memberRegions
     .filter((item) => item.geometryReliability !== "fallback")
     .map((item) => normalizeAngle(item.rotationDeg))
+    .map((angle) => writingMode === "vertical" ? normalizeAngle(angle - 90) : angle)
     .filter((angle) => Math.abs(angle) <= 25);
   const rotationDeg = reliableAngles.length ? median(reliableAngles) : 0;
-  const radians = rotationDeg * Math.PI / 180;
+  // rotationDeg 是渲染倾角；垂直排版的文字轴还需要在 crop 坐标中旋转 90°。
+  const axisAngleDeg = rotationDeg + (writingMode === "vertical" ? 90 : 0);
+  const radians = axisAngleDeg * Math.PI / 180;
   const axis = Object.freeze({ x: Math.cos(radians), y: Math.sin(radians) });
   const normal = Object.freeze({ x: -axis.y, y: axis.x });
   const memberPoints = memberRegions.flatMap((region) => region.sourcePolygon);
@@ -42,7 +46,7 @@ export function buildPlacementGeometry(memberRegions, options = {}) {
     axisLength: Math.max(1, axisMax - axisMin),
     normalThickness: Math.max(1, normalMax - normalMin),
     fontHeight,
-    writingMode: options.writingMode === "vertical" ? "vertical" : "horizontal",
+    writingMode,
     boundary: reliableRegion ? Object.freeze({ type: "bubble", polygon: reliableRegion.polygon }) : Object.freeze({
       type: "oriented-union", axisMin, axisMax, normalMin, normalMax
     })

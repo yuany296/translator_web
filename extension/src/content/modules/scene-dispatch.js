@@ -170,64 +170,6 @@ export function installSceneDispatch(runtime) {
     return !!oldOverlay && oldOverlay.renderSignature === renderSignature && oldOverlay.cleanedImage === cleanedImage;
   }
   runtime.isSameOverlayRenderPayload = isSameOverlayRenderPayload;
-  function getSeamBubbleIntrinsicGeometry(node, canvasWidth, canvasHeight) {
-    const polygonGeometry = runtime.getOverlayPolygonGeometry(node, {
-      width: canvasWidth,
-      height: canvasHeight
-    });
-    if (polygonGeometry) {
-      node.style.width = `${polygonGeometry.width}px`;
-      node.style.height = `${polygonGeometry.height}px`;
-      runtime.applyBubbleAnchorStyle(node, {
-        alignment: node.dataset.alignment,
-        x: polygonGeometry.left,
-        y: polygonGeometry.top,
-        w: polygonGeometry.width,
-        h: polygonGeometry.height,
-        centerX: polygonGeometry.centerX,
-        centerY: polygonGeometry.centerY,
-        rotation: Number(node.dataset.rotationDeg || 0),
-        unit: "px",
-        allowVerticalOverflow: true
-      });
-      return polygonGeometry;
-    }
-    return {
-      width: canvasWidth * Number(node.dataset.wPercent || 0) / 100,
-      height: canvasHeight * Number(node.dataset.hPercent || 0) / 100
-    };
-  }
-  runtime.getSeamBubbleIntrinsicGeometry = getSeamBubbleIntrinsicGeometry;
-  function applySeamBubbleLayout(surface, bubbleNodes) {
-    const layoutKey = String(surface && surface.layoutKey || surface && surface.renderKey || "");
-    const cached = runtime.state.seamLayoutCache.get(layoutKey);
-    let metrics = Array.isArray(cached) && cached.length === bubbleNodes.length ? cached : null;
-    if (!metrics) {
-      metrics = bubbleNodes.map(node => {
-        const geometry = runtime.getSeamBubbleIntrinsicGeometry(node, Number(surface.canvasWidth), Number(surface.canvasHeight));
-        const fontSize = runtime.fitBubbleFontSize(node, geometry.width, geometry.height, {}, runtime.getBubbleOriginalTextHeight(node, geometry.height, Number(surface.canvasHeight)));
-        return {
-          fontSize,
-          strokeWidth: runtime.getDynamicStrokeWidth(fontSize)
-        };
-      });
-      runtime.state.seamLayoutCache.set(layoutKey, metrics);
-      if (runtime.state.seamLayoutCache.size > runtime.MAX_FONT_FIT_CACHE) {
-        runtime.state.seamLayoutCache.delete(runtime.state.seamLayoutCache.keys().next().value);
-      }
-    } else {
-      bubbleNodes.forEach(node => {
-        runtime.getSeamBubbleIntrinsicGeometry(node, Number(surface.canvasWidth), Number(surface.canvasHeight));
-      });
-    }
-    bubbleNodes.forEach((node, index) => {
-      const metric = metrics[index];
-      if (!metric) return;
-      node.style.fontSize = `${Number(metric.fontSize).toFixed(1)}px`;
-      node.style.setProperty("--mt-stroke-width", `${Number(metric.strokeWidth).toFixed(1)}px`);
-    });
-  }
-  runtime.applySeamBubbleLayout = applySeamBubbleLayout;
   function createSeamWindowNode(surface, pageId) {
     const segment = surface.segments.find(item => item.pageId === pageId);
     if (!segment) return null;
@@ -252,14 +194,35 @@ export function installSceneDispatch(runtime) {
       composite.style.backgroundImage = `url("${surface.cleanedImage}")`;
     }
     composite.classList.toggle("mt-show-source", runtime.state.seamSourceModeByRenderKey.get(surface.renderKey) === true);
-    const bubbleNodes = surface.bubbles.map(runtime.projectionToRendererBubble).filter(bubble => bubble.w > 0 && bubble.h > 0).map((bubble, index) => runtime.createBubbleNode(bubble, index, {
-      seamRenderKey: surface.renderKey
-    })).filter(Boolean);
+    const bubbles = surface.bubbles.map(runtime.projectionToRendererBubble)
+      .filter(bubble => bubble.w > 0 && bubble.h > 0);
+    const renderScene = runtime.buildRenderSceneForBubbles({
+      id: `composite:${surface.renderKey}`,
+      surface: { id: surface.renderKey, type: "composite", width: surface.canvasWidth, height: surface.canvasHeight },
+      bubbles
+    });
+    let nodeIndex = 0;
+    const bubbleNodes = runtime.renderDomScene(renderScene, {
+      drawCover(layer) {
+        const node = runtime.createBubbleNode({ ...layer.content?.bubble, projection_role: "cover_only" }, nodeIndex++, {
+          seamRenderKey: surface.renderKey
+        });
+        node?.classList.add("mt-cover-layer");
+        return node;
+      },
+      createTextNode(layer) {
+        return runtime.createBubbleNode(layer.content?.bubble, nodeIndex++, {
+          seamRenderKey: surface.renderKey,
+          textOnly: true
+        });
+      },
+      drawDebug() { return null; },
+      drawLoading() { return null; }
+    });
     bubbleNodes.forEach(node => {
       node.classList.add("mt-seam-bubble");
       composite.appendChild(node);
     });
-    runtime.applySeamBubbleLayout(surface, bubbleNodes);
     const debugNodeCount = runtime.appendOcrDebugNodes(composite, {
       debug: surface.debug
     });
@@ -270,6 +233,7 @@ export function installSceneDispatch(runtime) {
       segment,
       windowNode,
       composite,
+      renderScene,
       bubbleNodes,
       debugNodeCount
     };

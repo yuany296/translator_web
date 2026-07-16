@@ -125,19 +125,7 @@ export function installLifecycleRestore(runtime) {
       overlayState.root.remove();
     }
     runtime.state.overlaysById.clear();
-    runtime.state.fontFitCache.clear();
-    runtime.state.seamLayoutCache.clear();
     runtime.state.seamSourceModeByRenderKey.clear();
-    if (runtime.state.seamCrossPages) {
-      for (const entry of runtime.state.seamCrossPages.values()) {
-        if (entry.root && entry.root.isConnected) entry.root.remove();
-      }
-      runtime.state.seamCrossPages.clear();
-    }
-    if (runtime.state.bubbleMeasureProbe && runtime.state.bubbleMeasureProbe.isConnected) {
-      runtime.state.bubbleMeasureProbe.remove();
-    }
-    runtime.state.bubbleMeasureProbe = null;
   }
   runtime.clearAllOverlays = clearAllOverlays;
 }

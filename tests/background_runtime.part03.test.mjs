@@ -368,7 +368,7 @@ test("block translation cache key depends on source image, normalized text, and 
 });
 test("glossary fingerprint invalidates full-image and block translation caches", () => {
   const base = {
-    provider: "local_paddle_deepseek",
+    provider: "local_paddle",
     model: "model",
     dataUrl: "data:image/png;base64,AAAA"
   };
@@ -408,8 +408,8 @@ test("text translation prompt injects matching glossary entries", () => {
   assert.match(prompt, /Mandatory terminology glossary/);
   assert.match(prompt, /成贤公爵/);
   assert.doesNotMatch(prompt, /魔法师/);
-  assert.equal(context.__backgroundTest.normalizeProvider("anthropic"), "baidu");
-  assert.equal(context.__backgroundTest.normalizeProvider("openai_compatible"), "baidu");
+  assert.deepEqual(Array.from(context.__backgroundTest.ocrProviders.ids()), ["baidu", "local_paddle"]);
+  assert.deepEqual(Array.from(context.__backgroundTest.translationProviders.ids()), ["openai_compatible"]);
 });
 test("stitched OCR drops a completed cluster owned by the adjacent slice", async () => {
   const payload = {

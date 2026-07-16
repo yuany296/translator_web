@@ -1,6 +1,5 @@
 const PENDING_STORAGE_KEY = "mt_glossary_pending_v1";
 const IGNORED_STORAGE_KEY = "mt_glossary_ignored_v1";
-const ENABLED_STORAGE_KEY = "mt_term_discovery_enabled";
 const SCHEMA_VERSION = 1;
 const MAX_CHAPTERS = 20;
 const MAX_CANDIDATES_PER_CHAPTER = 200;
@@ -305,7 +304,6 @@ function hashString(value) {
 export default Object.freeze({
   PENDING_STORAGE_KEY,
   IGNORED_STORAGE_KEY,
-  ENABLED_STORAGE_KEY,
   SCHEMA_VERSION,
   MAX_CHAPTERS,
   MAX_CANDIDATES_PER_CHAPTER,

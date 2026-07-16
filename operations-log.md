@@ -1,5 +1,18 @@
 # Operations Log
 
+## 2026-07-16 - Codex（完成 OCR / 翻译 / 渲染统一架构）
+
+- 在用户后续重构提交之上继续完成迁移，不回退既有提交；旧仓库继续保留，当前唯一开发与构建目录为 `C:\homework\translator`，Chrome 唯一加载目录为 `dist/extension/`。
+- OCR、翻译和运行时配置继续使用 `mt_ocr_config_v1`、`mt_translation_config_v1`、`mt_runtime_config_v1` 三个独立存储；删除生产代码中的组合 provider 和 `TRANSLATE_DATA_URL`，页面固定执行 OCR → canonical → 文本翻译。恢复遗漏的 OCR 安全缓存序列化，使清理图仅作为易失产物刷新，Observation 与翻译缓存彼此独立。
+- 建立统一 `RenderScene`：page/composite 共用 scene builder，DOM 与 embedded renderer 消费同一 placement；cover 使用完整清理区域，text 使用不可变 crop 几何。删除旧字体拟合、溢出扩张、跨页专用排版及重复 canvas/DOM 字号计算路径；无法容纳时返回 `layout_unfit` 并保留原文。
+- 斜排与竖排依据 polygon 文字轴、法向厚度及 `lineThickness` 中位数布局；竖排将检测长轴换算为文字倾角，可靠角度限制为 ±25°。低置信度清理区域不得扩大译文 placement，翻译长度不得改变几何。
+- Python OCR 模块从机械编号的 `ocr_service/generated/mNN_*` 重命名为 `ocr_service/pipeline/` 下的职责文件；生产 legacy pipeline bridge 删除，兼容 factory 只保留在 `tests/helpers/`。删除一次性拆分/重命名脚本，生产 JS/Python 继续执行 400 行、入口 120 行门禁。
+- OCR 外观/布局契约升级为 `detect-crop-recognize-appearance-layout-v2`，坐标模型升级为 `crop-source-transform-v2`；翻译提示版本保持不变，因此旧 OCR 几何缓存自动失效而翻译提示缓存边界不变。
+- 修正 `verify` 对嵌套 npm 命令的依赖，改为 Node 编排器；`npm run verify` 与 `pnpm run verify` 均执行同一套长度门禁、lint、构建和测试。
+- 自动验证通过：文件长度门禁通过；ESLint 通过；Pylint `10.00/10`；扩展构建成功；Node `468/468`；Python `58 passed, 1 skipped`。
+- 重启本地 OCR 服务后 `/health` 返回 `ok=true`、`device=gpu:0`、`ocrGeometryVersion=detect-crop-recognize-appearance-layout-v2`。浏览器扩展管理页属于受保护 URL，自动控制无法替用户点击重载；需用户在扩展页手动重载 `dist/extension/` 后再继续普通漫画页的现场检查。
+- 为避免与旧版扩展混淆，将扩展、弹窗和术语库标题统一为 `Manga OCR Translator · Next` / `漫画 OCR 翻译器 · Next`，版本提升为 `1.1.0`。使用内置 imagegen 生成紫色漫画气泡、青色 OCR 取景角与翻译箭头组合图标，移除色键背景后输出 16/32/48/128px PNG 并接入 manifest。
+
 ## 2026-07-16 - Codex (清理 legacy pipeline 死代码)
 
 - 从 content 模块中移除所有 `kakaoLegacyPipeline` 死代码引用：

@@ -12,6 +12,7 @@ import { layoutInPlacement } from "../extension/src/layout/crop-local-layout.js"
 import { createRenderScene } from "../extension/src/rendering/render-scene.js";
 import { applyDomTextLayer } from "../extension/src/rendering/dom-renderer.js";
 import { renderEmbeddedScene } from "../extension/src/rendering/embedded-renderer.js";
+import { buildRenderSceneForBubbles } from "../extension/src/rendering/scene-builder.js";
 import { detectReaderProfile } from "../extension/src/readers/profile.js";
 import { ProviderRegistry } from "../extension/src/background/providers/registry.js";
 
@@ -85,6 +86,23 @@ test("20 degree text uses 42px true thickness despite a roughly 170px AABB", () 
   assert.ok(placement.axisLength > 379 && placement.axisLength < 381);
 });
 
+test("vertical text keeps its tilt while using the long polygon edge as the text axis", () => {
+  const placement = buildPlacementGeometry([detected({
+    rotationDeg: -80,
+    sourcePolygon: orientedPolygon({ x: 220, y: 220 }, 320, 40, -80),
+    lineThickness: 40
+  })], { writingMode: "vertical" });
+  assert.ok(Math.abs(placement.rotationDeg - 10) < 0.01);
+  assert.ok(Math.abs(placement.axisLength - 320) < 0.01);
+  assert.ok(Math.abs(placement.normalThickness - 40) < 0.01);
+  assert.equal(placement.fontHeight, 40);
+  const node = { style: {}, textContent: "" };
+  const layout = layoutInPlacement("竖排", placement, { measure: (value, size) => value.length * size * 0.4 });
+  assert.equal(applyDomTextLayer(node, { type: "text", layout }), true);
+  assert.equal(node.style.width, `${placement.normalThickness}px`);
+  assert.equal(node.style.height, `${placement.axisLength}px`);
+});
+
 test("group rotation uses the reliable median and rejects angles above 25 degrees", () => {
   const placement = buildPlacementGeometry([
     detected({ regionId: "r1", rotationDeg: 10, sourcePolygon: orientedPolygon({ x: 100, y: 100 }, 100, 30, 10), lineThickness: 38 }),
@@ -118,6 +136,54 @@ test("RenderScene permits one active text layer per visual region family and kee
   });
   assert.equal(scene.layers.filter((layer) => layer.type === "cover").length, 1);
   assert.equal(scene.layers.filter((layer) => layer.type === "text").length, 1);
+});
+
+test("scene builder keeps cleanup geometry separate from oriented text placement", () => {
+  const bubble = {
+    block_id: "b1", canonical_id: "c1", x: 10, y: 20, w: 50, h: 20,
+    polygon: orientedPolygon({ x: 35, y: 30 }, 40, 4.2, 20),
+    fill_box: { x: 8, y: 18, w: 55, h: 25 }, bg_type: "solid",
+    translated_text: "译文", font_height_percent: 4.2, rotation_deg: 20
+  };
+  const scene = buildRenderSceneForBubbles({
+    id: "page", surface: { id: "p1", type: "page", width: 1000, height: 1000 },
+    bubbles: [bubble], measure: (value, size) => value.length * size * 0.4
+  });
+  const cover = scene.layers.find((layer) => layer.type === "cover");
+  const text = scene.layers.find((layer) => layer.type === "text");
+  assert.deepEqual(cover.geometry.fillBox, bubble.fill_box);
+  assert.notEqual(cover.geometry, text.geometry);
+  assert.equal(text.layout.placement.rotationDeg, 20);
+  assert.ok(text.layout.fontSize <= 42);
+});
+
+test("low-confidence cleanup regions cannot enlarge immutable text placement", () => {
+  const bubble = {
+    block_id: "b-low", canonical_id: "c-low", x: 20, y: 30, w: 40, h: 5,
+    polygon: orientedPolygon({ x: 40, y: 32.5 }, 40, 4, 0),
+    fill_box: { x: 5, y: 5, w: 90, h: 90 }, bg_type: "solid", bg_confidence: 0.2,
+    translated_text: "译文", font_height_percent: 4
+  };
+  const scene = buildRenderSceneForBubbles({
+    id: "low-confidence", surface: { id: "p1", type: "page", width: 1000, height: 1000 },
+    bubbles: [bubble], measure: (value, size) => value.length * size * 0.4
+  });
+  const placement = scene.layers.find((layer) => layer.type === "text").layout.placement;
+  assert.ok(placement.axisLength < 410);
+  assert.equal(placement.boundary.type, "oriented-union");
+  assert.deepEqual(scene.layers.find((layer) => layer.type === "cover").geometry.fillBox, bubble.fill_box);
+});
+
+test("layout_unfit scene preserves the source by omitting both cover and text layers", () => {
+  const scene = buildRenderSceneForBubbles({
+    id: "unfit", surface: { id: "p1", type: "page", width: 100, height: 100 },
+    bubbles: [{ block_id: "tiny", x: 10, y: 10, w: 5, h: 5, bg_type: "solid",
+      translated_text: "这是无法放入的超长翻译", font_height_percent: 3 }],
+    measure: (value, size) => value.length * size
+  });
+  assert.equal(scene.layers.some((layer) => layer.type === "cover"), false);
+  assert.equal(scene.layers.some((layer) => layer.type === "text"), false);
+  assert.equal(scene.layers[0].diagnostic.reason, "layout_unfit");
 });
 
 test("DOM and embedded renderers consume the same placement angle and font size", () => {

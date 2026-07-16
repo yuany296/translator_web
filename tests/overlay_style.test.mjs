@@ -82,7 +82,7 @@ test("seam composite is clipped only by its two page-local windows", () => {
   assert.match(sourceBubbleRule, /opacity:\s*0/);
 });
 
-test("overlay bubbles support source alignment without clipping long translations", () => {
+test("overlay bubbles keep source alignment while scene text stays inside immutable placement", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
   const bubbleRule = css.match(/\.mt-bubble\s*\{([^}]+)\}/)?.[1] ?? "";
   const leftRule = css.match(/\.mt-bubble\.mt-align-left\s*\{([^}]+)\}/)?.[1] ?? "";
@@ -101,7 +101,10 @@ test("overlay bubbles support source alignment without clipping long translation
   assert.ok(readContentModules(/translate\(-50%, -50%\) rotate/), "translate(-50%, -50%) rotate not found in content modules");
   assert.ok(readContentModules(/--mt-font-weight/), "--mt-font-weight not found in content modules");
   assert.ok(readContentModules(/rotate\(\$\{angle\.toFixed\(2\)\}deg\)/), "rotate template not found in content modules");
-  assert.ok(readContentModules(/function expandBubbleForTextOverflow\(/), "expandBubbleForTextOverflow not found in content modules");
-  assert.ok(readContentModules(/--mt-fill-width", "100%"/), "--mt-fill-width 100% not found in content modules");
+  assert.ok(!readContentModules(/function expandBubbleForTextOverflow\(/), "overflow expansion must not exist");
+  const domRenderer = readFileSync(path.resolve(projectRoot, "extension", "src", "rendering", "dom-renderer.js"), "utf8");
+  assert.match(domRenderer, /overflow:\s*"hidden"/);
+  const sceneBuilder = readFileSync(path.resolve(projectRoot, "extension", "src", "rendering", "scene-builder.js"), "utf8");
+  assert.match(sceneBuilder, /layout\.status === "layout_unfit"/);
   assert.ok(!readContentModules(/text-overflow:\s*ellipsis/), "text-overflow:ellipsis should not appear in content modules");
 });

@@ -17,7 +17,11 @@ export function layoutInPlacement(textValue, placement, options = {}) {
   const text = String(textValue || "").trim();
   const measure = options.measure || ((value, size) => [...value].length * size);
   const minFontSize = Math.max(6, Number(options.minFontSize) || 10);
-  const maxFontSize = Math.max(minFontSize, Math.min(placement.fontHeight, Number(options.maxFontSize) || placement.fontHeight));
+  const fontHeightCap = Math.max(1, Math.min(placement.fontHeight, Number(options.maxFontSize) || placement.fontHeight));
+  if (fontHeightCap < minFontSize) {
+    return Object.freeze({ status: "layout_unfit", text, placement, diagnostics: "source_font_below_absolute_minimum" });
+  }
+  const maxFontSize = fontHeightCap;
   const padding = Math.max(0, Number(options.padding) || 0);
   const width = Math.max(1, placement.axisLength - padding * 2);
   const height = Math.max(1, placement.normalThickness - padding * 2);

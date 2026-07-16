@@ -14,7 +14,7 @@ export function installTranslationProvider(runtime) {
     const outcome = new Map();
     const pending = [];
     const newRequests = [];
-    const configuredModel = model || runtime.DEFAULT_MODELS[runtime.PROVIDERS.baiduDeepSeek];
+    const configuredModel = model || runtime.DEFAULT_TRANSLATION_MODEL;
     const configuredBaseUrl = baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL;
     for (const item of items) {
       const translationFingerprint = runtime.buildCanonicalTranslationFingerprint({
@@ -166,7 +166,7 @@ export function installTranslationProvider(runtime) {
     }
     const endpoint = runtime.buildOpenAICompatibleEndpoint(baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL);
     const body = {
-      model: model || runtime.DEFAULT_MODELS[runtime.PROVIDERS.baiduDeepSeek],
+      model: model || runtime.DEFAULT_TRANSLATION_MODEL,
       temperature: 0,
       messages: [{
         role: "system",
@@ -218,7 +218,7 @@ export function installTranslationProvider(runtime) {
     }
     const endpoint = runtime.buildOpenAICompatibleEndpoint(baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL);
     const body = {
-      model: model || runtime.DEFAULT_MODELS[runtime.PROVIDERS.baiduDeepSeek],
+      model: model || runtime.DEFAULT_TRANSLATION_MODEL,
       temperature: 0,
       messages: [{
         role: "system",

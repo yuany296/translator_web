@@ -167,7 +167,8 @@ export function installStorePipelineContext(runtime) {
    *
    * 必须的 adapter 接口：
    *   extractTargetPayload(target, scopedKey) → payload
-   *   requestTranslationForPayload(payload, requestKey) → response
+   *   requestOcrForPayload(payload, meta) → provider-neutral observations
+   *   requestCanonicalTranslations(items, meta) → text-only translations
    *   renderTranslationResult(target, targetKey, result, payload, opts)
    *   clearRenderedTarget(target)
    *   renderOverlay(target, targetKey, result)

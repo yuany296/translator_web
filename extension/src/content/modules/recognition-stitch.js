@@ -66,26 +66,6 @@ export function installRecognitionStitch(runtime) {
     return runtime.KP.isAttachableKakaoShortPage(candidate, owner, candidateHeight, ownerHeight);
   }
   runtime.isAttachableKakaoShortPage = isAttachableKakaoShortPage;
-  async function requestTranslationForPayload(payload, requestKey) {
-    const pageId = `single:${requestKey}`;
-    const ocr = await runtime.sendRuntimeMessage({
-      type: "OCR_DATA_URL", dataUrl: payload.dataUrl, sourceType: "page",
-      pageIds: [pageId], targetKey: requestKey, imageMeta: runtime.buildPayloadImageMeta(payload)
-    });
-    if (!ocr?.ok) return ocr;
-    const observations = ocr.result?.observations || [];
-    const translation = await runtime.sendRuntimeMessage({
-      type: "TRANSLATE_TEXT_BLOCKS",
-      items: observations.map((item) => ({ id: item.id, revision: 1, original_text: item.originalText }))
-    });
-    if (!translation?.ok) return translation;
-    const translated = new Map(translation.translations.map((item) => [item.id, item.translated_text]));
-    return { ok: true, result: { bubbles: observations.map((item) => ({
-      ...(item.visual?.box || {}), original_text: item.originalText,
-      translated_text: translated.get(item.id) || item.originalText, visual: item.visual
-    })), cleanedImage: ocr.result.cleanedImage || null, debug: ocr.result.debug || null } };
-  }
-  runtime.requestTranslationForPayload = requestTranslationForPayload;
   function getBubbleLineCount(bubble) {
     return runtime.KP.getBubbleLineCount(bubble);
   }

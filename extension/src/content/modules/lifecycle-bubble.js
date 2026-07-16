@@ -46,6 +46,7 @@ export function installLifecycleBubble(runtime) {
     node.className = `mt-bubble mt-bg-${bgType}`;
     node.classList.add(`mt-align-${alignment}`);
     if (coverOnly) node.classList.add("mt-cover-only");
+    if (options.textOnly) node.classList.add("mt-text-layer");
     node.dataset.mangaTranslatorOverlay = "true";
     node.dataset.index = String(index);
     node.dataset.mode = coverOnly ? "cover" : "translated";
@@ -332,7 +333,6 @@ export function installLifecycleBubble(runtime) {
       runtime.syncKakaoVisualDuplicateBubbles();
       runtime.ensureOverlayFrameSync();
     }
-    runtime.syncSeamCrossPageOverlays();
     runtime.recoverRenderedTargets();
   }
   runtime.syncAllOverlays = syncAllOverlays;

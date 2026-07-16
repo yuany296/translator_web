@@ -88,6 +88,7 @@ export function installSceneProjection(runtime) {
       bg_confidence: Number(source.bg_confidence || visual.bg_confidence || visual.bgConfidence || 0),
       region_id: String(source.region_id || visual.region_id || visual.regionId || ""),
       region_type: String(source.region_type || visual.region_type || visual.regionType || "plain_text"),
+      writing_mode: String(source.writing_mode || source.writingMode || visual.writing_mode || visual.writingMode || ""),
       region_polygon: source.region_polygon || visual.region_polygon || visual.regionPolygon || null,
       polygon: source.polygon || visual.polygon || null,
       text_color: source.text_color || visual.text_color || visual.textColor || "",

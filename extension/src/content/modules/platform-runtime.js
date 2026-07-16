@@ -13,34 +13,6 @@ export function installPlatformRuntime(runtime) {
     }
   }
   runtime.rememberPayloadCache = rememberPayloadCache;
-  async function loadLocalSettings() {
-    try {
-      const result = await runtime.storageGet(["mt_enabled", "mt_show_ball", "mt_aggressive_preload", "mt_capture_mode", "mt_render_mode", "mt_pretranslate_mode", "mt_local_ocr_debug"]);
-      runtime.state.enabled = result.mt_enabled !== false;
-      runtime.state.showFloatingBall = result.mt_show_ball !== false;
-      runtime.state.captureMode = runtime.normalizeCaptureMode(result.mt_capture_mode);
-      runtime.state.renderMode = runtime.normalizeRenderMode(result.mt_render_mode);
-      runtime.state.pretranslateMode = runtime.normalizePretranslateMode(result.mt_pretranslate_mode);
-      runtime.ENABLE_PIPELINE_TRACE = result.mt_local_ocr_debug === true;
-      // 自动翻译是否开启属于当前页面会话，不能由全局设置激活其他标签页。
-      runtime.state.autoTranslatePageEnabled = false;
-      if (typeof result.mt_aggressive_preload === "boolean") {
-        runtime.state.aggressivePreload = result.mt_aggressive_preload;
-      } else {
-        runtime.state.aggressivePreload = runtime.IS_CMOA_SPEED_READER;
-      }
-    } catch {
-      runtime.state.enabled = true;
-      runtime.state.showFloatingBall = true;
-      runtime.state.captureMode = runtime.CAPTURE_MODE_DIRECT;
-      runtime.state.renderMode = runtime.RENDER_MODE_OVERLAY;
-      runtime.state.pretranslateMode = "manual";
-      runtime.ENABLE_PIPELINE_TRACE = false;
-      runtime.state.autoTranslatePageEnabled = false;
-      runtime.state.aggressivePreload = runtime.IS_CMOA_SPEED_READER;
-    }
-  }
-  runtime.loadLocalSettings = loadLocalSettings;
   function normalizeRenderMode(value) {
     const text = String(value || "").trim().toLowerCase();
     return text === runtime.RENDER_MODE_EMBEDDED ? runtime.RENDER_MODE_EMBEDDED : runtime.RENDER_MODE_OVERLAY;

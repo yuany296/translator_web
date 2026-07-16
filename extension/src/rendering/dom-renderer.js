@@ -6,8 +6,8 @@ export function applyDomTextLayer(node, layer) {
     position: "absolute",
     left: `${placement.center.x}px`,
     top: `${placement.center.y}px`,
-    width: `${placement.axisLength}px`,
-    height: `${placement.normalThickness}px`,
+    width: `${placement.writingMode === "vertical" ? placement.normalThickness : placement.axisLength}px`,
+    height: `${placement.writingMode === "vertical" ? placement.axisLength : placement.normalThickness}px`,
     fontSize: `${fontSize}px`,
     lineHeight: `${lineHeight}px`,
     whiteSpace: "pre-wrap",
@@ -26,7 +26,7 @@ export function renderDomScene(scene, adapter) {
     if (layer.type === "cover") nodes.push(adapter.drawCover(layer));
     if (layer.type === "text") {
       const node = adapter.createTextNode(layer);
-      if (applyDomTextLayer(node, layer)) nodes.push(node);
+      if (node && applyDomTextLayer(node, layer)) nodes.push(node);
     }
     if (layer.type === "debug") nodes.push(adapter.drawDebug(layer));
     if (layer.type === "loading") nodes.push(adapter.drawLoading(layer));

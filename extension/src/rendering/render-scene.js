@@ -16,6 +16,7 @@ export function createRenderLayer(value) {
     id, type: value.type, canonicalId: String(value.canonicalId || ""),
     active: value.active !== false, geometry: immutableGeometry(value.geometry),
     layout: value.layout || null, appearance: value.appearance ? Object.freeze({ ...value.appearance }) : null,
+    content: value.content ? Object.freeze({ ...value.content }) : null,
     diagnostic: value.diagnostic ? Object.freeze({ ...value.diagnostic }) : null
   });
 }

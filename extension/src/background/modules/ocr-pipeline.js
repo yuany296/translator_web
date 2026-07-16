@@ -63,13 +63,13 @@ export function installOcrPipeline(runtime) {
       request,
       settings
     });
-    const wantsCleanedImageArtifact = Boolean(settings.provider === runtime.PROVIDERS.localPaddleDeepSeek && (request.requireCleanedImage || request.forceCleanedImageArtifact));
+    const wantsCleanedImageArtifact = Boolean(settings.provider === runtime.PROVIDERS.localPaddle && (request.requireCleanedImage || request.forceCleanedImageArtifact));
     // 清理图是易失渲染产物，不进入持久语义缓存指纹；但并发中的强制产物请求
     // 不能复用一个未请求 cleaned image 的普通 OCR promise。
     const artifactFingerprint = wantsCleanedImageArtifact ? runtime.buildCleanedMasksFingerprint(cleanedMasks) : "none";
     const inflightKey = `${cacheKey}:cleaned-image:${wantsCleanedImageArtifact ? "1" : "0"}:${artifactFingerprint}`;
     let cached = settings.localOcrDebug ? null : await runtime.getCache(cacheKey);
-    const shouldRefreshCleanedImage = Boolean(cached && request.requireCleanedImage && settings.provider === runtime.PROVIDERS.localPaddleDeepSeek && (cached.requiresCleanedImage === true || request.forceCleanedImageArtifact) && !runtime.isDataUrl(cached.cleanedImage));
+    const shouldRefreshCleanedImage = Boolean(cached && request.requireCleanedImage && settings.provider === runtime.PROVIDERS.localPaddle && (cached.requiresCleanedImage === true || request.forceCleanedImageArtifact) && !runtime.isDataUrl(cached.cleanedImage));
     if (cached && !shouldRefreshCleanedImage) {
       return {
         ok: true,
@@ -155,12 +155,6 @@ export function installOcrPipeline(runtime) {
       };
     }
     const settings = await runtime.loadSettings();
-    if (![runtime.PROVIDERS.baiduDeepSeek, runtime.PROVIDERS.localPaddleDeepSeek].includes(settings.provider)) {
-      return {
-        ok: false,
-        error: "Current provider does not support text-only canonical translation"
-      };
-    }
     if (!settings.apiKey) {
       return {
         ok: false,
@@ -173,7 +167,7 @@ export function installOcrPipeline(runtime) {
       items: translatableItems,
       apiKey: settings.apiKey,
       baseUrl: settings.baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL,
-      model: settings.model || runtime.DEFAULT_MODELS[settings.provider],
+      model: settings.model || runtime.DEFAULT_TRANSLATION_MODEL,
       sourceLanguage,
       targetLanguage,
       promptVersion: String(message && message.promptVersion || runtime.CANONICAL_TRANSLATION_PROMPT_VERSION),

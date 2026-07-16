@@ -19,6 +19,7 @@ export function installReaderApi(runtime) {
     commitPageIdentity: (target, identity) => runtime.bindKakaoTargetToPage(target, identity && identity.pageId, identity && identity.imageRevision),
     requestOcrForPayload: runtime.requestOcrForPayload,
     requestCanonicalTranslations: runtime.requestCanonicalTranslations,
+    isAuthoritativePagePayload: payload => Boolean(payload && runtime.isDataUrl(payload.dataUrl)),
     findAdjacentPageTargets: runtime.findAdjacentKakaoPageTargets,
     resolvePageRecord: target => {
       return runtime.state.kakaoStore && typeof runtime.state.kakaoStore.getPageHandleForTarget === "function" ? runtime.state.kakaoStore.getPageHandleForTarget(target) : null;
@@ -53,10 +54,6 @@ export function installReaderApi(runtime) {
     togglePageAutoTranslate: runtime.togglePageAutoTranslate,
     getPageAutoTranslateStatus: runtime.getPageAutoTranslateStatus,
     __test: {
-      /** 直接访问 pipeline 模块（只读） */
-      get pipeline() {
-        return globalThis.MangaTranslatorKakaoPipeline;
-      },
       /** 访问 Store（已封装） */
       get kakaoStore() {
         return runtime.state.kakaoStore;

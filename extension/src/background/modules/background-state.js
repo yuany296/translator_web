@@ -1,45 +1,12 @@
+import { OCR_COORDINATE_MODEL_VERSION, OCR_GEOMETRY_VERSION, TRANSLATION_PROMPT_VERSION } from "../../config/versions.js";
+
 export function installBackgroundState(runtime) {
   const CONTENT_SCRIPT_FILES = Object.freeze(["kakao-reconciler.js", "kakao-pipeline.js", "content.js"]);
   runtime.CONTENT_SCRIPT_FILES = CONTENT_SCRIPT_FILES;
   const STORAGE_KEYS = {
-    provider: "mt_provider",
-    model: "mt_model",
-    apiKey: "mt_api_key",
-    baseUrl: "mt_base_url",
-    baiduApiKey: "mt_baidu_api_key",
-    baiduSecretKey: "mt_baidu_secret_key",
-    localOcrBaseUrl: "mt_local_ocr_base_url",
-    localOcrLang: "mt_local_ocr_lang",
-    localOcrMode: "mt_local_ocr_mode",
-    localOcrDetThresh: "mt_local_ocr_det_thresh",
-    localOcrDetBoxThresh: "mt_local_ocr_det_box_thresh",
-    localOcrDetUnclipRatio: "mt_local_ocr_det_unclip_ratio",
-    localOcrDebug: "mt_local_ocr_debug",
-    ocrConfidenceThreshold: "mt_ocr_confidence_threshold",
-    ocrMinBoxArea: "mt_ocr_min_box_area",
-    ocrMaxBoxArea: "mt_ocr_max_box_area",
-    ocrMinBoxWidth: "mt_ocr_min_box_width",
-    ocrMinBoxHeight: "mt_ocr_min_box_height",
-    ocrMaxAspectRatio: "mt_ocr_max_aspect_ratio",
-    ocrMergeLineGap: "mt_ocr_merge_line_gap",
-    overwriteFontScale: "mt_overwrite_font_scale",
-    overwriteCoverPadding: "mt_overwrite_cover_padding",
-    debugOverlayMode: "mt_debug_overlay_mode",
-    overwritePreviewMode: "mt_overwrite_preview_mode",
-    visionOcrApiKey: "mt_vision_ocr_api_key",
-    visionOcrBaseUrl: "mt_vision_ocr_base_url",
-    visionOcrModel: "mt_vision_ocr_model",
-    visionOcrEnabled: "mt_vision_ocr_enabled",
-    enabled: "mt_enabled",
-    showBall: "mt_show_ball",
-    captureMode: "mt_capture_mode",
-    renderMode: "mt_render_mode",
-    pretranslateMode: "mt_pretranslate_mode",
-    ignoreSimplifiedChinese: "mt_ignore_simplified_zh",
     glossary: runtime.glossaryCore.STORAGE_KEY,
     glossaryPending: runtime.termDiscoveryCore.PENDING_STORAGE_KEY,
     glossaryIgnored: runtime.termDiscoveryCore.IGNORED_STORAGE_KEY,
-    termDiscoveryEnabled: runtime.termDiscoveryCore.ENABLED_STORAGE_KEY,
     glossaryStorage: "mt_glossary_storage"
   };
   runtime.STORAGE_KEYS = STORAGE_KEYS;
@@ -82,15 +49,11 @@ export function installBackgroundState(runtime) {
   };
   runtime.DEFAULT_SETTINGS = DEFAULT_SETTINGS;
   const PROVIDERS = {
-    baiduDeepSeek: "baidu",
-    localPaddleDeepSeek: "local_paddle"
+    baidu: "baidu",
+    localPaddle: "local_paddle"
   };
   runtime.PROVIDERS = PROVIDERS;
-  const DEFAULT_MODELS = {
-    [runtime.PROVIDERS.baiduDeepSeek]: "deepseek-chat",
-    [runtime.PROVIDERS.localPaddleDeepSeek]: "deepseek-chat"
-  };
-  runtime.DEFAULT_MODELS = DEFAULT_MODELS;
+  runtime.DEFAULT_TRANSLATION_MODEL = "deepseek-chat";
   const DEFAULT_TRANSLATION_BASE_URL = "https://api.deepseek.com";
   runtime.DEFAULT_TRANSLATION_BASE_URL = DEFAULT_TRANSLATION_BASE_URL;
   const DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
@@ -119,11 +82,10 @@ export function installBackgroundState(runtime) {
   runtime.OCR_CACHE_PREFIX = OCR_CACHE_PREFIX;
   const CANONICAL_TRANSLATION_CACHE_PREFIX = "mt_cache_v22:translation:";
   runtime.CANONICAL_TRANSLATION_CACHE_PREFIX = CANONICAL_TRANSLATION_CACHE_PREFIX;
-  const LOCAL_OCR_GEOMETRY_VERSION = "appearance-layout-v3";
+  const LOCAL_OCR_GEOMETRY_VERSION = OCR_GEOMETRY_VERSION;
   runtime.LOCAL_OCR_GEOMETRY_VERSION = LOCAL_OCR_GEOMETRY_VERSION;
-  const OCR_COORDINATE_MODEL_VERSION = "page-percent-v4-oriented-appearance";
   runtime.OCR_COORDINATE_MODEL_VERSION = OCR_COORDINATE_MODEL_VERSION;
-  const CANONICAL_TRANSLATION_PROMPT_VERSION = "canonical-zh-cn-v1";
+  const CANONICAL_TRANSLATION_PROMPT_VERSION = TRANSLATION_PROMPT_VERSION;
   runtime.CANONICAL_TRANSLATION_PROMPT_VERSION = CANONICAL_TRANSLATION_PROMPT_VERSION;
   const TRANSLATION_CACHE_KEY_RE = /^mt_cache_v\d+:/;
   runtime.TRANSLATION_CACHE_KEY_RE = TRANSLATION_CACHE_KEY_RE;

@@ -8,9 +8,7 @@ export function installPipelineHelpers(runtime) {
   runtime.requireCanonicalAdapter = requireCanonicalAdapter;
   function defaultIsAuthoritativePagePayload(payload) {
     if (!payload || typeof payload !== "object") return false;
-    const source = String(payload.source || "").trim().toLowerCase();
-    const mode = String(payload.captureMode || payload.capture_mode || "").trim().toLowerCase();
-    return source !== "visible-tab-crop" && source !== "screenshot" && mode !== "screenshot";
+    return /^data:image\//iu.test(String(payload.dataUrl || ""));
   }
   runtime.defaultIsAuthoritativePagePayload = defaultIsAuthoritativePagePayload;
   function canonicalRevisionKey(id, revision) {

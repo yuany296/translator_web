@@ -22,7 +22,7 @@ import { installTranslationHelpers } from "./translation-helpers.js";
 import { installTranslationCoalesce } from "./translation-coalesce.js";
 import { installTranslationUtils } from "./translation-utils.js";
 import { installPlatformCache } from "./platform-cache.js";
-import { installPlatformSettings } from "./platform-settings.js";
+import { installPlatformUtils } from "./platform-utils.js";
 import { installPlatformStorage } from "./platform-storage.js";
 import { installBackgroundState } from "./background-state.js";
 import { installBootstrap } from "./bootstrap.js";
@@ -52,7 +52,7 @@ export const backgroundInstallers = Object.freeze([
   installTranslationCoalesce,
   installTranslationUtils,
   installPlatformCache,
-  installPlatformSettings,
+  installPlatformUtils,
   installPlatformStorage,
   installBackgroundState,
   installBootstrap
@@ -84,7 +84,7 @@ export const backgroundPhases = Object.freeze({
     installTranslationCoalesce,
     installTranslationUtils,
     installPlatformCache,
-    installPlatformSettings,
+    installPlatformUtils,
     installPlatformStorage
   ]),
   state: Object.freeze([installBackgroundState]),

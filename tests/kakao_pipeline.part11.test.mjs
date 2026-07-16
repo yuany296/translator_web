@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { canonicalPipeline as P } from "../extension/src/canonical/pipeline.js";
+import { createLegacyPipelineForTest } from "./helpers/legacy-pipeline.mjs";
 function createPipelineHarness(overrides = {}) {
   const calls = [];
   const store = P.createStore();
@@ -97,7 +98,7 @@ function createPipelineHarness(overrides = {}) {
     ...overrides
   };
   return {
-    pipeline: P.createPipeline(adapters),
+    pipeline: createLegacyPipelineForTest(adapters),
     store,
     target,
     calls,
@@ -520,7 +521,7 @@ test("neighbor discovery failure is isolated after authoritative page OCR", asyn
   assert.ok(harness.traces.some(entry => entry.event === "canonical:neighbor-discovery-error"));
   assert.equal(harness.calls.includes("retry"), false);
 });
-test("canonical pipeline delegates a visible-tab screenshot payload without running OCR", async () => {
+test("canonical pipeline treats a visible-tab screenshot crop as page evidence", async () => {
   const harness = createCanonicalHarness({
     adapterOverrides: {
       extractTargetPayload: async target => {
@@ -535,11 +536,10 @@ test("canonical pipeline delegates a visible-tab screenshot payload without runn
     }
   });
   const result = await harness.pipeline.run(harness.targets.a);
-  assert.equal(result.fallbackLegacy, true);
-  assert.equal(result.reason, "non-authoritative-page-payload");
-  assert.equal(harness.calls.some(call => call.startsWith("ocr:")), false);
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.some(call => call.startsWith("ocr:")), true);
   assert.equal(harness.calls.includes("retry"), false);
-  assert.equal(harness.store.getPageHandles().length, 0);
+  assert.equal(harness.store.getPageHandles().length, 1);
 });
 test("solid projections keep PAGE_OCR artifact refresh at zero", async () => {
   const harness = createCanonicalHarness();

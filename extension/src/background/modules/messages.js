@@ -52,8 +52,11 @@ export function installMessages(runtime) {
   runtime.handleMessage = handleMessage;
   async function handleDiscoverTerms(message) {
     return runtime.enqueueTermDiscoveryMutation(async () => {
-      const stored = await runtime.storageGet([runtime.STORAGE_KEYS.termDiscoveryEnabled, runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored, runtime.STORAGE_KEYS.glossary, runtime.STORAGE_KEYS.localOcrBaseUrl]);
-      if (stored[runtime.STORAGE_KEYS.termDiscoveryEnabled] === false) {
+      const configuration = await runtime.loadConfiguration();
+      const stored = await runtime.storageGet([
+        runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored
+      ]);
+      if (configuration.runtime.termDiscoveryEnabled === false) {
         return {
           ok: true,
           skipped: true,
@@ -79,7 +82,7 @@ export function installMessages(runtime) {
           status: runtime.getTermExtractorStatusSnapshot()
         };
       }
-      const baseUrl = runtime.sanitizeLocalOcrBaseUrl(stored[runtime.STORAGE_KEYS.localOcrBaseUrl] || runtime.DEFAULT_LOCAL_OCR_BASE_URL);
+      const baseUrl = runtime.sanitizeLocalOcrBaseUrl(configuration.ocr.localPaddle.baseUrl);
       try {
         const payload = await runtime.requestTermExtractorJson(`${baseUrl}/terms/extract`, {
           method: "POST",
@@ -92,14 +95,14 @@ export function installMessages(runtime) {
               id: block.id,
               text: block.originalText
             })),
-            user_terms: [...runtime.glossaryCore.normalizeGlossary(stored[runtime.STORAGE_KEYS.glossary]).entries.map(entry => entry.source), ...pending.chapters.flatMap(chapter => chapter.candidates).filter(candidate => candidate.kind === "person").map(candidate => candidate.source)].slice(0, 200)
+            user_terms: [...configuration.glossary.entries.map(entry => entry.source), ...pending.chapters.flatMap(chapter => chapter.candidates).filter(candidate => candidate.kind === "person").map(candidate => candidate.source)].slice(0, 200)
           })
         });
         runtime.markTermExtractorOnline();
         const nextPending = runtime.termDiscoveryCore.mergeDiscoveryResult({
           store: pending,
           ignored: stored[runtime.STORAGE_KEYS.glossaryIgnored],
-          glossary: runtime.glossaryCore.normalizeGlossary(stored[runtime.STORAGE_KEYS.glossary]),
+          glossary: configuration.glossary,
           pageUrl,
           pageTitle: message.pageTitle,
           targetKey,
@@ -147,10 +150,13 @@ export function installMessages(runtime) {
   }
   runtime.handleDiscoverTerms = handleDiscoverTerms;
   async function handleGetTermDiscoveryStatus(message = {}) {
-    const stored = await runtime.storageGet([runtime.STORAGE_KEYS.termDiscoveryEnabled, runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.localOcrBaseUrl]);
-    const enabled = stored[runtime.STORAGE_KEYS.termDiscoveryEnabled] !== false;
+    const [configuration, stored] = await Promise.all([
+      runtime.loadConfiguration(),
+      runtime.storageGet([runtime.STORAGE_KEYS.glossaryPending])
+    ]);
+    const enabled = configuration.runtime.termDiscoveryEnabled !== false;
     if (enabled && message.probe === true) {
-      await runtime.probeTermExtractor(stored[runtime.STORAGE_KEYS.localOcrBaseUrl]);
+      await runtime.probeTermExtractor(configuration.ocr.localPaddle.baseUrl);
     }
     return {
       ok: true,
@@ -164,10 +170,13 @@ export function installMessages(runtime) {
   }
   runtime.handleGetTermDiscoveryStatus = handleGetTermDiscoveryStatus;
   async function handleGetTermDiscoveryState(message = {}) {
-    const stored = await runtime.storageGet([runtime.STORAGE_KEYS.termDiscoveryEnabled, runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored, runtime.STORAGE_KEYS.localOcrBaseUrl]);
-    const enabled = stored[runtime.STORAGE_KEYS.termDiscoveryEnabled] !== false;
+    const [configuration, stored] = await Promise.all([
+      runtime.loadConfiguration(),
+      runtime.storageGet([runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored])
+    ]);
+    const enabled = configuration.runtime.termDiscoveryEnabled !== false;
     if (enabled && message.probe === true) {
-      await runtime.probeTermExtractor(stored[runtime.STORAGE_KEYS.localOcrBaseUrl]);
+      await runtime.probeTermExtractor(configuration.ocr.localPaddle.baseUrl);
     }
     const pending = runtime.termDiscoveryCore.normalizePendingStore(stored[runtime.STORAGE_KEYS.glossaryPending]);
     return {
@@ -185,8 +194,10 @@ export function installMessages(runtime) {
   runtime.handleGetTermDiscoveryState = handleGetTermDiscoveryState;
   async function handleSetTermDiscoveryEnabled(message) {
     const enabled = message.enabled !== false;
-    await runtime.storageSet({
-      [runtime.STORAGE_KEYS.termDiscoveryEnabled]: enabled
+    const configuration = await runtime.loadConfiguration();
+    await runtime.configurationStore.save("runtime", {
+      ...configuration.runtime,
+      termDiscoveryEnabled: enabled
     });
     return runtime.handleGetTermDiscoveryStatus({
       probe: enabled && message.probe === true

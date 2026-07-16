@@ -392,7 +392,7 @@ test("OCR capture and rendering are isolated from extension-owned overlays", () 
   assert.match(contentSource, /node\.closest\("\[data-manga-translator-overlay\]"\)/);
   assert.match(contentSource, /mutationInsideOverlay[\s\S]*continue/);
   assert.match(contentSource, /oldOverlay\.root\.remove\(\)/);
-  assert.match(contentSource, /source image changed during OCR/);
+  assert.match(contentSource, /expectedSourceImageId[\s\S]*getSourceImageIdForTarget\(target\)\s*!==\s*expectedSourceImageId/);
 });
 test("debug overlay exposes raw, deduped, duplicate, and block boxes", () => {
   assert.match(contentSource, /name: "raw",[\s\S]*?items: debug\.rawItems/);
@@ -458,7 +458,7 @@ test("Kakao short page attachment release is gated on stitched result coverage",
   assert.ok(renderStageIndex >= 0);
   assert.ok(releaseIndex > renderStageIndex);
   assert.ok(releaseIndex < cacheIndex);
-  assert.match(contentSource, /state\.kakaoStore\.releaseShortPage/);
+  assert.match(contentSource, /runtime\.KP\.releaseShortPagesForOwner\(runtime\.state\.kakaoStore/);
   assert.match(contentSource, /short-attachment-suppressed/);
 });
 test("stitched OCR remaps polygon points into the owner image", () => {

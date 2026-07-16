@@ -98,7 +98,7 @@ test("warm OCR cache refreshes only required cleaned artifacts and preserves cac
       callsByPage.set(pageId, call);
       const needsCleaned = pageId === "page-none";
       return {
-        provider: "local_paddle_deepseek",
+        provider: "local_paddle",
         sourceType: "page",
         pageIds: [pageId],
         imageRevisionByPage: request.imageRevisionByPage,
@@ -432,7 +432,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
     context.fetch = originalFetch;
   }
   assert.equal(requestBodies.length, 3);
-  assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-v1");
+  assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-appearance-layout-v2");
   assert.equal(requestBodies[0].return_cleaned_image, false);
   assert.equal(requestBodies[0].cleaned_mask_token, "");
   assert.equal(requestBodies[1].return_cleaned_image, true);
@@ -606,10 +606,7 @@ test("local OCR debug preserves raw detector boxes even when final OCR items are
 });
 test("identical OCR fingerprints share one provider request and then use the warm v22 cache", async () => {
   const background = context.__backgroundTest;
-  installMemoryStorage({
-    mt_provider: "local_paddle_deepseek",
-    mt_local_ocr_base_url: "http://127.0.0.1:8765"
-  });
+  installMemoryStorage(separatedConfiguration());
   let providerCalls = 0;
   background.setBackgroundTestHooks({
     requestProviderNeutralOcr: async ({

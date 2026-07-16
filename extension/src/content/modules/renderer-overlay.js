@@ -28,7 +28,6 @@ export function installRendererOverlay(runtime) {
 
     // 旧版 seam renderer 可能在扩展热更新后留下不受 overlaysById 管理的根节点。
     // canonical renderer 是唯一跨页渲染入口，新的页面结果到达时应立即清理旧根。
-    runtime.removeSeamCrossPageOverlays(target);
     if (bubbles.length === 0 && seamSurfaces.length === 0 && !runtime.hasRenderableOcrDebug(result)) {
       runtime.removeOverlayForTarget(target);
       return;
@@ -74,20 +73,42 @@ export function installRendererOverlay(runtime) {
     const seamDebugNodeCount = seamEntries.reduce((count, entry) => count + entry.debugNodeCount, 0);
     const bubbleNodes = [];
     const backgroundTarget = runtime.IS_PIXIV_COMIC_VIEWER && runtime.isBackgroundImageTarget(target);
-    bubbles.forEach((bubble, index) => {
-      const bubbleNode = runtime.createBubbleNode(bubble, index, {
-        backgroundTarget
-      });
-      if (bubbleNode) {
-        if (stream) {
-          const delayMs = Math.min(index * 34, 320);
-          bubbleNode.classList.add("mt-stream-enter");
-          bubbleNode.style.setProperty("--mt-stream-delay", `${delayMs}ms`);
-        }
-        bubbleNodes.push(bubbleNode);
-        root.appendChild(bubbleNode);
-      }
+    const targetRect = target.getBoundingClientRect();
+    const scene = runtime.buildRenderSceneForBubbles({
+      id: `page:${targetId}`,
+      surface: { id: targetId, type: "page", width: targetRect.width, height: targetRect.height },
+      bubbles
     });
+    let sceneNodeIndex = 0;
+    const sceneNodes = runtime.renderDomScene(scene, {
+      drawCover(layer) {
+        const bubble = layer.content?.bubble;
+        const node = runtime.createBubbleNode({ ...bubble, projection_role: "cover_only" }, sceneNodeIndex++);
+        if (node) {
+          node.classList.add("mt-cover-layer");
+          node.dataset.sceneFamily = String(layer.canonicalId || layer.id);
+        }
+        return node;
+      },
+      createTextNode(layer) {
+        const node = runtime.createBubbleNode(layer.content?.bubble, sceneNodeIndex++, { textOnly: true });
+        if (node) {
+          node.dataset.sceneTextLayer = "true";
+          node.dataset.sceneFamily = String(layer.canonicalId || layer.id);
+          node.mtSceneBubble = layer.content?.bubble;
+          if (stream) {
+            const delayMs = Math.min(sceneNodeIndex * 34, 320);
+            node.classList.add("mt-stream-enter");
+            node.style.setProperty("--mt-stream-delay", `${delayMs}ms`);
+          }
+        }
+        return node;
+      },
+      drawDebug() { return null; },
+      drawLoading() { return null; }
+    });
+    bubbleNodes.push(...sceneNodes);
+    sceneNodes.forEach((node) => root.appendChild(node));
     if (bubbleNodes.length === 0 && seamBubbleCount === 0 && debugNodeCount + seamDebugNodeCount === 0) {
       return;
     }
@@ -98,8 +119,9 @@ export function installRendererOverlay(runtime) {
       sourceToken: currentSourceToken,
       root,
       bubbleNodes,
+      renderScene: scene,
       seamEntries,
-      bubbleCount: bubbleNodes.length + seamBubbleCount,
+      bubbleCount: scene.layers.filter(layer => layer.type === "text").length + seamBubbleCount,
       isBackgroundTarget: backgroundTarget,
       mode: bubbleNodes.length + seamBubbleCount > 0 ? "bubbles" : "debug",
       debugNodeCount: debugNodeCount + seamDebugNodeCount,

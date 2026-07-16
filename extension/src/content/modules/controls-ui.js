@@ -159,9 +159,7 @@ export function installControlsUi(runtime) {
     runtime.state.showFloatingBall = false;
     runtime.updateFloatingBallState();
     try {
-      await runtime.storageSet({
-        mt_show_ball: false
-      });
+      await runtime.updateRuntimeConfiguration({ showBall: false });
     } catch {
       // Ignore persistence failure, keep current page hidden state.
     }

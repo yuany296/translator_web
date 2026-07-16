@@ -184,7 +184,7 @@ test("v22 OCR cache separates image evidence and excludes translation and render
     }
   };
   const settings = {
-    provider: "local_paddle_deepseek",
+    provider: "local_paddle",
     localOcrBaseUrl: "http://127.0.0.1:8765",
     localOcrLang: "korean",
     localOcrMode: "fast",

@@ -2,10 +2,11 @@ import { createConfigurationStore, toLegacySettings } from "../config/store.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { createOcrProviders } from "./providers/ocr.js";
 import { createTranslationProviders } from "./providers/translation.js";
+import { OCR_COORDINATE_MODEL_VERSION, OCR_GEOMETRY_VERSION } from "../config/versions.js";
 
 export function configureBackgroundRuntime(runtime) {
-  runtime.LOCAL_OCR_GEOMETRY_VERSION = "detect-crop-recognize-v1";
-  runtime.OCR_COORDINATE_MODEL_VERSION = "crop-source-transform-v1";
+  runtime.LOCAL_OCR_GEOMETRY_VERSION = OCR_GEOMETRY_VERSION;
+  runtime.OCR_COORDINATE_MODEL_VERSION = OCR_COORDINATE_MODEL_VERSION;
   const store = createConfigurationStore(runtime);
   const ocrProviders = createOcrProviders(runtime, new ProviderRegistry("ocr"));
   const translationProviders = createTranslationProviders(runtime, new ProviderRegistry("translation"));
@@ -49,9 +50,6 @@ export function configureBackgroundRuntime(runtime) {
     if (message.type === "TEST_TRANSLATION_CONFIGURATION") {
       const config = await store.load();
       return translationProviders.get(config.translation.provider).checkHealth(config.translation);
-    }
-    if (message.type === "TRANSLATE_DATA_URL") {
-      return { ok: false, error: "TRANSLATE_DATA_URL 已移除；请依次调用 OCR_DATA_URL 与 TRANSLATE_TEXT_BLOCKS" };
     }
     return handleLegacyMessage(message, sender);
   };

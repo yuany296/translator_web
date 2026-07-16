@@ -304,7 +304,7 @@ test("complex-background cache entries retain the cleaned-image requirement", ()
 });
 test("translation cache key separates OCR mode, source token, and fallback reason", () => {
   const base = {
-    provider: "local_paddle_deepseek",
+    provider: "local_paddle",
     model: "model",
     baseUrl: "https://api.example.test",
     captureMode: "direct",

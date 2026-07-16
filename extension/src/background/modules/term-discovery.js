@@ -28,7 +28,9 @@ export function installTermDiscovery(runtime) {
   runtime.handleRestoreIgnoredTerm = handleRestoreIgnoredTerm;
   async function handleStartLocalOcr() {
     try {
-      const resp = await fetch("http://127.0.0.1:8765/health", {
+      const configuration = await runtime.loadConfiguration();
+      const baseUrl = runtime.sanitizeLocalOcrBaseUrl(configuration.ocr.localPaddle.baseUrl);
+      const resp = await fetch(`${baseUrl}/health`, {
         signal: AbortSignal.timeout(2000)
       });
       if (resp.ok) return {
@@ -50,7 +52,9 @@ export function installTermDiscovery(runtime) {
   runtime.handleStopLocalOcr = handleStopLocalOcr;
   async function handlePingLocalOcr() {
     try {
-      const resp = await fetch("http://127.0.0.1:8765/health", {
+      const configuration = await runtime.loadConfiguration();
+      const baseUrl = runtime.sanitizeLocalOcrBaseUrl(configuration.ocr.localPaddle.baseUrl);
+      const resp = await fetch(`${baseUrl}/health`, {
         signal: AbortSignal.timeout(2000)
       });
       return {
@@ -171,8 +175,12 @@ export function installTermDiscovery(runtime) {
   }
   runtime.callGlossaryApi = callGlossaryApi;
   async function isGlossaryServerMode() {
-    const stored = await runtime.storageGet([runtime.STORAGE_KEYS.glossaryStorage, runtime.STORAGE_KEYS.localOcrBaseUrl]);
-    return stored[runtime.STORAGE_KEYS.glossaryStorage] === "server" ? stored[runtime.STORAGE_KEYS.localOcrBaseUrl] || runtime.DEFAULT_LOCAL_OCR_BASE_URL : "";
+    const [configuration, stored] = await Promise.all([
+      runtime.loadConfiguration(), runtime.storageGet([runtime.STORAGE_KEYS.glossaryStorage])
+    ]);
+    return stored[runtime.STORAGE_KEYS.glossaryStorage] === "server"
+      ? configuration.ocr.localPaddle.baseUrl
+      : "";
   }
   runtime.isGlossaryServerMode = isGlossaryServerMode;
 }

@@ -1,3 +1,5 @@
+import { CONFIG_KEYS } from "../../config/schema.js";
+
 export function installGlossaryEditor(runtime) {
   function bindEvents() {
     runtime.addBtn.addEventListener("click", () => runtime.openEditor());
@@ -25,7 +27,8 @@ export function installGlossaryEditor(runtime) {
         runtime.glossary = runtime.glossaryCore.normalizeGlossary(changes[runtime.glossaryCore.STORAGE_KEY].newValue);
         runtime.renderGlossary();
       }
-      if (changes[runtime.termDiscoveryCore.PENDING_STORAGE_KEY] || changes[runtime.termDiscoveryCore.IGNORED_STORAGE_KEY] || changes[runtime.termDiscoveryCore.ENABLED_STORAGE_KEY]) {
+      if (changes[runtime.termDiscoveryCore.PENDING_STORAGE_KEY] ||
+          changes[runtime.termDiscoveryCore.IGNORED_STORAGE_KEY] || changes[CONFIG_KEYS.runtime]) {
         runtime.loadTermDiscoveryState(false).catch(() => undefined);
       }
     });

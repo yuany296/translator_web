@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { canonicalPipeline as P } from "../extension/src/canonical/pipeline.js";
+import { createLegacyPipelineForTest } from "./helpers/legacy-pipeline.mjs";
 function createPipelineHarness(overrides = {}) {
   const calls = [];
   const store = P.createStore();
@@ -97,7 +98,7 @@ function createPipelineHarness(overrides = {}) {
     ...overrides
   };
   return {
-    pipeline: P.createPipeline(adapters),
+    pipeline: createLegacyPipelineForTest(adapters),
     store,
     target,
     calls,

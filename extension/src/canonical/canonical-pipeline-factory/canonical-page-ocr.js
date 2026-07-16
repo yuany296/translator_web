@@ -21,17 +21,7 @@ export function installCanonicalPageOcr(runtime, scope) {
         return scope.cancelJob(target, identity, "", "sourceChanged during payload admission");
       }
       if (!authoritativePayload) {
-        scope.trace("legacy-fallback", target, {
-          runId: identity.runId,
-          source: String(payload && payload.source || "")
-        });
-        return {
-          ok: false,
-          skipped: true,
-          fallbackLegacy: true,
-          reason: "non-authoritative-page-payload",
-          payload
-        };
+        throw new Error("Page capture did not produce an authoritative image payload");
       }
       const pageIdentity = await scope.withCanonicalTimeout(scope.buildPageIdentity(target, payload, {
         ...identity,
@@ -161,16 +151,6 @@ export function installCanonicalPageOcr(runtime, scope) {
         return scope.cancelJob(target, identity, pageRecord.pageId, "sourceChanged during pair refresh");
       }
 
-      // Direct seam cross-page render: 对已就绪的相邻页，无论是否有边缘证据，
-      // 都做合并图 OCR 渲染跨页 overlay。绕过 evaluateSeamEvidence 判断。
-      // 拼接结果统一由 canonical renderOverlay 投影，禁用旧的独立跨页渲染。
-      if (false) for (const _rel of pageRecord.adjacentTargets || []) {
-        const _n = scope.store.getPageHandleForTarget(_rel.target);
-        if (!_n || !scope.isReadyPageRecord(_n)) continue;
-        const [_a, _b] = _rel.side === "previous" ? [_n, pageRecord] : [pageRecord, _n];
-        scope.loading(target, identity.targetKey, "渲染跨页...");
-        scope.runSeamCrossPageRender(_a, _b).catch(function () {});
-      }
       if (snapshot && typeof scope.adapters.isTargetSnapshotStillValid === "function" && !scope.adapters.isTargetSnapshotStillValid(target, snapshot)) {
         return scope.cancelJob(target, identity, pageRecord.pageId, "target changed before render commit");
       }

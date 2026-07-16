@@ -34,7 +34,6 @@ export function installPipelineApi(runtime) {
     attachShortPageIfAllowed: runtime.attachShortPageIfAllowed,
     releaseShortPagesForOwner: runtime.releaseShortPagesForOwner,
     // Pipeline
-    createPipeline: runtime.createPipeline,
     createCanonicalPipeline: runtime.createCanonicalPipeline,
     // Canonical helpers
     calculateCanonicalSeamHeight: runtime.calculateCanonicalSeamHeight,

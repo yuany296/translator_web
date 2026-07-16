@@ -528,9 +528,10 @@ test("canonical pending and retry failures preserve the last stable projection",
   const renderSource = contentSource.slice(renderStart, renderEnd);
   assert.match(renderSource, /disposition === "pending"[\s\S]*?stream:\s*false,[\s\S]*?debugOnly:\s*true/);
   const translateStart = contentSource.indexOf("async function translateTarget");
-  const translateEnd = contentSource.indexOf("function syncAllOverlays", translateStart);
+  const translateEnd = contentSource.indexOf("runtime.translateTarget = translateTarget;", translateStart);
   const translateSource = contentSource.slice(translateStart, translateEnd);
-  assert.match(translateSource, /if \(runtime\.shouldUseKakaoCanonicalPipeline\(target\)\) \{[\s\S]*?runtime\.clearKakaoLoadingOverlay\(target\);[\s\S]*?\} else \{[\s\S]*?runtime\.clearRenderedTarget\(target\);/);
+  assert.match(translateSource, /executeCanonicalTarget\(target, options\)\.catch[\s\S]*?runtime\.clearKakaoLoadingOverlay\(target\);/);
+  assert.doesNotMatch(translateSource, /executeCanonicalTarget\(target, options\)\.catch[\s\S]*?runtime\.clearRenderedTarget\(target\);/);
 });
 test("canonical seam rendering uses explicit ESM dependencies and the common projection renderer", () => {
   const pipelineSource = fs.readFileSync(path.resolve(import.meta.dirname, "..", "extension", "src", "canonical", "pipeline.js"), "utf8");

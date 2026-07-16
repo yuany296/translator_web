@@ -87,10 +87,7 @@ function separatedConfiguration({
 }
 test("a forced cleaned-image OCR request does not reuse a plain in-flight request", async () => {
   const background = context.__backgroundTest;
-  installMemoryStorage({
-    mt_provider: "local_paddle_deepseek",
-    mt_local_ocr_base_url: "http://127.0.0.1:8765"
-  });
+  installMemoryStorage(separatedConfiguration());
   let markFirstStarted;
   let releaseRequests;
   const firstStarted = new Promise(resolve => {
@@ -148,10 +145,7 @@ test("a forced cleaned-image OCR request does not reuse a plain in-flight reques
 });
 test("forced cleaned-image requests with different canonical masks do not share an artifact", async () => {
   const background = context.__backgroundTest;
-  installMemoryStorage({
-    mt_provider: "local_paddle_deepseek",
-    mt_local_ocr_base_url: "http://127.0.0.1:8765"
-  });
+  installMemoryStorage(separatedConfiguration());
   let releaseRequests;
   const requestGate = new Promise(resolve => {
     releaseRequests = resolve;
@@ -222,10 +216,7 @@ test("forced cleaned-image requests with different canonical masks do not share 
 });
 test("equivalent cleaned masks share one artifact request after normalization", async () => {
   const background = context.__backgroundTest;
-  installMemoryStorage({
-    mt_provider: "local_paddle_deepseek",
-    mt_local_ocr_base_url: "http://127.0.0.1:8765"
-  });
+  installMemoryStorage(separatedConfiguration());
   let providerCalls = 0;
   let markFirstStarted;
   const firstStarted = new Promise(resolve => {

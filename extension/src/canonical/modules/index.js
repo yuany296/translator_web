@@ -5,7 +5,6 @@ import { installStitchMapping } from "./stitch-mapping.js";
 import { installStitchDebug } from "./stitch-debug.js";
 import { installPageStoreBridge } from "./page-store-bridge.js";
 import { installStorePipelineContext } from "./store-pipeline-context.js";
-import { installPipelineBridge } from "./pipeline-bridge.js";
 import { installCanonicalBridge } from "./canonical-bridge.js";
 import { installPipelineHelpers } from "./pipeline-helpers.js";
 import { installProjectionBuilder } from "./projection-builder.js";
@@ -25,7 +24,6 @@ export const pipelineInstallers = Object.freeze([
   installStitchDebug,
   installPageStoreBridge,
   installStorePipelineContext,
-  installPipelineBridge,
   installCanonicalBridge,
   installPipelineHelpers,
   installProjectionBuilder,
@@ -47,7 +45,6 @@ export const pipelinePhases = Object.freeze({
     installStitchDebug,
     installPageStoreBridge,
     installStorePipelineContext,
-    installPipelineBridge,
     installCanonicalBridge,
     installPipelineHelpers,
     installProjectionBuilder,

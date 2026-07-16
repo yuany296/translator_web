@@ -9,14 +9,14 @@ import { installRecognitionStitch } from "./recognition-stitch.js";
 import { installRecognitionOverlap } from "./recognition-overlap.js";
 import { installCapturePayload } from "./capture-payload.js";
 import { installSceneProjection } from "./scene-projection.js";
-import { installSceneCrosspage } from "./scene-crosspage.js";
+import { installSceneCanonical } from "./scene-canonical.js";
 import { installSceneDispatch } from "./scene-dispatch.js";
 import { installRendererOverlay } from "./renderer-overlay.js";
 import { installRendererEmbed } from "./renderer-embed.js";
 import { installRendererCanvas } from "./renderer-canvas.js";
 import { installLifecycleBubble } from "./lifecycle-bubble.js";
 import { installLifecyclePosition } from "./lifecycle-position.js";
-import { installLifecycleFontFit } from "./lifecycle-font-fit.js";
+import { installLifecycleOverlayCleanup } from "./lifecycle-overlay-cleanup.js";
 import { installLifecycleRestore } from "./lifecycle-restore.js";
 import { installControlsUi } from "./controls-ui.js";
 import { installControlsAutotranslate } from "./controls-autotranslate.js";
@@ -42,14 +42,14 @@ export const contentInstallers = Object.freeze([
   installRecognitionOverlap,
   installCapturePayload,
   installSceneProjection,
-  installSceneCrosspage,
+  installSceneCanonical,
   installSceneDispatch,
   installRendererOverlay,
   installRendererEmbed,
   installRendererCanvas,
   installLifecycleBubble,
   installLifecyclePosition,
-  installLifecycleFontFit,
+  installLifecycleOverlayCleanup,
   installLifecycleRestore,
   installControlsUi,
   installControlsAutotranslate,
@@ -77,14 +77,14 @@ export const contentPhases = Object.freeze({
     installRecognitionOverlap,
     installCapturePayload,
     installSceneProjection,
-    installSceneCrosspage,
+    installSceneCanonical,
     installSceneDispatch,
     installRendererOverlay,
     installRendererEmbed,
     installRendererCanvas,
     installLifecycleBubble,
     installLifecyclePosition,
-    installLifecycleFontFit,
+    installLifecycleOverlayCleanup,
     installLifecycleRestore,
     installControlsUi,
     installControlsAutotranslate,

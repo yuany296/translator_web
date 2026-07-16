@@ -248,6 +248,25 @@ export function installPlatformCache(runtime) {
     return /quota|kQuotaBytes/i.test(runtime.getErrorMessage(error));
   }
   runtime.isStorageQuotaError = isStorageQuotaError;
+  function buildCacheSafeOcrResult(value) {
+    if (!value || typeof value !== "object") return value;
+    const {
+      cleanedImage: _cleanedImage,
+      cleanedImageToken: _cleanedImageToken,
+      debug: _debug,
+      ...cacheSafeValue
+    } = value;
+    const requiresCleanedImage = Boolean(
+      Array.isArray(value.observations) && value.observations.some(
+        observation => observation?.visual?.bgType === "none"
+      )
+    );
+    return {
+      ...cacheSafeValue,
+      ...(requiresCleanedImage ? { requiresCleanedImage: true } : {})
+    };
+  }
+  runtime.buildCacheSafeOcrResult = buildCacheSafeOcrResult;
   function buildCacheSafeTranslationResult(value) {
     if (!value || typeof value !== "object") {
       return value;

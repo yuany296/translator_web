@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { canonicalPipeline as P } from "../extension/src/canonical/pipeline.js";
+import { createLegacyPipelineForTest } from "./helpers/legacy-pipeline.mjs";
 function createPipelineHarness(overrides = {}) {
   const calls = [];
   const store = P.createStore();
@@ -97,7 +98,7 @@ function createPipelineHarness(overrides = {}) {
     ...overrides
   };
   return {
-    pipeline: P.createPipeline(adapters),
+    pipeline: createLegacyPipelineForTest(adapters),
     store,
     target,
     calls,
@@ -466,6 +467,12 @@ test("manifest exposes only built entries from dist extension", () => {
   assert.deepEqual(manifest.content_scripts[0].js, ["content.js"]);
   assert.equal(manifest.background.service_worker, "background.js");
   assert.equal(manifest.background.type, "module");
+  assert.equal(manifest.name, "Manga OCR Translator · Next");
+  assert.equal(manifest.action.default_title, "漫画 OCR 翻译器 · Next");
+  for (const size of ["16", "32", "48", "128"]) {
+    const iconPath = path.join(root, "extension", "public", manifest.icons[size]);
+    assert.equal(fs.existsSync(iconPath), true, `missing ${size}px extension icon`);
+  }
   const buildSource = fs.readFileSync(path.join(root, "scripts", "build-extension.mjs"), "utf8");
   assert.match(buildSource, /format: "esm"/);
   assert.match(buildSource, /\["content", "popup", "glossary"\]/);

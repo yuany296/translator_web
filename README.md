@@ -1,4 +1,4 @@
-# Manga Realtime Translator (MV3)
+# Manga OCR Translator · Next (MV3)
 
 A Chrome/Edge extension that detects manga `img/canvas` on supported sites, performs OCR + translation, and overlays or embeds translated text in place.
 
@@ -33,6 +33,7 @@ translator/
 │   └── public/                # Static assets: manifest.json, HTML, CSS
 ├── dist/extension/            # Build output — loaded by Chrome
 ├── local-ocr-service/         # Python PaddleOCR service + glossary store
+│   └── ocr_service/pipeline/  # Detect/Crop/Recognize/Appearance orchestration
 ├── scripts/                   # Build, test runners, linting, line-length gate
 ├── tests/                     # Node & Python tests
 └── .local-data/               # Runtime data (git-ignored)

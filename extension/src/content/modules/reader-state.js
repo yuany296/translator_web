@@ -118,26 +118,10 @@ export function installReaderState(runtime) {
   runtime.CMOA_AUTO_MIN_VISIBLE_AREA = CMOA_AUTO_MIN_VISIBLE_AREA;
   const CMOA_MANUAL_MIN_VISIBLE_AREA = 2500;
   runtime.CMOA_MANUAL_MIN_VISIBLE_AREA = CMOA_MANUAL_MIN_VISIBLE_AREA;
-  const BUBBLE_FONT_MIN = 10;
-  runtime.BUBBLE_FONT_MIN = BUBBLE_FONT_MIN;
-  const BUBBLE_FONT_MAX = 48;
-  runtime.BUBBLE_FONT_MAX = BUBBLE_FONT_MAX;
-  const BUBBLE_FONT_BASE_RATIO = 0.5;
-  runtime.BUBBLE_FONT_BASE_RATIO = BUBBLE_FONT_BASE_RATIO;
-  const BUBBLE_FONT_BINARY_STEPS = 9;
-  runtime.BUBBLE_FONT_BINARY_STEPS = BUBBLE_FONT_BINARY_STEPS;
-  const BUBBLE_FONT_SAFETY_SCALE = 0.9;
-  runtime.BUBBLE_FONT_SAFETY_SCALE = BUBBLE_FONT_SAFETY_SCALE;
-  const BUBBLE_FONT_VERTICAL_SAFETY_SCALE = 0.84;
-  runtime.BUBBLE_FONT_VERTICAL_SAFETY_SCALE = BUBBLE_FONT_VERTICAL_SAFETY_SCALE;
-  const BUBBLE_FONT_ORIGINAL_SCALE = 1.15;
-  runtime.BUBBLE_FONT_ORIGINAL_SCALE = BUBBLE_FONT_ORIGINAL_SCALE;
   const BUBBLE_ROTATION_NEAR_HORIZONTAL = 0.75;
   runtime.BUBBLE_ROTATION_NEAR_HORIZONTAL = BUBBLE_ROTATION_NEAR_HORIZONTAL;
   const BUBBLE_ROTATION_MAX = 89;
   runtime.BUBBLE_ROTATION_MAX = BUBBLE_ROTATION_MAX;
-  const MAX_FONT_FIT_CACHE = 600;
-  runtime.MAX_FONT_FIT_CACHE = MAX_FONT_FIT_CACHE;
   const MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = /[\[\(（【<［]\s*image\s*#?\s*\d+\s*[\]\)）】>］]/giu;
   runtime.MODEL_IMAGE_PLACEHOLDER_BRACKET_RE = MODEL_IMAGE_PLACEHOLDER_BRACKET_RE;
   const MODEL_IMAGE_PLACEHOLDER_ONLY_RE = /^image\s*#?\s*\d+$/iu;
@@ -202,9 +186,6 @@ export function installReaderState(runtime) {
     floatingBallWrap: null,
     floatingBall: null,
     floatingBallClose: null,
-    bubbleMeasureProbe: null,
-    fontFitCache: new Map(),
-    seamLayoutCache: new Map(),
     seamSourceModeByRenderKey: new Map(),
     termDiscoverySentKeys: new Set(),
     lastInfoStatusAt: 0,

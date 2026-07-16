@@ -64,7 +64,7 @@ test("canonical rendering forwards page OCR debug data to the overlay renderer",
   const start = contentSource.indexOf("async function renderCanonicalProjections");
   const end = contentSource.indexOf("async function renderKakaoPipelineResult", start);
   const renderSource = contentSource.slice(start, end);
-  assert.match(renderSource, /defaultDebug\s*=\s*input\.debug\s*\|\|\s*input\.result\s*&&\s*input\.result\.debug[\s\S]*getPageMappedValue\(input\.debugByPage,\s*pageId,\s*defaultDebug\)/);
+  assert.match(renderSource, /getPageMappedValue\(\s*input\.debugByPage,\s*pageId,\s*input\.debug\s*\|\|\s*input\.result\?\.debug\s*\|\|\s*null\s*\)/);
 });
 test("OCR debug remains renderable without translated bubbles", () => {
   assert.equal(runtime.__test.hasRenderableOcrDebug({

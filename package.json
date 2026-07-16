@@ -11,8 +11,8 @@
     "lint:python": "node scripts/run-python-tool.mjs -m pylint --rcfile=.pylintrc local-ocr-service/server.py local-ocr-service/glossary_db.py local-ocr-service/glossary_store local-ocr-service/ocr_service local-ocr-service/term_extractor.py",
     "test:node": "node scripts/run-node-tests.mjs",
     "test:python": "node scripts/run-python-tool.mjs -m pytest tests -q",
-    "test": "npm run test:node",
-    "verify": "npm run check:lines && npm run lint:js && npm run lint:python && npm run build && npm run test:node && npm run test:python"
+    "test": "node scripts/run-node-tests.mjs",
+    "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {
     "@babel/generator": "^8.0.0",

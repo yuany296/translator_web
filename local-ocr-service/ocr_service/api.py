@@ -12,7 +12,7 @@ app = FastAPI(title="Manga Translator Local OCR")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 runtime.app = app
@@ -24,6 +24,8 @@ routes = [
     ("/glossary/health", runtime.glossary_health, ["GET"]),
     ("/glossary", runtime.glossary_list, ["GET"]),
     ("/glossary", runtime.glossary_upsert, ["PUT"]),
+    ("/glossary/batch", runtime.glossary_batch_upsert, ["POST"]),
+    ("/glossary/import-db", runtime.glossary_import_db, ["POST"]),
     ("/glossary/{entry_id}", runtime.glossary_delete, ["DELETE"]),
     ("/glossary/pending", runtime.glossary_pending_list, ["GET"]),
     ("/glossary/pending/confirm", runtime.glossary_pending_confirm, ["POST"]),

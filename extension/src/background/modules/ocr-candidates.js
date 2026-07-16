@@ -131,6 +131,19 @@ export function installOcrCandidates(runtime) {
   function toDebugOcrItem(item, index, imageSize, stage) {
     const box = runtime.getDebugItemBox(item);
     const text = String(item && (item.words || item.text) ? item.words || item.text : "").trim();
+    const imgW = Math.max(1, Number(imageSize && imageSize.width) || 1);
+    const imgH = Math.max(1, Number(imageSize && imageSize.height) || 1);
+    let polygon = null;
+    if (Array.isArray(item && item.polygon) && item.polygon.length >= 4) {
+      polygon = item.polygon.slice(0, 4).map(p => {
+        const x = Number(Array.isArray(p) ? p[0] : p && p.x);
+        const y = Number(Array.isArray(p) ? p[1] : p && p.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        return { x: Number((x / imgW * 100).toFixed(3)), y: Number((y / imgH * 100).toFixed(3)) };
+      }).filter(Boolean);
+      if (polygon.length < 4) polygon = null;
+    }
+    const angleDeg = Number(item && item.rotation_deg) || 0;
     return {
       id: `${stage || "ocr"}-${index}`,
       stage,
@@ -138,6 +151,8 @@ export function installOcrCandidates(runtime) {
       confidence: Number(item && (item.confidence ?? item.score)) || 0,
       rawBox: box,
       percent: runtime.boxToPercent(box, imageSize),
+      polygon,
+      angleDeg,
       engine: item && item.lang ? item.lang : "",
       source: item && item.variant ? item.variant : "",
       raw: item || null
@@ -204,6 +219,8 @@ export function installOcrCandidates(runtime) {
         w: item.w,
         h: item.h
       },
+      polygon: Array.isArray(item && item.polygon) && item.polygon.length >= 4 ? item.polygon.slice(0, 4) : null,
+      angleDeg: Number(item && item.rotation_deg) || 0,
       translatedText: item.translated_text || "",
       isDuplicate: false
     }));

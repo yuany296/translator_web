@@ -35,11 +35,16 @@ export function installOcrClustering(runtime) {
     }).filter(item => item && item.words && item.location).sort(runtime.compareBaiduWordItems);
     if (debugSession) {
       debugSession.dedupedItems = entries.map((entry, index) => runtime.toDebugOcrItem(entry.item, index, imageSize, "deduped"));
-      debugSession.lineItems = lineGroups.map((line, index) => runtime.toDebugOcrItem({
-        words: line.text,
-        confidence: line.confidence,
-        location: line.box
-      }, index, imageSize, "line"));
+      debugSession.lineItems = lineGroups.map((line, index) => {
+        const lineGeometry = runtime.buildRotatedClusterGeometry(line.entries, imageSize, line.rotation);
+        return runtime.toDebugOcrItem({
+          words: line.text,
+          confidence: line.confidence,
+          location: line.box,
+          polygon: lineGeometry && lineGeometry.polygon ? lineGeometry.polygon : null,
+          rotation_deg: line.rotation
+        }, index, imageSize, "line");
+      });
       debugSession.duplicateItems = dedupeResult.duplicates.map((duplicate, index) => ({
         ...runtime.toDebugOcrItem(duplicate.entry.item, index, imageSize, "duplicate"),
         duplicateOf: duplicate.kept.text,
@@ -56,7 +61,29 @@ export function installOcrClustering(runtime) {
           color: entry.color,
           box: entry.box
         })),
-        clusters: clusters.map(cluster => cluster.map(entry => entry.text))
+        clusters: clusters.map(cluster => cluster.map(entry => entry.text)),
+        orientedGroups: clusters.map((cluster, index) => {
+          const type = clusterRegionTypes[index];
+          const sharedRotation = Number.isFinite(runtime.getReliableSharedClusterRotation(cluster, type, clusters, clusterRegionTypes)) ? runtime.getReliableSharedClusterRotation(cluster, type, clusters, clusterRegionTypes) : null;
+          const angleDeg = Number.isFinite(sharedRotation) ? sharedRotation : runtime.medianRotation(cluster.map(e => e.rotation));
+          const geometry = runtime.buildRotatedClusterGeometry(cluster, imageSize, Number.isFinite(sharedRotation) ? sharedRotation : null);
+          const localW = geometry ? geometry.inlineWidth : 0;
+          const localH = geometry ? geometry.normalHeight : 0;
+          const aabbBox = cluster.map(e => e.box).reduce(runtime.unionLocalPaddleBoxes);
+          const worldW = aabbBox ? aabbBox.width : 0;
+          const worldH = aabbBox ? aabbBox.height : 0;
+          return {
+            id: `group-${index}`,
+            angleDeg: Number(angleDeg.toFixed(1)),
+            memberCount: cluster.length,
+            localWidth: Number(localW.toFixed(1)),
+            localHeight: Number(localH.toFixed(1)),
+            worldAabbWidth: Number(worldW.toFixed(1)),
+            worldAabbHeight: Number(worldH.toFixed(1)),
+            regionType: String(type || ""),
+            textSamples: cluster.slice(0, 3).map(e => String(e.text || "").slice(0, 40))
+          };
+        })
       });
     }
     return merged;

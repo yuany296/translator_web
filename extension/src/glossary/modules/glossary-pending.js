@@ -97,7 +97,15 @@ export function installGlossaryPending(runtime) {
     }
   }
   runtime.runPendingAction = runPendingAction;
-  async function loadGlossary() {
+  async function loadGlossary(source = "auto") {
+    // "auto": try server, fall back to chrome.storage
+    // "server": try server only
+    // "storage": chrome.storage only
+    if (source !== "storage") {
+      const result = await runtime.loadGlossaryFromServer();
+      if (result.ok) return;
+    }
+    if (source === "server") return;
     try {
       const stored = await runtime.storageGet([runtime.glossaryCore.STORAGE_KEY]);
       runtime.glossary = runtime.glossaryCore.normalizeGlossary(stored[runtime.glossaryCore.STORAGE_KEY]);

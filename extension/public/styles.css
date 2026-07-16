@@ -75,10 +75,56 @@
   white-space: nowrap;
 }
 
+/* SVG debug overlay — oriented polygon boxes */
+.mt-debug-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 40;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.mt-debug-poly {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Label-only divs for polygon items — no visible box, just the ::before tooltip */
+.mt-debug-label {
+  position: absolute;
+  z-index: 41;
+  pointer-events: none;
+  background: transparent;
+  border: 0;
+}
+
+.mt-debug-label::before {
+  content: attr(data-label);
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  max-width: 420px;
+  padding: 1px 3px;
+  overflow: hidden;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.78);
+  font: 10px/1.25 monospace;
+  white-space: nowrap;
+}
+
 .mt-debug-raw { color: #ff4d4f; }
 .mt-debug-duplicate { color: #f59e0b; border-style: dashed; }
 .mt-debug-deduped { color: #22c55e; }
 .mt-debug-block { color: #38bdf8; border-width: 2px; }
+
+/* SVG stroke colors mirror the div color classes */
+.mt-debug-poly.mt-debug-raw { stroke: #ff4d4f; stroke-width: 1; }
+.mt-debug-poly.mt-debug-duplicate { stroke: #f59e0b; stroke-width: 1; stroke-dasharray: 5 3; }
+.mt-debug-poly.mt-debug-deduped { stroke: #22c55e; stroke-width: 1; }
+.mt-debug-poly.mt-debug-block { stroke: #38bdf8; stroke-width: 1.5; }
 
 .mt-overlay-root.mt-overlay-loading {
   display: flex;
@@ -224,6 +270,18 @@
   z-index: -1;
   background: var(--mt-adaptive-bg, rgba(255, 255, 255, 0.96));
   clip-path: var(--mt-region-clip, inset(0));
+  pointer-events: none;
+}
+
+/* Counter-rotated fill div for tilted text — cancels parent rotation so
+   the world-space polygon clip-path is in the correct coordinate space. */
+.mt-fill-tilted {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
   pointer-events: none;
 }
 

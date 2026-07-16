@@ -9,20 +9,22 @@ export function installLifecycleFontFit(runtime) {
     if (options.backgroundTarget) {
       return runtime.fitPixivBubbleFontSize(node, width, height, text, vertical);
     }
-    let maxFont = runtime.BUBBLE_FONT_MAX;
-    let startSize = Math.min(maxFont, runtime.clamp(
-      height * runtime.BUBBLE_FONT_BASE_RATIO,
-      runtime.BUBBLE_FONT_MIN,
-      maxFont
-    ));
-    if (Number(originalTextHeight) > 0) {
-      const originalLineCap = originalTextHeight * runtime.BUBBLE_FONT_ORIGINAL_SCALE;
-      startSize = Math.min(startSize, originalLineCap);
-      maxFont = Math.min(maxFont, originalLineCap);
+    // Preferred start: original text height (when reliable) > height-based estimate
+    const originalH = Number(originalTextHeight) || 0;
+    let startSize;
+    if (originalH > 0) {
+      // Original text fit in this space — use its height as the preferred starting point
+      startSize = Math.min(originalH, runtime.BUBBLE_FONT_MAX);
+    } else {
+      startSize = Math.min(runtime.clamp(height * runtime.BUBBLE_FONT_BASE_RATIO, runtime.BUBBLE_FONT_MIN, runtime.BUBBLE_FONT_MAX), runtime.BUBBLE_FONT_MAX);
     }
-    const sourceHeightKey = Number(originalTextHeight) > 0
-      ? Math.round(originalTextHeight * 10) / 10
-      : 0;
+    // Cap at the bubble's nominal height (don't exceed what the region can display)
+    let maxFont = Math.min(runtime.BUBBLE_FONT_MAX, height * 0.88);
+    if (originalH > 0) {
+      startSize = Math.min(startSize, originalH * runtime.BUBBLE_FONT_ORIGINAL_SCALE);
+      maxFont = Math.min(maxFont, originalH * runtime.BUBBLE_FONT_ORIGINAL_SCALE);
+    }
+    const sourceHeightKey = originalH > 0 ? Math.round(originalH * 10) / 10 : 0;
     const cacheKey = `std|${vertical ? "v" : "h"}|${width}x${height}|${sourceHeightKey}|${text}`;
     const cachedSize = runtime.state.fontFitCache.get(cacheKey);
     if (Number.isFinite(cachedSize)) {
@@ -35,6 +37,7 @@ export function installLifecycleFontFit(runtime) {
 
     runtime.resetBubbleOverflowExpansion(node);
     const probe = runtime.prepareBubbleMeasureProbe(node, width, height, text, startSize);
+    // Binary search: low starts at MIN, high at startSize (the preferred)
     let low = runtime.BUBBLE_FONT_MIN;
     let high = startSize;
     let best = runtime.BUBBLE_FONT_MIN;
@@ -51,15 +54,24 @@ export function installLifecycleFontFit(runtime) {
       ? runtime.BUBBLE_FONT_VERTICAL_SAFETY_SCALE
       : runtime.BUBBLE_FONT_SAFETY_SCALE;
     let safeSize = runtime.clamp(best * safetyScale, runtime.BUBBLE_FONT_MIN, maxFont);
-    if (Number(originalTextHeight) > 0) {
-      safeSize = Math.min(safeSize, originalTextHeight * runtime.BUBBLE_FONT_ORIGINAL_SCALE);
-    }
     probe.style.fontSize = `${safeSize}px`;
     if (runtime.isProbeOverflowing(probe)) {
       runtime.expandBubbleForTextOverflow(node, width, height, probe);
     }
     const normalized = Math.round(safeSize * 10) / 10;
     runtime.rememberFontFitCache(cacheKey, normalized);
+    if (runtime.ENABLE_PIPELINE_TRACE) {
+      const preview = text.length > 24 ? text.slice(0, 22) + "…" : text;
+      console.debug("[MangaTranslator][font-fit]", { text: preview,
+        originalH: Number(originalH.toFixed(1)),
+        startSize: Number(startSize.toFixed(1)),
+        best: Number(best.toFixed(1)),
+        safeSize: Number(normalized.toFixed(1)),
+        width, height,
+        chars: [...text].length,
+        overflow: Number(best.toFixed(1)) < Number(startSize.toFixed(1)) ? `height|width` : "none"
+      });
+    }
     return normalized;
   }
   runtime.fitBubbleFontSize = fitBubbleFontSize;

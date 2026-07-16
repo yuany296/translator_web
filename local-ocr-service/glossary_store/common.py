@@ -4,11 +4,23 @@ import os
 import sqlite3
 import threading
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+DEFAULT_TGT_LNG = "zh-CN"
 
 
 def normalize_source(value: str) -> str:
     return value.strip().lower() if value else ""
+
+
+def normalize_tgt_lng(value: str) -> str:
+    v = (value or "").strip()
+    if not v:
+        return DEFAULT_TGT_LNG
+    if "-" in v:
+        return v
+    # Map short codes: zh → zh-CN, ko → ko-KR, ja → ja-JP, en → en-US
+    mapping = {"zh": "zh-CN", "ko": "ko-KR", "ja": "ja-JP", "en": "en-US"}
+    return mapping.get(v.lower(), v)
 
 
 class GlossaryBase:
@@ -21,6 +33,13 @@ class GlossaryBase:
         with self._lock:
             conn = sqlite3.connect(self._path, check_same_thread=False)
             try:
+                cur_ver = 0
+                try:
+                    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+                    if row:
+                        cur_ver = int(row[0])
+                except Exception:
+                    pass
                 conn.executescript("""
                     PRAGMA journal_mode=WAL;
                     PRAGMA foreign_keys=ON;
@@ -34,6 +53,7 @@ class GlossaryBase:
                         id         TEXT PRIMARY KEY,
                         source     TEXT NOT NULL,
                         target     TEXT NOT NULL,
+                        tgt_lng    TEXT NOT NULL DEFAULT '""" + DEFAULT_TGT_LNG + """',
                         note       TEXT NOT NULL DEFAULT '',
                         enabled    INTEGER NOT NULL DEFAULT 1,
                         source_key TEXT NOT NULL,
@@ -43,6 +63,10 @@ class GlossaryBase:
 
                     CREATE INDEX IF NOT EXISTS idx_glossary_source_key
                         ON glossary_entries(source_key);
+                    CREATE INDEX IF NOT EXISTS idx_glossary_tgt_lng
+                        ON glossary_entries(tgt_lng);
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique
+                        ON glossary_entries(source_key, tgt_lng);
 
                     CREATE TABLE IF NOT EXISTS pending_candidates (
                         id                TEXT PRIMARY KEY,
@@ -76,10 +100,21 @@ class GlossaryBase:
                     CREATE INDEX IF NOT EXISTS idx_ignored_source_key
                         ON ignored_terms(source_key);
                 """)
+                if cur_ver < 2:
+                    self._migrate_v2(conn)
                 conn.execute(
-                    "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
                 )
                 conn.commit()
             finally:
                 conn.close()
+
+    @staticmethod
+    def _migrate_v2(conn: sqlite3.Connection) -> None:
+        """Add tgt_lng column and unique index (source_key, tgt_lng)."""
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(glossary_entries)").fetchall()]
+        if "tgt_lng" not in cols:
+            conn.execute("ALTER TABLE glossary_entries ADD COLUMN tgt_lng TEXT NOT NULL DEFAULT '" + DEFAULT_TGT_LNG + "'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_tgt_lng ON glossary_entries(tgt_lng)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique ON glossary_entries(source_key, tgt_lng)")

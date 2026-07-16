@@ -181,7 +181,13 @@ export function installControlsUi(runtime) {
     const successCount = Math.max(0, Number(result?.successCount || 0));
     const failCount = Math.max(0, Number(result?.failCount || 0));
     const skippedCount = Math.max(0, Number(result?.skippedCount || 0));
-    const firstError = String(result?.errors?.[0] || "").trim();
+    const firstError = (() => {
+      const raw = result?.errors?.[0];
+      if (!raw) return "";
+      if (typeof raw === "string") return raw.trim();
+      if (raw && typeof raw.message === "string") return raw.message.trim();
+      try { return JSON.stringify(raw).slice(0, 120); } catch { return ""; }
+    })();
     const firstSkipped = String(result?.skippedReasons?.[0] || "").trim();
     if (/extension context invalidated/iu.test(firstError)) return { level: "error", message: "扩展已重新加载，请刷新漫画页后重试" };
     if (failCount > 0) return { level: "error", message: `翻译失败：${firstError || `${failCount} 个目标处理失败`}` };
@@ -254,8 +260,9 @@ export function installControlsUi(runtime) {
           if (result.reason) skippedReasons.push(result.reason);
         } else {
           failCount += 1;
-          if (result && result.error) {
-            errors.push(result.error);
+          const err = result && result.error;
+          if (err) {
+            errors.push(typeof err === "string" ? err : (err.message || runtime.getErrorMessage(err)));
           }
         }
       }
@@ -264,7 +271,7 @@ export function installControlsUi(runtime) {
       const result = { visibleCount: targets.length, successCount, failCount, skippedCount, errors: uniqueErrors, skippedReasons: uniqueSkippedReasons };
       const feedback = runtime.buildManualTranslateFeedback(result);
       runtime.showFloatingBallFeedback(feedback.message, feedback.level);
-      if (feedback.level === "error") console.warn("[MangaTranslator] manual translation failed", result);
+      if (feedback.level === "error") console.warn("[MangaTranslator] manual translation failed", { visibleCount: result.visibleCount, successCount: result.successCount, failCount: result.failCount, skippedCount: result.skippedCount, errors: result.errors });
       const summaryMessage = failCount > 0 ? `manual translate finished (${successCount}/${targets.length}), first error: ${uniqueErrors[0] || "unknown"}` : `manual translate finished (${successCount}/${targets.length})`;
       await runtime.reportStatus(failCount > 0 ? "error" : "info", summaryMessage, {
         visibleCount: targets.length,

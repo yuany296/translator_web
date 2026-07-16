@@ -30,8 +30,8 @@ export function installRendererCanvas(runtime) {
     let low = minFont;
     let high = Math.max(minFont + 1, Math.min(
       maxFont,
-      box.h * 0.42 * textScale,
-      box.w * 0.22 * textScale
+      box.h * 0.68 * textScale,
+      box.w * 0.38 * textScale
     ));
     for (let index = 0; index < 9; index += 1) {
       const size = (low + high) / 2;

@@ -99,7 +99,8 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   assert.match(lifecycle, /function createBubbleRenderNodes\(/);
   assert.match(lifecycle, /const coverBox = resolveBubbleCoverBox\(bubble\)/);
   assert.match(lifecycle, /x:\s*coverBox\.x[\s\S]*?y:\s*coverBox\.y[\s\S]*?w:\s*coverBox\.w[\s\S]*?h:\s*coverBox\.h/);
-  assert.match(lifecycle, /projection_role:\s*"cover_only"[\s\S]*?polygon:\s*null[\s\S]*?fill_box:\s*null[\s\S]*?region_polygon:\s*null/);
+  assert.match(lifecycle, /projection_role:\s*"cover_only"[\s\S]*?fill_box:\s*null[\s\S]*?region_polygon:\s*null/);
+  // polygon and rotation_deg are preserved from the original bubble for oriented fill (tilted text)
   assert.match(overlay, /createBubbleRenderNodes\([\s\S]*?appendChild\(coverNode\)[\s\S]*?appendChild\(textNode\)/);
   assert.match(seam, /createBubbleRenderNodes\(/);
   assert.match(css, /\.mt-bubble\.mt-text-layer\s*\{[\s\S]*?background-image:\s*none\s*!important/);

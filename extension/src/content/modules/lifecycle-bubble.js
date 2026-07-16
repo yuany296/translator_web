@@ -104,16 +104,30 @@ export function installLifecycleBubble(runtime) {
       node.style.setProperty("--mt-fill-height", fillBox.h / h * 100 + "%");
     }
     if (bgType === "solid" && Array.isArray(bubble.region_polygon)) {
-      const clipTarget = fillBox || {
-        x,
-        y,
-        w,
-        h
-      };
+      const clipTarget = fillBox || { x, y, w, h };
       const clip = runtime.buildRegionClipPath(bubble.region_polygon, clipTarget.x, clipTarget.y, clipTarget.w, clipTarget.h);
-      if (clip) {
-        node.style.setProperty("--mt-region-clip", clip);
-      }
+      if (clip) node.style.setProperty("--mt-region-clip", clip);
+    }
+    // Tilted text: use counter-rotated fill div so the polygon clip-path is in world space
+    const absAngle = Math.abs(runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type));
+    if (bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle > 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
+      const fillDiv = document.createElement("div");
+      fillDiv.className = "mt-fill-tilted";
+      fillDiv.dataset.mangaTranslatorOverlay = "true";
+      const invAngle = -runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
+      fillDiv.style.transform = `rotate(${invAngle}deg)`;
+      fillDiv.style.transformOrigin = "center center";
+      fillDiv.style.background = String(bubble.bg_color || "rgba(255,255,255,0.96)");
+      const clipRef = { x: Number(x), y: Number(y), w: Number(w), h: Number(h) };
+      const fillClip = runtime.buildRegionClipPath(bubble.polygon, clipRef.x, clipRef.y, clipRef.w, clipRef.h);
+      if (fillClip) fillDiv.style.clipPath = fillClip;
+      node.appendChild(fillDiv);
+    }
+    // Horizontal text: use ::before with polygon clip-path fallback (element is not rotated)
+    if (bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle <= 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
+      const clipTarget = fillBox || { x, y, w, h };
+      const clip = runtime.buildRegionClipPath(bubble.polygon, clipTarget.x, clipTarget.y, clipTarget.w, clipTarget.h);
+      if (clip) node.style.setProperty("--mt-region-clip", clip);
     }
     node.style.width = `${w}%`;
     node.style.height = `${h}%`;
@@ -155,17 +169,15 @@ export function installLifecycleBubble(runtime) {
     const coverBox = resolveBubbleCoverBox(bubble) || {};
     const coverBubble = {
       ...bubble,
-      x: coverBox.x,
-      y: coverBox.y,
-      w: coverBox.w,
-      h: coverBox.h,
+      x: coverBox.x != null ? coverBox.x : bubble.x,
+      y: coverBox.y != null ? coverBox.y : bubble.y,
+      w: coverBox.w != null ? coverBox.w : bubble.w,
+      h: coverBox.h != null ? coverBox.h : bubble.h,
       projection_role: "cover_only",
       original_text: "",
       translated_text: "",
-      polygon: null,
       fill_box: null,
-      region_polygon: null,
-      rotation_deg: 0
+      region_polygon: null
     };
     const coverNode = createBubbleNode(coverBubble, index, options);
     const textNode = role === "cover_only" ? null : createBubbleNode(bubble, index, {

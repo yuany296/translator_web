@@ -172,6 +172,111 @@ export function installGlossaryStorage(runtime) {
     }
   }
   runtime.migrateGlossaryToServer = migrateGlossaryToServer;
+  // ── server-backed glossary sync ──
+  let serverBaseUrl = localStorage.getItem("mt_glossary_server_url") || "http://127.0.0.1:8765";
+  runtime.getServerBaseUrl = () => serverBaseUrl;
+  runtime.setServerBaseUrl = (url) => { serverBaseUrl = String(url || "http://127.0.0.1:8765").replace(/\/+$/, ""); try { localStorage.setItem("mt_glossary_server_url", serverBaseUrl); } catch (_) {} };
+  runtime.getSyncRevision = () => {
+    try { return Number(localStorage.getItem("mt_glossary_sync_revision")) || 0; } catch (_) { return 0; }
+  };
+  runtime.setSyncRevision = (rev) => {
+    try { localStorage.setItem("mt_glossary_sync_revision", String(Number(rev) || 0)); } catch (_) {}
+  };
+  async function loadGlossaryFromServer() {
+    try {
+      const resp = await fetch(`${serverBaseUrl}/glossary?limit=2000`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      if (!data.ok || !Array.isArray(data.entries)) throw new Error("Invalid server response");
+      runtime.glossary = runtime.glossaryCore.normalizeGlossary({
+        version: runtime.glossaryCore.SCHEMA_VERSION,
+        revision: Math.max(1, Math.round((data.revision || data.last_updated || 0) * 1000)),
+        updatedAt: Date.now(),
+        entries: data.entries.map(e => ({ id: e.id, source: e.source, target: e.target, note: e.note || "", enabled: e.enabled !== false }))
+      });
+      if (data.revision) runtime.setSyncRevision(Number(data.revision));
+      runtime.renderGlossary();
+      runtime.setStatus(`已从服务加载 ${data.total || runtime.glossary.entries.length} 条术语 (修订 ${runtime.getSyncRevision().toFixed(1)})`, false);
+      return { ok: true, entries: runtime.glossary.entries };
+    } catch (error) {
+      runtime.setStatus(`加载失败：${runtime.getErrorMessage(error)}`, true);
+      return { ok: false, error: runtime.getErrorMessage(error) };
+    }
+  }
+  runtime.loadGlossaryFromServer = loadGlossaryFromServer;
+  async function saveEntryToServer(source, target, tgtLng, note, enabled, entryId) {
+    try {
+      const body = { source: source.trim(), target: target.trim(), tgt_lng: tgtLng || "zh-CN" };
+      if (note) body.note = note.trim();
+      body.enabled = enabled !== false;
+      if (entryId && !entryId.startsWith("term-new-")) body.id = entryId;
+      const resp = await fetch(`${serverBaseUrl}/glossary`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || "保存失败");
+      const savedEntry = data.entry || {};
+      // Refresh local revision
+      try {
+        const healthResp = await fetch(`${serverBaseUrl}/glossary/health`);
+        const healthData = await healthResp.json();
+        if (healthData.revision) runtime.setSyncRevision(Number(healthData.revision));
+      } catch (_) {}
+      return { ok: true, entry: savedEntry };
+    } catch (error) {
+      return { ok: false, error: runtime.getErrorMessage(error) };
+    }
+  }
+  runtime.saveEntryToServer = saveEntryToServer;
+  async function deleteEntryFromServer(entryId) {
+    try {
+      const resp = await fetch(`${serverBaseUrl}/glossary/${encodeURIComponent(entryId)}`, { method: "DELETE" });
+      if (resp.status === 404) return { ok: true };
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: runtime.getErrorMessage(error) };
+    }
+  }
+  runtime.deleteEntryFromServer = deleteEntryFromServer;
+  async function importDbFileToServer(file) {
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const resp = await fetch(`${serverBaseUrl}/glossary/import-db`, { method: "POST", body: form });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+      return data;
+    } catch (error) {
+      return { ok: false, error: runtime.getErrorMessage(error) };
+    }
+  }
+  runtime.importDbFileToServer = importDbFileToServer;
+  async function importGlossaryDbFile(event) {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    if (!confirm(`将导入数据库文件 "${file.name}" (${(file.size / 1024).toFixed(1)} KB)。\n\n导入前会自动备份当前数据库，不会直接替换。\n确认继续？`)) {
+      event.target.value = "";
+      return;
+    }
+    try {
+      runtime.setStatus("正在导入数据库…", false);
+      const result = await runtime.importDbFileToServer(file);
+      if (result.ok === false) throw new Error(result.error || result.detail || "导入失败");
+      const msg = `导入完成：读取 ${result.read || 0} 条，新增 ${result.added || 0} 条，更新 ${result.updated || 0} 条，跳过 ${result.skipped || 0} 条`;
+      runtime.setStatus(msg + (result.backup ? ` (备份: ${result.backup})` : ""), false);
+      await runtime.loadGlossary("server");
+    } catch (error) {
+      runtime.setStatus(`数据库导入失败：${runtime.getErrorMessage(error)}`, true);
+    } finally {
+      event.target.value = "";
+    }
+  }
+  runtime.importGlossaryDbFile = importGlossaryDbFile;
+  // ── end server sync ──
   async function persistEntries(entries, message) {
     const next = runtime.glossaryCore.normalizeGlossary({
       version: runtime.glossaryCore.SCHEMA_VERSION,
@@ -190,6 +295,21 @@ export function installGlossaryStorage(runtime) {
       runtime.renderGlossary();
       runtime.renderPendingState();
       runtime.setStatus(message, false);
+      // Sync to server in background
+      try {
+        const batchEntries = next.entries.map(e => ({ source: e.source, target: e.target, note: e.note || "", enabled: e.enabled !== false }));
+        const resp = await fetch(`${runtime.getServerBaseUrl()}/glossary/batch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entries: batchEntries, tgt_lng: "zh-CN" })
+        });
+        const data = await resp.json();
+        if (data.ok || data.added > 0 || data.updated > 0) {
+          runtime.setSyncRevision(data.revision || Date.now() / 1000);
+        }
+      } catch (_) {
+        // Server sync is best-effort
+      }
     } catch (error) {
       runtime.setStatus(`保存失败：${runtime.getErrorMessage(error)}`, true);
       await runtime.loadGlossary();

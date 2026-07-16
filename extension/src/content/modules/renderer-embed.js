@@ -230,13 +230,14 @@ export function installRendererEmbed(runtime) {
       }
       if (bgType === "solid") {
         ctx.save();
-        if (Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3) {
+        const clipPoly = Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3 ? bubble.region_polygon : Array.isArray(bubble.polygon) && bubble.polygon.length >= 4 ? bubble.polygon : null;
+        if (clipPoly) {
           ctx.beginPath();
-          bubble.region_polygon.forEach((point, index) => {
-            const pointX = Number(point?.x) / 100 * canvasWidth;
-            const pointY = Number(point?.y) / 100 * canvasHeight;
-            if (index === 0) ctx.moveTo(pointX, pointY);
-            else ctx.lineTo(pointX, pointY);
+          clipPoly.forEach((point, index) => {
+            const px = Number(point?.x) / 100 * canvasWidth;
+            const py = Number(point?.y) / 100 * canvasHeight;
+            if (index === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
           });
           ctx.closePath();
           ctx.clip();

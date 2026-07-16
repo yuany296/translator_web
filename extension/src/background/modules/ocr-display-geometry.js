@@ -317,4 +317,58 @@ export function installOcrDisplayGeometry(runtime) {
     return false;
   }
   runtime.shouldDropLowConfidenceLocalPaddleText = shouldDropLowConfidenceLocalPaddleText;
+
+  // ── oriented debug polygon utilities ──
+  function projectPointToAxes(point, angleDeg) {
+    const r = (Number(angleDeg) || 0) * Math.PI / 180, cs = Math.cos(r), sn = Math.sin(r);
+    return { u: point.x * cs + point.y * sn, v: -point.x * sn + point.y * cs };
+  }
+  runtime.projectPointToAxes = projectPointToAxes;
+
+  function unprojectPointFromAxes(u, v, angleDeg) {
+    const r = (Number(angleDeg) || 0) * Math.PI / 180, cs = Math.cos(r), sn = Math.sin(r);
+    return { x: u * cs - v * sn, y: u * sn + v * cs };
+  }
+  runtime.unprojectPointFromAxes = unprojectPointFromAxes;
+
+  function collectMemberPolygonPoints(members) {
+    const pts = [];
+    for (const m of Array.isArray(members) ? members : []) {
+      const src = m && m.item ? m.item : m;
+      const poly = Array.isArray(src && src.polygon) ? src.polygon : null;
+      if (!poly) continue;
+      for (const p of poly) {
+        const px = Number(Array.isArray(p) ? p[0] : p && p.x);
+        const py = Number(Array.isArray(p) ? p[1] : p && p.y);
+        if (Number.isFinite(px) && Number.isFinite(py)) pts.push({ x: px, y: py });
+      }
+    }
+    return pts;
+  }
+  runtime.collectMemberPolygonPoints = collectMemberPolygonPoints;
+
+  function buildOrientedDebugPolygon(members, angleDeg, imageSize) {
+    const iw = Math.max(1, Number(imageSize && imageSize.width) || 1);
+    const ih = Math.max(1, Number(imageSize && imageSize.height) || 1);
+    const pts = runtime.collectMemberPolygonPoints(members);
+    const a = Number(angleDeg) || 0;
+    const toPct = p => ({ x: Number((runtime.clamp(p.x, 0, iw) / iw * 100).toFixed(3)), y: Number((runtime.clamp(p.y, 0, ih) / ih * 100).toFixed(3)) });
+    if (pts.length < 4) {
+      const boxes = [];
+      for (const m of Array.isArray(members) ? members : []) {
+        const box = runtime.getDebugItemBox(m && m.item ? m.item : m);
+        if (box) boxes.push(box);
+      }
+      if (boxes.length === 0) return null;
+      const ml = Math.min(...boxes.map(b => b.left)), mt = Math.min(...boxes.map(b => b.top));
+      const mr = Math.max(...boxes.map(b => b.left + b.width)), mb = Math.max(...boxes.map(b => b.top + b.height));
+      const cx = (ml + mr) / 2, cy = (mt + mb) / 2, hw = (mr - ml) / 2, hh = (mb - mt) / 2;
+      return [runtime.unprojectPointFromAxes(-hw, -hh, a), runtime.unprojectPointFromAxes(hw, -hh, a), runtime.unprojectPointFromAxes(hw, hh, a), runtime.unprojectPointFromAxes(-hw, hh, a)].map(toPct);
+    }
+    const proj = pts.map(p => runtime.projectPointToAxes(p, a));
+    const uMin = Math.min(...proj.map(p => p.u)), uMax = Math.max(...proj.map(p => p.u));
+    const vMin = Math.min(...proj.map(p => p.v)), vMax = Math.max(...proj.map(p => p.v));
+    return [runtime.unprojectPointFromAxes(uMin, vMin, a), runtime.unprojectPointFromAxes(uMax, vMin, a), runtime.unprojectPointFromAxes(uMax, vMax, a), runtime.unprojectPointFromAxes(uMin, vMax, a)].map(toPct);
+  }
+  runtime.buildOrientedDebugPolygon = buildOrientedDebugPolygon;
 }

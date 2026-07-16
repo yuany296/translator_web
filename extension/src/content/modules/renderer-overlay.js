@@ -287,28 +287,77 @@ export function installRendererOverlay(runtime) {
     }
     let appended = 0;
     const stages = runtime.getRenderableOcrDebugStages(debug);
+    const hasAnyPolygon = stages.some(stage =>
+      (Array.isArray(stage.items) ? stage.items : []).some(item => Array.isArray(item && item.polygon))
+    );
+    // Create SVG overlay for polygon rendering
+    let svg = null;
+    if (hasAnyPolygon) {
+      svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "mt-debug-svg");
+      svg.setAttribute("viewBox", "0 0 100 100");
+      svg.setAttribute("preserveAspectRatio", "none");
+      svg.setAttribute("data-manga-translator-overlay", "true");
+    }
     stages.forEach(stage => {
       (Array.isArray(stage.items) ? stage.items : []).forEach((item, index) => {
-        const percent = runtime.getDebugItemPercent(item, debug);
-        if (!percent) {
-          return;
-        }
-        const node = document.createElement("div");
-        node.className = `mt-debug-box ${stage.className}`;
-        node.style.left = `${percent.x}%`;
-        node.style.top = `${percent.y}%`;
-        node.style.width = `${percent.w}%`;
-        node.style.height = `${percent.h}%`;
         const blockId = String(item.blockId || item.block_id || item.id || `${stage.name}-${index}`);
         const original = String(item.text || item.originalText || "").replace(/\s+/g, " ").slice(0, 28);
         const translated = String(item.translatedText || item.translated_text || "").replace(/\s+/g, " ").slice(0, 28);
         const duplicate = item.isDuplicate ? " duplicate" : "";
-        node.dataset.label = `${blockId}${duplicate}${original ? ` | ${original}` : ""}${translated ? ` → ${translated}` : ""}`;
-        node.dataset.mangaTranslatorOverlay = "true";
-        root.appendChild(node);
+        const label = `${blockId}${duplicate}${original ? ` | ${original}` : ""}${translated ? ` → ${translated}` : ""}`;
+
+        if (Array.isArray(item.polygon) && item.polygon.length >= 4) {
+          // Oriented polygon — render as SVG <polygon>
+          if (!svg) {
+            svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.setAttribute("class", "mt-debug-svg");
+            svg.setAttribute("viewBox", "0 0 100 100");
+            svg.setAttribute("preserveAspectRatio", "none");
+            svg.setAttribute("data-manga-translator-overlay", "true");
+          }
+          const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+          poly.setAttribute("class", `mt-debug-poly ${stage.className}`);
+          poly.setAttribute("points", item.polygon.map(p => `${p.x},${p.y}`).join(" "));
+          poly.setAttribute("data-manga-translator-overlay", "true");
+          // <title> for hover tooltip
+          const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+          title.textContent = label;
+          poly.appendChild(title);
+          svg.appendChild(poly);
+
+          // Label div at polygon's local top-left corner (minU, minV)
+          const labelDiv = document.createElement("div");
+          labelDiv.className = "mt-debug-label";
+          labelDiv.dataset.label = label;
+          labelDiv.dataset.mangaTranslatorOverlay = "true";
+          // Use AABB percent x/y as approximate anchor for the horizontal label
+          const percent = runtime.getDebugItemPercent(item, debug);
+          if (percent) {
+            labelDiv.style.left = `${percent.x}%`;
+            labelDiv.style.top = `${percent.y}%`;
+          }
+          root.appendChild(labelDiv);
+        } else {
+          // No polygon — fall back to axis-aligned debug box
+          const percent = runtime.getDebugItemPercent(item, debug);
+          if (!percent) return;
+          const node = document.createElement("div");
+          node.className = `mt-debug-box ${stage.className}`;
+          node.style.left = `${percent.x}%`;
+          node.style.top = `${percent.y}%`;
+          node.style.width = `${percent.w}%`;
+          node.style.height = `${percent.h}%`;
+          node.dataset.label = label;
+          node.dataset.mangaTranslatorOverlay = "true";
+          root.appendChild(node);
+        }
         appended += 1;
       });
     });
+    if (svg && svg.childElementCount > 0) {
+      root.insertBefore(svg, root.firstChild);
+    }
     return appended;
   }
   runtime.appendOcrDebugNodes = appendOcrDebugNodes;

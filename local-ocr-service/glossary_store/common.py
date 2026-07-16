@@ -53,7 +53,7 @@ class GlossaryBase:
                         id         TEXT PRIMARY KEY,
                         source     TEXT NOT NULL,
                         target     TEXT NOT NULL,
-                        tgt_lng    TEXT NOT NULL DEFAULT '""" + DEFAULT_TGT_LNG + """',
+                        tgt_lng    TEXT NOT NULL DEFAULT 'zh-CN',
                         note       TEXT NOT NULL DEFAULT '',
                         enabled    INTEGER NOT NULL DEFAULT 1,
                         source_key TEXT NOT NULL,
@@ -63,10 +63,6 @@ class GlossaryBase:
 
                     CREATE INDEX IF NOT EXISTS idx_glossary_source_key
                         ON glossary_entries(source_key);
-                    CREATE INDEX IF NOT EXISTS idx_glossary_tgt_lng
-                        ON glossary_entries(tgt_lng);
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique
-                        ON glossary_entries(source_key, tgt_lng);
 
                     CREATE TABLE IF NOT EXISTS pending_candidates (
                         id                TEXT PRIMARY KEY,

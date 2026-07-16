@@ -421,16 +421,11 @@
       <section id="officialPanel" class="panel">
         <div class="toolbar">
           <input id="searchInput" class="search" type="search" placeholder="搜索原文、译文或备注" />
-          <button id="importBtn" type="button">导入 JSON/CSV</button>
+          <button id="importBtn" type="button">导入文件</button>
           <button id="exportJsonBtn" type="button">导出 JSON</button>
           <button id="exportCsvBtn" type="button">导出 CSV</button>
-          <button id="loadDbBtn" class="primary" type="button">从数据库加载</button>
-          <button id="importDbBtn" type="button">导入数据库</button>
           <button id="clearBtn" class="danger" type="button">清空全部</button>
-          <input id="dbFileInput" class="hidden" type="file" accept=".db,.sqlite,.sqlite3" />
-          <button id="migrateBtn" class="secondary" type="button" title="将浏览器存储中的术语迁移到 OCR 服务端 SQLite 数据库">迁移到服务端</button>
-          <div id="migrateStatus" class="status-text" style="display:inline-block;margin-left:8px"></div>
-          <input id="fileInput" class="hidden" type="file" accept=".json,.csv,application/json,text/csv" />
+          <input id="fileInput" class="hidden" type="file" accept=".json,.csv,.db,.sqlite,.sqlite3" />
         </div>
 
         <div class="summary">

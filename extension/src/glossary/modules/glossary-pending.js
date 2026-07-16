@@ -245,27 +245,40 @@ export function installGlossaryPending(runtime) {
   runtime.handleRowToggle = handleRowToggle;
   async function importGlossaryFile() {
     const file = runtime.fileInput.files && runtime.fileInput.files[0];
-    runtime.fileInput.value = "";
-    if (!file) {
+    if (!file) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    // Validate extension
+    if (!["json", "csv", "db", "sqlite", "sqlite3"].includes(ext)) {
+      runtime.fileInput.value = "";
+      runtime.setStatus("不支持的文件格式。请选择 JSON、CSV 或 SQLite 数据库文件。", true);
       return;
     }
+    runtime.importBtn.disabled = true;
     try {
-      const text = await file.text();
-      const imported = file.name.toLocaleLowerCase().endsWith(".csv") ? runtime.parseCsvGlossary(text) : runtime.glossaryCore.normalizeGlossary(JSON.parse(text)).entries;
-      if (imported.length === 0) {
-        throw new Error("文件中没有有效术语");
+      if (ext === "db" || ext === "sqlite" || ext === "sqlite3") {
+        await runtime.importGlossaryDbFile({ target: { files: [file] } });
+      } else {
+        const text = await file.text();
+        const imported = ext === "csv"
+          ? runtime.parseCsvGlossary(text)
+          : runtime.glossaryCore.normalizeGlossary(JSON.parse(text)).entries;
+        if (!imported.length) throw new Error("文件中没有有效术语");
+        // Upsert: merge by source, keeping existing IDs
+        const merged = new Map(runtime.glossary.entries.map(e => [e.source, e]));
+        for (const entry of imported) {
+          const prev = merged.get(entry.source);
+          merged.set(entry.source, { ...entry, id: prev ? prev.id : (entry.id || runtime.createTermId()) });
+        }
+        const result = Array.from(merged.values()).slice(0, runtime.glossaryCore.MAX_ENTRIES);
+        await runtime.persistEntries(result, `已导入 ${imported.length} 条，合并后共 ${result.length} 条`);
       }
-      const merged = new Map(runtime.glossary.entries.map(entry => [entry.source, entry]));
-      for (const entry of imported) {
-        const existing = merged.get(entry.source);
-        merged.set(entry.source, {
-          ...entry,
-          id: existing ? existing.id : entry.id || runtime.createTermId()
-        });
-      }
-      await runtime.persistEntries(Array.from(merged.values()).slice(0, runtime.glossaryCore.MAX_ENTRIES), `已导入 ${imported.length} 条术语（同名原文已更新）`);
+      // Reload from server to get canonical data
+      await runtime.loadGlossary("server");
     } catch (error) {
       runtime.setStatus(`导入失败：${runtime.getErrorMessage(error)}`, true);
+    } finally {
+      runtime.importBtn.disabled = false;
+      runtime.fileInput.value = "";
     }
   }
   runtime.importGlossaryFile = importGlossaryFile;

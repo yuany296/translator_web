@@ -81,19 +81,21 @@ class TransferMixin:
             "exportedAt": time.time(),
         }
 
+    @staticmethod
     def _row_to_entry(row: tuple[Any, ...]) -> dict[str, Any]:
         return {
             "id": row[0],
             "source": row[1],
             "target": row[2],
-            "tgtLng": row[3] if len(row) > 7 else "zh-CN",
-            "note": row[4] if len(row) > 7 else row[3],
-            "enabled": bool(row[5] if len(row) > 7 else row[4]),
-            "sourceKey": row[6] if len(row) > 7 else row[5],
-            "createdAt": row[7] if len(row) > 7 else row[6],
-            "updatedAt": row[8] if len(row) > 7 else row[7],
+            "tgtLng": row[3] if len(row) > 8 else "zh-CN",
+            "note": row[4] if len(row) > 8 else row[3],
+            "enabled": bool(row[5] if len(row) > 8 else row[4]),
+            "sourceKey": row[6] if len(row) > 8 else row[5],
+            "createdAt": row[7] if len(row) > 8 else row[6],
+            "updatedAt": row[8] if len(row) > 8 else row[7],
         }
 
+    @staticmethod
     def _row_to_pending(row: tuple[Any, ...]) -> dict[str, Any]:
         return {
             "id": row[0],

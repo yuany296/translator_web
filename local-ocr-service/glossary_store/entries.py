@@ -249,3 +249,15 @@ class EntriesMixin:
         if tgt_lng:
             filters["tgt_lng"] = tgt_lng
         return self.get_entries(enabled_only=True, **filters)
+
+    def clear_all_entries(self) -> int:
+        """Delete all glossary entries. Returns count of deleted rows."""
+        with self._lock:
+            conn = sqlite3.connect(self._path, check_same_thread=False)
+            try:
+                cur = conn.execute("DELETE FROM glossary_entries")
+                count = cur.rowcount
+                conn.commit()
+                return count
+            finally:
+                conn.close()

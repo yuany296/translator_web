@@ -69,109 +69,26 @@ export function installGlossaryStorage(runtime) {
   }
   runtime.exportGlossaryCsv = exportGlossaryCsv;
   async function clearGlossary() {
-    if (runtime.glossary.entries.length === 0 || !confirm(`确定清空全部 ${runtime.glossary.entries.length} 条术语吗？`)) {
-      return;
+    if (runtime.glossary.entries.length === 0) return;
+    if (!confirm(`确定清空全部 ${runtime.glossary.entries.length} 条术语吗？此操作同时清空服务端数据库。`)) return;
+    runtime.clearBtn.disabled = true;
+    try {
+      const resp = await fetch(`${runtime.getServerBaseUrl()}/glossary/clear`, { method: "POST" });
+      if (!resp.ok) throw new Error(`服务器错误 ${resp.status}`);
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || "清空失败");
+      runtime.glossary.entries = [];
+      runtime.glossary.revision = 0;
+      await runtime.storageSet({ [runtime.glossaryCore.STORAGE_KEY]: runtime.glossary });
+      runtime.renderGlossary();
+      runtime.setStatus(`已清空 ${data.deleted || 0} 条术语`, false);
+    } catch (error) {
+      runtime.setStatus(`清空失败：${runtime.getErrorMessage(error)}`, true);
+    } finally {
+      runtime.clearBtn.disabled = false;
     }
-    await runtime.persistEntries([], "术语库已清空");
   }
   runtime.clearGlossary = clearGlossary;
-  async function migrateGlossaryToServer() {
-    const serverUrl = prompt("请输入 OCR 服务地址（默认 http://127.0.0.1:8765）：", "http://127.0.0.1:8765");
-    if (!serverUrl) return;
-    const baseUrl = serverUrl.replace(/\/+$/, "");
-    if (!confirm(`将把浏览器存储中的术语数据迁移到 ${baseUrl}，确认继续？`)) return;
-    runtime.migrateBtn.disabled = true;
-    runtime.migrateStatus.textContent = "迁移中...";
-    runtime.migrateStatus.style.color = "";
-    try {
-      // 1. 读取本地数据
-      const stored = await runtime.storageGet([runtime.glossaryCore.STORAGE_KEY, runtime.termDiscoveryCore.PENDING_STORAGE_KEY, runtime.termDiscoveryCore.IGNORED_STORAGE_KEY]);
-
-      // 2. 获取待确认和已忽略数据（通过 background）
-      const termState = await runtime.sendRuntimeMessage({
-        type: "GET_TERM_DISCOVERY_STATE"
-      });
-
-      // 3. 导入术语条目
-      const glossaryEntries = runtime.glossaryCore.normalizeGlossary(stored[runtime.glossaryCore.STORAGE_KEY]).entries;
-      let importedCount = 0;
-      if (glossaryEntries.length > 0) {
-        const resp = await fetch(`${baseUrl}/glossary/import`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            entries: glossaryEntries
-          })
-        });
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`服务端错误 ${resp.status}：${text.slice(0, 200)}`);
-        }
-        const data = await resp.json();
-        if (data.ok) importedCount = data.imported || 0;
-      }
-
-      // 4. 导入待确认候选
-      let pendingCount = 0;
-      const pending = termState && termState.pending;
-      if (pending && Array.isArray(pending.chapters)) {
-        for (const chapter of pending.chapters) {
-          if (Array.isArray(chapter.candidates)) {
-            for (const candidate of chapter.candidates) {
-              try {
-                // 将 evidenceIds 转换为字符串数组，避免类型不匹配
-                const eids = (candidate.evidenceIds || []).slice(0, 50).map(String);
-                await fetch(`${baseUrl}/glossary/pending`, {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json"
-                  },
-                  body: JSON.stringify({
-                    source: candidate.source,
-                    kind: candidate.kind || "proper_noun",
-                    score: Number(candidate.score) || 0,
-                    evidence_ids: eids,
-                    chapter_key: chapter.key || ""
-                  })
-                });
-                pendingCount++;
-              } catch (_) {}
-            }
-          }
-        }
-      }
-
-      // 5. 导入已忽略列表
-      let ignoredCount = 0;
-      const ignored = termState && termState.ignored;
-      if (ignored && Array.isArray(ignored.sources)) {
-        for (const item of ignored.sources) {
-          try {
-            await fetch(`${baseUrl}/glossary/pending/ignore`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                source: item.source
-              })
-            });
-            ignoredCount++;
-          } catch (_) {}
-        }
-      }
-      runtime.migrateStatus.textContent = `✅ 迁移完成：${importedCount} 条术语，${pendingCount} 条待确认，${ignoredCount} 条已忽略`;
-      runtime.migrateStatus.style.color = "#28a745";
-    } catch (error) {
-      runtime.migrateStatus.textContent = `❌ 迁移失败：${runtime.getErrorMessage(error)}`;
-      runtime.migrateStatus.style.color = "#dc3545";
-    } finally {
-      runtime.migrateBtn.disabled = false;
-    }
-  }
-  runtime.migrateGlossaryToServer = migrateGlossaryToServer;
   // ── server-backed glossary sync ──
   let serverBaseUrl = localStorage.getItem("mt_glossary_server_url") || "http://127.0.0.1:8765";
   runtime.getServerBaseUrl = () => serverBaseUrl;

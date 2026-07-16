@@ -25,6 +25,7 @@ routes = [
     ("/glossary", runtime.glossary_list, ["GET"]),
     ("/glossary", runtime.glossary_upsert, ["PUT"]),
     ("/glossary/batch", runtime.glossary_batch_upsert, ["POST"]),
+    ("/glossary/clear", runtime.glossary_clear, ["POST"]),
     ("/glossary/import-db", runtime.glossary_import_db, ["POST"]),
     ("/glossary/{entry_id}", runtime.glossary_delete, ["DELETE"]),
     ("/glossary/pending", runtime.glossary_pending_list, ["GET"]),

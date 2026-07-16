@@ -41,11 +41,14 @@ runtime.extract_terms = extract_terms
 
 def glossary_health() -> dict[str, runtime.Any]:
     try:
+        from glossary_store.common import SCHEMA_VERSION
         db = runtime.get_glossary_db()
         count = db.get_entry_count()
         pending = db.get_pending_count()
-        return {'ok': True, 'entryCount': count, 'pendingCount': pending, 'revision': db.get_revision()}
+        revision = db.get_revision()
+        return {'ok': True, 'entryCount': count, 'pendingCount': pending, 'revision': revision, 'schemaVersion': SCHEMA_VERSION}
     except Exception as exc:
+        import traceback; traceback.print_exc()
         return {'ok': False, 'error': str(exc)}
 
 runtime.glossary_health = glossary_health
@@ -56,51 +59,78 @@ def glossary_list(
     limit: int = 0, offset: int = 0,
     updated_after: float = 0.0,
 ) -> dict[str, runtime.Any]:
-    db = runtime.get_glossary_db()
-    entries = db.get_entries(
-        search=search, enabled_only=enabled_only,
-        tgt_lng=tgt_lng, keyword=keyword,
-        limit=limit, offset=offset,
-        updated_after=updated_after,
-    )
-    total = db.get_entry_count(tgt_lng=tgt_lng, keyword=keyword or search, enabled_only=enabled_only)
-    revision = db.get_revision()
-    return {'ok': True, 'entries': entries, 'total': total, 'revision': revision}
+    try:
+        db = runtime.get_glossary_db()
+        entries = db.get_entries(
+            search=search, enabled_only=enabled_only,
+            tgt_lng=tgt_lng, keyword=keyword,
+            limit=limit, offset=offset,
+            updated_after=updated_after,
+        )
+        total = db.get_entry_count(tgt_lng=tgt_lng, keyword=keyword or search, enabled_only=enabled_only)
+        revision = db.get_revision()
+        return {'ok': True, 'entries': entries, 'total': total, 'revision': revision}
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        raise runtime.HTTPException(status_code=500, detail=str(exc))
 
 runtime.glossary_list = glossary_list
 
 def glossary_upsert(payload: runtime.GlossaryEntryPayload) -> dict[str, runtime.Any]:
-    db = runtime.get_glossary_db()
-    entry = db.upsert_entry(
-        source=payload.source, target=payload.target,
-        tgt_lng=getattr(payload, 'tgt_lng', ''),
-        note=getattr(payload, 'note', ''),
-        enabled=getattr(payload, 'enabled', True),
-        entry_id=getattr(payload, 'id', ''),
-    )
-    return {'ok': True, 'entry': entry}
+    try:
+        db = runtime.get_glossary_db()
+        entry = db.upsert_entry(
+            source=payload.source, target=payload.target,
+            tgt_lng=getattr(payload, 'tgt_lng', ''),
+            note=getattr(payload, 'note', ''),
+            enabled=getattr(payload, 'enabled', True),
+            entry_id=getattr(payload, 'id', ''),
+        )
+        return {'ok': True, 'entry': entry}
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        raise runtime.HTTPException(status_code=500, detail=str(exc))
 
 runtime.glossary_upsert = glossary_upsert
 
 def glossary_batch_upsert(payload: runtime.GlossaryBatchPayload) -> dict[str, runtime.Any]:
-    db = runtime.get_glossary_db()
-    entries = getattr(payload, 'entries', []) or []
-    tgt_lng = getattr(payload, 'tgt_lng', '')
-    stats = db.upsert_batch(entries, tgt_lng=tgt_lng)
-    stats['ok'] = stats['failed'] == 0
-    stats['revision'] = db.get_revision()
-    return stats
+    try:
+        db = runtime.get_glossary_db()
+        entries = getattr(payload, 'entries', []) or []
+        tgt_lng = getattr(payload, 'tgt_lng', '')
+        stats = db.upsert_batch(entries, tgt_lng=tgt_lng)
+        stats['ok'] = stats['failed'] == 0
+        stats['revision'] = db.get_revision()
+        return stats
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        raise runtime.HTTPException(status_code=500, detail=str(exc))
 
 runtime.glossary_batch_upsert = glossary_batch_upsert
 
 def glossary_delete(entry_id: str) -> dict[str, runtime.Any]:
-    db = runtime.get_glossary_db()
-    deleted = db.delete_entry(entry_id)
-    if not deleted:
-        raise runtime.HTTPException(status_code=404, detail='Entry not found')
-    return {'ok': True}
+    try:
+        db = runtime.get_glossary_db()
+        deleted = db.delete_entry(entry_id)
+        if not deleted:
+            raise runtime.HTTPException(status_code=404, detail='Entry not found')
+        return {'ok': True}
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        raise runtime.HTTPException(status_code=500, detail=str(exc))
 
 runtime.glossary_delete = glossary_delete
+
+def glossary_clear() -> dict[str, runtime.Any]:
+    try:
+        db = runtime.get_glossary_db()
+        count = db.clear_all_entries()
+        return {'ok': True, 'deleted': count}
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        raise runtime.HTTPException(status_code=500, detail=str(exc))
+
+runtime.glossary_clear = glossary_clear
 
 def glossary_pending_list() -> dict[str, runtime.Any]:
     db = runtime.get_glossary_db()

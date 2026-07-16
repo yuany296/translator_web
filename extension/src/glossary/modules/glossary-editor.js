@@ -4,15 +4,11 @@ export function installGlossaryEditor(runtime) {
   function bindEvents() {
     runtime.addBtn.addEventListener("click", () => runtime.openEditor());
     runtime.searchInput.addEventListener("input", runtime.renderGlossary);
-    runtime.loadDbBtn.addEventListener("click", () => runtime.loadGlossary("server"));
-    runtime.importDbBtn.addEventListener("click", () => runtime.dbFileInput.click());
-    runtime.dbFileInput.addEventListener("change", runtime.importGlossaryDbFile);
     runtime.importBtn.addEventListener("click", () => runtime.fileInput.click());
     runtime.fileInput.addEventListener("change", runtime.importGlossaryFile);
     runtime.exportJsonBtn.addEventListener("click", runtime.exportGlossaryJson);
     runtime.exportCsvBtn.addEventListener("click", runtime.exportGlossaryCsv);
     runtime.clearBtn.addEventListener("click", runtime.clearGlossary);
-    runtime.migrateBtn.addEventListener("click", runtime.migrateGlossaryToServer);
     runtime.termForm.addEventListener("submit", runtime.saveEditor);
     runtime.cancelBtn.addEventListener("click", () => runtime.termDialog.close());
     runtime.termRows.addEventListener("click", runtime.handleRowClick);
@@ -209,20 +205,10 @@ export function installGlossaryEditor(runtime) {
   runtime.exportJsonBtn = exportJsonBtn;
   const exportCsvBtn = document.getElementById("exportCsvBtn");
   runtime.exportCsvBtn = exportCsvBtn;
-  const migrateBtn = document.getElementById("migrateBtn");
-  runtime.migrateBtn = migrateBtn;
-  const migrateStatus = document.getElementById("migrateStatus");
-  runtime.migrateStatus = migrateStatus;
   const clearBtn = document.getElementById("clearBtn");
   runtime.clearBtn = clearBtn;
   const fileInput = document.getElementById("fileInput");
   runtime.fileInput = fileInput;
-  const loadDbBtn = document.getElementById("loadDbBtn");
-  runtime.loadDbBtn = loadDbBtn;
-  const importDbBtn = document.getElementById("importDbBtn");
-  runtime.importDbBtn = importDbBtn;
-  const dbFileInput = document.getElementById("dbFileInput");
-  runtime.dbFileInput = dbFileInput;
   const countText = document.getElementById("countText");
   runtime.countText = countText;
   const statusText = document.getElementById("statusText");

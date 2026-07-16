@@ -43,8 +43,14 @@ class GlossaryEntryPayload(BaseModel):
     id: str = ""
     source: str
     target: str
+    tgt_lng: str = ""
     note: str = ""
     enabled: bool = True
+
+
+class GlossaryBatchPayload(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list, max_length=5000)
+    tgt_lng: str = ""
 
 
 class GlossaryConfirmPayload(BaseModel):

@@ -104,13 +104,13 @@ test("vertical text keeps its tilt while using the long polygon edge as the text
   assert.equal(node.style.height, `${placement.axisLength}px`);
 });
 
-test("group rotation uses the reliable median and rejects angles above 25 degrees", () => {
+test("group rotation uses the reliable median across the complete normalized range", () => {
   const placement = buildPlacementGeometry([
     detected({ regionId: "r1", rotationDeg: 10, sourcePolygon: orientedPolygon({ x: 100, y: 100 }, 100, 30, 10), lineThickness: 38 }),
     detected({ regionId: "r2", rotationDeg: 20, sourcePolygon: orientedPolygon({ x: 240, y: 130 }, 100, 30, 20), lineThickness: 42 }),
     detected({ regionId: "r3", rotationDeg: 40, sourcePolygon: orientedPolygon({ x: 380, y: 160 }, 100, 30, 40), lineThickness: 100 })
   ]);
-  assert.equal(placement.rotationDeg, 15);
+  assert.equal(placement.rotationDeg, 20);
   assert.equal(placement.fontHeight, 42);
 });
 

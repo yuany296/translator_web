@@ -108,7 +108,7 @@ export function installReconcilerProjection(runtime) {
       const componentEdges = acceptedEdges.filter(edge => memberIds.includes(edge.upperId) && memberIds.includes(edge.lowerId));
       const anchor = pageMembers.length ? [...pageMembers].sort((left, right) => runtime.compareObservationsByPage(left, right, pageIndex))[0] : members[0];
       const geometryByPage = runtime.geometryByPageForMembers(members, pageIndex);
-      const originalText = runtime.chooseCanonicalText(members, componentEdges, pageIndex);
+      const originalText = runtime.chooseCanonicalText(members, componentEdges, pageIndex, pageById);
       const status = pageMembers.some(member => reviewObservationIds.has(member.id)) && componentEdges.length === 0 ? "needs_review" : originalText ? "ready" : "filtered";
       const canonicalId = `canonical_${runtime.stableHash(anchor.id)}`;
       drafts.push({

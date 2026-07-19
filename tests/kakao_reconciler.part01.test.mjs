@@ -395,6 +395,64 @@ test("continuation concatenation trims an exact suffix/prefix overlap", () => {
   assert.equal(R.joinContinuationText("hello", "hello"), "hello");
   assert.equal(R.joinContinuationText("", "next"), "next");
 });
+test("standalone seam prefix joins the longer lower-page continuation", () => {
+  const upper = page("seam-prefix-upper", 0);
+  const lower = page("seam-prefix-lower", 1);
+  const upperBox = { x: 37, y: 97, w: 24, h: 3 };
+  const lowerFragmentBox = { x: 40, y: 0, w: 20, h: 7 };
+  const lowerSentenceBox = { x: 30, y: 3, w: 40, h: 23 };
+  const seam = seamObservation(upper, lower, "김솔음이 개빡센", upperBox, lowerFragmentBox);
+  const lowerSentence = pageObservation(lower, "개빡센 입사이틀을 보낸다음날,", lowerSentenceBox);
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [seam, lowerSentence]
+  });
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText, "김솔음이 개빡센 입사이틀을 보낸다음날,");
+  assert.deepEqual(result.canonicals[0].memberObservationIds, [lowerSentence.id, seam.id].sort());
+  assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
+});
+test("upper-page sentence absorbs a seam suffix instead of rendering two translations", () => {
+  const upper = page("seam-suffix-upper", 0);
+  const lower = page("seam-suffix-lower", 1);
+  const upperSentence = pageObservation(upper, "담당자 실수로 <화요 퀴즈쇼>가 중복 배정되었다고", {
+    x: 20.39,
+    y: 80,
+    w: 43.82,
+    h: 16.3
+  });
+  const seam = seamObservation(upper, lower, "중복 배정되었다고 합니다.", {
+    x: 20.66,
+    y: 90,
+    w: 43.29,
+    h: 10
+  }, {
+    x: 20.66,
+    y: 0,
+    w: 43.29,
+    h: 6
+  });
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperSentence, seam]
+  });
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText, "담당자 실수로 <화요 퀴즈쇼>가 중복 배정되었다고 합니다.");
+  assert.deepEqual(result.canonicals[0].memberObservationIds, [upperSentence.id, seam.id].sort());
+  assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
+});
+test("geometrically overlapping seam and page texts stay separate without a meaningful boundary overlap", () => {
+  const upper = page("seam-unrelated-upper", 0);
+  const lower = page("seam-unrelated-lower", 1);
+  const seam = seamObservation(upper, lower, "첫 번째 말풍선", { x: 35, y: 96, w: 30, h: 4 }, { x: 35, y: 0, w: 30, h: 8 });
+  const unrelated = pageObservation(lower, "완전히 다른 문장", { x: 30, y: 3, w: 40, h: 24 });
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [seam, unrelated]
+  });
+  assert.equal(result.canonicals.length, 2);
+  assert.notEqual(result.ledger[seam.id].canonicalId, result.ledger[unrelated.id].canonicalId);
+});
 test("same text in different horizontal positions is never merged", () => {
   const upper = page("a", 0);
   const lower = page("b", 1);

@@ -322,12 +322,12 @@ export function installLifecycleBubble(runtime) {
   runtime.applyBubbleTextLayout = applyBubbleTextLayout;
   function shouldUseVerticalJapaneseLayout(node, text) {
     const originalText = String(node && node.dataset && node.dataset.original || "").trim();
+    if (originalText && /[\uac00-\ud7afA-Za-z]/.test(originalText) && !runtime.looksLikeJapaneseText(originalText)) {
+      return false;
+    }
     const rotation = Math.abs(runtime.normalizeBubbleRotation(node && node.dataset && node.dataset.rotationDeg, node && node.dataset && node.dataset.regionType));
     if (rotation >= 45 && rotation <= 135) {
       return runtime.looksLikeCjkText(text);
-    }
-    if (originalText && /[\uac00-\ud7afA-Za-z]/.test(originalText) && !runtime.looksLikeJapaneseText(originalText)) {
-      return false;
     }
     const backgroundTarget = node.dataset.backgroundTarget === "true";
     if (backgroundTarget && runtime.looksLikeCjkText(text)) {

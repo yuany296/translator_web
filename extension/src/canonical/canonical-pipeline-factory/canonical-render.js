@@ -294,16 +294,33 @@ export function installCanonicalRender(runtime, scope) {
         reason: "page-ocr-pending"
       };
     }
-    await scope.processSeamPair(previous, next);
-    scope.releaseCompletedEdgeWaits();
-    await scope.refreshCanonicalState({
-      reason: "adjacent-target-available",
-      focusPageIds: [previous.pageId, next.pageId]
+    const pairKey = runtime.buildCanonicalPairKey(previous, next);
+    const pairState = scope.store.getSeamState(pairKey);
+    const loadingRecords = !pairState || pairState.status === "running" ? [previous, next] : [];
+    loadingRecords.forEach(record => {
+      scope.loading(record.target, record.targetKey, "处理跨页...");
     });
-    return {
-      ok: true,
-      pageIds: [previous.pageId, next.pageId]
-    };
+    try {
+      await scope.processSeamPair(previous, next);
+      scope.releaseCompletedEdgeWaits();
+      loadingRecords.forEach(record => {
+        scope.loading(record.target, record.targetKey, "渲染结果...");
+      });
+      await scope.refreshCanonicalState({
+        reason: "adjacent-target-available",
+        focusPageIds: [previous.pageId, next.pageId]
+      });
+      return {
+        ok: true,
+        pageIds: [previous.pageId, next.pageId]
+      };
+    } finally {
+      if (typeof scope.adapters.clearLoadingOverlay === "function") {
+        loadingRecords.forEach(record => {
+          scope.adapters.clearLoadingOverlay(record.target);
+        });
+      }
+    }
   }
   scope.onAdjacentTargetAvailable = onAdjacentTargetAvailable;
   scope.result = Object.freeze({

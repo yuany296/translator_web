@@ -234,6 +234,48 @@ export function installReconcilerSeam(runtime) {
     return 0;
   }
   runtime.suffixPrefixOverlap = suffixPrefixOverlap;
+  // seam 可能只覆盖上一页尾句与下一页长句的公共前缀；必须同时满足页边、文本和几何约束才视为续接。
+  function seamPageContinuationRelation(seam, pageObservation, pageById) {
+    if (seam?.sourceType !== "seam" || pageObservation?.sourceType !== "page" || !runtime.hasMeaningfulCrossPageContribution(seam, seam.pageIds)) return null;
+    const orderedSeamPages = seam.pageIds.map(pageId => pageById.get(pageId)).filter(Boolean).sort((left, right) => left.readingOrder - right.readingOrder || left.pageId.localeCompare(right.pageId));
+    if (orderedSeamPages.length < 2) return null;
+    const seamText = runtime.normalizeComparableText(seam.originalText);
+    const pageText = runtime.normalizeComparableText(pageObservation.originalText);
+    if (!seamText || !pageText) return null;
+    const minimumTextLength = Math.min(Array.from(seamText).length, Array.from(pageText).length);
+    const minimumOverlap = Math.max(2, Math.ceil(minimumTextLength * 0.35));
+    const candidates = [];
+    for (const pageId of pageObservation.pageIds.filter(value => seam.pageIds.includes(value))) {
+      const page = pageById.get(pageId);
+      const seamSpan = runtime.getSpan(seam, pageId);
+      const pageSpan = runtime.getSpan(pageObservation, pageId);
+      if (!page || !seamSpan || !pageSpan || !runtime.regionsCompatible(seam, seamSpan, pageObservation, pageSpan)) continue;
+      const isUpperEdge = pageId === orderedSeamPages[0].pageId;
+      const isLowerEdge = pageId === orderedSeamPages[orderedSeamPages.length - 1].pageId;
+      if (!isUpperEdge && !isLowerEdge) continue;
+      const edge = isLowerEdge ? "top" : "bottom";
+      const bandHeight = runtime.calculateSeamBandHeight(page.width, page.width);
+      if (!runtime.observationTouchesEdge(pageObservation, page, edge, bandHeight)) continue;
+      const direction = isLowerEdge ? "seam_then_page" : "page_then_seam";
+      const textOverlap = direction === "seam_then_page" ? runtime.suffixPrefixOverlap(seamText, pageText) : runtime.suffixPrefixOverlap(pageText, seamText);
+      if (textOverlap < minimumOverlap) continue;
+      const seamBox = runtime.boxInNormalizedPage(seamSpan, page);
+      const pageBox = runtime.boxInNormalizedPage(pageSpan, page);
+      const geometry = runtime.overlapOverSmaller(seamBox, pageBox);
+      if (geometry < 0.35 && !runtime.hasSharedVisualIdentity(seam, pageObservation)) continue;
+      const textScore = runtime.clamp(textOverlap / Math.max(1, minimumTextLength), 0, 1);
+      candidates.push({
+        direction,
+        geometry,
+        pageId,
+        score: runtime.clamp(geometry * 0.75 + textScore * 0.25, 0, 1),
+        textOverlap,
+        textScore
+      });
+    }
+    return candidates.sort((left, right) => right.score - left.score || right.textOverlap - left.textOverlap || left.pageId.localeCompare(right.pageId))[0] || null;
+  }
+  runtime.seamPageContinuationRelation = seamPageContinuationRelation;
   function joinContinuationText(leftText, rightText) {
     const left = runtime.normalizeText(leftText);
     const right = runtime.normalizeText(rightText);

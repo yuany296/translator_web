@@ -115,7 +115,7 @@ export function installOcrClustering(runtime) {
     const currentBox = runtime.getLocalPaddleEntriesBox(cluster);
     const relatedEntries = (Array.isArray(allClusters) ? allClusters : []).filter((candidate, index) => runtime.isChatRegionType(regionTypes[index]) && runtime.areRelatedChatRotationClusters(currentBox, runtime.getLocalPaddleEntriesBox(candidate))).flat();
     const rotation = runtime.medianRotation((relatedEntries.length > 0 ? relatedEntries : cluster).map(entry => entry && entry.rotation));
-    return Number.isFinite(rotation) && Math.abs(rotation) <= 25 ? rotation : 0;
+    return Number.isFinite(rotation) ? runtime.normalizeRotationDegrees(rotation) : 0;
   }
   runtime.getReliableSharedClusterRotation = getReliableSharedClusterRotation;
   function areRelatedChatRotationClusters(left, right) {

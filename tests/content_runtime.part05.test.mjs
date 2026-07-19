@@ -180,7 +180,6 @@ test("translation keeps the requested approximate source line count", () => {
   const formatted = runtime.__test.formatTranslationForOriginalLines("为什么没有把东西拿出来", 3);
   assert.equal(formatted.split("\n").length, 3);
   assert.equal(formatted.replace(/\n/g, ""), "为什么没有把东西拿出来");
-  assert.equal(runtime.__test.normalizeBubbleRotation(95), 0);
 });
 test("translation line balancing avoids isolated CJK characters", () => {
   const formatted = runtime.__test.formatTranslationForOriginalLines("那么是不是该慢慢把粉丝团名字亮出来了呢？", 5);
@@ -190,12 +189,14 @@ test("translation line balancing avoids isolated CJK characters", () => {
   assert.ok(lines.every(line => Array.from(line).length > 1));
   assert.ok(Array.from(lines.at(-1)).length > 2);
 });
-test("moderate OCR tilt is preserved while vertical noise is rejected", () => {
+test("OCR tilt keeps the complete normalized -90 to 90 degree range", () => {
   assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(8) - 8) < 0.01);
   assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(-13, "chat") + 13) < 0.01);
   assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(-13, "ui") + 13) < 0.01);
-  assert.equal(runtime.__test.normalizeBubbleRotation(95), 0);
-  assert.equal(runtime.__test.normalizeBubbleRotation(32), 0);
+  assert.equal(runtime.__test.normalizeBubbleRotation(32), 32);
+  assert.equal(runtime.__test.normalizeBubbleRotation(-89), -89);
+  assert.equal(runtime.__test.normalizeBubbleRotation(95), -85);
+  assert.equal(runtime.__test.normalizeBubbleRotation(180), 0);
 });
 test("transparent backgrounds default to black text with a white outline", () => {
   const outline = runtime.__test.getBubbleRenderColors({}, "none");

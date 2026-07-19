@@ -502,6 +502,22 @@ test("slanted chat rows share one reliable angle and size from polygon thickness
   assert.equal(result.every(row => row.fontHeight < 65), true, JSON.stringify(result.map(row => row.fontHeight)));
   assert.equal(result.every(row => row.location.height < 90), true, JSON.stringify(result.map(row => row.location)));
 });
+test("chat clusters preserve reliable rotations beyond 25 degrees", () => {
+  const cluster = [{
+    rotation: -30,
+    box: {
+      left: 100,
+      top: 100,
+      right: 300,
+      bottom: 160,
+      width: 200,
+      height: 60,
+      centerX: 200,
+      centerY: 130
+    }
+  }];
+  assert.equal(context.__backgroundTest.getReliableSharedClusterRotation(cluster, "chat"), -30);
+});
 test("strongly slanted equal-size rows group by their text axes instead of AABB height", async () => {
   const angle = -14 * Math.PI / 180;
   const axis = { x: Math.cos(angle), y: Math.sin(angle) };

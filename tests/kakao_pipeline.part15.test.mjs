@@ -179,6 +179,7 @@ function createCanonicalHarness(options = {}) {
     b: [makeCanonicalObservation("page-b", "rev-b", "obs-b", 40, "inside B")]
   };
   const store = P.createStore();
+  const loadings = [];
   const loadingClears = [];
   const adapters = {
     store,
@@ -285,7 +286,11 @@ function createCanonicalHarness(options = {}) {
       sourceToken: target.sourceToken
     }),
     isTargetSnapshotStillValid: (target, snapshot) => target.sourceToken === snapshot.sourceToken,
-    renderLoadingOverlay: () => {},
+    renderLoadingOverlay: (target, targetKey, text) => loadings.push({
+      target: target.name,
+      targetKey,
+      text
+    }),
     clearLoadingOverlay: target => loadingClears.push(target.name),
     tracePipeline: (event, _target, details) => traces.push({
       event,
@@ -318,6 +323,7 @@ function createCanonicalHarness(options = {}) {
     timers,
     ocrMetas,
     renderInputs,
+    loadings,
     loadingClears,
     identities
   };
@@ -599,8 +605,28 @@ test("onAdjacent records confirmed revisioned adjacency even when seam OCR retur
   });
   await harness.pipeline.run(harness.targets.a);
   await harness.pipeline.run(harness.targets.b);
+  harness.loadings.length = 0;
+  harness.loadingClears.length = 0;
   const result = await harness.pipeline.onAdjacentTargetAvailable(harness.targets.a, harness.targets.b);
   assert.equal(result.ok, true);
+  assert.deepEqual(harness.loadings, [{
+    target: "a",
+    targetKey: "target-a",
+    text: "处理跨页..."
+  }, {
+    target: "b",
+    targetKey: "target-b",
+    text: "处理跨页..."
+  }, {
+    target: "a",
+    targetKey: "target-a",
+    text: "渲染结果..."
+  }, {
+    target: "b",
+    targetKey: "target-b",
+    text: "渲染结果..."
+  }]);
+  assert.deepEqual(harness.loadingClears, ["a", "b"]);
   assert.equal(harness.store.getPageHandle("page-a").nextPageId, "page-b");
   assert.equal(harness.store.getPageHandle("page-b").previousPageId, "page-a");
   const pairs = P.buildConfirmedAdjacentPagePairs(harness.store.getPageHandles());

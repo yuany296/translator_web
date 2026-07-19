@@ -139,7 +139,8 @@ export function installReconcilerCanonical(runtime) {
   }
   runtime.canUnionComponents = canUnionComponents;
   function relationBetweenSeamAndPage(seam, pageObservation, pageById) {
-    if (!runtime.hasStrongTextRelation(seam.originalText, pageObservation.originalText)) return 0;
+    const continuation = runtime.seamPageContinuationRelation(seam, pageObservation, pageById);
+    if (!runtime.hasStrongTextRelation(seam.originalText, pageObservation.originalText) && !continuation) return 0;
     let total = 0;
     let matches = 0;
     for (const pageId of pageObservation.pageIds) {
@@ -158,7 +159,8 @@ export function installReconcilerCanonical(runtime) {
       matches += 1;
     }
     if (!matches) return 0;
-    return runtime.clamp(total / matches * 0.78 + runtime.textSimilarity(seam.originalText, pageObservation.originalText) * 0.22, 0, 1);
+    const relationScore = runtime.clamp(total / matches * 0.78 + Math.max(runtime.textSimilarity(seam.originalText, pageObservation.originalText), continuation?.textScore || 0) * 0.22, 0, 1);
+    return Math.max(relationScore, continuation?.score || 0);
   }
   runtime.relationBetweenSeamAndPage = relationBetweenSeamAndPage;
   function canAttachSeamToComponent(seam, members, pageById) {
@@ -229,8 +231,22 @@ export function installReconcilerCanonical(runtime) {
     return runtime.hasMeaningfulCrossPageContribution(observation);
   }
   runtime.isTrueCrossPageSeam = isTrueCrossPageSeam;
-  function chooseCanonicalText(memberObservations, componentEdges, pageIndex) {
+  function chooseCanonicalText(memberObservations, componentEdges, pageIndex, pageById) {
     const pageObservations = memberObservations.filter(observation => observation.sourceType === "page").sort((left, right) => runtime.compareObservationsByPage(left, right, pageIndex));
+    const seamContinuations = pageObservations.length === 1 ? memberObservations.filter(runtime.isTrueCrossPageSeam).map(seam => {
+      const pageObservation = pageObservations[0];
+      return {
+        pageObservation,
+        relation: runtime.seamPageContinuationRelation(seam, pageObservation, pageById),
+        seam
+      };
+    }).filter(candidate => candidate.relation).sort((left, right) => right.relation.score - left.relation.score || left.seam.id.localeCompare(right.seam.id) || left.pageObservation.id.localeCompare(right.pageObservation.id)) : [];
+    for (const candidate of seamContinuations) {
+      const combined = candidate.relation.direction === "seam_then_page" ? runtime.joinContinuationText(candidate.seam.originalText, candidate.pageObservation.originalText) : runtime.joinContinuationText(candidate.pageObservation.originalText, candidate.seam.originalText);
+      const combinedLength = Array.from(runtime.normalizeComparableText(combined)).length;
+      const sourceLength = Math.max(Array.from(runtime.normalizeComparableText(candidate.seam.originalText)).length, Array.from(runtime.normalizeComparableText(candidate.pageObservation.originalText)).length);
+      if (combinedLength > sourceLength) return combined;
+    }
     const continuation = componentEdges.some(edge => edge.type === "continuation");
     if (!continuation || pageObservations.length <= 1) {
       // duplicate 也可能是两个截断 page observation 被完整 seam observation

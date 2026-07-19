@@ -310,9 +310,7 @@ export function installTargetResolve(runtime) {
     // Near-horizontal text: ignore tiny rotation noise
     if (Math.abs(angle) < runtime.BUBBLE_ROTATION_NEAR_HORIZONTAL) return 0;
 
-    // 聊天、UI 与正文都保留同一组内的可靠倾角；超过 25° 的值更可能来自
-    // 方向误判，垂直排版仍由 writing-mode 单独处理。
-    if (Math.abs(angle) > 25) return 0;
+    // 保留归一化到 -90°～90° 的完整倾角，垂直排版由 writing-mode 单独处理。
     return runtime.clamp(angle, -runtime.BUBBLE_ROTATION_MAX, runtime.BUBBLE_ROTATION_MAX);
   }
   runtime.normalizeBubbleRotation = normalizeBubbleRotation;

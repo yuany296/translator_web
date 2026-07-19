@@ -18,7 +18,7 @@ export function buildPlacementGeometry(memberRegions, options = {}) {
     .filter((item) => item.geometryReliability !== "fallback")
     .map((item) => normalizeAngle(item.rotationDeg))
     .map((angle) => writingMode === "vertical" ? normalizeAngle(angle - 90) : angle)
-    .filter((angle) => Math.abs(angle) <= 25);
+    .filter(Number.isFinite);
   const rotationDeg = reliableAngles.length ? median(reliableAngles) : 0;
   // rotationDeg 是渲染倾角；垂直排版的文字轴还需要在 crop 坐标中旋转 90°。
   const axisAngleDeg = rotationDeg + (writingMode === "vertical" ? 90 : 0);

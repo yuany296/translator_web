@@ -249,7 +249,7 @@ export function installReconcilerSeam(runtime) {
       const page = pageById.get(pageId);
       const seamSpan = runtime.getSpan(seam, pageId);
       const pageSpan = runtime.getSpan(pageObservation, pageId);
-      if (!page || !seamSpan || !pageSpan || !runtime.regionsCompatible(seam, seamSpan, pageObservation, pageSpan)) continue;
+      if (!page || !seamSpan || !pageSpan) continue;
       const isUpperEdge = pageId === orderedSeamPages[0].pageId;
       const isLowerEdge = pageId === orderedSeamPages[orderedSeamPages.length - 1].pageId;
       if (!isUpperEdge && !isLowerEdge) continue;
@@ -264,7 +264,12 @@ export function installReconcilerSeam(runtime) {
       const geometry = runtime.overlapOverSmaller(seamBox, pageBox);
       if (geometry < 0.35 && !runtime.hasSharedVisualIdentity(seam, pageObservation)) continue;
       const textScore = runtime.clamp(textOverlap / Math.max(1, minimumTextLength), 0, 1);
+      const classifierDrift = !runtime.regionsCompatible(seam, seamSpan, pageObservation, pageSpan);
+      // 页缝会把同一段标题分别判成 effect_text / caption_panel。只有公共行和几何都足够强时
+      // 才允许跨过分类差异，普通的异类相邻文字仍保持硬边界。
+      if (classifierDrift && (geometry < 0.55 || textScore < 0.40)) continue;
       candidates.push({
+        classifierDrift,
         direction,
         geometry,
         pageId,

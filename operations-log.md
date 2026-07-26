@@ -1,5 +1,13 @@
 # Operations Log
 
+## 2026-07-26 - Codex（修复跨页三行文本的传递归并）
+
+- 按用户要求先提交本轮既有的跨页统一覆盖层与页面几何改动，基线提交为 `58f6ed8`，随后再开始本修复。
+- Chrome 现场证据显示：跨页 observation 已包含“上行 + 中行”，下一页普通 observation 又包含“中行 + 下行”；旧 reconciler 只会把 seam 归给得分最高的一个 page component，不能借公共中行继续吸收另一个 component，因而输出两个相互遮挡的 canonical。即使三个 observation 已偶然进入同一 component，旧文本选择也只在恰好一个 page observation 时扩展 seam，仍可能截断下行。
+- 新增 seam owner 的 continuation bridge：只有真实跨页贡献、公共边界文本、页边接触和几何重叠均达到阈值，且组件页数、同页几何与翻译角色约束全部通过时，才把第二个续接 component 原子并入 owner；诊断记录 `acceptedContinuationBridges`。对 `effect_text` / `caption_panel` 这类页缝分类漂移，仅在文本与几何双强证据下放行，普通异类相邻文字仍保持硬边界。
+- canonical 原文现在可同时按阅读方向吸收 seam 的前缀和后缀扩展，公共中行只保留一次；目标回归得到唯一原文 `이렇게 마음 편히 먹어보는 게 얼마 만이더라.`，三个 observation 全部记为 `consumed`。reconciler 模型版本提升为 `kakao-canonical-v2`，避免重载后复用旧 observation 身份。
+- 完整本地 `scripts/verify.mjs` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `519/519`、Python `58 passed, 1 skipped`；最新 bundle 已写入 `dist/extension/`。沙箱内首轮 Python OCR 的 5 个失败仅因无权读取用户目录中的 PaddleOCR 模型，获准在本机环境重跑同一验证后全部通过。
+
 ## 2026-07-22 - Codex（修复滚动后 loading 消失与排队状态不可见）
 
 - Chrome 现场先后采集到三类一致证据：正文图片仍有 `inflightSourceToken` 时 loading 已离开视口；滚动到后续图片时可见目标尚未启动且没有任何排队提示；控制台最终明确记录 `Loading overlay timed out, clearing`。右下角“停”只表示本页自动翻译已开启，不能证明当前有任务执行，因此旧 UI 会让用户误判为处理已经停止。

@@ -86,13 +86,6 @@ export function installReconcilerProjection(runtime) {
         });
       }
     }
-    const componentByRoot = new Map();
-    for (const observation of pageObservations) {
-      const root = unionFind.find(observation.id);
-      componentByRoot.set(root, componentByRoot.get(root) || []);
-      componentByRoot.get(root).push(observation);
-    }
-    const componentSeams = new Map(Array.from(componentByRoot.keys()).map(root => [root, []]));
     const explicitlySupported = new Map();
     for (const group of acceptedFragmentGroups) {
       const root = unionFind.find(group.memberObservationIds[0]);
@@ -102,6 +95,20 @@ export function installReconcilerProjection(runtime) {
       const root = unionFind.find(edge.upperId);
       for (const seamId of edge.supportingSeamIds) explicitlySupported.set(seamId, root);
     }
+    const acceptedContinuationBridges = runtime.bridgeOwnedSeamContinuations(
+      unionFind, pageObservations, seamEvidenceObservations, explicitlySupported,
+      observationById, pageById
+    );
+    for (const [seamId, root] of explicitlySupported) {
+      explicitlySupported.set(seamId, unionFind.find(root));
+    }
+    const componentByRoot = new Map();
+    for (const observation of pageObservations) {
+      const root = unionFind.find(observation.id);
+      componentByRoot.set(root, componentByRoot.get(root) || []);
+      componentByRoot.get(root).push(observation);
+    }
+    const componentSeams = new Map(Array.from(componentByRoot.keys()).map(root => [root, []]));
     const supportedContextSeamIds = new Set(explicitlySupported.keys());
     const attachableSeams = seamEvidenceObservations.filter(seam =>
       !seamContextOnlyIds.has(seam.id) || supportedContextSeamIds.has(seam.id)
@@ -191,6 +198,9 @@ export function installReconcilerProjection(runtime) {
         })),
         rejectedFragmentGroups: rejectedFragmentGroups.map(group => ({
           ...group
+        })),
+        acceptedContinuationBridges: acceptedContinuationBridges.map(bridge => ({
+          ...bridge
         })),
         acceptedEdges: acceptedEdges.map(edge => ({
           ...edge

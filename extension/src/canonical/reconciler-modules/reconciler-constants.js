@@ -1,5 +1,5 @@
 export function installReconcilerConstants(runtime) {
-  const RECONCILE_MODEL_VERSION = "kakao-canonical-v1";
+  const RECONCILE_MODEL_VERSION = "kakao-canonical-v2";
   runtime.RECONCILE_MODEL_VERSION = RECONCILE_MODEL_VERSION;
   const GEOMETRY_WEIGHT = 0.35;
   runtime.GEOMETRY_WEIGHT = GEOMETRY_WEIGHT;

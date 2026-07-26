@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { reconciler as R } from "../extension/src/canonical/reconciler.js";
+import {
+  createReconcilerRuntime,
+  reconciler as R
+} from "../extension/src/canonical/reconciler.js";
 function page(pageId, index, overrides = {}) {
   return {
     pageId,
@@ -410,6 +413,55 @@ test("standalone seam prefix joins the longer lower-page continuation", () => {
   assert.equal(result.canonicals.length, 1);
   assert.equal(result.canonicals[0].originalText, "김솔음이 개빡센 입사이틀을 보낸다음날,");
   assert.deepEqual(result.canonicals[0].memberObservationIds, [lowerSentence.id, seam.id].sort());
+  assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
+});
+test("an owned seam prefix transitively absorbs the lower continuation sharing its middle line", () => {
+  const upper = page("owned-seam-upper", 0);
+  const lower = page("owned-seam-lower", 1);
+  const upperLine = pageObservation(upper, "이렇게 마음 편히", {
+    x: 64,
+    y: 91,
+    w: 28,
+    h: 9
+  }, {
+    regionType: "effect_text"
+  });
+  const seam = seamObservation(upper, lower, "이렇게 마음 편히 먹어보는 게", {
+    x: 64,
+    y: 91,
+    w: 28,
+    h: 9
+  }, {
+    x: 24,
+    y: 0,
+    w: 52,
+    h: 8
+  }, {
+    regionType: "effect_text"
+  });
+  const lowerSentence = pageObservation(lower, "먹어보는 게 얼마 만이더라.", {
+    x: 22,
+    y: 2,
+    w: 56,
+    h: 14
+  }, {
+    regionType: "caption_panel"
+  });
+  const runtime = createReconcilerRuntime();
+  const pageById = new Map([[upper.pageId, upper], [lower.pageId, lower]]);
+  const continuation = runtime.seamPageContinuationRelation(seam, lowerSentence, pageById);
+  assert.equal(continuation?.classifierDrift, true);
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperLine, seam, lowerSentence],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText,
+    "이렇게 마음 편히 먹어보는 게 얼마 만이더라.");
+  assert.deepEqual(result.canonicals[0].memberObservationIds,
+    [upperLine.id, seam.id, lowerSentence.id].sort());
+  assert.equal(result.diagnostics.acceptedContinuationBridges.length, 1);
   assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
 });
 test("upper-page sentence absorbs a seam suffix instead of rendering two translations", () => {

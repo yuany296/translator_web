@@ -176,14 +176,14 @@ export function installReconcilerSeam(runtime) {
     return runtime.clamp(Math.max(containment, runtime.diceSimilarity(left, right)), 0, 1);
   }
   runtime.textSimilarity = textSimilarity;
-  function fuzzyFragmentSimilarity(leftText, rightText) {
+  function fuzzyFragmentSimilarity(leftText, rightText, minimumLength = runtime.FUZZY_SEAM_FRAGMENT_MIN_LENGTH) {
     const normalizeFragment = value => Array.from(runtime.normalizeComparableText(value).replace(runtime.FUZZY_OCR_QUOTE_RE, "").normalize("NFD"));
     const left = normalizeFragment(leftText);
     const right = normalizeFragment(rightText);
     if (!left.length || !right.length) return 0;
     const shorter = left.length <= right.length ? left : right;
     const longer = left.length > right.length ? left : right;
-    if (shorter.length < runtime.FUZZY_SEAM_FRAGMENT_MIN_LENGTH) return 0;
+    if (shorter.length < minimumLength) return 0;
     const editDistance = (first, second) => {
       let previous = Array.from({
         length: second.length + 1

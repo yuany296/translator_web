@@ -16,7 +16,7 @@ function page(pageId, readingOrder) {
   };
 }
 
-function pageObservation(pageValue, text, box, translationRole = "") {
+function pageObservation(pageValue, text, box, translationRole = "", regionType = "dialogue") {
   return R.createObservation({
     provider: "fixture-ocr",
     captureId: `page:${pageValue.pageId}:${text}:${box.x}`,
@@ -27,19 +27,20 @@ function pageObservation(pageValue, text, box, translationRole = "") {
       pageId: pageValue.pageId,
       box,
       coordinateSpace: "percent",
-      regionType: "dialogue",
+      regionType,
       overlapRatio: 1
     }],
     originalText: text,
     confidence: 0.94,
     visual: {
-      regionType: "dialogue",
+      regionType,
       translationRole
     }
   });
 }
 
-function seamObservation(upper, lower, text, upperBox, lowerBox, translationRole = "") {
+function seamObservation(upper, lower, text, upperBox, lowerBox, translationRole = "",
+  regionType = "dialogue") {
   return R.createObservation({
     provider: "fixture-ocr",
     captureId: `seam:${upper.pageId}:${lower.pageId}:${text}`,
@@ -53,19 +54,19 @@ function seamObservation(upper, lower, text, upperBox, lowerBox, translationRole
       pageId: upper.pageId,
       box: upperBox,
       coordinateSpace: "percent",
-      regionType: "dialogue",
+      regionType,
       overlapRatio: 0.4
     }, {
       pageId: lower.pageId,
       box: lowerBox,
       coordinateSpace: "percent",
-      regionType: "dialogue",
+      regionType,
       overlapRatio: 0.6
     }],
     originalText: text,
     confidence: 0.99,
     visual: {
-      regionType: "dialogue",
+      regionType,
       translationRole
     }
   });
@@ -293,4 +294,48 @@ test("an atomic multi-line owner may absorb a cross-page continuation", () => {
   assert.equal(result.canonicals[0].originalText,
     "이렇게 마음 편히 먹어보는 게 얼마 만이더라.");
   assert.equal(result.diagnostics.acceptedContinuationBridges.length, 1);
+  const repeated = R.reconcile({
+    pages: [upper, lower],
+    observations: [...pageObservations, seam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]],
+    previousCanonicals: result.canonicals
+  });
+  assert.deepEqual(repeated.canonicals, result.canonicals);
+});
+
+test("a strongly covered short Hangul OCR correction joins its seam group", () => {
+  const upper = page("corrected-short-upper", 0);
+  const lower = page("corrected-short-lower", 1);
+  const upperFragments = [
+    pageObservation(upper, "이렇게", { x: 60, y: 90, w: 15, h: 4 }, "", "effect_text"),
+    pageObservation(upper, "마음", { x: 60, y: 94, w: 12, h: 4 }, "", "effect_text"),
+    pageObservation(upper, "펴히", { x: 71, y: 94, w: 14, h: 4 }, "", "speech_bubble")
+  ];
+  const lowerSentence = pageObservation(lower, "먹어보는 게 얼마 만이더라.",
+    { x: 22, y: 0, w: 56, h: 14 }, "", "caption_panel");
+  const seam = seamObservation(upper, lower, "이렇게 마음 편히 먹어보는 게",
+    { x: 58, y: 89, w: 30, h: 10 }, { x: 22, y: 0, w: 56, h: 8 }, "", "effect_text");
+  const runtime = createReconcilerRuntime();
+  const farCorrection = pageObservation(upper, "펴히", { x: 20, y: 94, w: 14, h: 4 },
+    "", "speech_bubble");
+  const unrelatedShort = pageObservation(upper, "외부", { x: 71, y: 94, w: 14, h: 4 },
+    "", "speech_bubble");
+
+  assert.equal(runtime.fuzzyFragmentSimilarity(seam.originalText, "펴히"), 0);
+  assert.equal(runtime.fuzzyFragmentSimilarity(seam.originalText, "펴히", 4), 0.8);
+  assert.ok(runtime.seamFragmentSupport(seam, upperFragments[2], upper, "bottom"));
+  assert.equal(runtime.seamFragmentSupport(seam, farCorrection, upper, "bottom"), null);
+  assert.equal(runtime.seamFragmentSupport(seam, unrelatedShort, upper, "bottom"), null);
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [...upperFragments, lowerSentence, seam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText,
+    "이렇게 마음 편히 먹어보는 게 얼마 만이더라.");
+  assert.deepEqual(result.canonicals[0].memberObservationIds,
+    [...upperFragments, lowerSentence, seam].map(item => item.id).sort());
+  assert.equal(result.diagnostics.acceptedContinuationBridges.length, 1);
+  assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
 });

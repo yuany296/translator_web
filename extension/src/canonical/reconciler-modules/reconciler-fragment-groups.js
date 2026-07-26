@@ -51,9 +51,13 @@ export function installReconcilerFragmentGroups(runtime) {
     const geometry = Math.max(coveredRatio, horizontal.overlapRatio * 0.88, horizontal.centerScore * 0.72);
     if (geometry < 0.32) return null;
     const textRelated = runtime.hasStrongTextRelation(seam.originalText, observation.originalText);
+    const fragmentText = runtime.normalizeComparableText(observation.originalText);
+    // 极短韩文只在 seam 强覆盖且 NFD 仅差一个字形成分时校正，避免纯几何吞并邻近短词。
+    const correctedShort = geometry >= 0.72 && /^[가-힣]{2,3}$/u.test(fragmentText) &&
+      runtime.fuzzyFragmentSimilarity(seam.originalText, fragmentText, 4) >= runtime.FUZZY_SEAM_FRAGMENT_THRESHOLD;
     const visualRelated = runtime.hasSharedVisualIdentity(seam, observation);
-    if (!textRelated && !visualRelated) return null;
-    const text = textRelated ? 1 : runtime.textSimilarity(seam.originalText, observation.originalText);
+    if (!textRelated && !correctedShort && !visualRelated) return null;
+    const text = textRelated || correctedShort ? 1 : runtime.textSimilarity(seam.originalText, observation.originalText);
     return {
       box,
       observation,

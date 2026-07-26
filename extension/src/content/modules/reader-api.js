@@ -117,6 +117,7 @@ export function installReaderApi(runtime) {
       isCanonicalRenderComplete: runtime.isCanonicalRenderComplete,
       hasRenderableOcrDebug: runtime.hasRenderableOcrDebug,
       getRenderableOcrDebugStages: runtime.getRenderableOcrDebugStages,
+      formatOcrDebugConfidence: runtime.formatOcrDebugConfidence,
       normalizeDebugCoordinateItems: runtime.normalizeDebugCoordinateItems,
       normalizePretranslateMode: runtime.normalizePretranslateMode,
       buildManualTranslateFeedback: runtime.buildManualTranslateFeedback,

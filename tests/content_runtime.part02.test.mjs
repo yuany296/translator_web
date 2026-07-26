@@ -120,6 +120,25 @@ test("OCR final debug mode compares raw and final boxes", () => {
   debug.debugOverlayMode = "raw";
   assert.deepEqual(runtime.__test.getRenderableOcrDebugStages(debug).map(stage => stage.name), ["raw"]);
 });
+test("OCR debug labels format normalized and provider confidence values", () => {
+  assert.equal(runtime.__test.formatOcrDebugConfidence({
+    confidence: 0.9274
+  }), "OCR 92.7%");
+  assert.equal(runtime.__test.formatOcrDebugConfidence({
+    score: 84.25
+  }), "OCR 84.3%");
+  assert.equal(runtime.__test.formatOcrDebugConfidence({
+    raw: {
+      rec_score: "0.611"
+    }
+  }), "OCR 61.1%");
+  assert.equal(runtime.__test.formatOcrDebugConfidence({
+    confidence: 0
+  }), "OCR 0.0%");
+  assert.equal(runtime.__test.formatOcrDebugConfidence({
+    confidence: "unavailable"
+  }), "");
+});
 test("visible canonical pages left pending are eligible for recovery requeue", () => {
   const targetKey = "direct|page";
   const scopedTargetKey = "direct|page|src:revision";

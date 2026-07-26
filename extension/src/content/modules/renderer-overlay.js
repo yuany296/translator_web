@@ -244,6 +244,26 @@ export function installRendererOverlay(runtime) {
     }
   }
   runtime.syncKakaoVisualDuplicateBubbles = syncKakaoVisualDuplicateBubbles;
+  function formatOcrDebugConfidence(item) {
+    const raw = item && item.raw;
+    const candidates = [
+      item && item.confidence,
+      item && item.recognitionConfidence,
+      item && item.recognition_confidence,
+      item && item.recScore,
+      item && item.rec_score,
+      item && item.textScore,
+      item && item.text_score,
+      item && item.score,
+      raw && (raw.confidence ?? raw.rec_score ?? raw.text_score ?? raw.score)
+    ];
+    const value = candidates.find(candidate => candidate !== null && candidate !== undefined && candidate !== "");
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 100) return "";
+    const percent = numeric <= 1 ? numeric * 100 : numeric;
+    return `OCR ${percent.toFixed(1)}%`;
+  }
+  runtime.formatOcrDebugConfidence = formatOcrDebugConfidence;
   function appendOcrDebugNodes(root, result) {
     const debug = result && result.debug;
     if (!debug || !root) {
@@ -269,7 +289,8 @@ export function installRendererOverlay(runtime) {
         const original = String(item.text || item.originalText || "").replace(/\s+/g, " ").slice(0, 28);
         const translated = String(item.translatedText || item.translated_text || "").replace(/\s+/g, " ").slice(0, 28);
         const duplicate = item.isDuplicate ? " duplicate" : "";
-        const label = `${blockId}${duplicate}${original ? ` | ${original}` : ""}${translated ? ` → ${translated}` : ""}`;
+        const confidence = runtime.formatOcrDebugConfidence(item);
+        const label = `${blockId}${duplicate}${confidence ? ` [${confidence}]` : ""}${original ? ` | ${original}` : ""}${translated ? ` → ${translated}` : ""}`;
 
         if (Array.isArray(item.polygon) && item.polygon.length >= 4) {
           // Oriented polygon — render as SVG <polygon>

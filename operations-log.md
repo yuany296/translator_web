@@ -1,5 +1,12 @@
 # Operations Log
 
+## 2026-07-27 - Codex（OCR 调试标签显示识别置信度）
+
+- 复核 Kakao 跨页页缝链路：只在页边 OCR/视觉信号、短页/碎片结构或像素重叠等证据存在时，对上页底部与下页顶部各截取窄带；默认高度为较窄页宽的 15%，并限制在 64–96px。检测到重复像素行时，组合画布会折叠对应重叠后再执行独立 seam OCR。
+- 本地 OCR 的原始 `score` 已在 raw、filtered、deduped、merged 与 final debug payload 中统一保留为 `confidence`，跨页坐标映射也不会丢失该字段；缺口仅在前端 debug 标签此前没有显示它。
+- 红色 raw 框与蓝色 final block/polygon 的标签现追加一位小数的 `OCR xx.x%`。兼容标准 0–1 分值、少数 provider 的 0–100 分值及嵌套 raw 字段；无效或缺失值保持不显示，零分仍明确显示为 `OCR 0.0%`。
+- 新增回归覆盖标准置信度、百分制 provider 分值、嵌套 recognition score、零值与非法值。完整本地 `scripts/verify.mjs` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `524/524`、Python `58 passed, 1 skipped`；最新 bundle 已写入 `dist/extension/`。
+
 ## 2026-07-27 - Codex（Chrome 现场确认跨页残片吸收）
 
 - 重载 `22b5927` 后重新打开 Kakao 章节，将目标页缝置于视口中央并等待上下页 canonical 完成。最终 DOM 只有一个 `.mt-cross-page-overlay` 和一个跨页文字层，完整原文为 `이렇게 마음 편히 먹어보는 게 얼마 만이더라.`，译文为“多久没有这样安心地吃过饭了？”。

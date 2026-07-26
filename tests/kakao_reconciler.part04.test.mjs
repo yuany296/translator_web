@@ -307,8 +307,7 @@ test("a strongly covered short Hangul OCR correction joins its seam group", () =
   const upper = page("corrected-short-upper", 0);
   const lower = page("corrected-short-lower", 1);
   const upperFragments = [
-    pageObservation(upper, "이렇게", { x: 60, y: 90, w: 15, h: 4 }, "", "effect_text"),
-    pageObservation(upper, "마음", { x: 60, y: 94, w: 12, h: 4 }, "", "effect_text"),
+    pageObservation(upper, "마음", { x: 60, y: 94, w: 12, h: 4 }, "", "speech_bubble"),
     pageObservation(upper, "펴히", { x: 71, y: 94, w: 14, h: 4 }, "", "speech_bubble")
   ];
   const lowerSentence = pageObservation(lower, "먹어보는 게 얼마 만이더라.",
@@ -323,7 +322,9 @@ test("a strongly covered short Hangul OCR correction joins its seam group", () =
 
   assert.equal(runtime.fuzzyFragmentSimilarity(seam.originalText, "펴히"), 0);
   assert.equal(runtime.fuzzyFragmentSimilarity(seam.originalText, "펴히", 4), 0.8);
-  assert.ok(runtime.seamFragmentSupport(seam, upperFragments[2], upper, "bottom"));
+  assert.equal(runtime.textSimilarity(seam.originalText, "마음펴히"), 1 / 7);
+  assert.equal(runtime.fuzzyFragmentSimilarity(seam.originalText, "마음펴히"), 0.9);
+  assert.ok(runtime.seamFragmentSupport(seam, upperFragments[1], upper, "bottom"));
   assert.equal(runtime.seamFragmentSupport(seam, farCorrection, upper, "bottom"), null);
   assert.equal(runtime.seamFragmentSupport(seam, unrelatedShort, upper, "bottom"), null);
   const result = R.reconcile({
@@ -336,6 +337,8 @@ test("a strongly covered short Hangul OCR correction joins its seam group", () =
     "이렇게 마음 편히 먹어보는 게 얼마 만이더라.");
   assert.deepEqual(result.canonicals[0].memberObservationIds,
     [...upperFragments, lowerSentence, seam].map(item => item.id).sort());
+  assert.equal(result.diagnostics.acceptedFragmentGroups.length, 1);
+  assert.ok(result.diagnostics.acceptedFragmentGroups[0].scores.text >= 0.9);
   assert.equal(result.diagnostics.acceptedContinuationBridges.length, 1);
   assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
 });

@@ -142,7 +142,11 @@ export function installReconcilerFragmentGroups(runtime) {
     const observations = supports.map(item => item.observation);
     const authoritativeText = authoritativeFragmentText(capture, supports, pageIndex);
     const combinedText = observations.map(item => item.originalText).join("");
-    const textScore = runtime.textSimilarity(authoritativeText, combinedText);
+    // 页面片段可能只覆盖完整 seam 句子的一小段；按最佳窗口比较，避免被整句长度稀释。
+    const textScore = Math.max(
+      runtime.textSimilarity(authoritativeText, combinedText),
+      runtime.fuzzyFragmentSimilarity(authoritativeText, combinedText)
+    );
     const supportScore = supports.reduce((sum, item) => sum + item.score, 0) / Math.max(1, supports.length);
     const memberObservationIds = observations.map(item => item.id).sort();
     const seamObservationIds = [...new Set(supports.map(item => item.seamObservationId))].sort();

@@ -1,5 +1,11 @@
 # Operations Log
 
+## 2026-07-27 - Codex（Chrome 现场确认跨页残片吸收）
+
+- 重载 `22b5927` 后重新打开 Kakao 章节，将目标页缝置于视口中央并等待上下页 canonical 完成。最终 DOM 只有一个 `.mt-cross-page-overlay` 和一个跨页文字层，完整原文为 `이렇게 마음 편히 먹어보는 게 얼마 만이더라.`，译文为“多久没有这样安心地吃过饭了？”。
+- 独立译文“心”和“舒心地”的精确 DOM 计数均为 0。surface 诊断明确记录 `canonical_510e…`（`마음`）与 `canonical_be8e…`（`펴히`）为 `covered_text_fragment`，两者的 page-text overlap 与 seam capture coverage 均为 1，并归属到跨页 canonical `canonical_d911…`。
+- 截图目视确认三段原文对应唯一中文覆盖层；画面上的红/蓝小框来自已开启的 OCR 调试层，不是重复译文。
+
 ## 2026-07-26 - Codex（吸收跨页文本中的短韩文误识别片段）
 
 - Chrome 现场确认跨页三行已经归为一个 canonical，完整原文为 `이렇게 마음 편히 먹어보는 게 얼마 만이더라.`、译文为“多久没有这样安心地吃过饭了？”，但框内仍保留一个独立普通气泡“舒心地”。该气泡的原始 OCR 是 `펴히`，与正确 seam 文本中的 `편히` 只差一个韩文音节内部字母。

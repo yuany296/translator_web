@@ -139,6 +139,9 @@ export function installReconcilerProjection(runtime) {
     }
     const reviewObservationIds = new Set(reviewEdges.flatMap(edge => [edge.upperId, edge.lowerId]));
     const fragmentGroupByRoot = new Map(acceptedFragmentGroups.map(group => [unionFind.find(group.memberObservationIds[0]), group]));
+    const continuationBridgeMemberIds = new Set(acceptedContinuationBridges.flatMap(bridge =>
+      [...bridge.ownerMemberIds, ...bridge.absorbedMemberIds]
+    ));
     const drafts = [];
     for (const [root, pageMembers] of componentByRoot) {
       const seamMembers = componentSeams.get(root) || [];
@@ -148,7 +151,11 @@ export function installReconcilerProjection(runtime) {
       const componentEdges = acceptedEdges.filter(edge => memberIds.includes(edge.upperId) && memberIds.includes(edge.lowerId));
       const anchor = pageMembers.length ? [...pageMembers].sort((left, right) => runtime.compareObservationsByPage(left, right, pageIndex))[0] : members[0];
       const geometryByPage = runtime.geometryByPageForMembers(members, pageIndex);
-      const originalText = fragmentGroupByRoot.get(root)?.authoritativeText || runtime.chooseCanonicalText(members, componentEdges, pageIndex, pageById);
+      const fragmentText = fragmentGroupByRoot.get(root)?.authoritativeText || "";
+      const selectedText = runtime.chooseCanonicalText(members, componentEdges, pageIndex, pageById);
+      const bridgeExpanded = pageMembers.some(member => continuationBridgeMemberIds.has(member.id)) &&
+        runtime.normalizeComparableText(selectedText).length > runtime.normalizeComparableText(fragmentText).length;
+      const originalText = bridgeExpanded ? selectedText : fragmentText || selectedText;
       const status = pageMembers.some(member => reviewObservationIds.has(member.id)) && componentEdges.length === 0 ? "needs_review" : originalText ? "ready" : "filtered";
       const canonicalId = `canonical_${runtime.stableHash(anchor.id)}`;
       drafts.push({

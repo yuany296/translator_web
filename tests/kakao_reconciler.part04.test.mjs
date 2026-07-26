@@ -284,4 +284,13 @@ test("an atomic multi-line owner may absorb a cross-page continuation", () => {
   assert.equal(unionFind.find(upperLines[0].id), unionFind.find(lowerSentence.id));
   assert.equal(runtime.expandSeamText(seam, pageObservations, pageById),
     "이렇게 마음 편히 먹어보는 게 얼마 만이더라.");
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [...pageObservations, seam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText,
+    "이렇게 마음 편히 먹어보는 게 얼마 만이더라.");
+  assert.equal(result.diagnostics.acceptedContinuationBridges.length, 1);
 });

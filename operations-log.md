@@ -7,6 +7,8 @@
 - 上页 owner 是片段组原子合并得到的合法多行组件，内部包含独立的“이렇게”和“마음”行。旧的 `canUnionComponents()` 在吸收下页续句时重新校验 owner 的所有内部成员，因两行本就不应几何重叠 35% 而误拒绝整个续接。
 - 新增 continuation bridge 专用约束：信任两个已形成组件各自的内部合法性，只检查本次合并新增的跨组件同页几何冲突；章节一致、最多三页、三页中间页贯穿和翻译角色等全局硬约束保持不变。新增回归覆盖“原子多行 owner + seam 公共中间行 + 下页长续句”，并断言旧约束拒绝、新约束接受且原文扩展为完整三行句子。
 - 完整本地 `scripts/verify.mjs` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `520/520`、Python `58 passed, 1 skipped`；最终 bundle 已写入 `dist/extension/`。沙箱内首轮 Python 的 5 个失败仅因无权读取本机 PaddleOCR 模型缓存，在获准的本机环境重跑后全部通过。
+- 首次最终页面复测又暴露第二层缺口：新 continuation bridge 已把三个 page observations 合并为同一组件，但 `fragmentGroup.authoritativeText` 在 draft 阶段无条件覆盖 `chooseCanonicalText()` 的续接扩展，导致 canonical 成员已完整、原文仍停留在 seam 前缀。该行为此前的内部 helper 回归无法覆盖。
+- 对发生 continuation bridge 的片段组，draft 现在会在片段组权威文本与完整成员推导文本之间保留更长的续接结果；未发生 bridge 的普通片段组继续沿用原权威文本，避免放宽既有选择规则。回归升级为直接调用公开 `R.reconcile()`，断言只产生一个 canonical、`acceptedContinuationBridges=1`，且完整原文为 `이렇게 마음 편히 먹어보는 게 얼마 만이더라.`。修正后再次完整验证通过：Node `520/520`、Python `58 passed, 1 skipped`，其余门禁、lint 与构建均通过。
 
 ## 2026-07-26 - Codex（修复跨页三行文本的传递归并）
 

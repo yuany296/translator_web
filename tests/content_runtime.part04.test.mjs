@@ -420,6 +420,7 @@ test("debug overlay exposes raw, deduped, duplicate, and block boxes", () => {
   assert.match(contentSource, /name: "deduped",[\s\S]*?items: debug\.dedupedItems/);
   assert.match(contentSource, /name: "block",[\s\S]*?items: debug\.finalBubbles/);
   assert.match(contentSource, /node\.dataset\.blockId/);
+  assert.match(contentSource, /mt-debug-stage-\$\{stage\.name\}/);
 });
 test("ahead window contains the current image and the next six images", () => {
   const candidates = Array.from({

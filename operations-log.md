@@ -1,5 +1,13 @@
 # Operations Log
 
+## 2026-07-27 - Codex（修正 OCR 调试标签叠字与合并置信度语义）
+
+- 用户截图中的 raw 与 final 标签都固定绘制在框顶，两个阶段的框位置接近时标签会直接覆盖；重叠后的韩文字形看起来像 OCR 产生了重复或额外文本。对用户提供的无调试原图执行同款快速 OCR，三行分别稳定得到 `그렇다면`、`여기서 의문점이`、`생긴다.`，原始识别分约为 100.0%、99.9%、97.6%，确认截图中的主要异常是标签叠绘。
+- 发现蓝色合并块此前直接继承所有成员中的最高 `confidence`。这可供既有筛选/候选选择使用，但把它标成整块置信度会让“某一行 100%”错误表现为“整个多行块 100%”。
+- raw/filtered/deduped/merged/final debug payload 现保留成员置信度的最低值、平均值、最高值和成员数；原有用于判定的最高 `confidence` 不变。单行仍显示 `OCR xx.x%`，多行合并块显示 `OCR avg xx.x% min xx.x%`，不会把单个最高分冒充整块质量。
+- debug DOM 为每个阶段添加稳定 stage class，raw/deduped 与 final/merged/duplicate 标签使用不同垂直轨道，避免同坐标阶段标签互相盖字；框的几何和 OCR 判定均未改变。
+- 完整本地 `scripts/verify.mjs` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `526/526`、Python `58 passed, 1 skipped`；最新 bundle 已写入 `dist/extension/`。
+
 ## 2026-07-27 - Codex（OCR 调试标签显示识别置信度）
 
 - 复核 Kakao 跨页页缝链路：只在页边 OCR/视觉信号、短页/碎片结构或像素重叠等证据存在时，对上页底部与下页顶部各截取窄带；默认高度为较窄页宽的 15%，并限制在 64–96px。检测到重复像素行时，组合画布会折叠对应重叠后再执行独立 seam OCR。

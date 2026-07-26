@@ -100,6 +100,7 @@ export function installBaiduResults(runtime) {
       non_translate: item && (item.nonTranslate === true || item.non_translate === true),
       translation_role: runtime.normalizeChatTranslationRole(item && (item.translation_role || item.translationRole)),
       confidence: Number(item.confidence || 0),
+      ...runtime.summarizeOcrConfidence([item]),
       rawBox: {
         left: sourceLeft,
         top: sourceTop,

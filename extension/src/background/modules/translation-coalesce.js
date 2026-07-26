@@ -169,6 +169,7 @@ export function installTranslationCoalesce(runtime) {
       rotation_deg: runtime.medianRotation(sorted.map(item => item.rotation_deg)),
       source_line_count: Math.max(1, ...sorted.map(item => Number(item.source_line_count) || 1)),
       confidence: Math.max(...sorted.map(item => Number(item.confidence || 0))),
+      ...runtime.summarizeOcrConfidence(sorted),
       ...(rawBoxes.length > 0 ? {
         rawBox: {
           left: rawLeft,

@@ -260,6 +260,14 @@ export function installRendererOverlay(runtime) {
     const value = candidates.find(candidate => candidate !== null && candidate !== undefined && candidate !== "");
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric < 0 || numeric > 100) return "";
+    const count = Math.max(0, Math.round(Number(item && (item.confidenceCount ?? item.confidence_count)) || 0));
+    const average = Number(item && (item.confidenceAverage ?? item.confidence_average));
+    const minimum = Number(item && (item.confidenceMinimum ?? item.confidence_minimum));
+    if (count > 1 && Number.isFinite(average) && Number.isFinite(minimum)) {
+      const averagePercent = average <= 1 ? average * 100 : average;
+      const minimumPercent = minimum <= 1 ? minimum * 100 : minimum;
+      return `OCR avg ${averagePercent.toFixed(1)}% min ${minimumPercent.toFixed(1)}%`;
+    }
     const percent = numeric <= 1 ? numeric * 100 : numeric;
     return `OCR ${percent.toFixed(1)}%`;
   }
@@ -302,7 +310,7 @@ export function installRendererOverlay(runtime) {
             svg.setAttribute("data-manga-translator-overlay", "true");
           }
           const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-          poly.setAttribute("class", `mt-debug-poly ${stage.className}`);
+          poly.setAttribute("class", `mt-debug-poly ${stage.className} mt-debug-stage-${stage.name}`);
           poly.setAttribute("points", item.polygon.map(p => `${p.x},${p.y}`).join(" "));
           poly.setAttribute("data-manga-translator-overlay", "true");
           // <title> for hover tooltip
@@ -313,7 +321,7 @@ export function installRendererOverlay(runtime) {
 
           // Label div at polygon's local top-left corner (minU, minV)
           const labelDiv = document.createElement("div");
-          labelDiv.className = "mt-debug-label";
+          labelDiv.className = `mt-debug-label ${stage.className} mt-debug-stage-${stage.name}`;
           labelDiv.dataset.label = label;
           labelDiv.dataset.mangaTranslatorOverlay = "true";
           // Use AABB percent x/y as approximate anchor for the horizontal label
@@ -328,7 +336,7 @@ export function installRendererOverlay(runtime) {
           const percent = runtime.getDebugItemPercent(item, debug);
           if (!percent) return;
           const node = document.createElement("div");
-          node.className = `mt-debug-box ${stage.className}`;
+          node.className = `mt-debug-box ${stage.className} mt-debug-stage-${stage.name}`;
           node.style.left = `${percent.x}%`;
           node.style.top = `${percent.y}%`;
           node.style.width = `${percent.w}%`;

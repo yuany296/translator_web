@@ -136,6 +136,12 @@ test("OCR debug labels format normalized and provider confidence values", () => 
     confidence: 0
   }), "OCR 0.0%");
   assert.equal(runtime.__test.formatOcrDebugConfidence({
+    confidence: 1,
+    confidenceAverage: 0.94,
+    confidenceMinimum: 0.869,
+    confidenceCount: 3
+  }), "OCR avg 94.0% min 86.9%");
+  assert.equal(runtime.__test.formatOcrDebugConfidence({
     confidence: "unavailable"
   }), "");
 });

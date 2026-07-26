@@ -229,6 +229,7 @@ export function installBaiduProvider(runtime) {
       words: runtime.composeBaiduMergedWords(items),
       location,
       confidence: Math.max(...items.map(item => Number(item.confidence || 0))),
+      ...runtime.summarizeOcrConfidence(items),
       rawBox: location
     };
   }

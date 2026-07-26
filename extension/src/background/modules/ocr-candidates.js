@@ -1,4 +1,35 @@
 export function installOcrCandidates(runtime) {
+  function summarizeOcrConfidence(items) {
+    let minimum = 1;
+    let maximum = 0;
+    let weightedTotal = 0;
+    let count = 0;
+    const normalize = value => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric < 0 || numeric > 100) return NaN;
+      return numeric > 1 ? numeric / 100 : numeric;
+    };
+    (Array.isArray(items) ? items : []).forEach(item => {
+      const average = normalize(item && (item.confidenceAverage ?? item.confidence_average ?? item.confidence ?? item.score));
+      if (!Number.isFinite(average)) return;
+      const itemCount = Math.max(1, Math.round(Number(item && (item.confidenceCount ?? item.confidence_count)) || 1));
+      const rawMinimum = normalize(item && (item.confidenceMinimum ?? item.confidence_minimum));
+      const rawMaximum = normalize(item && (item.confidenceMaximum ?? item.confidence_maximum));
+      const itemMinimum = Number.isFinite(rawMinimum) ? rawMinimum : average;
+      const itemMaximum = Number.isFinite(rawMaximum) ? rawMaximum : average;
+      minimum = Math.min(minimum, itemMinimum);
+      maximum = Math.max(maximum, itemMaximum);
+      weightedTotal += average * itemCount;
+      count += itemCount;
+    });
+    return {
+      confidenceMinimum: count > 0 ? minimum : 0,
+      confidenceAverage: count > 0 ? weightedTotal / count : 0,
+      confidenceMaximum: count > 0 ? maximum : 0,
+      confidenceCount: count
+    };
+  }
+  runtime.summarizeOcrConfidence = summarizeOcrConfidence;
   function keepOrTraceFinalCandidate(item, imageSize, tuning, debug, engine) {
     const reason = runtime.getFinalCandidateDropReason(item, imageSize, tuning, engine);
     if (!reason) {
@@ -155,6 +186,7 @@ export function installOcrCandidates(runtime) {
       angleDeg,
       engine: item && item.lang ? item.lang : "",
       source: item && item.variant ? item.variant : "",
+      ...runtime.summarizeOcrConfidence([item]),
       raw: item || null
     };
   }
@@ -222,7 +254,8 @@ export function installOcrCandidates(runtime) {
       polygon: Array.isArray(item && item.polygon) && item.polygon.length >= 4 ? item.polygon.slice(0, 4) : null,
       angleDeg: Number(item && item.rotation_deg) || 0,
       translatedText: item.translated_text || "",
-      isDuplicate: false
+      isDuplicate: false,
+      ...runtime.summarizeOcrConfidence([item])
     }));
     if (debug) {
       debug.finalBubbles = finalBubbles;

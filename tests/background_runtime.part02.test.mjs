@@ -150,6 +150,15 @@ test("stitched OCR clusters all panel lines before owner filtering", async () =>
   assert.match(result[0].words, /이번 회/);
   assert.match(result[0].words, /참가 신청자들!/);
   assert.equal(result[0].sourceLineCount, 3);
+  assert.equal(result[0].confidenceCount, 3);
+  assert.equal(result[0].confidenceAverage, 0.98);
+  const candidate = context.__backgroundTest.normalizeBaiduOcrItem(result[0], 0, {
+    width: 760,
+    height: 900
+  });
+  const debugPayload = context.__backgroundTest.buildUnifiedOcrDebugPayload({}, [candidate]);
+  assert.equal(debugPayload.finalBubbles[0].confidenceCount, 3);
+  assert.equal(debugPayload.finalBubbles[0].confidenceAverage, 0.98);
 });
 test("fragmented caption regions and unassigned words merge into complete paragraphs", async () => {
   const region = (id, box) => ({
@@ -360,6 +369,26 @@ test("global OCR line dedupe keeps the strongest overlapping recognition", () =>
   assert.equal(debug.dedupedItems.length, 1);
   assert.equal(debug.duplicateItems.length, 1);
   assert.equal(result[0].confidence, 0.96);
+});
+test("merged OCR confidence keeps the decision maximum and exposes an honest summary", () => {
+  const summary = context.__backgroundTest.summarizeOcrConfidence([{
+    confidence: 1
+  }, {
+    confidence: 0.95
+  }, {
+    confidence: 0.869
+  }]);
+  assert.equal(summary.confidenceCount, 3);
+  assert.equal(summary.confidenceMinimum, 0.869);
+  assert.equal(summary.confidenceMaximum, 1);
+  assert.ok(Math.abs(summary.confidenceAverage - 0.9396666666666667) < 1e-12);
+  const combined = context.__backgroundTest.summarizeOcrConfidence([summary, {
+    confidence: 0.7
+  }]);
+  assert.equal(combined.confidenceCount, 4);
+  assert.equal(combined.confidenceMinimum, 0.7);
+  assert.equal(combined.confidenceMaximum, 1);
+  assert.ok(Math.abs(combined.confidenceAverage - 0.87975) < 1e-12);
 });
 test("enabled local OCR debug keeps its boolean flag separate from the writable debug session", async () => {
   const imageSize = { width: 720, height: 1100 };

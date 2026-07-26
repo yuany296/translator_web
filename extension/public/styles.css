@@ -84,7 +84,7 @@
   content: attr(data-label);
   position: absolute;
   left: 0;
-  bottom: 100%;
+  bottom: calc(100% + var(--mt-debug-label-lane, 0px));
   max-width: 420px;
   padding: 1px 3px;
   overflow: hidden;
@@ -124,7 +124,7 @@
   content: attr(data-label);
   position: absolute;
   left: 0;
-  bottom: 100%;
+  bottom: calc(100% + var(--mt-debug-label-lane, 0px));
   max-width: 420px;
   padding: 1px 3px;
   overflow: hidden;
@@ -138,6 +138,12 @@
 .mt-debug-duplicate { color: #f59e0b; border-style: dashed; }
 .mt-debug-deduped { color: #22c55e; }
 .mt-debug-block { color: #38bdf8; border-width: 2px; }
+
+.mt-debug-stage-block,
+.mt-debug-stage-duplicate,
+.mt-debug-stage-merged {
+  --mt-debug-label-lane: 14px;
+}
 
 /* SVG stroke colors mirror the div color classes */
 .mt-debug-poly.mt-debug-raw { stroke: #ff4d4f; stroke-width: 1; }

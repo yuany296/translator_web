@@ -48,6 +48,12 @@ test("OCR 调试框不会参与页面命中测试", () => {
   assert.match(css, /\.mt-debug-block/);
 });
 
+test("OCR 原始框与合并框的标签使用独立垂直轨道", () => {
+  const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
+  assert.match(css, /bottom:\s*calc\(100% \+ var\(--mt-debug-label-lane,\s*0px\)\)/);
+  assert.match(css, /\.mt-debug-stage-block,[\s\S]*?--mt-debug-label-lane:\s*14px/);
+});
+
 test("悬浮球直接显示翻译成功和失败反馈", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
   assert.match(css, /\.mt-floating-feedback\s*\{[\s\S]*?pointer-events:\s*none/);

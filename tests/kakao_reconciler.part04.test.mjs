@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reconciler as R } from "../extension/src/canonical/reconciler.js";
+import {
+  createReconcilerRuntime,
+  reconciler as R
+} from "../extension/src/canonical/reconciler.js";
 
 function page(pageId, readingOrder) {
   return {
@@ -246,4 +249,39 @@ test("explicit forum roles remain hard boundaries at a page seam", () => {
   assert.notEqual(result.ledger[nickname.id].canonicalId, result.ledger[timestamp.id].canonicalId);
   assert.equal(result.diagnostics.acceptedFragmentGroups.length, 0);
   assert.equal(result.diagnostics.rejectedFragmentGroups[0].reason, "fragment_group_not_coherent");
+});
+
+test("an atomic multi-line owner may absorb a cross-page continuation", () => {
+  const runtime = createReconcilerRuntime();
+  const upper = page("continuation-upper", 0);
+  const lower = page("continuation-lower", 1);
+  const upperLines = [
+    pageObservation(upper, "이렇게", { x: 60, y: 90, w: 25, h: 4 }),
+    pageObservation(upper, "마음 편히", { x: 60, y: 94, w: 25, h: 4 })
+  ];
+  const lowerSentence = pageObservation(lower, "먹어보는 게 얼마 만이더라.",
+    { x: 22, y: 0, w: 56, h: 14 });
+  const seam = seamObservation(upper, lower, "이렇게 마음 편히 먹어보는 게",
+    { x: 58, y: 89, w: 30, h: 10 }, { x: 22, y: 0, w: 56, h: 8 });
+  const pageObservations = [...upperLines, lowerSentence];
+  const observationById = new Map(pageObservations.map(item => [item.id, item]));
+  const pageById = new Map([[upper.pageId, upper], [lower.pageId, lower]]);
+  const unionFind = runtime.createUnionFind(pageObservations);
+  unionFind.union(upperLines[0].id, upperLines[1].id);
+  const ownerRoot = unionFind.find(upperLines[0].id);
+
+  assert.equal(runtime.canUnionComponents(
+    unionFind, ownerRoot, lowerSentence.id, observationById, pageById
+  ), false);
+  assert.equal(runtime.canUnionContinuationBridge(
+    unionFind, ownerRoot, lowerSentence.id, observationById, pageById
+  ), true);
+  const bridges = runtime.bridgeOwnedSeamContinuations(
+    unionFind, pageObservations, [seam], new Map([[seam.id, ownerRoot]]),
+    observationById, pageById
+  );
+  assert.equal(bridges.length, 1);
+  assert.equal(unionFind.find(upperLines[0].id), unionFind.find(lowerSentence.id));
+  assert.equal(runtime.expandSeamText(seam, pageObservations, pageById),
+    "이렇게 마음 편히 먹어보는 게 얼마 만이더라.");
 });

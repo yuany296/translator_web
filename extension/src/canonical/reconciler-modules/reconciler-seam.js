@@ -234,6 +234,38 @@ export function installReconcilerSeam(runtime) {
     return 0;
   }
   runtime.suffixPrefixOverlap = suffixPrefixOverlap;
+  // 两个组件已分别通过原子约束；续接时仅验证这次合并新增的同页几何冲突。
+  function canUnionContinuationBridge(unionFind, leftId, rightId, observationById, pageById) {
+    const left = [...unionFind.getMembers(leftId)].map(id => observationById.get(id)).filter(Boolean);
+    const right = [...unionFind.getMembers(rightId)].map(id => observationById.get(id)).filter(Boolean);
+    const observations = [...left, ...right];
+    const pageIds = [...new Set(observations.flatMap(observation => observation.pageIds))];
+    const pages = pageIds.map(pageId => pageById.get(pageId)).filter(Boolean).sort(
+      (first, second) => first.readingOrder - second.readingOrder || first.pageId.localeCompare(second.pageId)
+    );
+    if (!left.length || !right.length || !pages.length || pages.length !== pageIds.length ||
+        pages.length > runtime.MAX_COMPONENT_PAGES ||
+        new Set(pages.map(page => page.chapterId)).size > 1) return false;
+    for (const page of pages) {
+      const leftOnPage = left.filter(observation => observation.pageIds.includes(page.pageId));
+      const rightOnPage = right.filter(observation => observation.pageIds.includes(page.pageId));
+      for (const leftObservation of leftOnPage) {
+        for (const rightObservation of rightOnPage) {
+          const leftBox = runtime.boxInNormalizedPage(runtime.getSpan(leftObservation, page.pageId), page);
+          const rightBox = runtime.boxInNormalizedPage(runtime.getSpan(rightObservation, page.pageId), page);
+          if (runtime.overlapOverSmaller(leftBox, rightBox) < 0.35) return false;
+        }
+      }
+    }
+    if (pages.length === 3) {
+      const [previous, middle, next] = pages;
+      const middleObservations = observations.filter(item => item.pageIds.includes(middle.pageId));
+      const bandHeight = runtime.calculateSeamBandHeight(Math.min(previous.width, middle.width), Math.min(middle.width, next.width));
+      if (!middle.shortPage && !runtime.spanTouchesBothEdges(middleObservations, middle, bandHeight)) return false;
+    }
+    return true;
+  }
+  runtime.canUnionContinuationBridge = canUnionContinuationBridge;
   // seam 可能只覆盖上一页尾句与下一页长句的公共前缀；必须同时满足页边、文本和几何约束才视为续接。
   function seamPageContinuationRelation(seam, pageObservation, pageById) {
     if (seam?.sourceType !== "seam" || pageObservation?.sourceType !== "page" || !runtime.hasMeaningfulCrossPageContribution(seam, seam.pageIds)) return null;

@@ -231,8 +231,11 @@ export function installReconcilerCanonical(runtime) {
         const candidateIds = [...unionFind.getMembers(candidateRoot)];
         const combinedMembers = [...ownerIds, ...candidateIds]
           .map(id => observationById.get(id)).filter(Boolean);
-        if (!runtime.translationRolesCompatible([...combinedMembers, seam]) ||
-            !runtime.canUnionComponents(unionFind, ownerRoot, candidateRoot, observationById, pageById)) continue;
+        const roleCompatible = runtime.translationRolesCompatible([...combinedMembers, seam]);
+        const componentCompatible = runtime.canUnionContinuationBridge(
+          unionFind, ownerRoot, candidateRoot, observationById, pageById
+        );
+        if (!roleCompatible || !componentCompatible) continue;
         unionFind.union(ownerRoot, candidateRoot);
         bridges.push({
           absorbedMemberIds: candidateIds.sort(),

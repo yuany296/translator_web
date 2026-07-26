@@ -118,6 +118,35 @@ export function installOcrLines(runtime) {
     return groups;
   }
   runtime.buildConnectedLocalPaddleGroups = buildConnectedLocalPaddleGroups;
+  function localPaddleNodeEntries(value) {
+    return Array.isArray(value?.entries) && value.entries.length ? value.entries : value ? [value] : [];
+  }
+  runtime.localPaddleNodeEntries = localPaddleNodeEntries;
+  function areUnifiedLocalPaddleSpeechBubbleContainers(left, right) {
+    if (!left || !right || !left.box || !right.box) return false;
+    if (String(left.id || "") && left.id === right.id) return true;
+    if ([left, right].some(container => String(container.type || "").toLowerCase() !== "speech_bubble" || Number(container.confidence || 0) < 0.75)) return false;
+    const overlapWidth = Math.max(0, Math.min(left.box.right, right.box.right) - Math.max(left.box.left, right.box.left));
+    const overlapHeight = Math.max(0, Math.min(left.box.bottom, right.box.bottom) - Math.max(left.box.top, right.box.top));
+    const widthRatio = overlapWidth / Math.max(1, Math.min(left.box.width, right.box.width));
+    const heightRatio = overlapHeight / Math.max(1, Math.min(left.box.height, right.box.height));
+    const overlapAreaRatio = overlapWidth * overlapHeight / Math.max(1, Math.min(left.box.width * left.box.height, right.box.width * right.box.height));
+    return Math.max(widthRatio, heightRatio) >= 0.8 && Math.min(widthRatio, heightRatio) >= 0.35 && overlapAreaRatio >= 0.35 && runtime.getLocalPaddleRegionColorDistance(left.color, right.color) <= 24;
+  }
+  runtime.areUnifiedLocalPaddleSpeechBubbleContainers = areUnifiedLocalPaddleSpeechBubbleContainers;
+  function shareUnifiedSpeechBubbleContainer(...values) {
+    const entries = values.flatMap(runtime.localPaddleNodeEntries).filter(Boolean);
+    if (entries.length < 2 || entries.some(entry => runtime.normalizeChatTranslationRole(entry.translationRole || entry.translation_role || entry.item?.translation_role))) return false;
+    const containers = entries.map(entry => entry.container).filter(Boolean);
+    if (containers.length !== entries.length || containers.some(container => String(container.type || "").toLowerCase() !== "speech_bubble")) return false;
+    if (containers.some(container => !String(container.id || ""))) return false;
+    const connected = new Set([0]);
+    for (const index of connected) containers.forEach((container, candidate) => {
+      if (runtime.areUnifiedLocalPaddleSpeechBubbleContainers(containers[index], container)) connected.add(candidate);
+    });
+    return connected.size === containers.length;
+  }
+  runtime.shareUnifiedSpeechBubbleContainer = shareUnifiedSpeechBubbleContainer;
   function shouldMergeLocalPaddleSameLine(left, right) {
     if (!left || !right || runtime.rotationDistance(left.rotation, right.rotation) > 18) {
       return false;
@@ -127,8 +156,9 @@ export function installOcrLines(runtime) {
     }
     const geometry = runtime.getLocalPaddlePairGeometry(left, right);
     if (!geometry) return false;
+    const sharedSpeechBubble = runtime.shareUnifiedSpeechBubbleContainer(left, right);
     const heightRatio = Math.min(geometry.left.height, geometry.right.height) / Math.max(geometry.left.height, geometry.right.height);
-    if (heightRatio < 0.65) {
+    if (heightRatio < 0.65 && !sharedSpeechBubble) {
       return false;
     }
 
@@ -138,13 +168,13 @@ export function installOcrLines(runtime) {
     if (leftTime !== rightTime) return false;
 
     // Chat/UI rejection: height ratio too extreme for same-line merging (title/body)
-    if (heightRatio < 1 / runtime.CHAT_MERGE_HEIGHT_RATIO_MAX) return false;
+    if (heightRatio < 1 / runtime.CHAT_MERGE_HEIGHT_RATIO_MAX && !sharedSpeechBubble) return false;
 
     // Chat/UI rejection: color brightness difference (only when both have color data)
     const lColor = left && left.color;
     const rColor = right && right.color;
     if (lColor && rColor && typeof lColor.brightness === "number" && typeof rColor.brightness === "number" && lColor.selected > 0 && rColor.selected > 0) {
-      if (Math.abs(lColor.brightness - rColor.brightness) > runtime.CHAT_MERGE_BRIGHTNESS_DIFF) return false;
+      if (Math.abs(lColor.brightness - rColor.brightness) > runtime.CHAT_MERGE_BRIGHTNESS_DIFF && !sharedSpeechBubble) return false;
     }
     const avgHeight = Math.max(1, (geometry.left.height + geometry.right.height) / 2);
     const baselineDistance = Math.abs(geometry.left.bottom - geometry.right.bottom);
@@ -206,14 +236,15 @@ export function installOcrLines(runtime) {
     }
     const geometry = runtime.getLocalPaddlePairGeometry(left, right);
     if (!geometry) return false;
+    const sharedSpeechBubble = runtime.shareUnifiedSpeechBubbleContainer(left, right);
     const heightRatio = Math.min(geometry.left.height, geometry.right.height) / Math.max(geometry.left.height, geometry.right.height);
-    if (heightRatio < 0.65) {
+    if (heightRatio < 0.65 && !sharedSpeechBubble) {
       return false;
     }
 
     // Chat pattern rejection: small text above large text (e.g., username above message body)
     // When the upper box is significantly smaller, vertically close, and horizontally overlapping
-    if (rotationDelta < 3.5 && heightRatio < 1 / runtime.CHAT_PARAGRAPH_HEIGHT_RATIO_MAX) {
+    if (!sharedSpeechBubble && rotationDelta < 3.5 && heightRatio < 1 / runtime.CHAT_PARAGRAPH_HEIGHT_RATIO_MAX) {
       const chatAvgHeight = Math.max(1, (geometry.left.height + geometry.right.height) / 2);
       const upperAboveLower = geometry.left.centerY < geometry.right.centerY;
       const chatOverlapRatio = geometry.inlineOverlap / Math.max(1, Math.min(geometry.left.width, geometry.right.width));
@@ -256,6 +287,9 @@ export function installOcrLines(runtime) {
       return true;
     }
     if (leftContainer.id === rightContainer.id) {
+      return true;
+    }
+    if (runtime.areUnifiedLocalPaddleSpeechBubbleContainers(leftContainer, rightContainer)) {
       return true;
     }
     if (leftContainer.type === "caption_panel" && rightContainer.type === "caption_panel") {

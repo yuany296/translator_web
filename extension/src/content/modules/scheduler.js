@@ -131,6 +131,7 @@ export function installScheduler(runtime) {
     const insertIndex = runtime.getTranslationQueueInsertIndex(runtime.state.queue, options);
     runtime.state.queue.splice(insertIndex, 0, item);
     runtime.state.queuedTargets.add(target);
+    runtime.renderLoadingOverlay(target, runtime.computeTargetKey(target), "等待处理...");
     runtime.tracePipeline("queued", target, {
       reason: options.reason,
       targetKey: runtime.computeTargetKey(target).slice(0, 80)

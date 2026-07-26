@@ -604,7 +604,7 @@ test("local OCR debug preserves raw detector boxes even when final OCR items are
     height: 24
   });
 });
-test("identical OCR fingerprints share one provider request and then use the warm v22 cache", async () => {
+test("identical OCR fingerprints share one provider request and then use the warm v25 cache", async () => {
   const background = context.__backgroundTest;
   installMemoryStorage(separatedConfiguration());
   let providerCalls = 0;

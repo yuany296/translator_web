@@ -65,36 +65,34 @@ test("Kakao 覆盖层使用页面坐标系跟随原图滚动", () => {
   assert.match(rootRule, /position:\s*absolute/);
 });
 
-test("seam composite is clipped only by its two page-local windows", () => {
+test("cross-page overlay uses one unclipped reading-area root and segmented covers", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
   const ruleFor = (selector) => {
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return css.match(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]+)\\}`, "m"))?.[1] ?? "";
   };
   const rootRule = ruleFor(".mt-overlay-root");
-  const windowRule = ruleFor(".mt-seam-window");
-  const compositeRule = ruleFor(".mt-seam-composite");
-  const noneRule = ruleFor(".mt-seam-composite .mt-seam-bubble.mt-bg-none");
-  const sourceRule = ruleFor(".mt-seam-composite.mt-show-source");
-  const sourceBubbleRule = ruleFor(".mt-seam-composite.mt-show-source .mt-bubble");
+  const crossRootRule = ruleFor(".mt-cross-page-root");
+  const overlayRule = ruleFor(".mt-cross-page-overlay");
+  const coverRule = ruleFor(".mt-cross-page-overlay .mt-cover-segment");
+  const textRule = ruleFor(".mt-cross-page-overlay .mt-cross-page-text");
 
   assert.match(rootRule, /overflow:\s*visible/);
-  assert.match(windowRule, /position:\s*absolute/);
-  assert.match(windowRule, /inset:\s*0/);
-  assert.match(windowRule, /overflow:\s*hidden/);
-  assert.match(compositeRule, /position:\s*absolute/);
-  assert.match(compositeRule, /transform-origin:\s*0\s+0/);
-  assert.match(compositeRule, /background-size:\s*100%\s+100%/);
-  assert.match(noneRule, /background-image:\s*none/);
-  assert.match(sourceRule, /background-image:\s*none\s*!important/);
-  assert.match(sourceBubbleRule, /opacity:\s*0/);
+  assert.match(crossRootRule, /position:\s*absolute/);
+  assert.match(crossRootRule, /inset:\s*0/);
+  assert.match(crossRootRule, /overflow:\s*visible/);
+  assert.doesNotMatch(crossRootRule, /contain:\s*paint|overflow:\s*hidden/);
+  assert.match(overlayRule, /overflow:\s*visible/);
+  assert.match(coverRule, /position:\s*absolute/);
+  assert.match(textRule, /white-space:\s*pre/);
+  assert.doesNotMatch(css, /\.mt-seam-window|\.mt-seam-composite/);
 });
 
 test("cleanup cover keeps final blue geometry separate from raw text placement", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
   const lifecycle = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "lifecycle-bubble.js"), "utf8");
   const overlay = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "renderer-overlay.js"), "utf8");
-  const seam = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "scene-dispatch.js"), "utf8");
+  const crossPage = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "renderer-crosspage.js"), "utf8");
 
   assert.match(lifecycle, /function createBubbleRenderNodes\(/);
   assert.match(lifecycle, /const coverBox = resolveBubbleCoverBox\(bubble\)/);
@@ -102,7 +100,7 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   assert.match(lifecycle, /projection_role:\s*"cover_only"[\s\S]*?fill_box:\s*null[\s\S]*?region_polygon:\s*null/);
   // polygon and rotation_deg are preserved from the original bubble for oriented fill (tilted text)
   assert.match(overlay, /createBubbleRenderNodes\([\s\S]*?appendChild\(coverNode\)[\s\S]*?appendChild\(textNode\)/);
-  assert.match(seam, /createBubbleRenderNodes\(/);
+  assert.match(crossPage, /overlay\.appendChild\(coverLayer\)[\s\S]*?overlay\.appendChild\(textNode\)/);
   assert.match(css, /\.mt-bubble\.mt-text-layer\s*\{[\s\S]*?background-image:\s*none\s*!important/);
   assert.match(css, /\.mt-bubble\.mt-text-layer::before\s*\{[\s\S]*?content:\s*none\s*!important/);
 });

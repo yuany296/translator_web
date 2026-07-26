@@ -12,6 +12,10 @@ export function installOcrStyles(runtime) {
     if (entries.length < 2) {
       return [cluster];
     }
+    // 普通漫画气泡中的标题、强调色和正文仍属于一个语义文本层；论坛角色只按显式 chat 语义拆分。
+    if (runtime.shareUnifiedSpeechBubbleContainer(...entries)) {
+      return [cluster];
+    }
     const rotation = runtime.medianRotation(entries.map(entry => entry.rotation));
     const heightOf = entry => runtime.getLocalPaddleProjectedBounds(entry, rotation)?.height || entry.box.height;
     if (runtime.isChatRegionType(regionType)) {

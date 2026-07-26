@@ -13,6 +13,7 @@ export function installReaderObservers(runtime) {
         if (runtime.shouldUseKakaoCanonicalPipeline(target) && runtime.shouldRevalidateKakaoImageLoad(target)) {
           runtime.prepareKakaoTargetRevisionCheck(target, "image-load");
         }
+        runtime.scheduleCrossPageGeometryRefresh();
         runtime.registerTarget(target);
         // Image just finished loading — queue for translation if the
         // IntersectionObserver already fired and won't fire again.
@@ -143,8 +144,7 @@ export function installReaderObservers(runtime) {
     if (runtime.shouldUseKakaoCanonicalPipeline(target) && runtime.kakaoCanonicalPipeline) {
       // 延迟触发邻页 seam，等 pipeline 建立 handle 后再执行。
       if (typeof runtime.kakaoCanonicalPipeline.onAdjacentTargetAvailable === "function") {
-        if (!runtime.state.pendingKakaoAdjacency) runtime.state.pendingKakaoAdjacency = new Map();
-        runtime.state.pendingKakaoAdjacency.set(target, previous);
+        runtime.queuePendingKakaoAdjacency(target, previous);
       }
       return;
     }
@@ -236,6 +236,7 @@ export function installReaderObservers(runtime) {
       runtime.ensureExtensionUiMounted();
     }
     if (sawExternalMutation || shouldRepairUi) {
+      runtime.scheduleCrossPageGeometryRefresh();
       runtime.scheduleAheadPretranslation("mutation");
     }
     if (disconnectedCanonicalPageIds.size > 0) {

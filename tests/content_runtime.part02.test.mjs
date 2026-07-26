@@ -308,6 +308,30 @@ test("Kakao DOM source reuse detaches the old handle and schedules standby refre
     reason: "page-handle-source-changed"
   }]);
 });
+test("a connected Kakao image restores its canonical handle by unique source token", async () => {
+  const target = new globalThis.HTMLImageElement();
+  target.dataset = {};
+  target.currentSrc = "https://cdn.example.test/restorable-handle.jpg";
+  target.naturalWidth = 760;
+  target.naturalHeight = 1200;
+  target.width = 760;
+  target.height = 1200;
+  target.isConnected = true;
+  target.getAttribute = name => name === "src" ? target.currentSrc : "";
+  target.getBoundingClientRect = () => ({ top: 100, bottom: 1300, left: 0, right: 760, width: 760, height: 1200 });
+  const identity = await runtime.__test.buildKakaoPageIdentity(target, {
+    dataUrl: "data:image/png;base64,AQIR",
+    imageUrl: target.currentSrc,
+    width: 760,
+    height: 1200
+  });
+  runtime.__test.kakaoStore.registerPageHandle({ ...identity, target });
+  runtime.__test.detachKakaoTargetForSourceChange(target, () => {});
+  runtime.__test.kakaoStore.registerPageHandle({ ...identity, target: null });
+  assert.equal(runtime.__test.getTargetForKakaoPageId(identity.pageId), null);
+  assert.equal(runtime.__test.restoreKnownKakaoPageHandle(target, () => {}), identity.pageId);
+  assert.equal(runtime.__test.getTargetForKakaoPageId(identity.pageId), target);
+});
 test("Kakao rendering prefers the Store current handle over an older connected clone", async () => {
   const createClone = top => {
     const target = new globalThis.HTMLImageElement();

@@ -115,12 +115,24 @@ export function installRecognitionBinding(runtime) {
     }, 0);
   }
   runtime.scheduleKakaoProjectionRefresh = scheduleKakaoProjectionRefresh;
-  function restoreKnownKakaoPageHandle(target) {
+  function restoreKnownKakaoPageHandle(target, scheduleRefresh = runtime.scheduleKakaoProjectionRefresh) {
     if (!target || !runtime.shouldUseKakaoCanonicalPipeline(target)) return "";
-    const pageId = String(runtime.state.kakaoPageIdByTarget.get(target) || "");
-    if (!pageId || !runtime.state.kakaoStore || typeof runtime.state.kakaoStore.getPageHandle !== "function") return "";
-    const previous = runtime.state.kakaoStore.getPageHandle(pageId);
+    const store = runtime.state.kakaoStore;
+    if (!store || typeof store.getPageHandle !== "function") return "";
+    let pageId = String(runtime.state.kakaoPageIdByTarget.get(target) || "");
+    if (!pageId && typeof store.getPageHandles === "function") {
+      const sourceToken = String(runtime.getQuickSourceToken(target) || "");
+      const matches = sourceToken ? store.getPageHandles().filter(handle =>
+        handle && String(handle.sourceToken || "") === sourceToken
+      ) : [];
+      // 只接受唯一、完全相同的图片 token；避免把复用 DOM 误绑到旧 revision。
+      if (matches.length === 1) pageId = String(matches[0].pageId || "");
+    }
+    if (!pageId) return "";
+    const previous = store.getPageHandle(pageId);
     if (!previous || previous.imageRevision == null) return "";
+    const expectedSourceToken = String(previous.sourceToken || "");
+    if (expectedSourceToken && String(runtime.getQuickSourceToken(target) || "") !== expectedSourceToken) return "";
     const boundRevision = String(runtime.state.kakaoImageRevisionByTarget.get(target) || "");
     if (boundRevision && boundRevision !== String(previous.imageRevision || "")) return "";
     const boundTargets = runtime.state.kakaoTargetsByPageId.get(pageId);
@@ -128,8 +140,8 @@ export function installRecognitionBinding(runtime) {
       return pageId;
     }
     runtime.bindKakaoTargetToPage(target, pageId, previous.imageRevision);
-    if (typeof runtime.state.kakaoStore.registerPageHandle === "function") {
-      runtime.state.kakaoStore.registerPageHandle({
+    if (typeof store.registerPageHandle === "function") {
+      store.registerPageHandle({
         ...previous,
         target,
         targetKey: runtime.computeTargetKey(target),
@@ -137,7 +149,9 @@ export function installRecognitionBinding(runtime) {
         sourceToken: runtime.getQuickSourceToken(target)
       });
     }
-    runtime.scheduleKakaoProjectionRefresh([pageId], "page-handle-restored");
+    if (typeof scheduleRefresh === "function") {
+      scheduleRefresh([pageId], "page-handle-restored");
+    }
     return pageId;
   }
   runtime.restoreKnownKakaoPageHandle = restoreKnownKakaoPageHandle;

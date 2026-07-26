@@ -45,22 +45,38 @@ export function installReconcilerProjection(runtime) {
         filterReason: "cross_chapter_evidence"
       });
     }
-    for (const observation of activeInput.filter(item => seamContextOnlyIds.has(item.id)).sort((left, right) => left.id.localeCompare(right.id))) {
-      if (!ledgerBuilder.has(observation.id)) ledgerBuilder.resolve(observation.id, "filtered", {
-        filterReason: "seam_context_only"
-      });
-    }
     const active = activeInput.filter(observation => !explicitlyFilteredIds.has(observation.id) && !staleIds.has(observation.id) && !crossChapterIds.has(observation.id) && !seamContextOnlyIds.has(observation.id)).filter((observation, index, array) => array.findIndex(item => item.id === observation.id) === index).sort((left, right) => left.id.localeCompare(right.id));
     const pageObservations = active.filter(observation => observation.sourceType === "page");
     const seamObservations = active.filter(observation => observation.sourceType === "seam");
-    const observationById = new Map(active.map(observation => [observation.id, observation]));
+    const seamEvidenceObservations = activeInput.filter(observation => observation.sourceType === "seam" && !staleIds.has(observation.id) && !crossChapterIds.has(observation.id) && !explicitlyFilteredIds.has(observation.id)).filter((observation, index, array) => array.findIndex(item => item.id === observation.id) === index);
+    const observationById = new Map([...active, ...seamEvidenceObservations]
+      .map(observation => [observation.id, observation]));
     const unionFind = runtime.createUnionFind(pageObservations);
     const confirmedAdjacencyPairs = runtime.normalizeAdjacencyPairs(adjacencyPairs);
     const edges = runtime.buildCandidateEdges(pageObservations, seamObservations, pages, pageById, confirmedAdjacencyPairs);
+    const fragmentGroupResult = runtime.buildSeamFragmentGroups(pageObservations, seamEvidenceObservations, pages, pageById, confirmedAdjacencyPairs);
+    const acceptedFragmentGroups = [];
+    const rejectedFragmentGroups = [...fragmentGroupResult.rejected];
+    for (const group of fragmentGroupResult.candidates) {
+      if (group.score >= runtime.MERGE_THRESHOLD && group.adjacencyConfirmed && runtime.canUnionFragmentGroup(unionFind, group, observationById, pageById)) {
+        const [anchorId, ...memberIds] = group.memberObservationIds;
+        for (const memberId of memberIds) unionFind.union(anchorId, memberId);
+        acceptedFragmentGroups.push(group);
+      } else {
+        rejectedFragmentGroups.push({
+          seamCaptureId: group.seamCaptureId,
+          seamId: group.seamId,
+          seamObservationIds: group.seamObservationIds,
+          memberObservationIds: group.memberObservationIds,
+          reason: !group.adjacencyConfirmed ? "unconfirmed_adjacency" : group.score < runtime.MERGE_THRESHOLD ? "ambiguous_score" : "component_constraint"
+        });
+      }
+    }
     const acceptedEdges = [];
     const reviewEdges = [];
     for (const edge of edges) {
-      if (edge.score >= runtime.MERGE_THRESHOLD && edge.adjacencyConfirmed && runtime.canUnionComponents(unionFind, edge.upperId, edge.lowerId, observationById, pageById)) {
+      const alreadyJoined = unionFind.find(edge.upperId) === unionFind.find(edge.lowerId);
+      if (edge.score >= runtime.MERGE_THRESHOLD && edge.adjacencyConfirmed && (alreadyJoined || runtime.canUnionComponents(unionFind, edge.upperId, edge.lowerId, observationById, pageById))) {
         unionFind.union(edge.upperId, edge.lowerId);
         acceptedEdges.push(edge);
       } else if (edge.score >= runtime.REVIEW_THRESHOLD) {
@@ -78,11 +94,19 @@ export function installReconcilerProjection(runtime) {
     }
     const componentSeams = new Map(Array.from(componentByRoot.keys()).map(root => [root, []]));
     const explicitlySupported = new Map();
+    for (const group of acceptedFragmentGroups) {
+      const root = unionFind.find(group.memberObservationIds[0]);
+      for (const seamId of group.seamObservationIds) explicitlySupported.set(seamId, root);
+    }
     for (const edge of acceptedEdges) {
       const root = unionFind.find(edge.upperId);
       for (const seamId of edge.supportingSeamIds) explicitlySupported.set(seamId, root);
     }
-    for (const seam of seamObservations) {
+    const supportedContextSeamIds = new Set(explicitlySupported.keys());
+    const attachableSeams = seamEvidenceObservations.filter(seam =>
+      !seamContextOnlyIds.has(seam.id) || supportedContextSeamIds.has(seam.id)
+    );
+    for (const seam of attachableSeams) {
       let root = explicitlySupported.get(seam.id) || null;
       if (!root) {
         const candidates = Array.from(componentByRoot.entries()).map(([candidateRoot, members]) => ({
@@ -98,7 +122,16 @@ export function installReconcilerProjection(runtime) {
         componentSeams.set(seamRoot, [seam]);
       }
     }
+    const attachedSeamIds = new Set([...componentSeams.values()].flat().map(seam => seam.id));
+    for (const observation of activeInput.filter(item =>
+      seamContextOnlyIds.has(item.id) && !attachedSeamIds.has(item.id)
+    ).sort((left, right) => left.id.localeCompare(right.id))) {
+      if (!ledgerBuilder.has(observation.id)) ledgerBuilder.resolve(observation.id, "filtered", {
+        filterReason: "seam_context_only"
+      });
+    }
     const reviewObservationIds = new Set(reviewEdges.flatMap(edge => [edge.upperId, edge.lowerId]));
+    const fragmentGroupByRoot = new Map(acceptedFragmentGroups.map(group => [unionFind.find(group.memberObservationIds[0]), group]));
     const drafts = [];
     for (const [root, pageMembers] of componentByRoot) {
       const seamMembers = componentSeams.get(root) || [];
@@ -108,7 +141,7 @@ export function installReconcilerProjection(runtime) {
       const componentEdges = acceptedEdges.filter(edge => memberIds.includes(edge.upperId) && memberIds.includes(edge.lowerId));
       const anchor = pageMembers.length ? [...pageMembers].sort((left, right) => runtime.compareObservationsByPage(left, right, pageIndex))[0] : members[0];
       const geometryByPage = runtime.geometryByPageForMembers(members, pageIndex);
-      const originalText = runtime.chooseCanonicalText(members, componentEdges, pageIndex, pageById);
+      const originalText = fragmentGroupByRoot.get(root)?.authoritativeText || runtime.chooseCanonicalText(members, componentEdges, pageIndex, pageById);
       const status = pageMembers.some(member => reviewObservationIds.has(member.id)) && componentEdges.length === 0 ? "needs_review" : originalText ? "ready" : "filtered";
       const canonicalId = `canonical_${runtime.stableHash(anchor.id)}`;
       drafts.push({
@@ -153,6 +186,12 @@ export function installReconcilerProjection(runtime) {
       retiredCanonicals: history.retiredCanonicals,
       ledger,
       diagnostics: {
+        acceptedFragmentGroups: acceptedFragmentGroups.map(group => ({
+          ...group
+        })),
+        rejectedFragmentGroups: rejectedFragmentGroups.map(group => ({
+          ...group
+        })),
         acceptedEdges: acceptedEdges.map(edge => ({
           ...edge
         })),

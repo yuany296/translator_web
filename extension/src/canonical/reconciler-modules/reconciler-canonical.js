@@ -15,6 +15,7 @@ export function installReconcilerCanonical(runtime) {
         if (!runtime.isRevisionCurrent(upperObservation, pageById)) continue;
         for (const lowerObservation of observationsByPage.get(lowerPage.pageId) || []) {
           if (!runtime.isRevisionCurrent(lowerObservation, pageById)) continue;
+          if (!runtime.translationRolesCompatible([upperObservation, lowerObservation])) continue;
           const supports = seamObservations.map(seam => runtime.seamSupportsPair(seam, upperObservation, lowerObservation, upperPage, lowerPage)).filter(Boolean).sort((left, right) => right.score - left.score || left.seam.id.localeCompare(right.seam.id));
           const seamScore = supports[0]?.score || 0;
           // 单页视觉分类会在页面边界处漂移（例如同一标题上半页被判 effect_text，
@@ -233,6 +234,8 @@ export function installReconcilerCanonical(runtime) {
   runtime.isTrueCrossPageSeam = isTrueCrossPageSeam;
   function chooseCanonicalText(memberObservations, componentEdges, pageIndex, pageById) {
     const pageObservations = memberObservations.filter(observation => observation.sourceType === "page").sort((left, right) => runtime.compareObservationsByPage(left, right, pageIndex));
+    const coveringSeams = memberObservations.filter(runtime.isTrueCrossPageSeam).filter(seam => pageObservations.length > 1 && pageObservations.every(observation => runtime.hasStrongTextRelation(seam.originalText, observation.originalText))).sort((left, right) => runtime.observationQuality(right) - runtime.observationQuality(left) || Array.from(right.originalText).length - Array.from(left.originalText).length || left.id.localeCompare(right.id));
+    if (coveringSeams.length) return coveringSeams[0].originalText;
     const seamContinuations = pageObservations.length === 1 ? memberObservations.filter(runtime.isTrueCrossPageSeam).map(seam => {
       const pageObservation = pageObservations[0];
       return {

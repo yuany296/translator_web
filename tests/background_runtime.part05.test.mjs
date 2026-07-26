@@ -346,6 +346,70 @@ test("seam OCR keeps boundary text when its reliable speech region crosses both 
   assert.deepEqual(Array.from(result.observations[0].pageSpans, span => span.pageId), ["page-upper", "page-lower"]);
   assert.equal(result.observations[0].pageSpans.every(span => span.overlapRatio > 0), true);
 });
+test("seam OCR keeps both page spans after overlapping speech containers are unified", async () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 760, height: 192 };
+  const item = (text, box, side) => ({
+    text,
+    box,
+    score: 0.99,
+    det_score: 0.95,
+    rotation_deg: 0,
+    region_id: `seam-bubble-${side}`,
+    region_type: "speech_bubble",
+    region_confidence: 0.95,
+    bg_color: side === "left" ? "#f3edec" : "#fbf7f6",
+    text_color: "#240c0c",
+    stroke_color: "#ffffff",
+    region_polygon: side === "left" ? [[187, 19], [385, 19], [385, 192], [187, 192]] : [[289, 27], [595, 27], [595, 192], [289, 192]],
+    region_box: side === "left" ? { left: 187, top: 19, width: 198, height: 173 } : { left: 289, top: 27, width: 306, height: 165 }
+  });
+  const clustered = await background.buildLocalPaddleBubbleItems({
+    imageWidth: imageSize.width,
+    imageHeight: imageSize.height,
+    items: [
+      item("<화요", { left: 223, top: 73, width: 114, height: 54 }, "left"),
+      item("퀴즈쇼>의", { left: 344, top: 77, width: 196, height: 47 }, "right"),
+      item("A등급", { left: 223, top: 134, width: 126, height: 53 }, "left"),
+      item("재조정은", { left: 360, top: 136, width: 176, height: 52 }, "right")
+    ]
+  }, imageSize, "", false);
+  assert.equal(clustered.length, 1);
+  const normalized = background.normalizeBaiduOcrItem(clustered[0], 0, imageSize);
+  const result = background.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request: {
+      sourceType: "seam",
+      pageIds: ["page-upper", "page-lower"],
+      imageRevisionByPage: { "page-upper": "rev-upper", "page-lower": "rev-lower" },
+      imageDigest: "digest-overlapping-seam-regions",
+      imageMeta: {
+        pageSpans: [{
+          pageId: "page-upper",
+          canvasBox: { x: 0, y: 0, w: 760, h: 96 },
+          pageBox: { x: 0, y: 904, w: 760, h: 96 },
+          pageWidth: 760,
+          pageHeight: 1000
+        }, {
+          pageId: "page-lower",
+          canvasBox: { x: 0, y: 96, w: 760, h: 96 },
+          pageBox: { x: 0, y: 0, w: 760, h: 96 },
+          pageWidth: 760,
+          pageHeight: 1000
+        }]
+      }
+    },
+    imageSize,
+    normalized: [normalized],
+    ocrTuning: background.getDefaultOcrTuning(),
+    ocrDebug: { filterReasons: [] },
+    ignoreSimplifiedChinese: false,
+    debug: false
+  });
+  assert.equal(result.observations.length, 1);
+  assert.deepEqual(Array.from(result.observations[0].pageSpans, span => span.pageId), ["page-upper", "page-lower"]);
+  assert.equal(result.observations[0].pageSpans.every(span => span.overlapRatio > 0), true);
+});
 test("seam OCR does not use oversized visual regions to promote one-page text", () => {
   const background = context.__backgroundTest;
   const imageSize = {

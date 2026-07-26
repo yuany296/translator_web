@@ -23,32 +23,51 @@
   position: absolute;
 }
 
-.mt-seam-window {
+.mt-cross-page-root {
   position: absolute;
   inset: 0;
-  /* 复合画布保持可见，但每个页面窗口只显示自己的页面坐标片段。 */
-  overflow: hidden;
+  z-index: 2147483000;
+  overflow: visible;
   pointer-events: none;
 }
 
-.mt-seam-composite {
+.mt-cross-page-overlay {
   position: absolute;
   left: 0;
   top: 0;
   box-sizing: border-box;
-  transform-origin: 0 0;
-  background-repeat: no-repeat;
-  background-position: 0 0;
-  background-size: 100% 100%;
+  overflow: visible;
   pointer-events: none;
 }
 
-.mt-seam-composite .mt-seam-bubble {
+.mt-cross-page-overlay .mt-cover-layer {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.mt-cross-page-overlay .mt-cover-segment {
+  position: absolute;
+  box-sizing: border-box;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+
+.mt-cross-page-overlay .mt-cross-page-text {
+  white-space: pre;
+  word-break: normal;
   pointer-events: auto;
 }
 
-.mt-seam-composite .mt-seam-bubble.mt-bg-none {
-  background-image: none;
+.mt-cross-page-overlay.mt-cross-page-debug::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 42;
+  box-sizing: border-box;
+  border: 2px solid #38bdf8;
+  pointer-events: none;
 }
 
 .mt-debug-box {
@@ -324,11 +343,8 @@
   content: none;
 }
 
-.mt-seam-composite.mt-show-source {
-  background-image: none !important;
-}
-
-.mt-seam-composite.mt-show-source .mt-bubble {
+.mt-cross-page-overlay.mt-show-source .mt-cover-layer,
+.mt-cross-page-overlay.mt-show-source .mt-text-layer {
   color: transparent !important;
   background: transparent !important;
   background-image: none !important;
@@ -339,7 +355,7 @@
   opacity: 0;
 }
 
-.mt-seam-composite.mt-show-source .mt-bubble::before {
+.mt-cross-page-overlay.mt-show-source .mt-text-layer::before {
   content: none;
 }
 

@@ -78,7 +78,7 @@ export function installBackgroundState(runtime) {
   runtime.OVERWRITE_PREVIEW_MODES = OVERWRITE_PREVIEW_MODES;
   const CACHE_PREFIX = "mt_cache_v21:";
   runtime.CACHE_PREFIX = CACHE_PREFIX;
-  const OCR_CACHE_PREFIX = "mt_cache_v22:ocr:";
+  const OCR_CACHE_PREFIX = "mt_cache_v25:ocr:";
   runtime.OCR_CACHE_PREFIX = OCR_CACHE_PREFIX;
   const CANONICAL_TRANSLATION_CACHE_PREFIX = "mt_cache_v22:translation:";
   runtime.CANONICAL_TRANSLATION_CACHE_PREFIX = CANONICAL_TRANSLATION_CACHE_PREFIX;

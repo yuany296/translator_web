@@ -133,7 +133,10 @@ export function installReaderInit(runtime) {
       passive: true,
       capture: true
     });
-    window.addEventListener("resize", scheduleSync, {
+    window.addEventListener("resize", () => {
+      scheduleSync();
+      runtime.scheduleCrossPageGeometryRefresh();
+    }, {
       passive: true,
       capture: true
     });

@@ -592,6 +592,8 @@ test("seam composite is cleaned once and atomically replaces both page projectio
   assert.deepEqual([...atomic.payloadByPage.keys()].sort(), ["page-a", "page-b"]);
   assert.deepEqual([...atomic.debugByPage.keys()].sort(), ["page-a", "page-b"]);
   const [surface] = atomic.seamSurfaces;
+  assert.ok(atomic.allSeamSurfaces.some(item => item.renderKey === surface.renderKey),
+    "every page render must carry the authoritative global seam surface snapshot");
   assert.equal(surface.cleanedImage, options.seamCleanedImage);
   assert.equal(surface.cleanedImageToken, options.seamCleanedImageToken);
   assert.equal(surface.artifactFingerprint, options.seamCleanedImageToken);
@@ -612,6 +614,8 @@ test("seam composite is cleaned once and atomically replaces both page projectio
   assert.deepEqual(surface.bubbles[0].region_polygon, options.seamObservations[0].visual.regionPolygon);
   assert.ok(surface.bubbles[0].y < 50 && surface.bubbles[0].y + surface.bubbles[0].h > 50);
   assert.deepEqual(surface.handledCanonicalIds, Object.keys(surface.canonicalRevisionById));
+  assert.ok(surface.absorbedCanonicalIds.includes(surface.handledCanonicalIds[0]));
+  assert.ok(surface.absorbedObservationIds.includes("merge-seam"));
   for (const projections of atomic.projectionsByPage.values()) {
     assert.equal(projections.some(projection => surface.handledCanonicalIds.includes(projection.canonicalId)), false, "normal page cover/text projections must not coexist with the seam surface");
   }
@@ -627,8 +631,16 @@ test("seam composite is cleaned once and atomically replaces both page projectio
   assert.equal(refreshed.renderKey, beforeRefresh.renderKey);
   assert.equal(refreshed.layoutKey, beforeRefresh.layoutKey);
   assert.equal(harness.ocrMetas.filter(meta => meta.sourceType === "seam").length, beforeRefresh.seamRequests);
+  harness.targets.a.isConnected = false;
+  await harness.pipeline.runCached(harness.targets.b, null, { reason: "one-seam-page-temporarily-missing" });
+  const deferred = harness.renderInputs.at(-1);
+  const deferredFallback = [...deferred.fallbackProjectionsByPage.values()].flat();
+  assert.equal(deferred.seamSurfaces.length, 0, "the overlay waits until both DOM pages are available");
+  assert.equal(deferred.projections.some(item => surface.handledCanonicalIds.includes(item.canonicalId)), false);
+  assert.equal(deferredFallback.some(item => surface.handledCanonicalIds.includes(item.canonicalId)), false,
+    "temporary DOM absence must not reactivate an absorbed single-page projection");
 });
-test("translated seam geometry suppresses a smaller conflicting page-edge projection", () => {
+test("translated seam ownership ignores unrelated page-edge geometry", () => {
   const surface = {
     renderKey: "live-seam",
     canvasWidth: 720,
@@ -676,7 +688,8 @@ test("translated seam geometry suppresses a smaller conflicting page-edge projec
       original_text: "다준이ㅋㅋㅋㅋ작곡 잘하네",
       translated_text: "多俊哈哈哈哈，作曲得真好"
     }],
-    handledCanonicalIds: ["canonical-seam"]
+    handledCanonicalIds: ["canonical-seam"],
+    absorbedCanonicalIds: ["canonical-seam"]
   };
   const projections = new Map([["page-a", [{
     canonicalId: "canonical-small-wrong",
@@ -694,9 +707,17 @@ test("translated seam geometry suppresses a smaller conflicting page-edge projec
     original_text: "그자고자하니는",
     translated_text: "那个想睡觉的人"
   }]]]);
-  assert.deepEqual([...P.collectSeamSuppressedCanonicalIds(surface, projections)], ["canonical-small-wrong"]);
+  const index = {
+    surfaces: [surface],
+    handledCanonicalIds: new Set(surface.handledCanonicalIds),
+    absorbedCanonicalIds: new Set(surface.absorbedCanonicalIds)
+  };
+  const plan = P.resolveSeamProjectionPlan(index, handledIds => new Map([[
+    "page-a", projections.get("page-a").filter(item => !handledIds.has(item.canonicalId))
+  ]]));
+  assert.equal(plan.projections.get("page-a").length, 1);
 });
-test("seam suppression is recomputed after surface handoff before a page fragment can reactivate", () => {
+test("seam ownership prevents a page fragment from reactivating", () => {
   const surface = {
     renderKey: "live-seam",
     canvasWidth: 720,
@@ -723,12 +744,14 @@ test("seam suppression is recomputed after surface handoff before a page fragmen
       region_type: "speech_bubble",
       original_text: "많이 와 주셔서 감사해요"
     }],
-    handledCanonicalIds: ["canonical-complete"]
+    handledCanonicalIds: ["canonical-complete"],
+    absorbedCanonicalIds: ["canonical-complete", "canonical-fragment"]
   };
   const index = {
     surfaces: [surface],
     byPage: new Map([["page-a", [surface]], ["page-b", [surface]]]),
-    handledCanonicalIds: new Set(surface.handledCanonicalIds)
+    handledCanonicalIds: new Set(surface.handledCanonicalIds),
+    absorbedCanonicalIds: new Set(surface.absorbedCanonicalIds)
   };
   const fragment = {
     canonicalId: "canonical-fragment",
@@ -743,8 +766,9 @@ test("seam suppression is recomputed after surface handoff before a page fragmen
     handledCalls.push([...handledIds].sort());
     return new Map([["page-a", handledIds.has("canonical-fragment") ? [] : [fragment]]]);
   });
-  assert.deepEqual(handledCalls, [["canonical-complete"], ["canonical-complete", "canonical-fragment"]]);
-  assert.deepEqual(plan.seamSurfaceIndex.surfaces[0].suppressedCanonicalIds, ["canonical-fragment"]);
+  assert.deepEqual(handledCalls, [["canonical-complete", "canonical-fragment"]]);
+  assert.deepEqual(plan.seamSurfaceIndex.surfaces[0].absorbedCanonicalIds,
+    ["canonical-complete", "canonical-fragment"]);
   assert.deepEqual(plan.projections.get("page-a"), []);
 });
 test("canonical pipeline translates interior observations while edge candidates wait", async () => {

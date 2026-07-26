@@ -134,15 +134,7 @@ export function installLifecyclePosition(runtime) {
       overlayState.root.style.height = `${viewportRect.height}px`;
       overlayState.lastViewportRect = viewportRect;
     }
-
-    // seam 内部使用固定的合并画布；页面尺寸变化时只更新整幅场景的平移和缩放，
-    // 不触发译文重新换行或字号拟合。
-    if (changes.sizeChanged) {
-      runtime.syncSeamOverlayTransforms(overlayState, {
-        width: viewportRect.width,
-        height: viewportRect.height
-      });
-    }
+    runtime.syncLoadingOverlayCardPosition(overlayState, rect, targetVisibleRect);
 
     // 画面平移只更新根节点坐标；尺寸不变时不重新测量文字，避免滚动期间抖动。
     if (!changes.sizeChanged) {
@@ -180,6 +172,35 @@ export function installLifecyclePosition(runtime) {
     });
   }
   runtime.syncOverlayPosition = syncOverlayPosition;
+  function getLoadingOverlayCardPosition(rect, visibleRect, viewportWidth, viewportHeight) {
+    if (!rect || !visibleRect) return null;
+    const rectRight = Number(rect.right ?? Number(rect.left) + Number(rect.width));
+    const rectBottom = Number(rect.bottom ?? Number(rect.top) + Number(rect.height));
+    const visibleRight = Number(visibleRect.right ?? Number(visibleRect.left) + Number(visibleRect.width));
+    const visibleBottom = Number(visibleRect.bottom ?? Number(visibleRect.top) + Number(visibleRect.height));
+    const left = Math.max(Number(rect.left), Number(visibleRect.left), 0);
+    const right = Math.min(rectRight, visibleRight, Number(viewportWidth));
+    const top = Math.max(Number(rect.top), Number(visibleRect.top), 0);
+    const bottom = Math.min(rectBottom, visibleBottom, Number(viewportHeight));
+    if (![left, right, top, bottom].every(Number.isFinite) || right <= left || bottom <= top) return null;
+    return {
+      left: (left + right) / 2 - Number(rect.left),
+      top: (top + bottom) / 2 - Number(rect.top)
+    };
+  }
+  runtime.getLoadingOverlayCardPosition = getLoadingOverlayCardPosition;
+  function syncLoadingOverlayCardPosition(overlayState, rect, visibleRect) {
+    const card = overlayState && (overlayState.loadingCard || overlayState.root.querySelector(".mt-loading-card"));
+    if (!card) return;
+    const position = runtime.getLoadingOverlayCardPosition(rect, visibleRect, window.innerWidth, window.innerHeight);
+    if (!position) return;
+    // 卡片锚定在图片当前可见部分的中心，而不是整张长图的固定中心。
+    card.style.position = "absolute";
+    card.style.left = `${position.left}px`;
+    card.style.top = `${position.top}px`;
+    card.style.transform = "translate(-50%, -50%)";
+  }
+  runtime.syncLoadingOverlayCardPosition = syncLoadingOverlayCardPosition;
   function compareOverlayViewportRects(previous, next) {
     if (!previous) {
       return {

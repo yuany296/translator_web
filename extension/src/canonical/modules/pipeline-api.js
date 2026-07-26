@@ -52,11 +52,11 @@ export function installPipelineApi(runtime) {
     seamBubbleRequiresCleanedImage: runtime.seamBubbleRequiresCleanedImage,
     seamSurfaceRequiresCleanedImage: runtime.seamSurfaceRequiresCleanedImage,
     inspectCanonicalSeamGeometry: runtime.inspectCanonicalSeamGeometry,
+    canonicalSeamPageBoxes: runtime.canonicalSeamPageBoxes,
+    buildSeamSurfaceBubble: runtime.buildSeamSurfaceBubble,
     resolveSeamSurfaceCandidates: runtime.resolveSeamSurfaceCandidates,
     buildSeamSurfaceDebug: runtime.buildSeamSurfaceDebug,
     resolvePageDebugForSeamSurfaces: runtime.resolvePageDebugForSeamSurfaces,
-    collectSeamSuppressedCanonicalIds: runtime.collectSeamSuppressedCanonicalIds,
-    addSeamProjectionSuppressions: runtime.addSeamProjectionSuppressions,
     resolveSeamProjectionPlan: runtime.resolveSeamProjectionPlan,
     assertCoverageInvariant: runtime.assertCoverageInvariant,
     // 纯函数

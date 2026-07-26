@@ -142,11 +142,38 @@ export function installCanonicalRender(runtime, scope) {
       if (!scope.isReadyPageRecord(handle)) continue;
       const seamSurfaces = seamSurfaceIndex.byPage.get(String(handle.pageId)) || Object.freeze([]);
       const pageDebug = runtime.resolvePageDebugForSeamSurfaces(handle.ocrDebug || null, seamSurfaces, handle.pageId);
-      const handledCanonicalIds = new Set(seamSurfaces.flatMap(surface => surface.handledCanonicalIds || []));
+      const handledCanonicalIds = new Set(seamSurfaces.flatMap(surface => [
+        ...(surface.handledCanonicalIds || []),
+        ...(surface.absorbedCanonicalIds || [])
+      ]));
       if (options.debugOnly === true && !handle.ocrDebug && !seamSurfaces.some(surface => surface.debug)) continue;
       if (options.debugOnly === true && focusPageIds.size > 0 && !focusPageIds.has(String(handle.pageId)) && seamSurfaces.length === 0) continue;
       const target = scope.getTargetForPageId ? scope.getTargetForPageId(handle.pageId) : handle.target;
       if (!scope.targetIsUsable(target)) continue;
+      if (target.dataset) {
+        const relatedStates = scope.store.getSeamStates().filter(state =>
+          Array.isArray(state?.pageIds) && state.pageIds.map(String).includes(String(handle.pageId))
+        );
+        const stateObservationIds = new Set(relatedStates.flatMap(state =>
+          (state.observationIds || []).map(String)
+        ));
+        const canonicalMembership = scope.store.getCanonicalSnapshot().filter(canonical =>
+          Object.keys(canonical?.geometryByPage || {}).includes(String(handle.pageId)) ||
+          (canonical?.memberObservationIds || []).some(id => stateObservationIds.has(String(id)))
+        ).map(canonical => ({
+          type: "canonical",
+          canonicalId: canonical.id,
+          revision: canonical.revision,
+          memberObservationIds: canonical.memberObservationIds,
+          geometryPageIds: Object.keys(canonical.geometryByPage || {}).sort(),
+          sharedSeamObservationIds: (canonical.memberObservationIds || []).filter(id => stateObservationIds.has(String(id)))
+        }));
+        target.dataset.mtSeamDiagnostics = JSON.stringify([
+          ...seamSurfaces.map(surface => ({ type: "surface", renderKey: surface.renderKey, pageIds: surface.pageIds, diagnostics: surface.diagnostics })),
+          ...relatedStates.map(state => ({ type: "state", pairKey: state.pairKey, status: state.status, pageIds: state.pageIds, imageRevisionByPage: state.imageRevisionByPage, observationIds: state.observationIds, filteredObservationIds: (state.filteredObservations || []).map(item => item.id), reasons: state.reasons, error: state.error || "" })),
+          ...canonicalMembership
+        ]);
+      }
       const storedProjections = scope.store.getProjections(handle.pageId).filter(projection => !handledCanonicalIds.has(String(projection && projection.canonicalId || "")) && !handledCanonicalIds.has(String(projection && projection.pendingCanonicalId || "")));
       if (options.debugOnly === true && seamSurfaces.length === 0 && storedProjections.some(item => item.activeText && item.translated_text)) {
         continue;
@@ -187,6 +214,7 @@ export function installCanonicalRender(runtime, scope) {
       scopedTargetKey: descriptor.handle.scopedTargetKey,
       projections: descriptor.projections,
       seamSurfaces: extra.seamSurfaces || descriptor.seamSurfaces,
+      allSeamSurfaces: seamSurfaceIndex.surfaces,
       result: {
         bubbles: descriptor.activeBubbles,
         cleanedImage: descriptor.handle.cleanedImage || null,
@@ -220,9 +248,15 @@ export function installCanonicalRender(runtime, scope) {
     for (const descriptor of descriptors) {
       if (!guardAllows()) return;
       if (batchPageIds.has(String(descriptor.pageId))) continue;
+      // surface 已取得 canonical 所有权但另一页 DOM 暂不可用时，延后统一 overlay，
+      // 同时继续压制被吸收的单页 fallback，避免完整 seam 文本退回某一页重复显示。
+      const deferredSurfaceOwnership = descriptor.seamSurfaces.length > 0;
       await renderDescriptor(descriptor, {
         seamSurfaces: [],
-        fallbackProjectionsByPage: new Map([[String(descriptor.pageId), descriptor.fallbackProjections]])
+        fallbackProjectionsByPage: new Map([[
+          String(descriptor.pageId),
+          deferredSurfaceOwnership ? descriptor.projections : descriptor.fallbackProjections
+        ]])
       });
     }
   }

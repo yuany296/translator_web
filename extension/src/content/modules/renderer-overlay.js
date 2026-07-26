@@ -1,34 +1,9 @@
 export function installRendererOverlay(runtime) {
-  function removeDuplicateSeamSurfaceRoots(seamSurfaces, keepRoot, pageId = "") {
-    const renderKeys = runtime.getSeamSurfaceRenderKeys(seamSurfaces);
-    const sliceKeys = runtime.getSeamSurfaceSliceKeys(seamSurfaces, pageId);
-    if (renderKeys.size === 0 || !runtime.state.overlayLayer) return;
-    for (const root of Array.from(runtime.state.overlayLayer.querySelectorAll(".mt-overlay-root"))) {
-      if (root === keepRoot) continue;
-      const hasSliceKeys = String(root.dataset && root.dataset.seamSliceKeys || "").trim();
-      const isSameSlice = hasSliceKeys ? runtime.rootHasAnySeamSliceKey(root, sliceKeys) : runtime.rootHasAnySeamRenderKey(root, renderKeys);
-      if (!isSameSlice) continue;
-      const rootTargetId = String(root.dataset && root.dataset.targetId || "");
-      const overlayState = rootTargetId ? runtime.state.overlaysById.get(rootTargetId) : null;
-      if (overlayState && overlayState.root === root) {
-        if (overlayState.loadingTimeout) {
-          window.clearTimeout(overlayState.loadingTimeout);
-          overlayState.loadingTimeout = 0;
-        }
-        runtime.state.overlaysById.delete(rootTargetId);
-      }
-      root.remove();
-    }
-  }
-  runtime.removeDuplicateSeamSurfaceRoots = removeDuplicateSeamSurfaceRoots;
   function renderOverlay(target, targetKey, result, options = {}) {
     const bubbles = Array.isArray(result.bubbles) ? result.bubbles : [];
-    const seamSurfaces = Array.isArray(result && result.seamSurfaces) ? result.seamSurfaces : [];
     const stream = options.stream === true;
 
-    // 旧版 seam renderer 可能在扩展热更新后留下不受 overlaysById 管理的根节点。
-    // canonical renderer 是唯一跨页渲染入口，新的页面结果到达时应立即清理旧根。
-    if (bubbles.length === 0 && seamSurfaces.length === 0 && !runtime.hasRenderableOcrDebug(result)) {
+    if (bubbles.length === 0 && !runtime.hasRenderableOcrDebug(result)) {
       runtime.removeOverlayForTarget(target);
       return;
     }
@@ -36,7 +11,7 @@ export function installRendererOverlay(runtime) {
     const targetId = runtime.getTargetId(target);
     const oldOverlay = runtime.state.overlaysById.get(targetId);
     const currentSourceToken = runtime.getQuickSourceToken(target);
-    const hasTranslatedRenderContent = bubbles.length > 0 || seamSurfaces.some(surface => Array.isArray(surface && surface.bubbles) && surface.bubbles.length > 0);
+    const hasTranslatedRenderContent = bubbles.length > 0;
     const renderSignature = hasTranslatedRenderContent ? runtime.buildOverlayRenderSignature(result) : runtime.buildOverlayDebugRenderSignature(result);
     const cleanedImage = String(result && result.cleanedImage || "");
     if (oldOverlay && oldOverlay.targetKey === targetKey && oldOverlay.sourceToken === currentSourceToken) {
@@ -58,19 +33,10 @@ export function installRendererOverlay(runtime) {
     root.className = "mt-overlay-root";
     root.dataset.mangaTranslatorOverlay = "true";
     root.dataset.targetId = targetId;
-    root.dataset.seamRenderKeys = seamSurfaces.map(surface => surface.renderKey).join(" ");
-    const seamPageId = String(result && result.seamPageId || runtime.state.kakaoPageIdByTarget.get(target) || "");
-    root.dataset.seamPageId = seamPageId;
-    root.dataset.seamSliceKeys = runtime.getSeamSurfaceSliceKeys(seamSurfaces, seamPageId).size > 0 ? Array.from(runtime.getSeamSurfaceSliceKeys(seamSurfaces, seamPageId)).join(" ") : "";
     if (result && runtime.isDataUrl(result.cleanedImage)) {
       root.style.setProperty("--mt-cleaned-image", `url("${result.cleanedImage}")`);
     }
     const debugNodeCount = runtime.appendOcrDebugNodes(root, result);
-    const seamEntries = seamSurfaces.map(surface => runtime.createSeamWindowNode(surface, seamPageId)).filter(Boolean);
-    root.dataset.seamSliceKeys = seamEntries.map(entry => runtime.buildSeamSurfaceSliceKey(entry.surface && entry.surface.renderKey, entry.pageId)).filter(Boolean).join(" ");
-    seamEntries.forEach(entry => root.appendChild(entry.windowNode));
-    const seamBubbleCount = seamEntries.reduce((count, entry) => count + Number(entry.logicalBubbleCount || entry.bubbleNodes.length), 0);
-    const seamDebugNodeCount = seamEntries.reduce((count, entry) => count + entry.debugNodeCount, 0);
     const bubbleNodes = [];
     const coverNodes = [];
     let logicalBubbleCount = 0;
@@ -93,7 +59,7 @@ export function installRendererOverlay(runtime) {
         root.appendChild(textNode);
       }
     });
-    if (logicalBubbleCount === 0 && seamBubbleCount === 0 && debugNodeCount + seamDebugNodeCount === 0) {
+    if (logicalBubbleCount === 0 && debugNodeCount === 0) {
       return;
     }
     const overlayState = {
@@ -104,11 +70,10 @@ export function installRendererOverlay(runtime) {
       root,
       bubbleNodes,
       coverNodes,
-      seamEntries,
-      bubbleCount: logicalBubbleCount + seamBubbleCount,
+      bubbleCount: logicalBubbleCount,
       isBackgroundTarget: backgroundTarget,
-      mode: logicalBubbleCount + seamBubbleCount > 0 ? "bubbles" : "debug",
-      debugNodeCount: debugNodeCount + seamDebugNodeCount,
+      mode: logicalBubbleCount > 0 ? "bubbles" : "debug",
+      debugNodeCount,
       renderSignature,
       cleanedImage,
       imageMeta: options.imageMeta || null,
@@ -128,7 +93,6 @@ export function installRendererOverlay(runtime) {
       runtime.state.overlayLayer.appendChild(root);
     }
     runtime.state.overlaysById.set(targetId, overlayState);
-    runtime.removeDuplicateSeamSurfaceRoots(seamSurfaces, root, seamPageId);
     runtime.syncOverlayPosition(overlayState);
     if (!bubbles.some(bubble => bubble && bubble.canonical_id)) {
       runtime.syncKakaoVisualDuplicateBubbles(true);
@@ -137,8 +101,8 @@ export function installRendererOverlay(runtime) {
     runtime.logOcrDebugMapping(overlayState, result);
     if (result && result.debug) {
       console.info("[MangaTranslator][OCR chain] rendered", {
-        frontendRenderedOverlays: bubbleNodes.length + seamBubbleCount,
-        frontendRenderedDebugBoxes: debugNodeCount + seamDebugNodeCount,
+        frontendRenderedOverlays: bubbleNodes.length,
+        frontendRenderedDebugBoxes: debugNodeCount,
         targetKey,
         targetId
       });
@@ -155,8 +119,8 @@ export function installRendererOverlay(runtime) {
       });
     }
     runtime.tracePipeline("rendered", target, {
-      bubbleCount: logicalBubbleCount + seamBubbleCount,
-      debugNodeCount: debugNodeCount + seamDebugNodeCount,
+      bubbleCount: logicalBubbleCount,
+      debugNodeCount,
       targetKey: String(targetKey).slice(0, 80)
     });
   }

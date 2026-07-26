@@ -177,6 +177,9 @@ export function installSceneProjection(runtime) {
         artifactFingerprint: String(surface && surface.artifactFingerprint || ""),
         segments,
         cleanedImage: String(surface && surface.cleanedImage || ""),
+        cleanedImageByPage: surface && surface.cleanedImageByPage && typeof surface.cleanedImageByPage === "object" ? {
+          ...surface.cleanedImageByPage
+        } : {},
         cleanedImageToken: String(surface && surface.cleanedImageToken || ""),
         bubbles: Array.isArray(surface && surface.bubbles) ? surface.bubbles : [],
         debug: surface && surface.debug && typeof surface.debug === "object" ? surface.debug : null,
@@ -184,39 +187,13 @@ export function installSceneProjection(runtime) {
           ...item
         })) : [],
         handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds) ? surface.handledCanonicalIds.map(String).filter(Boolean) : [],
-        suppressedCanonicalIds: Array.isArray(surface && surface.suppressedCanonicalIds) ? surface.suppressedCanonicalIds.map(String).filter(Boolean) : []
+        absorbedCanonicalIds: Array.isArray(surface && surface.absorbedCanonicalIds) ? surface.absorbedCanonicalIds.map(String).filter(Boolean) : [],
+        absorbedObservationIds: Array.isArray(surface && surface.absorbedObservationIds) ? surface.absorbedObservationIds.map(String).filter(Boolean) : [],
+        absorbedDebugItemIds: Array.isArray(surface && surface.absorbedDebugItemIds) ? surface.absorbedDebugItemIds.map(String).filter(Boolean) : []
       };
     });
   }
   runtime.normalizeSeamRenderSurfaces = normalizeSeamRenderSurfaces;
-  function getSeamSegmentTransform(segment, pageCssWidth, pageCssHeight) {
-    const drawRect = runtime.normalizeSeamRect(segment && segment.drawRect);
-    const sourceCrop = runtime.normalizeSeamRect(segment && segment.sourceCrop);
-    const naturalWidth = Number(segment && segment.naturalWidth || 0);
-    const naturalHeight = Number(segment && segment.naturalHeight || 0);
-    const pageWidth = Number(pageCssWidth || 0);
-    const pageHeight = Number(pageCssHeight || 0);
-    if (!(drawRect.w > 0 && drawRect.h > 0) || !(sourceCrop.w > 0 && sourceCrop.h > 0) || !(naturalWidth > 0 && naturalHeight > 0) || !(pageWidth > 0 && pageHeight > 0)) {
-      return null;
-    }
-    const scaleX = sourceCrop.w / drawRect.w * (pageWidth / naturalWidth);
-    const scaleY = sourceCrop.h / drawRect.h * (pageHeight / naturalHeight);
-    return {
-      scaleX,
-      scaleY,
-      left: sourceCrop.x * pageWidth / naturalWidth - drawRect.x * scaleX,
-      top: sourceCrop.y * pageHeight / naturalHeight - drawRect.y * scaleY
-    };
-  }
-  runtime.getSeamSegmentTransform = getSeamSegmentTransform;
-  function getSeamSurfaceHostPageId(surface, resolveTarget = runtime.getTargetForKakaoPageId) {
-    const pageIds = Array.isArray(surface && surface.pageIds) ? surface.pageIds.map(String).filter(Boolean) : [];
-    return pageIds.find(pageId => {
-      const target = typeof resolveTarget === "function" ? resolveTarget(pageId) : null;
-      return !!target && target.isConnected !== false;
-    }) || pageIds[0] || "";
-  }
-  runtime.getSeamSurfaceHostPageId = getSeamSurfaceHostPageId;
   function buildSeamSurfaceRenderSignature(surface) {
     try {
       return runtime.hashSourceIdentity(JSON.stringify({
@@ -233,30 +210,39 @@ export function installSceneProjection(runtime) {
         artifactFingerprint: String(surface && surface.artifactFingerprint || ""),
         segments: Array.isArray(surface && surface.segments) ? surface.segments : [],
         cleanedImageHash: runtime.hashSourceIdentity(String(surface && surface.cleanedImage || "")),
+        cleanedImageByPageHash: Object.fromEntries(Object.entries(surface && surface.cleanedImageByPage || {})
+          .map(([pageId, value]) => [pageId, runtime.hashSourceIdentity(String(value || ""))])),
         bubbles: Array.isArray(surface && surface.bubbles) ? surface.bubbles : [],
         diagnostics: Array.isArray(surface && surface.diagnostics) ? surface.diagnostics : [],
         handledCanonicalIds: Array.isArray(surface && surface.handledCanonicalIds) ? surface.handledCanonicalIds : [],
-        suppressedCanonicalIds: Array.isArray(surface && surface.suppressedCanonicalIds) ? surface.suppressedCanonicalIds : []
+        absorbedCanonicalIds: Array.isArray(surface && surface.absorbedCanonicalIds) ? surface.absorbedCanonicalIds : [],
+        absorbedObservationIds: Array.isArray(surface && surface.absorbedObservationIds) ? surface.absorbedObservationIds : [],
+        absorbedDebugItemIds: Array.isArray(surface && surface.absorbedDebugItemIds) ? surface.absorbedDebugItemIds : []
       }));
     } catch {
       return "";
     }
   }
   runtime.buildSeamSurfaceRenderSignature = buildSeamSurfaceRenderSignature;
-  function isSeamSurfaceRenderable(surface, resolveTarget = runtime.getTargetForKakaoPageId, resolveRevision = target => runtime.state.kakaoImageRevisionByTarget.get(target)) {
+  function inspectSeamSurfaceRenderability(surface, resolveTarget = runtime.getTargetForKakaoPageId, resolveRevision = target => runtime.state.kakaoImageRevisionByTarget.get(target)) {
     const requiresCleanedImage = (Array.isArray(surface && surface.bubbles) ? surface.bubbles : []).some(bubble => String(bubble && (bubble.bg_type || bubble.visual && (bubble.visual.bgType || bubble.visual.bg_type)) || "none").trim().toLowerCase() !== "solid");
     if (!surface || !surface.renderKey || !surface.layoutKey || !(surface.canvasWidth > 0 && surface.canvasHeight > 0) || requiresCleanedImage && !runtime.isDataUrl(surface.cleanedImage) || !Array.isArray(surface.pageIds) || surface.pageIds.length < 2 || new Set(surface.pageIds).size !== surface.pageIds.length) {
-      return false;
+      return { ok: false, reason: "invalid_surface_contract" };
     }
-    return surface.pageIds.every(pageId => {
+    for (const pageId of surface.pageIds) {
       const segment = surface.segments.find(item => item.pageId === pageId);
-      if (!segment || !runtime.getSeamSegmentTransform(segment, 1, 1)) return false;
+      if (!segment || !runtime.isValidCrossPageSegment(segment)) return { ok: false, reason: "invalid_segment", pageId };
       const target = typeof resolveTarget === "function" ? resolveTarget(pageId) : null;
-      if (!target || target.isConnected === false) return false;
+      if (!target || target.isConnected === false) return { ok: false, reason: "missing_target", pageId };
       const expectedRevision = String(surface.imageRevisionByPage && surface.imageRevisionByPage[pageId] || "");
       const currentRevision = String(typeof resolveRevision === "function" ? resolveRevision(target, pageId) || "" : "");
-      return !!expectedRevision && currentRevision === expectedRevision;
-    });
+      if (!expectedRevision || currentRevision !== expectedRevision) return { ok: false, reason: "revision_mismatch", pageId, expectedRevision, currentRevision };
+    }
+    return { ok: true, reason: "accepted" };
+  }
+  runtime.inspectSeamSurfaceRenderability = inspectSeamSurfaceRenderability;
+  function isSeamSurfaceRenderable(surface, resolveTarget = runtime.getTargetForKakaoPageId, resolveRevision = target => runtime.state.kakaoImageRevisionByTarget.get(target)) {
+    return runtime.inspectSeamSurfaceRenderability(surface, resolveTarget, resolveRevision).ok;
   }
   runtime.isSeamSurfaceRenderable = isSeamSurfaceRenderable;
   function classifyCanonicalProjectionRender(bubbles, input = {}) {

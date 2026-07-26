@@ -493,6 +493,48 @@ test("fragmented page structure triggers seam OCR without edge text or pixel ove
   assert.equal(harness.calls.filter(call => call.startsWith("ocr:seam:")).length, 1);
   assert.deepEqual(harness.store.getSeamStates()[0].reasons, ["fragment_structure"]);
 });
+test("a multi-fragment seam requests one canonical translation", async () => {
+  const upper = makeCanonicalObservation("page-a", "rev-a", "multi-upper", 94, "키즈쇼의");
+  upper.pageSpans[0].box = { x: 25, y: 94, w: 50, h: 6 };
+  const lower = [
+    makeCanonicalObservation("page-b", "rev-b", "multi-lower-1", 0, "<화요"),
+    makeCanonicalObservation("page-b", "rev-b", "multi-lower-2", 0, "퀴즈쇼>의"),
+    makeCanonicalObservation("page-b", "rev-b", "multi-lower-3", 3, "A등급은 인정되지 않았습니다.")
+  ];
+  lower[0].pageSpans[0].box = { x: 25, y: 0, w: 25, h: 4 };
+  lower[1].pageSpans[0].box = { x: 49, y: 0, w: 26, h: 4 };
+  lower[2].pageSpans[0].box = { x: 25, y: 3, w: 50, h: 8 };
+  const fullText = "키즈쇼의 <화요 퀴즈쇼>의 A등급은 인정되지 않았습니다.";
+  const harness = createCanonicalHarness({
+    pageObservations: { a: [upper], b: lower },
+    seamObservations: [{
+      id: "multi-seam",
+      sourceType: "seam",
+      pageIds: ["page-a", "page-b"],
+      imageRevisionByPage: { "page-a": "rev-a", "page-b": "rev-b" },
+      pageSpans: [{
+        pageId: "page-a",
+        box: { x: 25, y: 93, w: 50, h: 7 },
+        overlapRatio: 0.4
+      }, {
+        pageId: "page-b",
+        box: { x: 25, y: 0, w: 50, h: 11 },
+        overlapRatio: 0.6
+      }],
+      originalText: fullText,
+      confidence: 0.99,
+      visual: { regionType: "speech", bgType: "solid" }
+    }]
+  });
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+  const canonicals = harness.store.getCanonicalSnapshot();
+  assert.equal(canonicals.length, 1);
+  assert.equal(canonicals[0].originalText, fullText);
+  const translationCalls = harness.calls.filter(call => call.startsWith("translate:"));
+  assert.equal(translationCalls.length, 1);
+  assert.match(translationCalls[0], new RegExp(`:${fullText}$`, "u"));
+});
 test("structured negative edge signals do not create a false edge wait", () => {
   const record = {
     pageId: "page-a",
@@ -637,6 +679,24 @@ test("onAdjacent records confirmed revisioned adjacency even when seam OCR retur
   });
   assert.equal(harness.store.getSeamStates()[0].status, "completed");
   assert.deepEqual(harness.store.getCanonicalSnapshot(), []);
+});
+test("page-ready adjacency notification runs after the ready terminal and before page projection", async () => {
+  const events = [];
+  let harness;
+  harness = createCanonicalHarness({
+    adapterOverrides: {
+      notifyCanonicalPageReady: async (target, record) => {
+        const terminal = harness.store.getPageTerminal(record.pageId);
+        events.push(`ready:${target.name}:${terminal && terminal.state}`);
+        harness.calls.push(`notify-ready:${target.name}`);
+      }
+    }
+  });
+  await harness.pipeline.run(harness.targets.a);
+  assert.deepEqual(events, ["ready:a:ready"]);
+  const notifyIndex = harness.calls.indexOf("notify-ready:a");
+  const renderIndex = harness.calls.findIndex(item => item.startsWith("render:page-a:"));
+  assert.ok(notifyIndex >= 0 && renderIndex > notifyIndex);
 });
 test("onAdjacent rejects retained SPA pages from another chapter before recording adjacency", async () => {
   const harness = createCanonicalHarness({

@@ -293,40 +293,61 @@ export function installRecognitionPayload(runtime) {
     }
   }
   runtime.bindKakaoTargetToPage = bindKakaoTargetToPage;
-  function resolvePendingKakaoAdjacency(target, pageId) {
-    const previous = runtime.state.pendingKakaoAdjacency.get(target);
-    if (previous && previous.isConnected) {
-      runtime.state.pendingKakaoAdjacency.delete(target);
-      const store = runtime.state.kakaoStore;
-      if (store && typeof store.getPageHandleForTarget === "function") {
-        const prevHandle = store.getPageHandleForTarget(previous);
-        const curHandle = store.getPageHandleForTarget(target);
-        if (prevHandle && curHandle) {
-          runtime.kakaoCanonicalPipeline.onAdjacentTargetAvailable(previous, target).catch(error => {
-            console.warn("[MangaTranslator][Kakao canonical] pending adjacent reconcile failed:", error);
-          });
-        }
-      }
+  function queuePendingKakaoAdjacency(target, previous) {
+    if (!target || !previous || target === previous) return false;
+    if (!runtime.state.pendingKakaoAdjacency) runtime.state.pendingKakaoAdjacency = new Map();
+    runtime.state.pendingKakaoAdjacency.set(target, previous);
+    return true;
+  }
+  runtime.queuePendingKakaoAdjacency = queuePendingKakaoAdjacency;
+  function hasPendingKakaoAdjacency(target) {
+    return !!runtime.state.pendingKakaoAdjacency?.has(target);
+  }
+  runtime.hasPendingKakaoAdjacency = hasPendingKakaoAdjacency;
+  function getReadyKakaoAdjacencyHandle(store, target) {
+    if (!store || typeof store.getPageHandleForTarget !== "function") return null;
+    const handle = store.getPageHandleForTarget(target);
+    if (!handle || handle.pageOcrState !== "ready") return null;
+    const terminal = typeof store.getPageTerminal === "function" ? store.getPageTerminal(handle.pageId) : null;
+    if (!terminal || terminal.state !== "ready") return null;
+    const terminalRevision = String(terminal.details && terminal.details.imageRevision || "");
+    return terminalRevision && terminalRevision !== String(handle.imageRevision || "") ? null : handle;
+  }
+  runtime.getReadyKakaoAdjacencyHandle = getReadyKakaoAdjacencyHandle;
+  function resolvePendingKakaoAdjacency(target, _pageId) {
+    const pending = runtime.state.pendingKakaoAdjacency;
+    const pipeline = runtime.kakaoCanonicalPipeline;
+    const store = runtime.state.kakaoStore;
+    if (!pending || !pending.size || !pipeline || typeof pipeline.onAdjacentTargetAvailable !== "function") {
+      return Promise.resolve([]);
     }
+    const candidates = [];
+    const directPrevious = pending.get(target);
+    if (directPrevious) candidates.push([target, directPrevious]);
     // 也检查是否有其他 target pending 和本 target 配对
-    if (runtime.state.pendingKakaoAdjacency) {
-      for (const [pendingTarget, pendingPrevious] of runtime.state.pendingKakaoAdjacency) {
-        if (pendingPrevious === target && pendingTarget.isConnected) {
-          runtime.state.pendingKakaoAdjacency.delete(pendingTarget);
-          const store = runtime.state.kakaoStore;
-          if (store && typeof store.getPageHandleForTarget === "function") {
-            const prevHandle = store.getPageHandleForTarget(target);
-            const curHandle = store.getPageHandleForTarget(pendingTarget);
-            if (prevHandle && curHandle) {
-              runtime.kakaoCanonicalPipeline.onAdjacentTargetAvailable(target, pendingTarget).catch(error => {
-                console.warn("[MangaTranslator][Kakao canonical] pending adjacent reconcile failed:", error);
-              });
-            }
-          }
-          break;
-        }
-      }
+    for (const [pendingTarget, pendingPrevious] of pending) {
+      if (pendingPrevious === target) candidates.push([pendingTarget, pendingPrevious]);
     }
+    const jobs = [];
+    const visited = new Set();
+    for (const [pendingTarget, pendingPrevious] of candidates) {
+      if (!pendingTarget || visited.has(pendingTarget)) continue;
+      visited.add(pendingTarget);
+      if (pendingTarget.isConnected === false || pendingPrevious.isConnected === false) {
+        pending.delete(pendingTarget);
+        continue;
+      }
+      const previousHandle = runtime.getReadyKakaoAdjacencyHandle(store, pendingPrevious);
+      const targetHandle = runtime.getReadyKakaoAdjacencyHandle(store, pendingTarget);
+      // commitPageIdentity 早于 page handle/terminal ready；此时必须保留关系等待再次通知。
+      if (!previousHandle || !targetHandle) continue;
+      pending.delete(pendingTarget);
+      jobs.push(Promise.resolve(pipeline.onAdjacentTargetAvailable(pendingPrevious, pendingTarget)).catch(error => {
+        console.warn("[MangaTranslator][Kakao canonical] pending adjacent reconcile failed:", error);
+        return { ok: false, error: runtime.getErrorMessage(error) };
+      }));
+    }
+    return jobs.length ? Promise.all(jobs) : Promise.resolve([]);
   }
   runtime.resolvePendingKakaoAdjacency = resolvePendingKakaoAdjacency;
 }

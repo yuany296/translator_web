@@ -376,6 +376,64 @@ test("loading preserves translated bubbles but replaces a debug-only overlay", (
     if (originalDocument === undefined) delete globalThis.document;else globalThis.document = originalDocument;
   }
 });
+test("loading follows the visible slice of a long image while scrolling", () => {
+  assert.deepEqual(runtime.__test.getLoadingOverlayCardPosition({
+    left: 693,
+    right: 1413,
+    top: -828,
+    bottom: 214
+  }, {
+    left: 693,
+    right: 1413,
+    top: 0,
+    bottom: 214
+  }, 2124, 1112), {
+    left: 360,
+    top: 935
+  });
+  const longImagePosition = runtime.__test.getLoadingOverlayCardPosition({
+    left: 693,
+    right: 1413,
+    top: -2000,
+    bottom: 4000
+  }, {
+    left: 693,
+    right: 1413,
+    top: 0,
+    bottom: 1112
+  }, 2124, 1112);
+  assert.equal(longImagePosition.left, 360);
+  assert.equal(longImagePosition.top - 2000, 556,
+    "the root-relative position must resolve to the viewport center");
+});
+test("loading timeout keeps real queued and running work visible", () => {
+  assert.equal(runtime.__test.shouldKeepLoadingOverlayAfterTimeout({
+    isConnected: true
+  }, true), true);
+  assert.equal(runtime.__test.shouldKeepLoadingOverlayAfterTimeout({
+    isConnected: true
+  }, false), false);
+  assert.equal(runtime.__test.shouldKeepLoadingOverlayAfterTimeout({
+    isConnected: false
+  }, true), false);
+  const timeoutStart = contentSource.indexOf("function scheduleLoadingOverlayTimeout(");
+  const timeoutEnd = contentSource.indexOf("function renderLoadingOverlay(", timeoutStart);
+  const timeoutSource = contentSource.slice(timeoutStart, timeoutEnd);
+  const keepIndex = timeoutSource.indexOf("shouldKeepLoadingOverlayAfterTimeout");
+  const rearmIndex = timeoutSource.indexOf("scheduleLoadingOverlayTimeout(overlayState)", keepIndex);
+  const clearIndex = timeoutSource.indexOf("Loading overlay timed out, clearing");
+  assert.ok(keepIndex >= 0 && rearmIndex > keepIndex && clearIndex > rearmIndex,
+    "active tasks must re-arm the watchdog before the orphan cleanup branch");
+});
+test("queued translations show a waiting state before the worker starts", () => {
+  const queueStart = contentSource.indexOf("function queueTranslate(");
+  const queueEnd = contentSource.indexOf("function isCanonicalRevisionCheckOptions(", queueStart);
+  const queueSource = contentSource.slice(queueStart, queueEnd);
+  const queuedIndex = queueSource.indexOf("queuedTargets.add(target)");
+  const loadingIndex = queueSource.indexOf("renderLoadingOverlay(target, runtime.computeTargetKey(target), \"等待处理...\")");
+  const pumpIndex = queueSource.indexOf("runtime.pumpQueue()");
+  assert.ok(queuedIndex >= 0 && loadingIndex > queuedIndex && pumpIndex > loadingIndex);
+});
 test("extension-owned seam composites never reenter Kakao OCR target selection", () => {
   const target = new globalThis.HTMLImageElement();
   target.dataset = {
@@ -436,6 +494,26 @@ test("only a current ready Kakao page binding can reuse OCR facts", () => {
     ...handle,
     pageOcrState: "failed"
   }, terminal, "page-a", "rev-a"), false);
+});
+test("pending Kakao adjacency survives early binding until both page terminals are ready", async () => {
+  const store = runtime.__test.kakaoStore;
+  const previous = { isConnected: true };
+  const current = { isConnected: true };
+  runtime.__test.queuePendingKakaoAdjacency(current, previous);
+  store.registerPageHandle({ pageId: "pending-previous", imageRevision: "r1", target: previous,
+    width: 800, height: 1200, pageOcrState: "running" });
+  store.registerPageHandle({ pageId: "pending-current", imageRevision: "r2", target: current,
+    width: 800, height: 1200, pageOcrState: "ready" });
+  store.markPageTerminal("pending-current", "ready", { imageRevision: "r2" });
+  await runtime.__test.resolvePendingKakaoAdjacency(current, "pending-current");
+  assert.equal(runtime.__test.hasPendingKakaoAdjacency(current), true,
+    "early commit must not consume the pending relation");
+  store.registerPageHandle({ pageId: "pending-previous", imageRevision: "r1", target: previous,
+    width: 800, height: 1200, pageOcrState: "ready" });
+  store.markPageTerminal("pending-previous", "ready", { imageRevision: "r1" });
+  await runtime.__test.resolvePendingKakaoAdjacency(previous, "pending-previous");
+  assert.equal(runtime.__test.hasPendingKakaoAdjacency(current), false,
+    "the relation is consumed only after both ready terminals exist");
 });
 test("identical overlay payloads have a stable render signature", () => {
   const first = {
@@ -549,30 +627,18 @@ test("canonical seam rendering uses explicit ESM dependencies and the common pro
   assert.doesNotMatch(contentSource, /\n\s*renderSeamCrossPage,\n/);
   assert.match(contentSource, /renderCanonicalProjections[\s\S]*renderTranslationResult\(/);
 });
-test("canonical seam surfaces render page-local slices for every page", () => {
-  const surface = {
-    pageIds: ["page-a", "page-b"]
-  };
-  assert.equal(runtime.__test.getSeamSurfaceHostPageId(surface, pageId => ({
-    isConnected: pageId === "page-a"
-  })), "page-a");
-  assert.equal(runtime.__test.getSeamSurfaceHostPageId(surface, pageId => ({
-    isConnected: pageId === "page-b"
-  })), "page-b");
-  assert.equal(runtime.__test.getSeamSurfaceHostPageId(surface, () => null), "page-a");
+test("canonical seam surfaces render once in the shared reading-area root", () => {
   const renderStart = contentSource.indexOf("async function renderCanonicalProjections");
   const renderEnd = contentSource.indexOf("async function renderTranslationResult", renderStart);
   const renderSource = contentSource.slice(renderStart, renderEnd);
-  assert.match(renderSource, /const pageSurfaces = seamSurfacesByPage\.get\(pageId\) \|\| \[\]/);
-  assert.doesNotMatch(renderSource, /hostedSeamSurfacesByPage/);
-  assert.doesNotMatch(renderSource, /hostedPageSurfaces/);
-  assert.match(renderSource, /seamSurfaces: pageSurfaces/);
+  assert.match(renderSource, /runtime\.renderCrossPageSurfaces\(allSeamSurfaces\)/);
+  assert.doesNotMatch(renderSource, /seamSurfacesByPage|seamSurfaces:\s*pageSurfaces/);
   const overlayStart = contentSource.indexOf("function renderOverlay(");
   const overlayEnd = contentSource.indexOf("function scheduleTermDiscovery", overlayStart);
   const overlaySource = contentSource.slice(overlayStart, overlayEnd);
-  assert.match(overlaySource, /root\.dataset\.seamPageId = seamPageId/);
-  assert.match(overlaySource, /root\.dataset\.seamSliceKeys/);
-  assert.match(overlaySource, /removeDuplicateSeamSurfaceRoots\(seamSurfaces, root, seamPageId\)/);
+  assert.doesNotMatch(overlaySource, /seamSurfaces|seamPageId|seamSliceKeys/);
+  assert.match(contentSource, /root\.className = "mt-cross-page-root"/);
+  assert.match(contentSource, /overlay\.className = "mt-cross-page-overlay"/);
 });
 test("Kakao seam capture is limited to the immediate 64-96px boundary band", () => {
   assert.equal(runtime.__test.calculateKakaoSeamCaptureBandHeight(320, 480), 64);

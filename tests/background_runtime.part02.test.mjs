@@ -421,6 +421,43 @@ test("same-line merge accepts emphasis colors but rejects a title-sized fragment
     box: box(230, 112, 100, 20)
   }), false);
 });
+test("overlapping speech-bubble regions join split title and body rows into one OCR candidate", async () => {
+  const region = {
+    region_id: "styled-bubble",
+    region_type: "speech_bubble",
+    region_polygon: [[80, 70], [500, 70], [500, 260], [80, 260]],
+    region_box: { left: 80, top: 70, width: 420, height: 190 },
+    region_confidence: 0.94,
+    bg_color: "#ffffff",
+    score: 0.98,
+    det_score: 0.95,
+    rotation_deg: 0
+  };
+  const item = (text, left, top, width, height, textColor, side) => ({
+    ...region,
+    region_id: `styled-bubble-${side}`,
+    region_polygon: side === "left" ? [[80, 70], [330, 70], [330, 260], [80, 260]] : [[190, 72], [520, 72], [520, 262], [190, 262]],
+    region_box: side === "left" ? { left: 80, top: 70, width: 250, height: 190 } : { left: 190, top: 72, width: 330, height: 190 },
+    text,
+    text_color: textColor,
+    box: { left, top, width, height }
+  });
+  const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: 720,
+    imageHeight: 900,
+    items: [
+      item("<화요", 120, 100, 90, 24, "#6f2222", "left"),
+      item("퀴즈쇼>의", 218, 100, 150, 24, "#6f2222", "right"),
+      item("A등급", 120, 136, 95, 42, "#111111", "left"),
+      item("재조정은", 223, 136, 150, 42, "#111111", "right"),
+      item("인정되지", 120, 184, 140, 42, "#111111", "left"),
+      item("않았습니다.", 268, 184, 170, 42, "#111111", "right")
+    ]
+  }, { width: 720, height: 900 }, "", false);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].words, "<화요 퀴즈쇼>의\nA등급 재조정은\n인정되지 않았습니다.");
+  assert.equal(result[0].translation_role || "", "");
+});
 test("chat-style metadata and body keep separate visual/font candidates", async () => {
   const item = (text, left, top, width, height) => ({
     text,

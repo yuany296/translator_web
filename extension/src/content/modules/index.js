@@ -9,9 +9,11 @@ import { installRecognitionStitch } from "./recognition-stitch.js";
 import { installRecognitionOverlap } from "./recognition-overlap.js";
 import { installCapturePayload } from "./capture-payload.js";
 import { installSceneProjection } from "./scene-projection.js";
+import { installSceneCrossPage } from "./scene-crosspage.js";
 import { installSceneCanonical } from "./scene-canonical.js";
 import { installSceneDispatch } from "./scene-dispatch.js";
 import { installRendererOverlay } from "./renderer-overlay.js";
+import { installRendererCrossPage } from "./renderer-crosspage.js";
 import { installRendererEmbed } from "./renderer-embed.js";
 import { installRendererCanvas } from "./renderer-canvas.js";
 import { installLifecycleBubble } from "./lifecycle-bubble.js";
@@ -43,9 +45,11 @@ export const contentInstallers = Object.freeze([
   installRecognitionOverlap,
   installCapturePayload,
   installSceneProjection,
+  installSceneCrossPage,
   installSceneCanonical,
   installSceneDispatch,
   installRendererOverlay,
+  installRendererCrossPage,
   installRendererEmbed,
   installRendererCanvas,
   installLifecycleBubble,
@@ -79,9 +83,11 @@ export const contentPhases = Object.freeze({
     installRecognitionOverlap,
     installCapturePayload,
     installSceneProjection,
+    installSceneCrossPage,
     installSceneCanonical,
     installSceneDispatch,
     installRendererOverlay,
+    installRendererCrossPage,
     installRendererEmbed,
     installRendererCanvas,
     installLifecycleBubble,

@@ -253,226 +253,75 @@ test("findTargetByScopedKey handles empty/non-existent keys gracefully", () => {
   // In real browser context it will return null for unmatched keys
   assert.ok(true, "findTargetByScopedKey is exported and callable");
 });
-test("seam segment transforms expose one continuous virtual page through page-local windows", () => {
-  const upper = runtime.__test.getSeamSegmentTransform({
-    drawRect: {
-      x: 0,
-      y: 0,
-      w: 760,
-      h: 260
-    },
-    sourceCrop: {
-      x: 0,
-      y: 740,
-      w: 760,
-      h: 260
-    },
-    naturalWidth: 760,
-    naturalHeight: 1000
-  }, 760, 1000);
-  const lower = runtime.__test.getSeamSegmentTransform({
-    drawRect: {
-      x: 0,
-      y: 260,
-      w: 760,
-      h: 260
-    },
-    sourceCrop: {
-      x: 0,
-      y: 0,
-      w: 760,
-      h: 260
-    },
-    naturalWidth: 760,
-    naturalHeight: 1000
-  }, 760, 1000);
-  assert.deepEqual(upper, {
-    scaleX: 1,
-    scaleY: 1,
-    left: 0,
-    top: 740
-  });
-  assert.deepEqual(lower, {
-    scaleX: 1,
-    scaleY: 1,
-    left: 0,
-    top: -260
-  });
-  assert.equal(upper.top + 260, 1000, "upper seam slice reaches the exact page bottom");
-  assert.equal(lower.top + 260, 0, "lower seam slice starts at the exact page top");
-});
-test("seam sync installs the same scene in both windows and keeps the lower scene negative", () => {
+test("cross-page geometry uses positive reading-area coordinates and preserves the page gap", () => {
   const surface = {
-    renderKey: "render-shared",
-    layoutKey: "layout-shared"
+    canvasWidth: 760,
+    canvasHeight: 520,
+    pageIds: ["upper", "lower"],
+    segments: [{
+      pageId: "upper", drawRect: { x: 0, y: 0, w: 760, h: 260 },
+      sourceCrop: { x: 0, y: 740, w: 760, h: 260 }, naturalWidth: 760, naturalHeight: 1000
+    }, {
+      pageId: "lower", drawRect: { x: 0, y: 260, w: 760, h: 260 },
+      sourceCrop: { x: 0, y: 0, w: 760, h: 260 }, naturalWidth: 760, naturalHeight: 1000
+    }]
   };
-  const makeEntry = segment => ({
-    surface,
-    segment,
-    windowNode: {
-      style: {}
-    },
-    composite: {
-      style: {}
-    }
-  });
-  const upper = makeEntry({
-    pageId: "upper",
-    drawRect: {
-      x: 0,
-      y: 0,
-      w: 760,
-      h: 260
-    },
-    sourceCrop: {
-      x: 0,
-      y: 740,
-      w: 760,
-      h: 260
-    },
-    naturalWidth: 760,
-    naturalHeight: 1000
-  });
-  const lower = makeEntry({
-    pageId: "lower",
-    drawRect: {
-      x: 0,
-      y: 260,
-      w: 760,
-      h: 260
-    },
-    sourceCrop: {
-      x: 0,
-      y: 0,
-      w: 760,
-      h: 260
-    },
-    naturalWidth: 760,
-    naturalHeight: 1000
-  });
-  runtime.__test.syncSeamOverlayTransforms({
-    seamEntries: [upper, lower]
-  }, {
-    width: 760,
-    height: 1000
-  });
-  assert.equal(upper.surface, lower.surface);
-  assert.equal(upper.surface.renderKey, lower.surface.renderKey);
-  assert.equal(upper.surface.layoutKey, lower.surface.layoutKey);
-  assert.equal(upper.windowNode.style.display, "block");
-  assert.equal(lower.windowNode.style.display, "block");
-  assert.equal(upper.composite.style.top, "740px");
-  assert.equal(lower.composite.style.top, "-260px");
-  assert.ok(Number.parseFloat(lower.composite.style.top) < 0);
-  assert.equal(upper.composite.style.transform, lower.composite.style.transform);
+  const targets = new Map([
+    ["upper", { left: 100, top: 50, width: 760, height: 1000 }],
+    ["lower", { left: 100, top: 1074, width: 760, height: 1000 }]
+  ]);
+  const geometry = runtime.__test.buildCrossPageBubbleGeometry(surface, {
+    x: 20, y: 35, w: 60, h: 30, fill_box: { x: 20, y: 35, w: 60, h: 30 }
+  }, targets, { left: 80, top: 20, width: 800, height: 2100 });
+  assert.ok(geometry.outer.left >= 0 && geometry.outer.top >= 0);
+  assert.equal(geometry.coverSegments.length, 2);
+  const [upper, lower] = geometry.coverSegments;
+  const uncoveredGap = lower.top - (upper.top + upper.height);
+  assert.equal(uncoveredGap, 24);
+  assert.ok(geometry.textFrame.height > upper.height + lower.height,
+    "one text frame must include the real inter-page gap");
 });
-test("two seam windows cover a cross-boundary bubble without a coordinate gap", () => {
-  const upper = runtime.__test.getSeamSegmentTransform({
-    drawRect: {
-      x: 0,
-      y: 0,
-      w: 760,
-      h: 260
-    },
-    sourceCrop: {
-      x: 0,
-      y: 740,
-      w: 760,
-      h: 260
-    },
-    naturalWidth: 760,
-    naturalHeight: 1000
-  }, 760, 1000);
-  const lower = runtime.__test.getSeamSegmentTransform({
-    drawRect: {
-      x: 0,
-      y: 260,
-      w: 760,
-      h: 260
-    },
-    sourceCrop: {
-      x: 0,
-      y: 0,
-      w: 760,
-      h: 260
-    },
-    naturalWidth: 760,
-    naturalHeight: 1000
-  }, 760, 1000);
-  const canvasHeight = 520;
-  const pageHeight = 1000;
-  const visibleInterval = transform => ({
-    start: Math.max(0, -transform.top / transform.scaleY),
-    end: Math.min(canvasHeight, (pageHeight - transform.top) / transform.scaleY)
-  });
-  const bubble = {
-    start: 180,
-    end: 340
+test("cross-page geometry lays out one text frame from full page-space canonical boxes", () => {
+  const surface = {
+    canvasWidth: 760, canvasHeight: 192, pageIds: ["upper", "lower"],
+    segments: [{
+      pageId: "upper", drawRect: { x: 0, y: 0, w: 760, h: 96 },
+      sourceCrop: { x: 0, y: 904, w: 760, h: 96 }, naturalWidth: 760, naturalHeight: 1000
+    }, {
+      pageId: "lower", drawRect: { x: 0, y: 96, w: 760, h: 96 },
+      sourceCrop: { x: 0, y: 0, w: 760, h: 96 }, naturalWidth: 760, naturalHeight: 1000
+    }]
   };
-  const clip = interval => ({
-    start: Math.max(interval.start, bubble.start),
-    end: Math.min(interval.end, bubble.end)
-  });
-  const upperClip = clip(visibleInterval(upper));
-  const lowerClip = clip(visibleInterval(lower));
-  assert.deepEqual(upperClip, {
-    start: 180,
-    end: 260
-  });
-  assert.deepEqual(lowerClip, {
-    start: 260,
-    end: 340
-  });
-  assert.ok(lowerClip.start <= upperClip.end, "the two clips must not leave a blank seam");
-  assert.equal(upperClip.end - upperClip.start + (lowerClip.end - lowerClip.start), bubble.end - bubble.start);
+  const targets = new Map([
+    ["upper", { left: 100, top: 50, width: 760, height: 1000 }],
+    ["lower", { left: 100, top: 1074, width: 760, height: 1000 }]
+  ]);
+  const pageBoxes = [
+    { pageId: "upper", x: 20, y: 94, w: 60, h: 6 },
+    { pageId: "lower", x: 18, y: 0, w: 64, h: 16.32 }
+  ];
+  const geometry = runtime.__test.buildCrossPageBubbleGeometry(surface, {
+    x: 20, y: 35, w: 60, h: 30, fill_box: { x: 20, y: 35, w: 60, h: 30 },
+    page_text_boxes: pageBoxes, page_cover_boxes: pageBoxes
+  }, targets, { left: 80, top: 20, width: 800, height: 2200 });
+  assert.ok(geometry.outer.left >= 0 && geometry.outer.top >= 0);
+  assert.equal(geometry.coverSegments.length, 2);
+  assert.equal(Math.round(geometry.coverSegments[1].height * 100) / 100, 163.2,
+    "the lower cover must not be truncated to the 96px seam crop");
+  const uncoveredGap = geometry.coverSegments[1].top -
+    (geometry.coverSegments[0].top + geometry.coverSegments[0].height);
+  assert.equal(uncoveredGap, 24);
+  assert.equal(Math.round(geometry.textFrame.height * 10) / 10, 247.2);
 });
-test("seam source mode toggles every window sharing one render key", () => {
-  const calls = [];
-  const entry = (renderKey, pageId) => ({
-    surface: {
-      renderKey
-    },
-    composite: {
-      classList: {
-        toggle: (className, enabled) => calls.push({
-          pageId,
-          className,
-          enabled
-        })
-      }
-    }
-  });
-  const overlays = new Map([["upper", {
-    seamEntries: [entry("shared", "upper")]
-  }], ["lower", {
-    seamEntries: [entry("shared", "lower")]
-  }], ["other", {
-    seamEntries: [entry("other", "other")]
-  }]]);
-  runtime.__test.setSeamSourceModeForOverlays(overlays, "shared", true);
-  assert.deepEqual(calls, [{
-    pageId: "upper",
-    className: "mt-show-source",
-    enabled: true
-  }, {
-    pageId: "lower",
-    className: "mt-show-source",
-    enabled: true
-  }]);
-});
-test("seam text is fitted once in intrinsic composite coordinates and resize only scales it", () => {
-  const positionStart = contentSource.indexOf("function syncOverlayPosition(");
-  const positionEnd = contentSource.indexOf("function compareOverlayViewportRects", positionStart);
-  const positionSource = contentSource.slice(positionStart, positionEnd);
-  const seamStart = contentSource.indexOf("function syncSeamOverlayTransforms(");
-  const seamEnd = contentSource.indexOf("function setSeamSourceModeForOverlays", seamStart);
-  const seamSource = contentSource.slice(seamStart, seamEnd);
-  assert.match(positionSource, /syncSeamOverlayTransforms\(overlayState/);
-  assert.doesNotMatch(seamSource, /applySeamBubbleLayout|fitBubbleFontSize/);
-  const createStart = contentSource.indexOf("function createSeamWindowNode(");
-  const createEnd = contentSource.indexOf("function syncSeamOverlayTransforms", createStart);
-  const createSource = contentSource.slice(createStart, createEnd);
-  assert.match(createSource, /applySeamBubbleLayout\(surface, bubbleNodes\)/);
+test("cross-page renderer has one layout call site and no legacy page-local seam windows", () => {
+  const start = contentSource.indexOf("function applyCrossPageTextGeometry(");
+  const end = contentSource.indexOf("function syncCrossPageSurfaceEntry", start);
+  const layoutSource = contentSource.slice(start, end);
+  const syncStart = contentSource.indexOf("function syncCrossPageSurfaceEntry(");
+  const syncEnd = contentSource.indexOf("function removeCrossPageSurfaceEntry", syncStart);
+  assert.equal((layoutSource.match(/fitBubbleFontSize\(/g) || []).length, 1);
+  assert.doesNotMatch(contentSource.slice(syncStart, syncEnd), /fitBubbleFontSize\(/);
+  assert.doesNotMatch(contentSource, /mt-seam-window|mt-seam-composite|syncSeamOverlayTransforms/);
 });
 test("seam surface validation is atomic across targets and image revisions", () => {
   const targets = {
@@ -544,7 +393,8 @@ test("seam surface validation is atomic across targets and image revisions", () 
         reason: "accepted"
       }],
       handledCanonicalIds: ["canonical-1"],
-      suppressedCanonicalIds: ["canonical-small-edge"]
+      absorbedCanonicalIds: ["canonical-1", "canonical-old"],
+      absorbedObservationIds: ["observation-upper", "observation-lower"]
     }]
   })[0];
   const resolveTarget = pageId => targets[pageId];
@@ -554,7 +404,8 @@ test("seam surface validation is atomic across targets and image revisions", () 
     canonicalId: "canonical-1",
     reason: "accepted"
   }]);
-  assert.deepEqual(surface.suppressedCanonicalIds, ["canonical-small-edge"]);
+  assert.deepEqual(surface.absorbedCanonicalIds, ["canonical-1", "canonical-old"]);
+  assert.deepEqual(surface.absorbedObservationIds, ["observation-upper", "observation-lower"]);
   targets.lower.revision = "stale-revision";
   assert.equal(runtime.__test.isSeamSurfaceRenderable(surface, resolveTarget, resolveRevision), false);
   targets.lower.revision = "rev-b";

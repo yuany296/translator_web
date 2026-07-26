@@ -1,5 +1,81 @@
 # Operations Log
 
+## 2026-07-22 - Codex（修复滚动后 loading 消失与排队状态不可见）
+
+- Chrome 现场先后采集到三类一致证据：正文图片仍有 `inflightSourceToken` 时 loading 已离开视口；滚动到后续图片时可见目标尚未启动且没有任何排队提示；控制台最终明确记录 `Loading overlay timed out, clearing`。右下角“停”只表示本页自动翻译已开启，不能证明当前有任务执行，因此旧 UI 会让用户误判为处理已经停止。
+- 翻译目标进入调度队列后立即渲染“等待处理...”，任务真正开始后继续由 canonical 阶段更新为提取、识别、翻译、跨页处理和渲染等文案。排队与执行两种状态现在都有明确反馈。
+- loading 的 30 秒计时器改为孤儿状态看门：目标仍在 `queuedTargets` 或 `inflightByTarget` 时保留提示并重新武装计时器；只有任务已经不在队列/执行集合时才清除并按既有恢复规则重试。已翻译 overlay 上附加的进度胶囊也共用相同生命周期，终态清理会同步取消计时器。
+- loading 卡片不再固定在整张图片的顶部或中心，而是每帧根据目标图片与当前视口的可见交集计算锚点。长图顶部滚出屏幕、只剩图片底部可见或页面继续下滑时，提示仍保持在当前可见片段中央。
+- 新增回归覆盖长图可见片段定位、活动任务超时保留/断连清理和排队提示先于 worker 启动。定向测试 `39/39` 通过；完整验证中的文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建和全部 Node 测试通过；Python 在获准读取本机 PaddleOCR 模型后为 `58 passed, 1 skipped`。新 bundle 已写入 `dist/extension/`。
+- Chrome 安全策略禁止自动打开或操作 `chrome://extensions/`，因此未绕过限制。普通页面刷新仍使用旧扩展进程，现场最终回归需要用户手动在扩展管理页点击一次“重新加载”，再刷新当前 Kakao 页面。
+
+## 2026-07-20 - Codex（跨页完整页坐标几何进入统一 overlay）
+
+- 首轮 Chrome MCP 复测中，surface 已显示 `accepted` 且内容层校验为 `ok=true`，但 DOM 仍为零。进一步确认统一 overlay 会在包含目标 seam 的渲染调用中创建，随后又被处理第 125 页的空 seam 调用全局删除。修复为 canonical 的每一次逐页 render descriptor 都携带同一份权威 `allSeamSurfaces` snapshot；内容 renderer 统一按该快照协调全局 overlay，无关页面不再撤销刚安装的跨页节点。
+- Chrome MCP 诊断确认目标 seam 已完成、上下页 revision 一致、跨页 observation 与下页完整 observation 已归入同一个 canonical，译文也已生成；但 `buildSeamRenderSurfaceIndex()` 仍未产出 surface。现场下页 canonical 框从页顶延伸至约 `16.32%`，而 seam 捕获带只覆盖页顶约 `10%`，旧的 `inspectCanonicalSeamGeometry()` 要求 page observation 必须完全包含在捕获带内，因此合法的页边文字块被误判为 `canonical_geometry_outside_capture`。
+- 几何门槛改为“page observation 必须与对应 seam 捕获带真实相交”，不再要求完整包含。这样从页边开始、但为了容纳整行/整段而延伸到捕获带外的块可进入跨页 surface；完全位于捕获带外、与 seam 断开的附近文字仍会被拒绝。
+- surface bubble 新增 canonical 级 `page_text_boxes` / `page_cover_boxes`：汇总全部成员在上下页原图坐标中的完整几何，并在阅读区域 overlay 中通过各页 `getBoundingClientRect()` 转成统一正数局部坐标。text frame 取上下页完整框的整体 union，只布局一次并包含真实 page gap；cover 仍按页生成独立 segment，不覆盖 gap，也不再被 seam 截图高度截短。
+- 非纯色背景继续优先使用对应页 cleaned image；缺失页级 artifact 时保留 seam cleaned image 路径或背景色回退。surface 签名纳入页级 cleaned image 哈希，artifact 更新不会污染稳定 layout key。
+- 新增回归覆盖：页边块延伸出 seam 捕获带仍保留完整 `16.32%` 页几何、断开正文继续拒绝、阅读区域 text frame 跨越上下页及 24px gap、下页 cover 不被 96px seam band 截短。完整 `npm run verify` 通过：文件长度、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `515/515`、Python `58 passed, 1 skipped`；最新产物已写入 `dist/extension/`。
+
+## 2026-07-19 - Codex（让片段组采用的 seam observation 成为 canonical 正式成员）
+
+- Chrome MCP 在重载后的真实 Kakao 页复核：跨页 loading 正常，本轮 seam OCR 文件按预期生成，v25 已把圆形气泡的四个文字片段合成完整文本；但 DOM 仍为下页普通 `text_primary`，canonical 为 `canonical_c59a163480e4d400ee2b47e48a74a45c`，`.mt-cross-page-overlay=0`，页面级 seam/render 诊断均为空，证明 surface 在 canonical ownership 建立前即缺席。
+- 根因是片段组允许多个单侧 `seam_context_only` observations 共同构成强 seam capture，却只把被归并的 page observations 写入 canonical 成员；这些 seam observations 虽提供了 authoritative 完整原文和归并授权，仍在 coverage ledger 中被标为过滤。`buildSeamRenderSurfaceIndex()` 按 observation ID 验证 canonical 与 seam state 的明确所有权时因此找不到交集，正确拒绝 surface，随后完整文本只能落为下页普通 projection。
+- 被采纳片段组的 `seamObservationIds` 现正式附着到同一 canonical，进入 `memberObservationIds`、geometry、coverage ownership 与 surface 归属；同一 capture 中未参与归并的附近 seam 片段继续保持 `seam_context_only` 过滤。普通单页兼容约束、论坛角色硬边界及未授权 seam 的过滤行为不变。
+- 更新回归断言：共同授权下页多片段的 seam observations 必须为 `consumed` 且进入 canonical；无关上页 seam 仍过滤；共享区域的双侧多片段全部进入同一 canonical。完整 `npm run verify` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `513/513`、Python `58 passed, 1 skipped`；构建已写入 `dist/extension/`。
+
+## 2026-07-19 - Codex（修复 seam 所有权随 DOM 可用性抖动）
+
+- Chrome MCP 复核确认本地 OCR 服务 `/health` 正常（`ok=true`、`device=gpu:0`），但重载后的失败轮次没有产生新 OCR 请求；结合上一轮已确认的 v25 seam OCR（四个文字片段已经合并为一个跨页 observation）继续追踪 canonical→render 路径，排除“需要重启 OCR”及论坛昵称/时间拆分规则。
+- 根因是 `buildSeamRenderSurfaceIndex()` 把已完成 seam surface 的 canonical 所有权错误地依赖于两页 DOM 在同一时刻均可解析。任一页面绑定短暂缺席时，surface 被直接丢弃，后续 projection plan 会把完整 seam 文本重新作为普通单页投影显示在仍可用的下页，形成“韩文残留 + 中文框从下页顶部开始”的现场现象。
+- seam surface 现只由已完成的 OCR/canonical/revision 证据决定，不再因瞬时 DOM 可用性撤销；若另一页暂不可用，统一 overlay 延后安装，同时继续按 `absorbedCanonicalIds` 压制单页 fallback，不重新 OCR、翻译或排版。
+- `restoreKnownKakaoPageHandle()` 增加唯一、完全相同 source token 的恢复路径：阅读器回收/重连同一图片 DOM 后可恢复 pageId 与 image revision 绑定，并触发纯 projection refresh；不同 token、多个候选或 revision 冲突仍拒绝恢复，避免复用 DOM 绑定到旧图片。
+- 新增回归覆盖“任一 seam 页面临时缺席时不恢复被吸收的单页 projection”和“同源图片恢复 canonical handle”；既有真实 seam 多片段、单 overlay、非负坐标、gap、resize/zoom、loading 与论坛角色边界用例继续通过。完整 `npm run verify` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `513/513`、Python `58 passed, 1 skipped`；新 bundle 已写入 `dist/extension/`。
+
+## 2026-07-19 - Codex（单页气泡样式碎片归并与 OCR 语义缓存失效）
+
+- Chrome MCP 将接缝置于视口中部并读取相邻图片几何后确认：圆形气泡确实横跨图片 123/124，第一页包含标题行，第二页包含后两行；现场拆出的 canonical 都是普通 `speech_bubble` 且 `translationRole` 为空，论坛昵称/时间拆分不是直接原因。
+- 重载 v24 后旧三框缓存已失效，但 DOM 仍产生左右两列：`<화요 A등급 인정되지` 与 `'귀스쇼/의 재조정은 않았습니다.`。直接对 Chrome 截图运行扩展同款 OCR pipeline，发现服务把同一个圆形气泡误检成两个区域：左区 `x=113..369, y=172..432`，右区 `x=254..613, y=176..437`；纵向重叠约 98%、横向重叠约 45%，但 region ID 不同，导致左右同行在聚类入口即被判为不同气泡。
+- 新增“强重叠气泡区域家族”：仅当两个高置信 `speech_bubble` 区域在一个轴向重叠至少 80%、另一个轴向至少 35%、交集占较小区域至少 35%，且背景色距离不超过 24 时，才允许不同 region ID 共享普通漫画文字聚类。仍保留原 `1.2 × 行高` 同行间距，不放宽远距离文字；不同容器、断开区域、时间格式冲突和 `chat_nickname` / `chat_time` / `chat_body` 等论坛角色继续保持硬边界。
+- 聚类后的 Observation 会在扩展中缓存 7 天。扩展 OCR 语义缓存前缀最终提升为 `mt_cache_v25:ocr:`，让旧三框与两框结果失效；未改动 Python OCR 几何协议，因此无需重启 `local-ocr-service`。新 bundle 已写入 `dist/extension/`，现场生效只需重载扩展并刷新 Kakao 页面。
+- 新增“两个强重叠 region ID、不同颜色/字号且每行均拆成左右两段”的六碎片回归，断言按行恢复完整原文；现有独立气泡、论坛昵称、时间、正文用例继续通过。最终 `verify` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `511/511`、Python `58 passed, 1 skipped`。
+
+## 2026-07-19 - Codex（修正 seam capture 多 observation 证据粒度）
+
+- 用户重载旧一轮构建后，用 Chrome MCP 再次刷新并触发当前视口翻译：loading 正常出现三个“提取单页图片...”，但现场仍是 `A등급 인정되지`、`'귀스쇼/의`、`<화요`、`재조정은 않았습니다.` 四个普通 page canonical；DOM 中 `.mt-cross-page-overlay=0`。这证明统一 overlay 已加载，失败点仍在 canonical 归并之前。
+- 根因是上一版片段组仍要求“单个 seam observation”同时对两页有有效贡献。真实 seam OCR 会在同一次 capture 中返回多个 observation，每个 observation 可能只落在上页或下页；它们逐个都被标记为 `seam_context_only`，因此片段组拿不到能代表整次截缝的强证据。
+- 改为按稳定 `captureId` 聚合同一次 seam OCR：组内 contribution 共同满足两页最低占比后才成为强 seam capture；每个 page fragment 仍必须分别通过页边、几何、文本/视觉关系检查。同页 fragment 使用连通分量原子归并，不放宽普通 `pageMembersCompatible()`。
+- 同一 capture 内，单个 seam observation 可仅支持一侧；跨页组件只有共享同一 seam observation 或同一 capture-local region 身份时才连接，否则分别形成独立的单页片段组，避免把分页面两侧相邻但无关的气泡合并。完整原文按匹配的 seam observations 稳定排序并只翻译、布局一次；诊断同时记录 capture ID、seam observation IDs 和吸收的 page observation IDs。
+- 新增回归覆盖“多个 context-only seam observations 共同授权下页四片段归并”和“同一区域的双侧多片段跨页归并”。完整 `verify` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `510/510`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。Chrome MCP 因浏览器安全策略不能操作 `edge://extensions/`，需要用户再次手动点扩展重载后完成现场复核。
+
+## 2026-07-19 - Codex（跨页 seam 多片段 canonical 原子归并）
+
+- Chrome 现场确认论坛角色拆分不是直接原因：问题块的 `translationRole` 均为空。真正缺口是 reconciler 只按“上页一个 observation + 下页一个 observation”建立普通边；第一条边合并后，后续同页相邻碎片因彼此重叠不足 35% 被组件约束拒绝，最终形成多个独立 canonical 和重叠译文框。
+- 新增 seam 级片段组：每个 page observation 必须位于对应页边、落在同一 seam 支持几何内，并与 seam 文本或稳定视觉身份相关；同页碎片使用归一化坐标的间距连通图分组。候选按分数、成员数和稳定 ID 排序，在普通 pair edge 之前一次性合并，普通单页 `pageMembersCompatible()` 约束保持不变。
+- seam 自身已经提供上下两页权威几何时，允许吸收仅出现在单侧 page OCR 中的多个连通碎片；这覆盖当前视口未生成上页 page observation、但 seam OCR 已跨越两页的场景。完整 seam 文本成为唯一 canonical 原文，所有吸收 observation 共享同一 ownership、翻译和布局。
+- `chat_nickname`、`chat_time`、`chat_body` 等显式角色是硬边界；不同角色以及空角色与显式角色不得通过普通边或片段组归并。诊断新增 `acceptedFragmentGroups` / `rejectedFragmentGroups`，记录 seam ID、成员 observation IDs、分数及拒绝原因。
+- 新增回归覆盖上页一块+下页多块、双侧多块、仅单侧多块、输入乱序确定性、断开干扰块、论坛角色隔离，以及 canonical pipeline 只发起一次翻译；现有统一 overlay DOM 用例继续验证单 overlay、非负坐标、页面 gap、分段 cover、一次文字拟合和 resize 几何复用。
+- 完整本地 `verify` 通过：文件长度、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `508/508`、Python `58 passed, 1 skipped`；新构建已写入 `dist/extension/`。Chrome MCP 能刷新和检查 Kakao 页，但浏览器安全策略禁止控制 `edge://extensions/`；未绕过限制，现场最终复核需要用户手动点击一次扩展“重新加载”后继续。
+
+## 2026-07-19 - Codex（修复邻页 ready 时机导致 seam 未激活）
+
+- Chrome 现场确认两处异常均没有生成 `.mt-cross-page-overlay`，而是由相邻页的普通 `.mt-overlay-root` 分别渲染多个 canonical；旧 `.mt-seam-window` / `.mt-seam-composite` 已不存在，说明问题发生在统一跨页 renderer 之前。
+- 根因是 `registerTarget` 记录的 pending 邻页关系会在 `commitPageIdentity` 阶段调用 `resolvePendingKakaoAdjacency()`；此时当前页尚未写入 Store，旧逻辑却先删除 pending 关系。两页并发 OCR 时，双方第一次检查都可能只看到未就绪邻页，之后再无事件触发 seam，8 秒 edge wait 超时后只能放行普通单页碎片。
+- 新逻辑只在双方 page handle、ready terminal 与 image revision 全部匹配后消费 pending 关系；页面 OCR 标记 ready 后通过 `notifyCanonicalPageReady` 再次兑现邻页，并在当前页普通 projection 前等待 `onAdjacentTargetAvailable()` 完成。seam 明确 completed/failed/skipped 后才按既有规则继续，成功 surface 继续使用显式 `absorbedCanonicalIds` / `absorbedObservationIds` 接管上下页。
+- 新增回归覆盖：过早 pageId 绑定不得消费 pending 关系、双方 ready 后只消费一次，以及 ready 通知发生在页面 projection 之前。文件长度、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `501/501` 均通过；Python 在获准读取本机 PaddleOCR 模型后为 `58 passed, 1 skipped`。
+- 新构建已写入 `dist/extension/`。浏览器安全策略禁止自动操作 `edge://extensions/`，未绕过限制；仍需用户手动重新加载本地扩展并刷新 Kakao 漫画页后进行现场复核。
+
+## 2026-07-19 - Codex（跨页气泡改为阅读区域统一坐标系的单一 DOM overlay）
+
+- 按用户要求先在 `main` 提交既有已验证修复（`a787fa3`），再创建并切换到 `codex/cross-page-unified-overlay` 分支；本轮只替换 seam projection/render，OCR、翻译和 canonical 归并入口保持不变。
+- 删除上下页面各自创建 `.mt-seam-window` / `.mt-seam-composite` 的旧路径以及负 `top` 裁剪变换。新增阅读区域级 `.mt-cross-page-root`：选择同时包含两页且不含 `overflow/clip-path/contain:paint` 裁剪的共同祖先，必要时将其设为 `position:relative`，root 使用 `position:absolute; inset:0; overflow:visible`。
+- 新坐标链严格按 seam 原始画布坐标 → 每页原图坐标 → 页面 `getBoundingClientRect()` 显示坐标 → overlay root 局部坐标转换。每个跨页 canonical 只生成一个 `.mt-cross-page-overlay`、一个完整 `.mt-text-layer` 和一次文字拟合；resize、缩放、图片加载、阅读宽度变化及 DOM 重排仅重算位置、尺寸和字号比例，不重新 OCR、翻译或调用文字拟合。
+- cover 与 text 分层：清理图按 upper/lower segment 分别投射到实际图片区域，页面 gap 保持透明；译文元素的整体 frame 包含真实 gap 并连续横跨两页。调试态通过同一个 overlay 的连续蓝框显示，不再生成上下页两套框。
+- 普通页去重改为显式 ownership：surface 携带 `absorbedCanonicalIds`、`absorbedObservationIds` 与调试项别名，并追溯 `supersedesId` / `retiredById` 链；普通 projection 和旧 page debug 按 ID 移交，不再以 72% 蓝框重叠作为主要判据。
+- 新增真实 DOM 回归，覆盖裁剪祖先上移、单一 overlay、非负 top/left、单一 text、两段 cover、不覆盖 24px gap、一次文字布局以及 resize 后几何/字号正确缩放；同步更新 ownership、样式和架构测试，并断言生产代码不存在旧 seam window/composite 或负坐标同步函数。
+- 完整本地 `verify` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `499/499`、Python `58 passed, 1 skipped`；构建已更新 `dist/extension/`。沙箱内首次 Python 视觉测试仅因无法读取用户目录中的 PaddleOCR 模型缓存失败，获准在沙箱外重跑同一套验证后全部通过。
+
 ## 2026-07-19 - Codex（跨页增量 loading 与尾句重复译文）
 
 - Chrome 现场确认同一气泡同时渲染两个不同 canonical：单页 OCR `담당자 실수로 <화요 퀴즈쇼>가 중복 배정되었다고` 与跨页 seam OCR `중복 배정되었다고 합니다.`。两者共享页边尾句且几何重叠，但旧版运行中的扩展没有将其归并，因此分别翻译为长句和“复安排了”。

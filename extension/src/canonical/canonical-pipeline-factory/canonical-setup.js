@@ -6,6 +6,9 @@ export function installCanonicalSetup(runtime, scope) {
   scope.buildPageIdentity = buildPageIdentity;
   const commitPageIdentity = typeof scope.adapters.commitPageIdentity === "function" ? scope.adapters.commitPageIdentity : null;
   scope.commitPageIdentity = commitPageIdentity;
+  const notifyCanonicalPageReady = typeof scope.adapters.notifyCanonicalPageReady === "function" ?
+    scope.adapters.notifyCanonicalPageReady : null;
+  scope.notifyCanonicalPageReady = notifyCanonicalPageReady;
   const requestOcrForPayload = runtime.requireCanonicalAdapter(scope.adapters, "requestOcrForPayload");
   scope.requestOcrForPayload = requestOcrForPayload;
   const requestCanonicalTranslations = runtime.requireCanonicalAdapter(scope.adapters, "requestCanonicalTranslations");

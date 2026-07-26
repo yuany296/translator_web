@@ -121,8 +121,24 @@ export function installCanonicalPageOcr(runtime, scope) {
       });
       pageOcrReady = true;
 
-      // Interior canonical bubbles are translated before any seam work completes.
+      // 普通内部 canonical 可以提前翻译；边缘 canonical 必须先等待邻页关系结算。
       scope.ensureEdgeWait(pageRecord);
+      // 延迟邻页只在双方 page handle 和 terminal 都 ready 后兑现；这样 seam 会在
+      // 边缘 canonical 的普通投影放行之前取得所有权。
+      if (scope.notifyCanonicalPageReady) {
+        try {
+          await scope.notifyCanonicalPageReady(target, pageRecord);
+        } catch (error) {
+          // seam 是可选增量证据，通知异常不能破坏已成功的单页 OCR。
+          scope.trace("page-ready-adjacency-error", target, {
+            pageId: pageRecord.pageId,
+            error: runtime.getErrorMessage(error)
+          });
+        }
+        if (!scope.isCurrentJob(target, identity) || !scope.isCurrentPageRevision(pageRecord)) {
+          return scope.cancelJob(target, identity, pageRecord.pageId, "sourceChanged during ready adjacency");
+        }
+      }
       scope.loading(target, identity.targetKey, "翻译文字中...");
       const pageRefresh = await scope.refreshCanonicalState({
         reason: "page-ocr",

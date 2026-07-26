@@ -3,14 +3,17 @@ export function installSceneIndexBuilder(runtime) {
     const byPage = new Map();
     const surfaces = [];
     const handledCanonicalIds = new Set();
+    const absorbedCanonicalIds = new Set();
     if (!activeStore) return {
       byPage,
       surfaces: Object.freeze([]),
-      handledCanonicalIds
+      handledCanonicalIds,
+      absorbedCanonicalIds
     };
     const canonicals = activeStore.getCanonicalSnapshot();
+    const retiredCanonicals = typeof activeStore.getRetiredCanonicals === "function" ?
+      activeStore.getRetiredCanonicals() : [];
     const observationsById = new Map(activeStore.getObservations().map(item => [String(item.id || ""), item]));
-    const isAvailable = typeof options.isPageAvailable === "function" ? options.isPageAvailable : null;
     for (const state of activeStore.getSeamStates()) {
       if (!state || state.status !== "completed") continue;
       const pageIds = (Array.isArray(state.pageIds) ? state.pageIds : []).map(String);
@@ -23,7 +26,8 @@ export function installSceneIndexBuilder(runtime) {
         const terminal = activeStore.getPageTerminal(record.pageId);
         return !terminal || terminal.state !== "ready" || terminal.details && terminal.details.imageRevision && String(terminal.details.imageRevision) !== String(record.imageRevision || "");
       })) continue;
-      if (isAvailable && pageIds.some(pageId => !isAvailable(pageId))) continue;
+      // seam 所有权来自已完成的 canonical 证据，不应随瞬时 DOM 可用性改变。
+      // 目标暂时缺席时由内容渲染层延后安装；这里仍需保留 surface，避免退回单页投影。
       const canvasWidth = Number(state.canvasWidth || state.payloadGeometry && state.payloadGeometry.canvasWidth) || 0;
       const canvasHeight = Number(state.canvasHeight || state.payloadGeometry && state.payloadGeometry.canvasHeight) || 0;
       const segments = Array.isArray(state.segments) ? state.segments : [];
@@ -111,7 +115,7 @@ export function installSceneIndexBuilder(runtime) {
           });
           continue;
         }
-        const bubble = runtime.buildSeamSurfaceBubble(canonical, translation, linked, canvasWidth, canvasHeight);
+        const bubble = runtime.buildSeamSurfaceBubble(canonical, translation, linked, canvasWidth, canvasHeight, observationsById, segments);
         if (!bubble) {
           candidateDiagnostics.push({
             canonicalId,
@@ -146,15 +150,45 @@ export function installSceneIndexBuilder(runtime) {
         const diagnostic = candidateDiagnostics.find(item => item.canonicalId === canonicalId && item.reason === "candidate");
         if (!diagnostic) continue;
         const winnerCanonicalId = overlapSuppressedIds.get(canonicalId);
-        diagnostic.reason = winnerCanonicalId ? "overlap_suppressed" : renderableIds.has(canonicalId) ? "accepted" : "missing_cleaned_image";
+        diagnostic.reason = winnerCanonicalId ? "ownership_suppressed" : renderableIds.has(canonicalId) ? "accepted" : "missing_cleaned_image";
         if (winnerCanonicalId) diagnostic.winnerCanonicalId = winnerCanonicalId;
       }
       if (!selected.length && !hasDebug) continue;
       const bubbles = Object.freeze(selected.map(candidate => candidate.bubble));
       const handledCandidates = [...selected, ...candidatePlan.suppressed.map(item => item.candidate)].sort((left, right) => String(left.canonical.id).localeCompare(String(right.canonical.id)));
       const handledIds = Object.freeze(handledCandidates.map(candidate => String(candidate.canonical.id)));
+      const absorbedIdSet = new Set(handledCandidates.flatMap(candidate =>
+        [candidate.canonical.id, candidate.canonical.supersedesId].filter(Boolean).map(String)
+      ));
+      let lineageChanged = true;
+      while (lineageChanged) {
+        lineageChanged = false;
+        for (const retired of retiredCanonicals) {
+          const retiredId = String(retired && retired.id || "");
+          const successorId = String(retired && retired.retiredById || "");
+          if (retiredId && absorbedIdSet.has(successorId) && !absorbedIdSet.has(retiredId)) {
+            absorbedIdSet.add(retiredId);
+            lineageChanged = true;
+          }
+        }
+      }
+      const absorbedIds = Object.freeze([...absorbedIdSet].sort());
+      const absorbedRecords = [
+        ...handledCandidates.map(candidate => candidate.canonical),
+        ...retiredCanonicals.filter(canonical => absorbedIdSet.has(String(canonical && canonical.id || "")))
+      ];
+      const absorbedObservationIds = Object.freeze([...new Set(absorbedRecords.flatMap(canonical =>
+        (canonical.memberObservationIds || []).map(String)
+      ))].sort());
+      const absorbedDebugItemIds = Object.freeze([...new Set(absorbedObservationIds.flatMap(id => {
+        const observation = observationsById.get(id) || stateObservationsById.get(id) || {};
+        return [id, observation.providerBlockId, observation.blockId, observation.block_id]
+          .filter(Boolean).map(String);
+      }))].sort());
       const requiresCleanedImage = runtime.seamSurfaceRequiresCleanedImage(bubbles);
       const cleanedImageToken = requiresCleanedImage ? String(state.cleanedImageToken || (cleanedImage ? `derived-${runtime.hashFnv1a(cleanedImage)}` : "")) : "";
+      const cleanedImageByPage = Object.fromEntries(currentRecords.map(record => [String(record.pageId),
+        runtime.isDataUrlValue(record.cleanedImage) ? record.cleanedImage : ""]));
       const canonicalRevisionById = Object.fromEntries(handledCandidates.map(candidate => [String(candidate.canonical.id), Math.max(1, Number(candidate.canonical.revision) || 1)]));
       const translationFingerprintByCanonicalId = Object.fromEntries(handledCandidates.map(candidate => [String(candidate.canonical.id), String(candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) || runtime.hashFnv1a(candidate.bubble.translated_text))]));
       const layoutFingerprint = JSON.stringify({
@@ -174,7 +208,9 @@ export function installSceneIndexBuilder(runtime) {
         imageRevisionByPage: pageIds.map(pageId => [pageId, state.imageRevisionByPage[pageId]]),
         layoutKey,
         cleanedImageToken,
-        handledIds
+        absorbedIds,
+        absorbedObservationIds,
+        absorbedDebugItemIds
       }))}`;
       const surface = runtime.freezeCanonicalValue({
         renderKey,
@@ -190,16 +226,21 @@ export function installSceneIndexBuilder(runtime) {
         artifactFingerprint: cleanedImageToken,
         segments,
         cleanedImage: requiresCleanedImage ? cleanedImage : null,
+        cleanedImageByPage,
         cleanedImageToken,
         bubbles,
         debug: runtime.buildSeamSurfaceDebug(state.debug || null, bubbles),
         diagnostics: Object.freeze(candidateDiagnostics.map(item => Object.freeze({
           ...item
         }))),
-        handledCanonicalIds: handledIds
+        handledCanonicalIds: handledIds,
+        absorbedCanonicalIds: absorbedIds,
+        absorbedObservationIds,
+        absorbedDebugItemIds
       });
       surfaces.push(surface);
       for (const canonicalId of handledIds) handledCanonicalIds.add(canonicalId);
+      for (const canonicalId of absorbedIds) absorbedCanonicalIds.add(canonicalId);
       for (const pageId of pageIds) {
         if (!byPage.has(pageId)) byPage.set(pageId, []);
         byPage.get(pageId).push(surface);
@@ -211,7 +252,8 @@ export function installSceneIndexBuilder(runtime) {
     return {
       byPage,
       surfaces: Object.freeze([...surfaces]),
-      handledCanonicalIds
+      handledCanonicalIds,
+      absorbedCanonicalIds
     };
   }
   runtime.buildSeamRenderSurfaceIndex = buildSeamRenderSurfaceIndex;

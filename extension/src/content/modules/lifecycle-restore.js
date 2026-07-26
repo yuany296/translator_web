@@ -111,12 +111,14 @@ export function installLifecycleRestore(runtime) {
   }
   runtime.isTargetSnapshotStillValid = isTargetSnapshotStillValid;
   function clearRenderedTarget(target) {
+    runtime.removeCrossPageOverlaysForTarget(target);
     runtime.removeOverlayForTarget(target);
     runtime.restoreEmbeddedForTarget(target);
   }
   runtime.clearRenderedTarget = clearRenderedTarget;
   function clearAllOverlays() {
     runtime.stopOverlayFrameSync();
+    runtime.clearCrossPageOverlays();
     for (const overlayState of runtime.state.overlaysById.values()) {
       if (overlayState.loadingTimeout) {
         window.clearTimeout(overlayState.loadingTimeout);

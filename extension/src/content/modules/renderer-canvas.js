@@ -114,6 +114,60 @@ export function installRendererCanvas(runtime) {
     };
   }
   runtime.decodeDataUrlImageSize = decodeDataUrlImageSize;
+  function shouldKeepLoadingOverlayAfterTimeout(target, taskActive) {
+    return Boolean(target && target.isConnected !== false && taskActive);
+  }
+  runtime.shouldKeepLoadingOverlayAfterTimeout = shouldKeepLoadingOverlayAfterTimeout;
+  function scheduleLoadingOverlayTimeout(overlayState) {
+    if (!overlayState) return;
+    if (overlayState.loadingTimeout) {
+      window.clearTimeout(overlayState.loadingTimeout);
+    }
+    overlayState.loadingTimeout = window.setTimeout(() => {
+      overlayState.loadingTimeout = 0;
+      if (!overlayState.root.isConnected) return;
+      const current = runtime.state.overlaysById.get(overlayState.targetId);
+      const hasProgressCard = current && (current.mode === "loading" || current.loadingCard && current.loadingCard.isConnected);
+      if (current !== overlayState || !hasProgressCard) return;
+      const target = overlayState.target;
+      const targetKey = overlayState.targetKey;
+      const scopedTargetKey = runtime.buildTargetSourceCacheKey(targetKey, runtime.getQuickSourceToken(target));
+      const settled = runtime.hasSettledTranslationMarker(target, targetKey, scopedTargetKey);
+      const taskActive = runtime.state.inflightByTarget.has(target) || runtime.state.queuedTargets.has(target);
+      if (runtime.shouldKeepLoadingOverlayAfterTimeout(target, taskActive)) {
+        // 慢任务仍在队列或执行时，loading 是真实状态，不能因 UI 看门时间到而消失。
+        runtime.syncOverlayPosition(overlayState);
+        runtime.scheduleLoadingOverlayTimeout(overlayState);
+        runtime.reportStatus("warn", "loading-overlay-still-active", {
+          targetKey: String(targetKey).slice(0, 80),
+          settled,
+          taskActive
+        }).catch(() => {});
+        return;
+      }
+      console.warn("[MangaTranslator] Loading overlay timed out, clearing", {
+        targetKey: String(targetKey).slice(0, 80)
+      });
+      if (overlayState.mode === "loading") {
+        overlayState.root.remove();
+        runtime.state.overlaysById.delete(overlayState.targetId);
+        if (runtime.state.overlaysById.size === 0) {
+          runtime.stopOverlayFrameSync();
+        }
+      } else {
+        runtime.clearKakaoLoadingOverlay(target);
+      }
+      if (target.isConnected && runtime.state.autoTranslatePageEnabled && !settled) {
+        runtime.scheduleAutoTranslateRetry(target);
+      }
+      runtime.reportStatus("warn", "loading-overlay-timeout", {
+        targetKey: String(targetKey).slice(0, 80),
+        settled,
+        taskActive
+      }).catch(() => {});
+    }, runtime.LOADING_OVERLAY_TIMEOUT_MS);
+  }
+  runtime.scheduleLoadingOverlayTimeout = scheduleLoadingOverlayTimeout;
   function renderLoadingOverlay(target, targetKey, text) {
     runtime.ensureOverlayLayer();
     const targetId = runtime.getTargetId(target);
@@ -121,6 +175,7 @@ export function installRendererCanvas(runtime) {
     if (oldOverlay && oldOverlay.targetKey === targetKey && oldOverlay.mode === "loading") {
       runtime.updateLoadingOverlayText(target, targetKey, text);
       runtime.syncOverlayPosition(oldOverlay);
+      runtime.scheduleLoadingOverlayTimeout(oldOverlay);
       return;
     }
     if (runtime.shouldPreserveOverlayDuringLoading(oldOverlay, targetKey)) {
@@ -128,6 +183,7 @@ export function installRendererCanvas(runtime) {
       // 同时保留独立的进度胶囊，避免后台仍在运行时 loading 从画面消失。
       runtime.ensureLoadingStatusCard(oldOverlay, text);
       runtime.syncOverlayPosition(oldOverlay);
+      runtime.scheduleLoadingOverlayTimeout(oldOverlay);
       return;
     }
     if (oldOverlay) {
@@ -155,37 +211,13 @@ export function installRendererCanvas(runtime) {
       bubbleNodes: [],
       bubbleCount: 0,
       mode: "loading",
-      loadingTimeout: window.setTimeout(() => {
-        // Loading 超时保护：清除 loading overlay 并触发重试
-        if (!overlayState.root.isConnected) return;
-        const current = runtime.state.overlaysById.get(targetId);
-        if (current !== overlayState || current.mode !== "loading") return;
-        console.warn("[MangaTranslator] Loading overlay timed out, clearing", {
-          targetKey: String(targetKey).slice(0, 80)
-        });
-        overlayState.root.remove();
-        runtime.state.overlaysById.delete(targetId);
-        if (runtime.state.overlaysById.size === 0) {
-          runtime.stopOverlayFrameSync();
-        }
-        const scopedTargetKey = runtime.buildTargetSourceCacheKey(targetKey, runtime.getQuickSourceToken(target));
-        const settled = runtime.hasSettledTranslationMarker(target, targetKey, scopedTargetKey);
-        const taskActive = runtime.state.inflightByTarget.has(target) || runtime.state.queuedTargets.has(target);
-        // UI 超时不能推翻已经完成的翻译，也不能给仍在运行的同一任务制造第二份作业。
-        if (target.isConnected && runtime.state.autoTranslatePageEnabled && !settled && !taskActive) {
-          runtime.scheduleAutoTranslateRetry(target);
-        }
-        runtime.reportStatus("warn", "loading-overlay-timeout", {
-          targetKey: String(targetKey).slice(0, 80),
-          settled,
-          taskActive
-        }).catch(() => {});
-      }, runtime.LOADING_OVERLAY_TIMEOUT_MS)
+      loadingTimeout: 0
     };
     runtime.state.overlayLayer.appendChild(root);
     runtime.state.overlaysById.set(targetId, overlayState);
     runtime.syncOverlayPosition(overlayState);
     runtime.ensureOverlayFrameSync();
+    runtime.scheduleLoadingOverlayTimeout(overlayState);
   }
   runtime.renderLoadingOverlay = renderLoadingOverlay;
 }

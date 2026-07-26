@@ -1,19 +1,25 @@
 export function installSceneCanonical(runtime) {
   async function renderCanonicalProjections(input = {}) {
     const pages = runtime.normalizeProjectionPages(input);
-    const seamSurfaces = runtime.normalizeSeamRenderSurfaces(input)
-      .filter((surface) => runtime.isSeamSurfaceRenderable(surface));
-    const seamSurfacesByPage = new Map();
+    const inspectedSurfaces = runtime.normalizeSeamRenderSurfaces(input).map(surface => ({
+      surface,
+      inspection: runtime.inspectSeamSurfaceRenderability(surface)
+    }));
+    if (input.target?.dataset) input.target.dataset.mtSeamRenderDiagnostics = JSON.stringify(inspectedSurfaces.map(item => ({
+      renderKey: item.surface.renderKey,
+      ...item.inspection
+    })));
+    const seamSurfaces = inspectedSurfaces.filter(item => item.inspection.ok).map(item => item.surface);
+    const allSurfaceInput = Array.isArray(input.allSeamSurfaces) ? input.allSeamSurfaces : input.seamSurfaces;
+    const allSeamSurfaces = runtime.normalizeSeamRenderSurfaces({ seamSurfaces: allSurfaceInput })
+      .filter(surface => runtime.inspectSeamSurfaceRenderability(surface).ok);
     const handledCanonicalIds = new Set();
     const atomicSeamPageIds = new Set();
     seamSurfaces.forEach((surface) => {
       surface.handledCanonicalIds.forEach((id) => handledCanonicalIds.add(id));
-      surface.suppressedCanonicalIds.forEach((id) => handledCanonicalIds.add(id));
+      surface.absorbedCanonicalIds.forEach((id) => handledCanonicalIds.add(id));
       surface.pageIds.forEach((pageId) => {
         if (!pages.has(pageId)) pages.set(pageId, []);
-        const pageSurfaces = seamSurfacesByPage.get(pageId) || [];
-        pageSurfaces.push(surface);
-        seamSurfacesByPage.set(pageId, pageSurfaces);
         atomicSeamPageIds.add(pageId);
       });
     });
@@ -47,7 +53,6 @@ export function installSceneCanonical(runtime) {
       const target = runtime.getTargetForKakaoPageId(pageId) ||
         (pageId === String(input.pageId || "") ? input.target : null);
       if (!target || !target.isConnected) continue;
-      const pageSurfaces = seamSurfacesByPage.get(pageId) || [];
       const ordinaryProjections = [...projections].filter((projection) => {
         const canonicalId = String(projection?.canonicalId || projection?.groupId || "");
         return !canonicalId || !handledCanonicalIds.has(canonicalId);
@@ -69,13 +74,10 @@ export function installSceneCanonical(runtime) {
         ),
         debug: runtime.getPageMappedValue(
           input.debugByPage, pageId, input.debug || input.result?.debug || null
-        ),
-        seamSurfaces: pageSurfaces,
-        seamPageId: pageId
+        )
       };
       const pageRenderOptions = {
         ...input,
-        seamSurfaces: pageSurfaces,
         translationComplete: runtime.getPageMappedValue(
           input.translationCompleteByPage, pageId, input.translationComplete
         ),
@@ -110,8 +112,8 @@ export function installSceneCanonical(runtime) {
       runtime.rememberLocalResult(scopedTargetKey, result);
       if (disposition === "translated") {
         const task = invokeRender({
-          stream: pageSurfaces.length === 0,
-          forceOverlay: pageSurfaces.length > 0
+          stream: !atomicSeamPageIds.has(pageId),
+          forceOverlay: atomicSeamPageIds.has(pageId)
         });
         if (task) await task;
         target.dataset.mtNoTextKey = "";
@@ -123,7 +125,10 @@ export function installSceneCanonical(runtime) {
         if (runtime.hasRenderableOcrDebug(result)) {
           const task = invokeRender({ stream: false, debugOnly: input.debugOnly === true });
           if (task) await task;
-        } else runtime.clearRenderedTarget(target);
+        } else {
+          runtime.removeOverlayForTarget(target);
+          runtime.restoreEmbeddedForTarget(target);
+        }
         target.dataset.mtNoTextKey = scopedTargetKey;
         target.dataset.mtLastTranslatedKey = "";
         runtime.kakaoRetryScheduler.cancel(target);
@@ -131,9 +136,9 @@ export function installSceneCanonical(runtime) {
       renderedCount += bubbles.length;
     }
     if (atomicRenderTasks.length) await Promise.all(atomicRenderTasks);
-    const seamBubbleCount = seamSurfaces.reduce(
-      (count, surface) => count + surface.bubbles.length, 0
-    );
+    // canonical refresh 会逐页提交普通 projection；每次都携带同一份全局 surface snapshot，
+    // 避免后续无关页面的空 seam 输入误删刚安装的跨页 overlay。
+    const seamBubbleCount = runtime.renderCrossPageSurfaces(allSeamSurfaces);
     return { ok: true, bubbles: renderedCount + seamBubbleCount };
   }
   runtime.renderCanonicalProjections = renderCanonicalProjections;

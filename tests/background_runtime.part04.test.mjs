@@ -168,7 +168,7 @@ test("translated substring in a separate region is not collapsed", () => {
   }]);
   assert.equal(result.length, 2);
 });
-test("v22 OCR cache separates image evidence and excludes translation and render settings", () => {
+test("v25 OCR cache separates image evidence and excludes translation and render settings", () => {
   const build = context.__backgroundTest.buildOcrCacheKey;
   const request = {
     imageDigest: "digest-a",
@@ -257,7 +257,7 @@ test("v22 OCR cache separates image evidence and excludes translation and render
     },
     settings
   });
-  assert.match(first, /^mt_cache_v22:ocr:/);
+  assert.match(first, /^mt_cache_v25:ocr:/);
   assert.equal(first, translationAndRenderChanged);
   assert.equal(first, newCleanedMask, "render-only masks must not split semantic OCR cache entries");
   assert.notEqual(first, newImage);

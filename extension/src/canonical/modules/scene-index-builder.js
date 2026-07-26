@@ -157,9 +157,11 @@ export function installSceneIndexBuilder(runtime) {
       const bubbles = Object.freeze(selected.map(candidate => candidate.bubble));
       const handledCandidates = [...selected, ...candidatePlan.suppressed.map(item => item.candidate)].sort((left, right) => String(left.canonical.id).localeCompare(String(right.canonical.id)));
       const handledIds = Object.freeze(handledCandidates.map(candidate => String(candidate.canonical.id)));
-      const absorbedIdSet = new Set(handledCandidates.flatMap(candidate =>
-        [candidate.canonical.id, candidate.canonical.supersedesId].filter(Boolean).map(String)
-      ));
+      const ownership = runtime.collectSeamSurfaceOwnership(
+        selected, handledCandidates, canonicals, observationsById, segments
+      );
+      const { coveredResiduals, absorbedIdSet } = ownership;
+      candidateDiagnostics.push(...ownership.diagnostics);
       let lineageChanged = true;
       while (lineageChanged) {
         lineageChanged = false;
@@ -175,6 +177,7 @@ export function installSceneIndexBuilder(runtime) {
       const absorbedIds = Object.freeze([...absorbedIdSet].sort());
       const absorbedRecords = [
         ...handledCandidates.map(candidate => candidate.canonical),
+        ...coveredResiduals.map(item => item.canonical),
         ...retiredCanonicals.filter(canonical => absorbedIdSet.has(String(canonical && canonical.id || "")))
       ];
       const absorbedObservationIds = Object.freeze([...new Set(absorbedRecords.flatMap(canonical =>

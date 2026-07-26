@@ -9,6 +9,9 @@
 - 完整本地 `npm run verify` 通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `521/521`、Python `58 passed, 1 skipped`；最新 bundle 已写入 `dist/extension/`。
 - 首次现场重载揭示测试结构仍比真实输入多一个上页 `이렇게` 片段。真实上页只有相邻的 `마음`、`펴히` 两个普通气泡；两者各自都通过 seam 强覆盖与文本证据，但组级 `textSimilarity()` 把局部 `마음펴히` 与完整 seam 句子按全长比较，组分仅约 `0.689`，低于 `0.75` 合并门槛，因而完整跨页层之上仍叠着“心”和“舒心地”。
 - 片段组的文本评分改为同时使用整串相似度与最佳窗口模糊相似度；真实局部片段相对完整 seam 的窗口分为 `0.9`，而每个成员仍须先独立通过文本/视觉、页边和几何硬约束。回归同步移除额外的 `이렇게` page observation，使用两个 `speech_bubble` 片段复现现场，并断言组级窗口分与唯一 canonical。再次完整验证通过：Node `521/521`、Python `58 passed, 1 skipped`，其余门禁、lint 与构建均通过。
+- 第二次重载通过页面 `data-mt-seam-diagnostics` 取得最终所有权证据：跨页 canonical `canonical_d911…` 已被 surface 接受，但 `canonical_1009…`、`canonical_510e…`（`마음`）和 `canonical_be8e…`（`펴히`）仍是没有共享 seam observation 的单页 canonical，未进入 surface 的 `absorbedCanonicalIds`。因此问题不再是跨页文本生成，而是最终投影压制只认识已归并的 canonical 成员。
+- 新增独立 `seam-residuals` 所有权模块：仅对同一 seam 捕获带覆盖至少 72%、被跨页 page text box 覆盖至少 72%、面积不超过其 1.35 倍、翻译角色严格一致，且原文为强子串关系或满足短韩文纠错阈值的单页 canonical，写入 surface 的正式吸收集合。无关文字、远处同词、角色不同和大范围容器均保留。surface 诊断同步记录 `covered_text_fragment`，现场可以直接核对被吸收 ID。
+- 新增纯函数与 surface 集成回归，断言“心/舒心地”进入 `absorbedCanonicalIds`、无关页边文字保留，随后投影计划不会恢复这些残片。最终完整验证通过：文件长度门禁、JavaScript lint、Python lint `10.00/10`、扩展构建、Node `523/523`、Python `58 passed, 1 skipped`。
 
 ## 2026-07-26 - Codex（修复原子多行组件的跨页续接）
 

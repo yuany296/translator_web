@@ -342,3 +342,49 @@ test("a strongly covered short Hangul OCR correction joins its seam group", () =
   assert.equal(result.diagnostics.acceptedContinuationBridges.length, 1);
   assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
 });
+
+test("a truncated overlap rebuilds three lines from page OCR when seam text crosses the wrong rows", () => {
+  const upper = page("truncated-overlap-upper", 0);
+  const lower = page("truncated-overlap-lower", 1);
+  const upperLines = pageObservation(upper, "그렇다면 여기서 의문점이",
+    { x: 27.18, y: 85.25, w: 46.04, h: 12.1 }, "", "caption_panel");
+  const clippedThirdLine = pageObservation(upper, "새기",
+    { x: 40.33, y: 97.5, w: 18.16, h: 2.5 }, "", "caption_panel");
+  const completeThirdLine = pageObservation(lower, "생긴다.",
+    { x: 39.47, y: 0, w: 20.27, h: 3.4 }, "", "caption_panel");
+  const wrongRowSeam = seamObservation(upper, lower, "여기성원무적이",
+    { x: 27.18, y: 91.2, w: 46.04, h: 6.9 },
+    { x: 39.47, y: 0, w: 20.27, h: 3.4 }, "", "caption_panel");
+
+  const result = reconcileFixture({ upper, lower },
+    [upperLines, clippedThirdLine, completeThirdLine, wrongRowSeam]);
+
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText, "그렇다면 여기서 의문점이 생긴다.");
+  assert.deepEqual(result.canonicals[0].memberObservationIds,
+    [upperLines, clippedThirdLine, completeThirdLine, wrongRowSeam]
+      .map(item => item.id).sort());
+  assert.equal(result.diagnostics.acceptedFragmentGroups.length, 1);
+  assert.equal(result.diagnostics.acceptedFragmentGroups[0].structuralFallback, true);
+  assert.deepEqual(result.diagnostics.acceptedFragmentGroups[0].discardedObservationIds,
+    [clippedThirdLine.id]);
+  assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
+});
+
+test("an unrelated seam cannot merge three aligned edge blocks without a duplicate boundary line", () => {
+  const upper = page("no-overlap-repair-upper", 0);
+  const lower = page("no-overlap-repair-lower", 1);
+  const observations = [
+    pageObservation(upper, "첫 번째 줄", { x: 30, y: 86, w: 40, h: 8 }),
+    pageObservation(upper, "두 번째 줄", { x: 30, y: 94, w: 40, h: 6 }),
+    pageObservation(lower, "별개의 문장", { x: 30, y: 0, w: 40, h: 7 })
+  ];
+  const unrelated = seamObservation(upper, lower, "잘못 읽은 접합부",
+    { x: 30, y: 88, w: 40, h: 12 }, { x: 30, y: 0, w: 40, h: 7 });
+
+  const result = reconcileFixture({ upper, lower }, [...observations, unrelated]);
+
+  assert.equal(result.diagnostics.acceptedFragmentGroups.length, 0);
+  assert.equal(new Set(observations.map(item => result.ledger[item.id].canonicalId)).size, 3);
+  assert.equal(result.ledger[unrelated.id].resolution, "standalone");
+});

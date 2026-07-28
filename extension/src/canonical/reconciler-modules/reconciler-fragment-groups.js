@@ -103,6 +103,70 @@ export function installReconcilerFragmentGroups(runtime) {
       .sort((left, right) => right.score - left.score || left.seamObservationId.localeCompare(right.seamObservationId))[0] || null;
   }
 
+  function structuralFragmentSupport(seam, observation, page, edge) {
+    if (!runtime.isRevisionCurrent(observation, new Map([[page.pageId, page]]))) return null;
+    if (!runtime.translationRolesCompatible([seam, observation])) return null;
+    const bandHeight = runtime.calculateSeamBandHeight(page.width, page.width);
+    if (!runtime.observationTouchesEdge(observation, page, edge, bandHeight)) return null;
+    const seamSpan = runtime.getSpan(seam, page.pageId);
+    const pageSpan = runtime.getSpan(observation, page.pageId);
+    if (!seamSpan || !pageSpan || Number(seamSpan.overlapRatio) <= 0 ||
+        !runtime.regionsCompatible(seam, seamSpan, observation, pageSpan)) return null;
+    const seamBox = runtime.boxInNormalizedPage(seamSpan, page);
+    const box = runtime.boxInNormalizedPage(pageSpan, page);
+    const horizontal = runtime.horizontalRelation(box, seamBox);
+    if (horizontal.overlapRatio < 0.72 || horizontal.centerScore < 0.72) return null;
+    const coveredRatio = runtime.intersectionArea(box, seamBox) /
+      Math.max(0.000001, box.width * box.height);
+    const geometry = Math.max(coveredRatio, horizontal.overlapRatio * 0.92);
+    return {
+      box,
+      observation,
+      seamObservationId: seam.id,
+      score: runtime.clamp(geometry, 0, 1)
+    };
+  }
+
+  function captureStructuralSupport(capture, observation, page, edge) {
+    return capture.observations.map(seam =>
+      structuralFragmentSupport(seam, observation, page, edge)
+    ).filter(Boolean).sort((left, right) =>
+      right.score - left.score ||
+      left.seamObservationId.localeCompare(right.seamObservationId)
+    )[0] || null;
+  }
+
+  function boundaryDuplicateRelation(left, right) {
+    const horizontal = runtime.horizontalRelation(left.box, right.box);
+    if (horizontal.overlapRatio < 0.55 || horizontal.centerScore < 0.78) return false;
+    const leftText = runtime.normalizeComparableText(left.observation.originalText);
+    const rightText = runtime.normalizeComparableText(right.observation.originalText);
+    if (!leftText || !rightText) return false;
+    if (runtime.hasStrongTextRelation(leftText, rightText)) return true;
+    const shorter = leftText.length <= rightText.length ? leftText : rightText;
+    return /^[가-힣]{2,3}$/u.test(shorter) &&
+      runtime.fuzzyFragmentSimilarity(leftText, rightText, 4) >=
+        runtime.FUZZY_SEAM_FRAGMENT_THRESHOLD;
+  }
+
+  function selectBoundaryDuplicateLosers(upper, lower) {
+    const losers = new Set();
+    for (const upperSupport of upper) {
+      for (const lowerSupport of lower) {
+        if (!boundaryDuplicateRelation(upperSupport, lowerSupport)) continue;
+        const candidates = [upperSupport, lowerSupport].sort((left, right) =>
+          runtime.observationQuality(right.observation) -
+            runtime.observationQuality(left.observation) ||
+          runtime.normalizeComparableText(right.observation.originalText).length -
+            runtime.normalizeComparableText(left.observation.originalText).length ||
+          left.observation.id.localeCompare(right.observation.id)
+        );
+        losers.add(candidates[1].observation.id);
+      }
+    }
+    return losers;
+  }
+
   function seamRegionKey(observation) {
     const visual = observation?.visual || {};
     const regionId = String(visual.regionId || visual.region_id || "").trim();
@@ -137,11 +201,15 @@ export function installReconcilerFragmentGroups(runtime) {
     return runtime.normalizeText(matched.map(item => item.originalText).join(" "));
   }
 
-  function groupCandidate(capture, upperPage, lowerPage, upperSupports, lowerSupports, adjacencyConfirmed, pageIndex) {
+  function groupCandidate(capture, upperPage, lowerPage, upperSupports, lowerSupports,
+    adjacencyConfirmed, pageIndex, options = {}) {
     const supports = [...upperSupports, ...lowerSupports];
     const observations = supports.map(item => item.observation);
-    const authoritativeText = authoritativeFragmentText(capture, supports, pageIndex);
-    const combinedText = observations.map(item => item.originalText).join("");
+    const textSupports = Array.isArray(options.textSupports) ? options.textSupports : supports;
+    const textObservations = textSupports.map(item => item.observation);
+    const authoritativeText = options.authoritativeText ||
+      authoritativeFragmentText(capture, supports, pageIndex);
+    const combinedText = textObservations.map(item => item.originalText).join("");
     // 页面片段可能只覆盖完整 seam 句子的一小段；按最佳窗口比较，避免被整句长度稀释。
     const textScore = Math.max(
       runtime.textSimilarity(authoritativeText, combinedText),
@@ -162,8 +230,58 @@ export function installReconcilerFragmentGroups(runtime) {
       adjacencyConfirmed,
       role: runtime.translationRoleOf(observations[0]),
       score: runtime.roundTo(supportScore * 0.72 + textScore * 0.28, 6),
-      scores: { support: runtime.roundTo(supportScore, 6), text: runtime.roundTo(textScore, 6) }
+      scores: { support: runtime.roundTo(supportScore, 6), text: runtime.roundTo(textScore, 6) },
+      ...(options.structuralFallback ? {
+        structuralFallback: true,
+        discardedObservationIds: [...(options.discardedObservationIds || [])].sort()
+      } : {})
     };
+  }
+
+  function structuralFallbackCandidates(capture, upperPage, lowerPage, pageObservations,
+    adjacencyConfirmed, pageIndex) {
+    const upper = pageObservations.filter(item => item.pageIds.includes(upperPage.pageId))
+      .map(item => captureStructuralSupport(capture, item, upperPage, "bottom")).filter(Boolean);
+    const lower = pageObservations.filter(item => item.pageIds.includes(lowerPage.pageId))
+      .map(item => captureStructuralSupport(capture, item, lowerPage, "top")).filter(Boolean);
+    if (upper.length + lower.length < 3) return [];
+    const candidates = [];
+    const roles = [...new Set([...upper, ...lower].map(item =>
+      runtime.translationRoleOf(item.observation)))].sort();
+    for (const role of roles) {
+      const upperComponents = runtime.connectedFragmentComponents(
+        upper.filter(item => runtime.translationRoleOf(item.observation) === role)
+      );
+      const lowerComponents = runtime.connectedFragmentComponents(
+        lower.filter(item => runtime.translationRoleOf(item.observation) === role)
+      );
+      for (const upperComponent of upperComponents) {
+        for (const lowerComponent of lowerComponents) {
+          if (!componentsCrossLinked(capture, upperComponent, lowerComponent)) continue;
+          const losers = selectBoundaryDuplicateLosers(upperComponent, lowerComponent);
+          if (!losers.size) continue;
+          const textSupports = [...upperComponent, ...lowerComponent]
+            .filter(item => !losers.has(item.observation.id));
+          const textPageIds = new Set(textSupports.flatMap(item => item.observation.pageIds));
+          if (!textPageIds.has(upperPage.pageId) || !textPageIds.has(lowerPage.pageId)) continue;
+          const authoritativeText = runtime.normalizeText(textSupports.sort((left, right) =>
+            runtime.compareObservationsByPage(
+              left.observation, right.observation, pageIndex
+            )
+          ).map(item => item.observation.originalText).join(" "));
+          candidates.push(groupCandidate(
+            capture, upperPage, lowerPage, upperComponent, lowerComponent,
+            adjacencyConfirmed, pageIndex, {
+              authoritativeText,
+              discardedObservationIds: losers,
+              structuralFallback: true,
+              textSupports
+            }
+          ));
+        }
+      }
+    }
+    return candidates;
   }
 
   function buildSeamFragmentGroups(pageObservations, seamObservations, pages, pageById, adjacencyPairs) {
@@ -206,6 +324,11 @@ export function installReconcilerFragmentGroups(runtime) {
         lowerComponents.forEach((component, index) => {
           if (component.length >= 2 && !linkedLower.has(index)) captureCandidates.push(groupCandidate(capture, upperPage, lowerPage, [], component, adjacencyConfirmed, pageIndex));
         });
+      }
+      if (!captureCandidates.length) {
+        captureCandidates.push(...structuralFallbackCandidates(
+          capture, upperPage, lowerPage, pageObservations, adjacencyConfirmed, pageIndex
+        ));
       }
       captureCandidates.sort((left, right) => right.score - left.score || right.memberObservationIds.length - left.memberObservationIds.length || left.id.localeCompare(right.id));
       const claimed = new Set();

@@ -34,8 +34,7 @@ export function installSceneIndexBuilder(runtime) {
       if (!(canvasWidth > 0 && canvasHeight > 0) || pageIds.some(pageId => !segments.some(segment => String(segment && segment.pageId || "") === pageId && runtime.isValidSeamSurfaceSegment(segment)))) {
         continue;
       }
-      const stateObservationIds = new Set((Array.isArray(state.observationIds) ? state.observationIds : []).map(String));
-      const stateObservationsById = new Map((Array.isArray(state.observations) ? state.observations : []).map(item => [String(item && item.id || ""), item]));
+      const stateEvidence = runtime.buildSeamStateEvidence(state); const { observationIds: stateObservationIds, observationsById: stateObservationsById } = stateEvidence;
       const candidates = [];
       const candidateDiagnostics = [];
       const canonicalMemberIds = new Set(canonicals.flatMap(canonical => (Array.isArray(canonical && canonical.memberObservationIds) ? canonical.memberObservationIds : []).map(String)));
@@ -53,13 +52,14 @@ export function installSceneIndexBuilder(runtime) {
       for (const canonical of canonicals) {
         if (!canonical) continue;
         const canonicalId = String(canonical.id || "");
-        const stateMemberIds = (Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : []).map(String).filter(id => stateObservationIds.has(id));
-        if (!stateMemberIds.length) continue;
+        const { linkedIds: stateLinkedIds, pairWitness } =
+          runtime.linkCanonicalToSeamState(canonical, stateEvidence);
+        if (!stateLinkedIds.length && !pairWitness) continue;
         if (handledCanonicalIds.has(canonicalId)) {
           candidateDiagnostics.push({
             canonicalId,
             reason: "already_handled",
-            stateMemberIds
+            stateLinkedIds
           });
           continue;
         }
@@ -68,7 +68,7 @@ export function installSceneIndexBuilder(runtime) {
           candidateDiagnostics.push({
             canonicalId,
             reason: "page_mismatch",
-            stateMemberIds,
+            stateLinkedIds,
             canonicalPageIds
           });
           continue;
@@ -78,28 +78,30 @@ export function installSceneIndexBuilder(runtime) {
           candidateDiagnostics.push({
             canonicalId,
             reason: "canonical_geometry_outside_capture",
-            stateMemberIds,
+            stateLinkedIds,
             canonicalPageIds,
             outsideObservationIds: seamGeometry.outsideObservationIds,
             missingObservationIds: seamGeometry.missingObservationIds
           });
           continue;
         }
-        const linked = stateMemberIds.map(id => stateObservationsById.get(String(id)) || observationsById.get(String(id))).filter(observation => runtime.observationHasTrueSeamContribution(observation, pageIds));
-        if (!linked.length) {
+        const linked = stateLinkedIds.map(id => stateObservationsById.get(String(id)) ||
+          observationsById.get(String(id))).filter(observation =>
+          runtime.observationHasTrueSeamContribution(observation, pageIds));
+        if (!linked.length && !pairWitness) {
           candidateDiagnostics.push({
             canonicalId,
             reason: "no_linked_observation",
-            stateMemberIds,
+            stateLinkedIds,
             canonicalPageIds
           });
           continue;
         }
-        if (!runtime.seamObservationsCoverPair(linked, pageIds)) {
+        if (linked.length && !runtime.seamObservationsCoverPair(linked, pageIds)) {
           candidateDiagnostics.push({
             canonicalId,
             reason: "incomplete_pair",
-            stateMemberIds,
+            stateLinkedIds,
             canonicalPageIds
           });
           continue;
@@ -110,7 +112,7 @@ export function installSceneIndexBuilder(runtime) {
             canonicalId,
             revision: Math.max(1, Number(canonical.revision) || 1),
             reason: "missing_translation",
-            stateMemberIds,
+            stateLinkedIds,
             canonicalPageIds
           });
           continue;
@@ -120,7 +122,7 @@ export function installSceneIndexBuilder(runtime) {
           candidateDiagnostics.push({
             canonicalId,
             reason: "bubble_build_failed",
-            stateMemberIds,
+            stateLinkedIds,
             canonicalPageIds
           });
           continue;
@@ -128,7 +130,7 @@ export function installSceneIndexBuilder(runtime) {
         candidateDiagnostics.push({
           canonicalId,
           reason: "candidate",
-          stateMemberIds,
+          stateLinkedIds,
           canonicalPageIds
         });
         candidates.push({

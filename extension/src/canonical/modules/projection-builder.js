@@ -36,6 +36,12 @@ export function installProjectionBuilder(runtime) {
       id: String(canonical.id),
       revision: Math.max(1, Number(canonical.revision) || 1),
       memberObservationIds: Object.freeze((Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : []).map(String).sort()),
+      seamWitnessObservationIds: Object.freeze((Array.isArray(canonical.seamWitnessObservationIds) ?
+        canonical.seamWitnessObservationIds : []).map(String).sort()),
+      seamWitnessPairKeys: Object.freeze((Array.isArray(canonical.seamWitnessPairKeys) ?
+        canonical.seamWitnessPairKeys : []).map(String).sort()),
+      seamDiscardedObservationIds: Object.freeze((Array.isArray(canonical.seamDiscardedObservationIds) ?
+        canonical.seamDiscardedObservationIds : []).map(String).sort()),
       originalText: String(canonical.originalText || canonical.original_text || ""),
       geometryByPage: Object.freeze(geometryByPage),
       status: String(canonical.status || "ready")

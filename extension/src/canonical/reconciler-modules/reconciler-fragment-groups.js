@@ -98,6 +98,19 @@ export function installReconcilerFragmentGroups(runtime) {
   }
   runtime.strongSeamCaptures = strongSeamCaptures;
 
+  function filteredSeamGeometryObservations(observations, pageById) {
+    return observations.filter(observation => {
+      if (observation.sourceType !== "seam" ||
+          !runtime.isRevisionCurrent(observation, pageById)) return false;
+      const chapters = observation.pageIds.map(pageId => pageById.get(pageId)?.chapterId)
+        .filter(value => value !== undefined);
+      return new Set(chapters).size <= 1;
+    }).filter((observation, index, array) =>
+      array.findIndex(item => item.id === observation.id) === index
+    );
+  }
+  runtime.filteredSeamGeometryObservations = filteredSeamGeometryObservations;
+
   function captureFragmentSupport(capture, observation, page, edge) {
     return capture.observations.map(seam => runtime.seamFragmentSupport(seam, observation, page, edge)).filter(Boolean)
       .sort((left, right) => right.score - left.score || left.seamObservationId.localeCompare(right.seamObservationId))[0] || null;
@@ -166,6 +179,7 @@ export function installReconcilerFragmentGroups(runtime) {
     }
     return losers;
   }
+  runtime.selectBoundaryDuplicateLosers = selectBoundaryDuplicateLosers;
 
   function seamRegionKey(observation) {
     const visual = observation?.visual || {};
@@ -217,7 +231,7 @@ export function installReconcilerFragmentGroups(runtime) {
     );
     const supportScore = supports.reduce((sum, item) => sum + item.score, 0) / Math.max(1, supports.length);
     const memberObservationIds = observations.map(item => item.id).sort();
-    const seamObservationIds = [...new Set(supports.map(item => item.seamObservationId))].sort();
+    const seamObservationIds = Array.isArray(options.seamObservationIds) ? [...new Set(options.seamObservationIds.map(String))].sort() : [...new Set(supports.map(item => item.seamObservationId))].sort();
     return {
       id: `fragment_group_${runtime.stableHash([capture.captureId, ...memberObservationIds])}`,
       seamId: seamObservationIds[0] || capture.captureId,
@@ -233,10 +247,13 @@ export function installReconcilerFragmentGroups(runtime) {
       scores: { support: runtime.roundTo(supportScore, 6), text: runtime.roundTo(textScore, 6) },
       ...(options.structuralFallback ? {
         structuralFallback: true,
-        discardedObservationIds: [...(options.discardedObservationIds || [])].sort()
+        discardedObservationIds: [...(options.discardedObservationIds || [])].sort(),
+        ...(options.structuralStateFallback ? { structuralStateFallback: true } : {}),
+        ...(options.seamWitnessPairKeys?.length ? { seamWitnessPairKeys: [...options.seamWitnessPairKeys].map(String).sort() } : {})
       } : {})
     };
   }
+  runtime.groupCandidate = groupCandidate;
 
   function structuralFallbackCandidates(capture, upperPage, lowerPage, pageObservations,
     adjacencyConfirmed, pageIndex) {
@@ -284,21 +301,35 @@ export function installReconcilerFragmentGroups(runtime) {
     return candidates;
   }
 
-  function buildSeamFragmentGroups(pageObservations, seamObservations, pages, pageById, adjacencyPairs) {
+  function buildSeamFragmentGroups(pageObservations, seamObservations, pages, pageById, adjacencyPairs, structuralSeamObservations = [], structuralAdjacencyPairs = []) {
     const candidates = [];
     const rejected = [];
     const pageIndex = new Map(pages.map((page, index) => [page.pageId, index]));
-    for (const capture of runtime.strongSeamCaptures(seamObservations, pageById)) {
+    const textCaptureById = new Map(runtime.strongSeamCaptures(
+      seamObservations, pageById
+    ).map(capture => [capture.captureId, capture]));
+    const structuralEvidence = [...new Map([
+      ...seamObservations,
+      ...structuralSeamObservations
+    ].map(observation => [observation.id, observation])).values()];
+    for (const capture of runtime.strongSeamCaptures(structuralEvidence, pageById)) {
       const captureStart = candidates.length;
       const seamPages = capture.pageIds.map(pageId => pageById.get(pageId)).filter(Boolean)
         .sort((left, right) => left.readingOrder - right.readingOrder || left.pageId.localeCompare(right.pageId));
       if (seamPages.length !== 2) continue;
       const [upperPage, lowerPage] = seamPages;
-      const adjacencyConfirmed = runtime.isConfirmedAdjacentPair(upperPage, lowerPage, seamObservations, pageById, adjacencyPairs);
+      const adjacencyConfirmed = runtime.isConfirmedAdjacentPair(
+        upperPage, lowerPage, structuralEvidence, pageById, adjacencyPairs
+      );
+      const textCapture = textCaptureById.get(capture.captureId);
       const upper = pageObservations.filter(item => item.pageIds.includes(upperPage.pageId))
-        .map(item => captureFragmentSupport(capture, item, upperPage, "bottom")).filter(Boolean);
+        .map(item => textCapture ?
+          captureFragmentSupport(textCapture, item, upperPage, "bottom") : null
+        ).filter(Boolean);
       const lower = pageObservations.filter(item => item.pageIds.includes(lowerPage.pageId))
-        .map(item => captureFragmentSupport(capture, item, lowerPage, "top")).filter(Boolean);
+        .map(item => textCapture ?
+          captureFragmentSupport(textCapture, item, lowerPage, "top") : null
+        ).filter(Boolean);
       const roles = [...new Set([...upper, ...lower].map(item => runtime.translationRoleOf(item.observation)))].sort();
       const captureCandidates = [];
       for (const role of roles) {
@@ -344,8 +375,14 @@ export function installReconcilerFragmentGroups(runtime) {
         reason: "fragment_group_not_coherent"
       });
     }
+    candidates.push(...runtime.buildStatePairFragmentGroups(pageObservations, pageById, structuralAdjacencyPairs, pageIndex));
+    const uniqueCandidates = new Map();
+    for (const candidate of candidates.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))) {
+      const key = candidate.memberObservationIds.join("|");
+      if (!uniqueCandidates.has(key)) uniqueCandidates.set(key, candidate);
+    }
     return {
-      candidates: candidates.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id)),
+      candidates: [...uniqueCandidates.values()],
       rejected: rejected.sort((left, right) => left.seamId.localeCompare(right.seamId))
     };
   }

@@ -75,6 +75,179 @@ test("seam rendering accepts an edge fragment that extends beyond the capture ba
   assert.equal(bubble.page_cover_boxes.length, 2);
 });
 
+test("a filtered seam witness rebuilds the surface box from trusted page rows", () => {
+  const segments = [
+    {
+      pageId: "a", drawRect: { x: 0, y: 0, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 800, w: 1000, h: 200 },
+      naturalWidth: 1000, naturalHeight: 1000
+    },
+    {
+      pageId: "b", drawRect: { x: 0, y: 100, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 0, w: 1000, h: 200 },
+      naturalWidth: 1000, naturalHeight: 1000
+    }
+  ];
+  const observations = new Map([
+    ["upper-lines", {
+      id: "upper-lines", sourceType: "page",
+      pageSpans: [{ pageId: "a", box: { x: 27.18, y: 85.25, w: 46.04, h: 12.1 } }]
+    }],
+    ["clipped", {
+      id: "clipped", sourceType: "page",
+      pageSpans: [{ pageId: "a", box: { x: 40.33, y: 97.5, w: 18.16, h: 2.5 } }]
+    }],
+    ["complete", {
+      id: "complete", sourceType: "page",
+      pageSpans: [{ pageId: "b", box: { x: 39.47, y: 0, w: 20.27, h: 3.4 } }]
+    }],
+    ["filtered-seam", {
+      id: "filtered-seam", sourceType: "seam",
+      visual: { box: { x: 27.18, y: 44, w: 46.04, h: 8 }, bgType: "solid" },
+      pageSpans: [
+        { pageId: "a", box: { x: 27.18, y: 91.2, w: 46.04, h: 6.9 }, overlapRatio: 0.5 },
+        { pageId: "b", box: { x: 39.47, y: 0, w: 20.27, h: 3.4 }, overlapRatio: 0.5 }
+      ]
+    }]
+  ]);
+  const canonical = {
+    id: "three-lines",
+    revision: 1,
+    originalText: "그렇다면 여기서 의문점이 생긴다.",
+    memberObservationIds: ["upper-lines", "clipped", "complete"],
+    seamWitnessObservationIds: ["filtered-seam"],
+    seamDiscardedObservationIds: ["clipped"]
+  };
+
+  const bubble = P.buildSeamSurfaceBubble(
+    canonical, { translated_text: "那么，这里就产生了疑问。" },
+    [observations.get("filtered-seam")], 1000, 200, observations, segments
+  );
+
+  assert.ok(bubble);
+  assert.equal(Math.round(bubble.y * 100) / 100, 13.13);
+  assert.equal(Math.round(bubble.h * 100) / 100, 45.38);
+  assert.equal(bubble.original_text, canonical.originalText);
+});
+
+test("a completed pair witness builds a surface without a retained seam OCR box", () => {
+  const segments = [
+    {
+      pageId: "a", drawRect: { x: 0, y: 0, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 800, w: 1000, h: 200 },
+      naturalWidth: 1000, naturalHeight: 1000
+    },
+    {
+      pageId: "b", drawRect: { x: 0, y: 100, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 0, w: 1000, h: 200 },
+      naturalWidth: 1000, naturalHeight: 1000
+    }
+  ];
+  const observations = new Map([
+    ["upper-lines", {
+      id: "upper-lines", sourceType: "page", visual: { bgType: "solid" },
+      pageSpans: [{ pageId: "a", box: { x: 27.18, y: 85.25, w: 46.04, h: 12.1 } }]
+    }],
+    ["clipped", {
+      id: "clipped", sourceType: "page",
+      pageSpans: [{ pageId: "a", box: { x: 40.33, y: 97.5, w: 18.16, h: 2.5 } }]
+    }],
+    ["complete", {
+      id: "complete", sourceType: "page",
+      pageSpans: [{ pageId: "b", box: { x: 39.47, y: 0, w: 20.27, h: 3.4 } }]
+    }]
+  ]);
+  const canonical = {
+    id: "three-lines",
+    revision: 1,
+    originalText: "그렇다면 여기서 의문점이 생긴다.",
+    memberObservationIds: ["upper-lines", "clipped", "complete"],
+    seamWitnessPairKeys: ["pair"],
+    seamDiscardedObservationIds: ["clipped"]
+  };
+
+  const bubble = P.buildSeamSurfaceBubble(
+    canonical, { translated_text: "那么，这里就有了疑问。" },
+    [], 1000, 200, observations, segments
+  );
+
+  assert.ok(bubble);
+  assert.equal(bubble.original_text, canonical.originalText);
+  assert.equal(Math.round(bubble.y * 100) / 100, 13.13);
+  assert.equal(Math.round(bubble.h * 100) / 100, 45.38);
+  assert.equal(bubble.source_line_count, 2);
+});
+
+test("surface index accepts a canonical linked only by completed pair evidence", () => {
+  const pageIds = ["a", "b"];
+  const revisions = { a: "rev-a", b: "rev-b" };
+  const segments = [
+    {
+      pageId: "a", drawRect: { x: 0, y: 0, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 800, w: 1000, h: 200 },
+      naturalWidth: 1000, naturalHeight: 1000
+    },
+    {
+      pageId: "b", drawRect: { x: 0, y: 100, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 0, w: 1000, h: 200 },
+      naturalWidth: 1000, naturalHeight: 1000
+    }
+  ];
+  const observations = [
+    {
+      id: "upper-lines", sourceType: "page", pageIds: ["a"],
+      pageSpans: [{ pageId: "a", box: { x: 27.18, y: 85.25, w: 46.04, h: 12.1 } }]
+    },
+    {
+      id: "clipped", sourceType: "page", pageIds: ["a"],
+      pageSpans: [{ pageId: "a", box: { x: 40.33, y: 97.5, w: 18.16, h: 2.5 } }]
+    },
+    {
+      id: "complete", sourceType: "page", pageIds: ["b"],
+      pageSpans: [{ pageId: "b", box: { x: 39.47, y: 0, w: 20.27, h: 3.4 } }]
+    }
+  ];
+  const canonical = {
+    id: "three-lines", revision: 1,
+    originalText: "그렇다면 여기서 의문점이 생긴다.",
+    memberObservationIds: observations.map(item => item.id),
+    seamWitnessPairKeys: ["pair"],
+    seamDiscardedObservationIds: ["clipped"],
+    geometryByPage: { a: [{}], b: [{}] },
+    status: "ready"
+  };
+  const handles = new Map(pageIds.map(pageId => [pageId, {
+    pageId, imageRevision: revisions[pageId],
+    width: 1000, height: 1000
+  }]));
+  const store = {
+    getCanonicalSnapshot: () => [canonical],
+    getRetiredCanonicals: () => [],
+    getObservations: () => observations,
+    getSeamStates: () => [{
+      status: "completed", pairKey: "pair", pageIds,
+      imageRevisionByPage: revisions,
+      canvasWidth: 1000, canvasHeight: 200, segments,
+      observationIds: [], observations: [], filteredObservations: [],
+      cleanedImage: "data:image/png;base64,AA==",
+      cleanedImageToken: "fixture-cleaned"
+    }],
+    getPageHandle: pageId => handles.get(pageId),
+    getPageTerminal: pageId => ({
+      state: "ready", details: { imageRevision: revisions[pageId] }
+    }),
+    getCoverageLedger: () => new Map(),
+    getTranslation: () => ({ translated_text: "那么，这里就有了疑问。" })
+  };
+
+  const index = P.buildSeamRenderSurfaceIndex(store);
+
+  assert.equal(index.surfaces.length, 1);
+  assert.deepEqual(index.surfaces[0].handledCanonicalIds, ["three-lines"]);
+  assert.equal(index.surfaces[0].bubbles[0].original_text,
+    canonical.originalText);
+});
+
 test("final debug follows the selected seam box and hides duplicate page final boxes", () => {
   const bubble = { x: 10, y: 50, w: 40, h: 20, original_text: "whole", translated_text: "完整" };
   const surface = {

@@ -371,6 +371,119 @@ test("a truncated overlap rebuilds three lines from page OCR when seam text cros
   assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
 });
 
+test("a filtered wrong-row seam remains a geometry witness without contributing text", () => {
+  const upper = page("filtered-overlap-upper", 0);
+  const lower = page("filtered-overlap-lower", 1);
+  const upperLines = pageObservation(upper, "그렇다면 여기서 의문점이",
+    { x: 27.18, y: 85.25, w: 46.04, h: 12.1 }, "", "caption_panel");
+  const clippedThirdLine = pageObservation(upper, "새기",
+    { x: 40.33, y: 97.5, w: 18.16, h: 2.5 }, "", "caption_panel");
+  const completeThirdLine = pageObservation(lower, "생긴다.",
+    { x: 39.47, y: 0, w: 20.27, h: 3.4 }, "", "caption_panel");
+  const wrongRowSeam = seamObservation(upper, lower, "여기성원무적이",
+    { x: 27.18, y: 91.2, w: 46.04, h: 6.9 },
+    { x: 39.47, y: 0, w: 20.27, h: 3.4 }, "", "caption_panel");
+
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperLines, clippedThirdLine, completeThirdLine],
+    filteredObservations: [wrongRowSeam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText, "그렇다면 여기서 의문점이 생긴다.");
+  assert.deepEqual(result.canonicals[0].memberObservationIds,
+    [upperLines, clippedThirdLine, completeThirdLine].map(item => item.id).sort());
+  assert.deepEqual(result.canonicals[0].seamWitnessObservationIds, [wrongRowSeam.id]);
+  assert.deepEqual(result.canonicals[0].seamDiscardedObservationIds,
+    [clippedThirdLine.id]);
+  assert.equal(result.ledger[wrongRowSeam.id].resolution, "filtered");
+  assert.equal(result.ledger[wrongRowSeam.id].filterReason, "provider_filtered");
+  assert.equal(result.diagnostics.acceptedFragmentGroups[0].structuralFallback, true);
+});
+
+test("a completed overlap state rebuilds edge rows when seam OCR has no usable box", () => {
+  const upper = page("state-overlap-upper", 0);
+  const lower = page("state-overlap-lower", 1);
+  const upperLines = pageObservation(upper, "그렇다면 여기서 의문점이",
+    { x: 27.18, y: 85.25, w: 46.04, h: 12.1 }, "", "caption_panel");
+  const clippedThirdLine = pageObservation(upper, "새기",
+    { x: 40.33, y: 97.5, w: 18.16, h: 2.5 }, "", "caption_panel");
+  const completeThirdLine = pageObservation(lower, "생긴다.",
+    { x: 39.47, y: 0, w: 20.27, h: 3.4 }, "", "caption_panel");
+  const wrongSeamRow = seamCaptureFragment(
+    upper, lower, "state-overlap-capture", upper,
+    "여기성원무적이", { x: 27.18, y: 91.2, w: 46.04, h: 6.9 }
+  );
+  const pairKey = "state-overlap-pair";
+
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperLines, clippedThirdLine, completeThirdLine, wrongSeamRow],
+    adjacentPagePairs: [{
+      pageIds: [upper.pageId, lower.pageId],
+      seamEvidence: {
+        pairKey,
+        status: "completed",
+        reasons: ["lower_ocr_edge", "pixel_overlap", "upper_ocr_edge"],
+        observationIds: [wrongSeamRow.id],
+        imageRevisionByPage: {
+          [upper.pageId]: upper.imageRevision,
+          [lower.pageId]: lower.imageRevision
+        }
+      }
+    }]
+  });
+
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText,
+    "그렇다면 여기서 의문점이 생긴다.");
+  assert.deepEqual(result.canonicals[0].memberObservationIds,
+    [upperLines, clippedThirdLine, completeThirdLine, wrongSeamRow]
+      .map(item => item.id).sort());
+  assert.deepEqual(result.canonicals[0].seamWitnessPairKeys, [pairKey]);
+  assert.deepEqual(result.canonicals[0].seamDiscardedObservationIds,
+    [clippedThirdLine.id]);
+  assert.equal(result.diagnostics.acceptedFragmentGroups[0].structuralStateFallback,
+    true);
+  assert.equal(result.ledger[wrongSeamRow.id].resolution, "consumed");
+});
+
+test("edge rows stay separate when a completed seam has no overlap evidence", () => {
+  const upper = page("state-no-overlap-upper", 0);
+  const lower = page("state-no-overlap-lower", 1);
+  const observations = [
+    pageObservation(upper, "그렇다면 여기서 의문점이",
+      { x: 27.18, y: 85.25, w: 46.04, h: 12.1 }, "", "caption_panel"),
+    pageObservation(upper, "새기",
+      { x: 40.33, y: 97.5, w: 18.16, h: 2.5 }, "", "caption_panel"),
+    pageObservation(lower, "생긴다.",
+      { x: 39.47, y: 0, w: 20.27, h: 3.4 }, "", "caption_panel")
+  ];
+
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations,
+    adjacentPagePairs: [{
+      pageIds: [upper.pageId, lower.pageId],
+      seamEvidence: {
+        pairKey: "state-no-overlap-pair",
+        status: "completed",
+        reasons: ["lower_ocr_edge", "upper_ocr_edge"],
+        imageRevisionByPage: {
+          [upper.pageId]: upper.imageRevision,
+          [lower.pageId]: lower.imageRevision
+        }
+      }
+    }]
+  });
+
+  assert.equal(result.diagnostics.acceptedFragmentGroups.length, 0);
+  assert.equal(new Set(observations.map(item =>
+    result.ledger[item.id].canonicalId)).size, 3);
+});
+
 test("an unrelated seam cannot merge three aligned edge blocks without a duplicate boundary line", () => {
   const upper = page("no-overlap-repair-upper", 0);
   const lower = page("no-overlap-repair-lower", 1);

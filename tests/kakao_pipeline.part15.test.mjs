@@ -678,6 +678,15 @@ test("onAdjacent records confirmed revisioned adjacency even when seam OCR retur
     "page-b": "rev-b"
   });
   assert.equal(harness.store.getSeamStates()[0].status, "completed");
+  const evidencedPairs = P.buildConfirmedAdjacentPagePairs(
+    harness.store.getPageHandles(), harness.store.getSeamStates()
+  );
+  assert.equal(evidencedPairs[0].seamEvidence.status, "completed");
+  assert.deepEqual(evidencedPairs[0].seamEvidence.observationIds, []);
+  assert.deepEqual(evidencedPairs[0].seamEvidence.imageRevisionByPage, {
+    "page-a": "rev-a",
+    "page-b": "rev-b"
+  });
   assert.deepEqual(harness.store.getCanonicalSnapshot(), []);
 });
 test("page-ready adjacency notification runs after the ready terminal and before page projection", async () => {

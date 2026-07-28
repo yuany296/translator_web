@@ -8,6 +8,7 @@ import { installStorePipelineContext } from "./store-pipeline-context.js";
 import { installCanonicalBridge } from "./canonical-bridge.js";
 import { installPipelineHelpers } from "./pipeline-helpers.js";
 import { installProjectionBuilder } from "./projection-builder.js";
+import { installSeamSurfaceWitness } from "./seam-surface-witness.js";
 import { installProjectionUtils } from "./projection-utils.js";
 import { installSeamResiduals } from "./seam-residuals.js";
 import { installSceneIndexBuilder } from "./scene-index-builder.js";
@@ -28,6 +29,7 @@ export const pipelineInstallers = Object.freeze([
   installCanonicalBridge,
   installPipelineHelpers,
   installProjectionBuilder,
+  installSeamSurfaceWitness,
   installProjectionUtils,
   installSeamResiduals,
   installSceneIndexBuilder,
@@ -50,6 +52,7 @@ export const pipelinePhases = Object.freeze({
     installCanonicalBridge,
     installPipelineHelpers,
     installProjectionBuilder,
+    installSeamSurfaceWitness,
     installProjectionUtils,
     installSeamResiduals,
     installSceneIndexBuilder,

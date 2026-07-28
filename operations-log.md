@@ -1,5 +1,14 @@
 # Operations Log
 
+## 2026-07-28 - Codex（用已确认接缝状态修复无可用 seam OCR 框的截断页）
+
+- 真实重载确认 filtered seam OCR 的跨页投影可能不足以授权合并，且同一接缝在下一次 OCR 中也可能保留一条错误读数；因此不再依赖某个 seam 文本框，而是把已完成 seam state 的上下页 OCR 边缘信号、视觉边缘信号、像素重叠和图像 revision 作为结构见证。
+- 新增 `reconciler-pair-fallback.js`：只有已完成接缝同时具备上下 OCR 边缘和 `pixel_overlap`/`fragment_structure`，页面边缘至少有三个相连块，并存在水平对齐的重复截断行时，才用 page OCR 重建 canonical。当前保留 `그렇다면 여기서 의문점이` 与完整 `생긴다.`，舍弃截断 `새기`；无像素重叠、无重复行或 revision 过期时均保持分离。
+- canonical 记录 `seamWitnessPairKeys`，`seam-surface-witness.js` 将可信 page span 按 `sourceCrop → drawRect` 映射回拼接画布；即使没有保留 seam OCR 框，也能生成一张连续跨页 surface。跨页译文使用 `pre-wrap` 与任意断词，防止长译文横向越界。
+- 已完成接缝的 retained observation ID 会随相邻页证据传给 reconciler。结构合并接受后，错误 seam OCR `obs-v1-b9efa3c0afb4534c6ed18a6a67248e03` 被吸收到同一 canonical，不再恢复成第二个跨页译文。
+- Chrome 最终现场复核：目标 surface `seam-render-v1:c31abb10` 只有一个 accepted canonical；原文为 `그렇다면 여기서 의문점이 생긴다.`，译文为“那么,这里就产生了一个疑问。”；canonical 四个成员包含上下页三份 page OCR 和错误 seam OCR，页面上该 surface 只有一个 `.mt-cross-page-overlay`。
+- 文件长度门禁、JavaScript lint、扩展构建与完整 Node `534/534` 通过；本轮未修改 Python，既有 Python 验证为 `58 passed, 1 skipped`、Pylint `10.00/10`。
+
 ## 2026-07-28 - Codex（修复截断重叠页的错行 seam 与第三行半截）
 
 - Chrome 现场将目标两页精确映射为四份 OCR/canonical 证据：上页 `그렇다면 여기서 의문점이` 的正确两行块位于 `y=85.25%–97.35%`，上页误识别 `새기` 位于 `y=97.5%–100%`，下页完整 `생긴다.` 位于 `y=0%–3.4%`；另有 seam OCR `여기성원무적이` 的内容来自第二行，但跨页框覆盖第二、三行。旧逻辑把这个错行 seam 当成独立跨页权威，同时保留三个页面 canonical，最终出现四层重叠译文。

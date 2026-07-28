@@ -49,10 +49,27 @@ export function installProjectionUtils(runtime) {
 
   function buildSeamSurfaceBubble(canonical, translation, observations, canvasWidth, canvasHeight, observationsById, segments) {
     const linked = (Array.isArray(observations) ? observations : []).filter(observation => runtime.seamObservationCaptureBox(observation, canvasWidth, canvasHeight));
-    if (!linked.length) return null;
-    const box = runtime.unionSeamPercentBoxes(linked.map(observation => runtime.seamObservationCaptureBox(observation, canvasWidth, canvasHeight)));
+    const witnessBox = linked.length ? runtime.unionSeamPercentBoxes(linked.map(observation =>
+      runtime.seamObservationCaptureBox(observation, canvasWidth, canvasHeight)
+    )) : null;
+    const hasStructuralWitness = (Array.isArray(canonical?.seamWitnessObservationIds) &&
+      canonical.seamWitnessObservationIds.length) ||
+      (Array.isArray(canonical?.seamWitnessPairKeys) &&
+        canonical.seamWitnessPairKeys.length);
+    const structuralBox = hasStructuralWitness ? runtime.canonicalSeamCaptureBox(
+        canonical, observationsById, segments, canvasWidth, canvasHeight
+      ) : null;
+    // 过滤 seam 只提供跨页关系；最终蓝框由可信 page OCR 的几何重建。
+    const box = structuralBox || witnessBox;
     if (!box) return null;
-    const selected = runtime.selectSeamVisualObservation(linked);
+    const discardedIds = new Set((canonical?.seamDiscardedObservationIds || []).map(String));
+    const trustedMembers = (canonical?.memberObservationIds || []).map(id =>
+      observationsById instanceof Map ? observationsById.get(String(id)) : null
+    ).filter(item => item && item.sourceType === "page" &&
+      !discardedIds.has(String(item.id)));
+    const selected = runtime.selectSeamVisualObservation(
+      linked.length ? linked : trustedMembers
+    );
     const rawVisual = selected && selected.visual && typeof selected.visual === "object" ? selected.visual : {};
     const translatedText = String(translation && (translation.translated_text || translation.translatedText) || "").trim();
     if (!translatedText) return null;
@@ -69,7 +86,8 @@ export function installProjectionUtils(runtime) {
     const rotationDeg = Number(rawVisual.rotationDeg ?? rawVisual.rotation_deg) || 0;
     const fontWeight = runtime.normalizeFontWeight(rawVisual.fontWeight ?? rawVisual.font_weight);
     const translationRole = String(rawVisual.translationRole || rawVisual.translation_role || "");
-    const sourceLineCount = Math.max(linked.length, Number(rawVisual.sourceLineCount ?? rawVisual.source_line_count) || 1);
+    const sourceLineCount = Math.max(linked.length, trustedMembers.length,
+      Number(rawVisual.sourceLineCount ?? rawVisual.source_line_count) || 1);
     const visual = runtime.freezeCanonicalValue({
       ...rawVisual,
       fillBox: box,

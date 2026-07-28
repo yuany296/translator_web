@@ -2,6 +2,7 @@ import { installReconcilerObservation } from "./reconciler-observation.js";
 import { installReconcilerSeam } from "./reconciler-seam.js";
 import { installReconcilerSeamEval } from "./reconciler-seam-eval.js";
 import { installReconcilerFragmentGroups } from "./reconciler-fragment-groups.js";
+import { installReconcilerPairFallback } from "./reconciler-pair-fallback.js";
 import { installReconcilerCanonical } from "./reconciler-canonical.js";
 import { installReconcilerHistory } from "./reconciler-history.js";
 import { installReconcilerProjection } from "./reconciler-projection.js";
@@ -16,6 +17,7 @@ export const reconcilerInstallers = Object.freeze([
   installReconcilerSeam,
   installReconcilerSeamEval,
   installReconcilerFragmentGroups,
+  installReconcilerPairFallback,
   installReconcilerCanonical,
   installReconcilerHistory,
   installReconcilerProjection,
@@ -32,6 +34,7 @@ export const reconcilerPhases = Object.freeze({
     installReconcilerSeam,
     installReconcilerSeamEval,
     installReconcilerFragmentGroups,
+    installReconcilerPairFallback,
     installReconcilerCanonical,
     installReconcilerHistory,
     installReconcilerProjection,

@@ -49,12 +49,13 @@ export function installReconcilerProjection(runtime) {
     const pageObservations = active.filter(observation => observation.sourceType === "page");
     const seamObservations = active.filter(observation => observation.sourceType === "seam");
     const seamEvidenceObservations = activeInput.filter(observation => observation.sourceType === "seam" && !staleIds.has(observation.id) && !crossChapterIds.has(observation.id) && !explicitlyFilteredIds.has(observation.id)).filter((observation, index, array) => array.findIndex(item => item.id === observation.id) === index);
-    const observationById = new Map([...active, ...seamEvidenceObservations]
-      .map(observation => [observation.id, observation]));
+    // 被过滤的 seam 文本不能成为 canonical 文本，但其跨页投影仍可作为结构见证。
+    const filteredSeamGeometryObservations = runtime.filteredSeamGeometryObservations(filteredInput, pageById);
+    const observationById = new Map([...active, ...seamEvidenceObservations].map(observation => [observation.id, observation]));
     const unionFind = runtime.createUnionFind(pageObservations);
     const confirmedAdjacencyPairs = runtime.normalizeAdjacencyPairs(adjacencyPairs);
     const edges = runtime.buildCandidateEdges(pageObservations, seamObservations, pages, pageById, confirmedAdjacencyPairs);
-    const fragmentGroupResult = runtime.buildSeamFragmentGroups(pageObservations, seamEvidenceObservations, pages, pageById, confirmedAdjacencyPairs);
+    const fragmentGroupResult = runtime.buildSeamFragmentGroups(pageObservations, seamEvidenceObservations, pages, pageById, confirmedAdjacencyPairs, filteredSeamGeometryObservations, adjacencyPairs);
     const acceptedFragmentGroups = [];
     const rejectedFragmentGroups = [...fragmentGroupResult.rejected];
     for (const group of fragmentGroupResult.candidates) {
@@ -151,16 +152,19 @@ export function installReconcilerProjection(runtime) {
       const componentEdges = acceptedEdges.filter(edge => memberIds.includes(edge.upperId) && memberIds.includes(edge.lowerId));
       const anchor = pageMembers.length ? [...pageMembers].sort((left, right) => runtime.compareObservationsByPage(left, right, pageIndex))[0] : members[0];
       const geometryByPage = runtime.geometryByPageForMembers(members, pageIndex);
-      const fragmentText = fragmentGroupByRoot.get(root)?.authoritativeText || "";
+      const fragmentGroup = fragmentGroupByRoot.get(root) || null;
+      const fragmentText = fragmentGroup?.authoritativeText || "";
       const selectedText = runtime.chooseCanonicalText(members, componentEdges, pageIndex, pageById);
       const bridgeExpanded = pageMembers.some(member => continuationBridgeMemberIds.has(member.id)) &&
         runtime.normalizeComparableText(selectedText).length > runtime.normalizeComparableText(fragmentText).length;
       const originalText = bridgeExpanded ? selectedText : fragmentText || selectedText;
       const status = pageMembers.some(member => reviewObservationIds.has(member.id)) && componentEdges.length === 0 ? "needs_review" : originalText ? "ready" : "filtered";
       const canonicalId = `canonical_${runtime.stableHash(anchor.id)}`;
+      const seamWitnessObservationIds = fragmentGroup?.structuralFallback ? fragmentGroup.seamObservationIds.filter(id => explicitlyFilteredIds.has(id)).sort() : [];
+      const seamWitnessPairKeys = fragmentGroup?.structuralFallback ? [...(fragmentGroup.seamWitnessPairKeys || [])].map(String).sort() : [];
+      const seamDiscardedObservationIds = fragmentGroup?.structuralFallback ? [...(fragmentGroup.discardedObservationIds || [])].sort() : [];
       drafts.push({
-        id: canonicalId,
-        revision: 1,
+        id: canonicalId, revision: 1,
         supersedesId: runtime.deterministicSupersedesId(pageMembers, pageIndex, canonicalId),
         memberObservationIds: memberIds,
         originalText,
@@ -168,7 +172,10 @@ export function installReconcilerProjection(runtime) {
         geometryByPage,
         status,
         translationFingerprint: `text_${runtime.stableHash(runtime.normalizeText(originalText))}`,
-        evidenceGeneration: runtime.canonicalEvidenceGeneration(members)
+        evidenceGeneration: runtime.canonicalEvidenceGeneration(members),
+        ...(seamWitnessObservationIds.length ? { seamWitnessObservationIds } : {}),
+        ...(seamWitnessPairKeys.length ? { seamWitnessPairKeys } : {}),
+        ...(seamDiscardedObservationIds.length ? { seamDiscardedObservationIds } : {})
       });
     }
     drafts.sort((left, right) => runtime.earliestPageIndexForCanonical(left, pageIndex) - runtime.earliestPageIndexForCanonical(right, pageIndex) || runtime.stableSerialize(left.geometryByPage).localeCompare(runtime.stableSerialize(right.geometryByPage)) || left.id.localeCompare(right.id));

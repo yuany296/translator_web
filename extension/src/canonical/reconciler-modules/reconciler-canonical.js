@@ -359,6 +359,9 @@ export function installReconcilerCanonical(runtime) {
   function canonicalSignature(canonical) {
     return runtime.stableHash({
       memberObservationIds: canonical.memberObservationIds,
+      seamWitnessObservationIds: canonical.seamWitnessObservationIds || [],
+      seamWitnessPairKeys: canonical.seamWitnessPairKeys || [],
+      seamDiscardedObservationIds: canonical.seamDiscardedObservationIds || [],
       originalText: canonical.originalText,
       nonTranslate: canonical.nonTranslate === true,
       geometryByPage: canonical.geometryByPage

@@ -55,8 +55,8 @@
 }
 
 .mt-cross-page-overlay .mt-cross-page-text {
-  white-space: pre;
-  word-break: normal;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   pointer-events: auto;
 }
 

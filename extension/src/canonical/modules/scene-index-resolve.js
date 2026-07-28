@@ -18,7 +18,9 @@ export function installSceneIndexResolve(runtime) {
   runtime.normalizeSpanBoxPixels = normalizeSpanBoxPixels;
   function reconcileCanonicalEvidence(store) {
     const pages = store.getPageHandles().map(runtime.canonicalPageDescriptor);
-    const adjacentPagePairs = runtime.buildConfirmedAdjacentPagePairs(store.getPageHandles());
+    const adjacentPagePairs = runtime.buildConfirmedAdjacentPagePairs(
+      store.getPageHandles(), store.getSeamStates()
+    );
     const observations = store.getObservations().filter(item => !store.getFilteredObservations().some(filtered => filtered.id === item.id));
     const filteredObservations = store.getFilteredObservations();
     const previousCanonicals = store.getCanonicalSnapshot();
@@ -41,8 +43,12 @@ export function installSceneIndexResolve(runtime) {
     });
   }
   runtime.reconcileCanonicalEvidence = reconcileCanonicalEvidence;
-  function buildConfirmedAdjacentPagePairs(records) {
+  function buildConfirmedAdjacentPagePairs(records, seamStates = []) {
     const pageById = new Map((Array.isArray(records) ? records : []).map(record => [record.pageId, record]));
+    const pairToken = (left, right) => [String(left || ""), String(right || "")].sort().join("\u0000");
+    const stateByPair = new Map((Array.isArray(seamStates) ? seamStates : [])
+      .filter(state => Array.isArray(state?.pageIds) && state.pageIds.length === 2)
+      .map(state => [pairToken(state.pageIds[0], state.pageIds[1]), state]));
     const pairs = new Map();
     for (const record of pageById.values()) {
       const candidates = new Set([String(record.previousPageId || ""), String(record.nextPageId || ""), ...(Array.isArray(record.adjacentPageIds) ? record.adjacentPageIds.map(String) : [])]);
@@ -51,11 +57,27 @@ export function installSceneIndexResolve(runtime) {
         if (!adjacent || adjacent.pageId === record.pageId) continue;
         const ordered = [record, adjacent].sort(runtime.comparePageRecords);
         const key = `${ordered[0].pageId}|${ordered[1].pageId}`;
+        const state = stateByPair.get(pairToken(
+          ordered[0].pageId, ordered[1].pageId
+        ));
         pairs.set(key, Object.freeze({
           pageIds: Object.freeze(ordered.map(page => page.pageId)),
           pageAId: ordered[0].pageId,
           pageBId: ordered[1].pageId,
-          imageRevisionByPage: Object.freeze(runtime.revisionsForPages(ordered))
+          imageRevisionByPage: Object.freeze(runtime.revisionsForPages(ordered)),
+          ...(state ? {
+            seamEvidence: Object.freeze({
+              pairKey: String(state.pairKey || ""),
+              status: String(state.status || ""),
+              reasons: Object.freeze((Array.isArray(state.reasons) ?
+                state.reasons : []).map(String).sort()),
+              observationIds: Object.freeze((Array.isArray(state.observationIds) ?
+                state.observationIds : []).map(String).sort()),
+              imageRevisionByPage: Object.freeze({
+                ...(state.imageRevisionByPage || {})
+              })
+            })
+          } : {})
         }));
       }
     }

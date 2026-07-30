@@ -248,6 +248,55 @@ test("seam OCR can join only compatible fragments immediately above and below th
   ], request, imageSize);
   assert.equal(completed.retained.length, 0);
 });
+test("seam OCR keeps every line from a speech region when the image boundary cuts through one line", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 720, height: 192 };
+  const request = {
+    sourceType: "seam",
+    imageMeta: {
+      pageSpans: [{
+        pageId: "page-upper",
+        canvasBox: { x: 0, y: 0, w: 720, h: 96 },
+        pageBox: { x: 0, y: 904, w: 720, h: 96 },
+        pageWidth: 720,
+        pageHeight: 1000
+      }, {
+        pageId: "page-lower",
+        canvasBox: { x: 0, y: 96, w: 720, h: 96 },
+        pageBox: { x: 0, y: 0, w: 720, h: 96 },
+        pageWidth: 720,
+        pageHeight: 1000
+      }]
+    }
+  };
+  const candidate = (text, rawBox, regionId = "chat-bubble") => ({
+    original_text: text,
+    x: rawBox.left / imageSize.width * 100,
+    y: rawBox.top / imageSize.height * 100,
+    w: rawBox.width / imageSize.width * 100,
+    h: rawBox.height / imageSize.height * 100,
+    rawBox,
+    fill_box: { x: 24, y: 38, w: 54, h: 47 },
+    confidence: 0.98,
+    bg_type: "solid",
+    bg_color: "#ffffff",
+    region_id: regionId,
+    region_type: "speech_bubble",
+    source_line_count: 1
+  });
+  const result = background.filterSeamOcrCandidates([
+    candidate("내일이면 드디어 귀국이군", { left: 190, top: 84, width: 330, height: 24 }),
+    candidate("요. 모두 고생 많으셨습니", { left: 205, top: 112, width: 300, height: 20 }),
+    candidate("다.", { left: 210, top: 140, width: 42, height: 18 }),
+    candidate("unrelated", { left: 590, top: 142, width: 80, height: 18 }, "other-bubble")
+  ], request, imageSize);
+  assert.equal(result.retained.length, 1);
+  assert.equal(result.retained[0].original_text,
+    "내일이면 드디어 귀국이군\n요. 모두 고생 많으셨습니\n다.");
+  assert.equal(result.retained[0].source_line_count, 3);
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].candidate.original_text, "unrelated");
+});
 test("seam OCR keeps boundary text when its reliable speech region crosses both pages", () => {
   const background = context.__backgroundTest;
   const imageSize = {

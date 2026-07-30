@@ -60,6 +60,74 @@ function makeStitchPayload(ownerTop, ownerHeight, compositeHeight, opts = {}) {
     }
   };
 }
+function createSnapshotImage(source) {
+  const target = new globalThis.HTMLImageElement();
+  const attributes = new Map([["src", source]]);
+  target.dataset = {};
+  target.currentSrc = source;
+  Object.defineProperty(target, "src", {
+    configurable: true,
+    get() {
+      return this.currentSrc;
+    },
+    set(value) {
+      this.currentSrc = String(value);
+      attributes.set("src", this.currentSrc);
+    }
+  });
+  target.naturalWidth = 760;
+  target.naturalHeight = 1200;
+  target.isConnected = true;
+  target.getAttribute = name => attributes.get(name) || "";
+  target.setAttribute = (name, value) => attributes.set(name, String(value));
+  target.removeAttribute = name => attributes.delete(name);
+  target.getBoundingClientRect = () => ({
+    width: 760,
+    height: 1200
+  });
+  return target;
+}
+test("embedded image commit keeps its pre-render target snapshot valid", () => {
+  const source = "https://cdn.example.test/novel-page.jpg";
+  const output = "data:image/png;base64,ZW1iZWRkZWQ=";
+  const target = createSnapshotImage(source);
+  const snapshot = runtime.__test.captureTargetSnapshot(target);
+  runtime.__test.applyEmbeddedImageDataUrl(target, "novel-output", output, {
+    bubbleCount: 1,
+    translatedLines: ["中文"]
+  });
+  assert.equal(runtime.__test.getCommittedEmbeddedOriginalSource(target, output), source);
+  assert.equal(runtime.__test.isTargetSnapshotStillValid(target, snapshot), true);
+});
+test("an external data URL replacement still invalidates an embedded snapshot", () => {
+  const source = "https://cdn.example.test/novel-page-replaced.jpg";
+  const output = "data:image/png;base64,b3V0cHV0";
+  const target = createSnapshotImage(source);
+  const snapshot = runtime.__test.captureTargetSnapshot(target);
+  runtime.__test.applyEmbeddedImageDataUrl(target, "novel-output-replaced", output, {
+    bubbleCount: 1,
+    translatedLines: ["中文"]
+  });
+  target.src = "data:image/png;base64,ZXh0ZXJuYWw=";
+  assert.equal(runtime.__test.isTargetSnapshotStillValid(target, snapshot), false);
+});
+test("confirmed novel image output wins over a late cancellation without opening the panel", () => {
+  const cancelled = { ok: false, reason: "cancelled:target changed before render commit" };
+  assert.deepEqual(runtime.__test.classifyNovelImageResult(cancelled, ["中文"]), {
+    status: "complete",
+    error: ""
+  });
+  assert.deepEqual(runtime.__test.classifyNovelImageResult(cancelled, [], true), {
+    status: "complete",
+    error: ""
+  });
+  assert.equal(runtime.__test.shouldOpenNovelImagePanel(false, "complete"), false);
+  assert.deepEqual(runtime.__test.classifyNovelImageResult(cancelled, []), {
+    status: "failed",
+    error: cancelled.reason
+  });
+  assert.equal(runtime.__test.shouldOpenNovelImagePanel(false, "failed"), true);
+});
 test("dedupedItems coordinate mapping follows same rules as raw items", () => {
   const result = runtime.__test.normalizeDebugCoordinateItems([{
     id: "dup",
@@ -316,6 +384,34 @@ test("cross-page geometry lays out one text frame from full page-space canonical
     "page-coordinate boxes inside the seam capture must retain cleaned-image coordinates");
   assert.equal(geometry.coverSegments[1].compositeIntersection, undefined,
     "page-coordinate boxes extending beyond the seam capture cannot sample unavailable pixels");
+});
+test("solid cross-page geometry bridges a small mask gap cut through a source line", () => {
+  const surface = {
+    canvasWidth: 760, canvasHeight: 192, pageIds: ["upper", "lower"],
+    segments: [{
+      pageId: "upper", drawRect: { x: 0, y: 0, w: 760, h: 96 },
+      sourceCrop: { x: 0, y: 904, w: 760, h: 96 }, naturalWidth: 760, naturalHeight: 1000
+    }, {
+      pageId: "lower", drawRect: { x: 0, y: 96, w: 760, h: 96 },
+      sourceCrop: { x: 0, y: 0, w: 760, h: 96 }, naturalWidth: 760, naturalHeight: 1000
+    }]
+  };
+  const targets = new Map([
+    ["upper", { left: 100, top: 50, width: 760, height: 1000 }],
+    ["lower", { left: 100, top: 1050, width: 760, height: 1000 }]
+  ]);
+  const pageBoxes = [
+    { pageId: "upper", x: 20, y: 94, w: 60, h: 6 },
+    { pageId: "lower", x: 22, y: 2, w: 56, h: 8 }
+  ];
+  const geometry = runtime.__test.buildCrossPageBubbleGeometry(surface, {
+    x: 20, y: 35, w: 60, h: 30, fill_box: { x: 20, y: 35, w: 60, h: 30 },
+    bg_type: "solid", page_text_boxes: pageBoxes, page_cover_boxes: pageBoxes
+  }, targets, { left: 80, top: 20, width: 800, height: 2200 });
+  const bridge = geometry.coverSegments.find(segment => segment.mapping === "bridge");
+  assert.ok(bridge);
+  assert.equal(Math.round(bridge.height), 20);
+  assert.equal(Math.round(geometry.textFrame.sourceImageHeight), 192);
 });
 test("cross-page renderer has one layout call site and no legacy page-local seam windows", () => {
   const start = contentSource.indexOf("function applyCrossPageTextGeometry(");

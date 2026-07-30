@@ -165,6 +165,51 @@ def test_recognition_candidates_are_sent_as_one_batch(monkeypatch: pytest.Monkey
     assert calls == [(3, 3)]
     assert [item["text"] for item in result] == ["문장0", "문장1", "문장2"]
 
+def test_korean_recognition_restores_two_raised_carets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cv2
+    import numpy as np
+    import server
+
+    image = np.full((111, 172, 3), (40, 220, 250), dtype=np.uint8)
+    cv2.rectangle(image, (26, 33), (55, 77), (20, 20, 20), -1)
+    cv2.rectangle(image, (45, 27), (67, 91), (20, 20, 20), -1)
+    cv2.rectangle(image, (76, 25), (82, 95), (20, 20, 20), -1)
+    cv2.line(image, (89, 58), (103, 34), (20, 20, 20), 5)
+    cv2.line(image, (103, 34), (116, 58), (20, 20, 20), 5)
+    cv2.line(image, (124, 58), (137, 34), (20, 20, 20), 5)
+    cv2.line(image, (137, 34), (151, 58), (20, 20, 20), 5)
+
+    class StubRecognizer:
+        def predict(self, _images, batch_size):
+            assert batch_size == 1
+            return [{"rec_text": "네쓰", "rec_score": 0.88}]
+
+    monkeypatch.setattr(server, "get_text_recognition_client", lambda _lang: StubRecognizer())
+    result = server.recognize_candidate_rows([{
+        "detection_index": 0,
+        "orientation": 0,
+        "image": image,
+    }], ["korean"])
+
+    assert result[0]["text"] == "네^^"
+
+def test_korean_recognition_keeps_syllable_when_lower_ink_is_present() -> None:
+    import cv2
+    import numpy as np
+    import server
+
+    image = np.full((111, 172, 3), 255, dtype=np.uint8)
+    cv2.rectangle(image, (26, 25), (75, 95), 0, 4)
+    cv2.line(image, (89, 58), (104, 34), 0, 5)
+    cv2.line(image, (104, 34), (119, 58), 0, 5)
+    cv2.line(image, (121, 58), (136, 34), 0, 5)
+    cv2.line(image, (136, 34), (151, 58), 0, 5)
+    cv2.line(image, (89, 82), (151, 82), 0, 5)
+
+    assert server.normalize_symbol_emoticon_text("네쓰", "korean", image) == "네쓰"
+
 def test_detection_only_reads_numpy_polygons_and_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     import numpy as np
     import server

@@ -523,3 +523,21 @@ test("an old generation timeout cannot clear the current generation loading stat
   assert.match(stale.reason, /cancelled:/);
   assert.equal(clearedLoading, 0);
 });
+test("isolated novel images translate edge text without waiting for comic neighbors", async () => {
+  const harness = createCanonicalHarness({
+    pageObservations: {
+      a: [makeCanonicalObservation("page-a", "rev-a", "edge-only", 96, "edge-only")],
+      b: []
+    }
+  });
+  const result = await harness.pipeline.run(harness.targets.a, {
+    isolatedPage: true,
+    reason: "novel-image:test"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.pendingEdge, false);
+  const translateCalls = harness.calls.filter(call => call.startsWith("translate:"));
+  assert.equal(translateCalls.length, 1);
+  assert.match(translateCalls[0], /:edge-only/);
+  assert.equal(harness.timers.length, 0);
+});

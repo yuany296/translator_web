@@ -91,6 +91,27 @@ def test_local_ocr_request_defaults_to_fast_mode() -> None:
     import server
 
     assert server.OcrRequest(image="placeholder").mode == "fast"
+    assert server.OCR_GEOMETRY_CONTRACT_VERSION == "detect-crop-recognize-appearance-layout-v4"
+
+def test_seam_recovery_removes_separator_and_reconnects_vertical_stroke() -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV is required for seam recovery.")
+    image = Image.new("RGB", (160, 80), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((28, 18, 32, 62), fill="black")
+    draw.line((0, 40, 159, 40), fill="black", width=1)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+
+    recovered = server.build_seam_recovery_image_bytes(buffer.getvalue(), [40])
+
+    assert recovered is not None
+    output = Image.open(io.BytesIO(recovered)).convert("L")
+    assert output.getpixel((100, 40)) >= 250
+    assert output.getpixel((30, 40)) <= 5
+    assert server.build_seam_recovery_image_bytes(buffer.getvalue(), []) is None
 
 def test_local_ocr_request_limits_supplemental_cleaned_masks() -> None:
     import server

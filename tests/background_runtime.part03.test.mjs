@@ -85,6 +85,84 @@ function separatedConfiguration({
     }
   };
 }
+test("novel glossary warnings preserve valid Chinese after one retry and survive cache", async () => {
+  installMemoryStorage({
+    ...separatedConfiguration({ translationApiKey: "test-key" }),
+    mt_glossary_v2: {
+      entries: [{ source: "성현", target: "晟玄", scope: "global" }]
+    }
+  });
+  let calls = 0;
+  context.__backgroundTest.setBackgroundTestHooks({
+    requestNovelChunk() {
+      calls += 1;
+      return {
+        translations: [{ id: "p-warning", translated_text: `成贤第${calls}次回答。` }],
+        memory_delta: { summary: calls === 1 ? "第一次记忆" : "第二次记忆" }
+      };
+    }
+  });
+  const request = {
+    scopeKey: "kakao:warning",
+    chapterId: "double-violation",
+    items: [{ id: "p-warning", original_text: "성현이 말했다." }]
+  };
+  const warned = await context.__backgroundTest.handleTranslateNovelChunk(request);
+  assert.equal(warned.partial, false);
+  assert.equal(warned.errors.length, 0);
+  assert.equal(warned.translations[0].translated_text, "成贤第2次回答。");
+  assert.equal(warned.warnings[0].code, "glossary_warning");
+  assert.equal(warned.memory_delta.summary, "第二次记忆");
+  assert.doesNotMatch(JSON.stringify(warned.diagnostics), /成贤第/u);
+  const cached = await context.__backgroundTest.handleTranslateNovelChunk(request);
+  assert.equal(cached.cached, true);
+  assert.equal(cached.warnings[0].code, "glossary_warning");
+  assert.equal(calls, 2);
+
+  let fallbackCalls = 0;
+  context.__backgroundTest.setBackgroundTestHooks({
+    requestNovelChunk() {
+      fallbackCalls += 1;
+      if (fallbackCalls > 1) throw new Error("retry unavailable");
+      return {
+        translations: [{ id: "p-fallback", translated_text: "成贤先回答了。" }],
+        memory_delta: { summary: "首次有效记忆" }
+      };
+    }
+  });
+  const fallback = await context.__backgroundTest.handleTranslateNovelChunk({
+    scopeKey: "kakao:warning",
+    chapterId: "retry-failed",
+    items: [{ id: "p-fallback", original_text: "성현이 먼저 말했다." }]
+  });
+  assert.equal(fallback.partial, false);
+  assert.equal(fallback.errors.length, 0);
+  assert.equal(fallback.translations[0].translated_text, "成贤先回答了。");
+  assert.equal(fallback.warnings[0].code, "glossary_warning");
+  assert.equal(fallback.memory_delta.summary, "首次有效记忆");
+  assert.equal(fallback.diagnostics.at(-1).status, "request_failed");
+  context.__backgroundTest.setBackgroundTestHooks(null);
+});
+test("novel warning fallback never accepts a source-language leak", async () => {
+  installMemoryStorage({
+    ...separatedConfiguration({ translationApiKey: "test-key" }),
+    mt_glossary_v2: { entries: [{ source: "성현", target: "晟玄" }] }
+  });
+  context.__backgroundTest.setBackgroundTestHooks({
+    requestNovelChunk() {
+      return { translations: [{ id: "p-leak", translated_text: "성현이 그대로 말했다." }] };
+    }
+  });
+  const response = await context.__backgroundTest.handleTranslateNovelChunk({
+    scopeKey: "kakao:warning",
+    items: [{ id: "p-leak", original_text: "성현이 그대로 말했다." }]
+  });
+  assert.equal(response.partial, true);
+  assert.equal(response.translations.length, 0);
+  assert.equal(response.warnings.length, 0);
+  assert.equal(response.errors[0].code, "source_language_leak");
+  context.__backgroundTest.setBackgroundTestHooks(null);
+});
 test("slanted edge lettering stays separate across owner and adjacent-page OCR variants", async () => {
   const region = {
     region_id: "region-dialog",
@@ -415,6 +493,26 @@ test("text translation prompt injects matching glossary entries", () => {
   assert.doesNotMatch(prompt, /魔法师/);
   assert.deepEqual(Array.from(context.__backgroundTest.ocrProviders.ids()), ["baidu", "local_paddle"]);
   assert.deepEqual(Array.from(context.__backgroundTest.translationProviders.ids()), ["openai_compatible"]);
+});
+test("novel image translation prompt carries nearby text, memory, and scoped glossary", () => {
+  const prompt = context.__backgroundTest.buildOpenAICompatibleTranslationPrompt([{
+    id: "t0",
+    original_text: "성현"
+  }], {
+    entries: [
+      { source: "성현", target: "成贤", scope: "global" },
+      { source: "성현", target: "晟玄", scope: "series", scopeKey: "kakao:1" }
+    ]
+  }, {
+    scopeKey: "kakao:1",
+    nearbyText: "그는 다시 문을 열었다.",
+    memory: { summary: "晟玄此前见过这扇门。" },
+    memoryRevision: 4
+  });
+  assert.match(prompt, /그는 다시 문을 열었다/u);
+  assert.match(prompt, /晟玄此前见过这扇门/u);
+  assert.match(prompt, /"target":"晟玄"/u);
+  assert.doesNotMatch(prompt, /"target":"成贤"/u);
 });
 test("stitched OCR drops a completed cluster owned by the adjacent slice", async () => {
   const payload = {

@@ -421,9 +421,36 @@ test("loading timeout keeps real queued and running work visible", () => {
   const timeoutSource = contentSource.slice(timeoutStart, timeoutEnd);
   const keepIndex = timeoutSource.indexOf("shouldKeepLoadingOverlayAfterTimeout");
   const rearmIndex = timeoutSource.indexOf("scheduleLoadingOverlayTimeout(overlayState)", keepIndex);
-  const clearIndex = timeoutSource.indexOf("Loading overlay timed out, clearing");
+  const clearIndex = timeoutSource.indexOf("Recovered stale loading overlay");
   assert.ok(keepIndex >= 0 && rearmIndex > keepIndex && clearIndex > rearmIndex,
     "active tasks must re-arm the watchdog before the orphan cleanup branch");
+  assert.doesNotMatch(timeoutSource, /console\.warn\s*\(/u,
+    "a successfully recovered stale loading card must not enter the extension error list");
+  assert.deepEqual(runtime.__test.getLoadingOverlayRecoveryDiagnostic(true), {
+    level: "info",
+    code: "loading-overlay-recovered-settled"
+  });
+  assert.deepEqual(runtime.__test.getLoadingOverlayRecoveryDiagnostic(false), {
+    level: "info",
+    code: "loading-overlay-recovered-orphan"
+  });
+});
+test("novel image results distinguish translated, empty, and missing renders", () => {
+  assert.deepEqual(runtime.__test.classifyNovelImageResult({ ok: true, bubbles: 1 }, ["中文"]), {
+    status: "complete",
+    error: ""
+  });
+  assert.deepEqual(runtime.__test.classifyNovelImageResult({ ok: true, bubbles: 0 }, []), {
+    status: "empty",
+    error: ""
+  });
+  assert.deepEqual(runtime.__test.classifyNovelImageResult({ ok: true, bubbles: 1 }, []), {
+    status: "failed",
+    error: "图片译文已生成，但渲染结果不可用"
+  });
+  assert.deepEqual(runtime.__test.getEmbeddedTranslatedLines([
+    { translated_text: "中文" }, { translated_text: "中文" }
+  ]), ["中文"]);
 });
 test("queued translations show a waiting state before the worker starts", () => {
   const queueStart = contentSource.indexOf("function queueTranslate(");

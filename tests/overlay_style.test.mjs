@@ -60,6 +60,9 @@ test("悬浮球直接显示翻译成功和失败反馈", () => {
   assert.match(css, /\.mt-floating-feedback\.mt-error\s*\{/);
   assert.match(css, /\.mt-floating-feedback\.mt-success\s*\{/);
   assert.match(css, /\.mt-floating-feedback\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(css, /\.mt-novel-progress-panel\s*\{[\s\S]*?pointer-events:\s*none/);
+  assert.match(css, /\.mt-novel-progress-spinner\s*\{[\s\S]*?animation:\s*mt-progress-spin/);
+  assert.match(css, /\.mt-novel-progress-fill\s*\{[\s\S]*?transition:\s*width/);
 });
 
 test("Kakao 覆盖层使用页面坐标系跟随原图滚动", () => {

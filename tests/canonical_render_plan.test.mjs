@@ -178,6 +178,48 @@ test("a completed pair witness builds a surface without a retained seam OCR box"
   assert.equal(bubble.source_line_count, 2);
 });
 
+test("seam surface estimates source rows from text height when one OCR witness undercounts them", () => {
+  const segments = [{
+    pageId: "a",
+    drawRect: { x: 0, y: 0, w: 1000, h: 100 },
+    sourceCrop: { x: 0, y: 900, w: 1000, h: 100 },
+    naturalWidth: 1000,
+    naturalHeight: 1000
+  }, {
+    pageId: "b",
+    drawRect: { x: 0, y: 100, w: 1000, h: 100 },
+    sourceCrop: { x: 0, y: 0, w: 1000, h: 100 },
+    naturalWidth: 1000,
+    naturalHeight: 1000
+  }];
+  const seam = {
+    id: "seam",
+    sourceType: "seam",
+    originalText: "three source rows",
+    visual: {
+      box: { x: 20, y: 18, w: 60, h: 64 },
+      bgType: "solid",
+      sourceLineCount: 1,
+      fontHeightPercent: 18
+    },
+    pageSpans: [{
+      pageId: "a", box: { x: 20, y: 96, w: 60, h: 4 }
+    }, {
+      pageId: "b", box: { x: 20, y: 0, w: 60, h: 9 }
+    }]
+  };
+  const observations = new Map([[seam.id, seam]]);
+  const canonical = {
+    id: "geometry-lines",
+    revision: 1,
+    originalText: seam.originalText,
+    memberObservationIds: [seam.id]
+  };
+  const bubble = P.buildSeamSurfaceBubble(canonical,
+    { translated_text: "三行译文" }, [seam], 1000, 200, observations, segments);
+  assert.equal(bubble.source_line_count, 3);
+});
+
 test("surface index accepts a canonical linked only by completed pair evidence", () => {
   const pageIds = ["a", "b"];
   const revisions = { a: "rev-a", b: "rev-b" };

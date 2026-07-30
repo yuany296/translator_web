@@ -96,8 +96,10 @@ test("term extractor enters cooldown after failure and recovers after success", 
 });
 test("confirming a pending candidate writes the formal glossary and removes every same-source candidate", async () => {
   const stored = {
-    mt_glossary_v1: {
-      entries: []
+    mt_glossary_v2: {
+      entries: [{
+        source: "성현", target: "晟玄", scope: "series", scopeKey: "kakao:1"
+      }]
     },
     mt_glossary_pending_v1: {
       chapters: [{
@@ -137,8 +139,9 @@ test("confirming a pending candidate writes the formal glossary and removes ever
     }]
   });
   assert.equal(response.ok, true);
-  assert.equal(stored.mt_glossary_v1.entries.length, 1);
-  assert.equal(stored.mt_glossary_v1.entries[0].target, "成贤");
+  assert.equal(stored.mt_glossary_v2.entries.length, 2);
+  assert.equal(stored.mt_glossary_v2.entries.find(entry => entry.scope === "global").target, "成贤");
+  assert.equal(stored.mt_glossary_v2.entries.find(entry => entry.scope === "series").target, "晟玄");
   assert.equal(stored.mt_glossary_pending_v1.chapters.every(chapter => chapter.candidates.length === 0), true);
 });
 test("confirming an edited source stores the correction and removes the original partial candidate", async () => {
@@ -177,9 +180,111 @@ test("confirming an edited source stores the correction and removes the original
     }]
   });
   assert.equal(response.ok, true);
-  assert.equal(stored.mt_glossary_v1.entries[0].source, "김솔음");
-  assert.equal(stored.mt_glossary_v1.entries[0].target, "金索音");
+  assert.equal(stored.mt_glossary_v2.entries[0].source, "김솔음");
+  assert.equal(stored.mt_glossary_v2.entries[0].target, "金索音");
   assert.equal(stored.mt_glossary_pending_v1.chapters.length, 0);
+});
+test("novel chunk retries only rejected paragraphs and enforces the book glossary", async () => {
+  const stored = installMemoryStorage({
+    ...separatedConfiguration({ translationApiKey: "test-key" }),
+    mt_glossary_v2: {
+      entries: [
+        { source: "성현", target: "成贤", scope: "global" },
+        { source: "성현", target: "晟玄", scope: "series", scopeKey: "kakao:65171279" }
+      ]
+    }
+  });
+  const calls = [];
+  context.__backgroundTest.setBackgroundTestHooks({
+    requestNovelChunk({ items }) {
+      calls.push(items.map(item => item.id));
+      if (calls.length === 1) {
+        return {
+          translations: [
+            { id: "p1", translated_text: "晟玄来了。" },
+            { id: "p2", translated_text: "成贤离开了。" }
+          ],
+          memory_delta: { summary: "人物登场" }
+        };
+      }
+      if (items[0].id === "p3") {
+        return { translations: [{ id: "p3", translated_text: "这是普通的一天。" }] };
+      }
+      return {
+        translations: [{ id: "p2", translated_text: "晟玄离开了。" }],
+        memory_delta: { unresolved: ["去向"] }
+      };
+    }
+  });
+  const response = await context.__backgroundTest.handleTranslateNovelChunk({
+    scopeKey: "kakao:65171279",
+    seriesId: "65171279",
+    chapterId: "70081892",
+    chapterOrder: 399,
+    items: [
+      { id: "p1", original_text: "성현이 왔다." },
+      { id: "p2", original_text: "성현이 떠났다." },
+      { id: "p3", original_text: "평범한 하루였다." }
+    ]
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.partial, false);
+  assert.equal(response.warnings.length, 0);
+  assert.deepEqual(Array.from(calls, ids => Array.from(ids)), [["p1", "p2", "p3"], ["p2"], ["p3"]]);
+  assert.deepEqual(
+    Array.from(response.translations, row => row.translated_text),
+    ["晟玄来了。", "晟玄离开了。", "这是普通的一天。"]
+  );
+  assert.deepEqual(
+    Array.from(response.diagnostics, item => Array.from(item.itemIds)),
+    [["p1", "p2", "p3"], ["p2"], ["p3"]]
+  );
+  assert.deepEqual(
+    Array.from(response.diagnostics[0].validationErrors, error => error.code),
+    ["glossary_violation", "missing_translation"]
+  );
+  assert.ok(Object.keys(stored).some(key => key.startsWith("mt_cache_v23:novel:")));
+  let partialCall = 0;
+  context.__backgroundTest.setBackgroundTestHooks({
+    requestNovelChunk() {
+      partialCall += 1;
+      if (partialCall > 1) throw new Error("retry timeout");
+      return { translations: [{ id: "p3", translated_text: "第一段。" }] };
+    }
+  });
+  const partial = await context.__backgroundTest.handleTranslateNovelChunk({
+    scopeKey: "kakao:65171279",
+    chapterId: "partial",
+    chapterOrder: 400,
+    items: [
+      { id: "p3", original_text: "첫 문단." },
+      { id: "p4", original_text: "둘째 문단." }
+    ]
+  });
+  assert.equal(partial.ok, true);
+  assert.equal(partial.partial, true);
+  assert.deepEqual(Array.from(partial.translations, row => row.id), ["p3"]);
+  assert.equal(partial.errors[0].id, "p4");
+  assert.equal(partial.diagnostics.at(-1).status, "request_failed");
+  context.__backgroundTest.setBackgroundTestHooks(null);
+});
+test("novel memory commits a complete checkpoint and excludes later chapters on back-read", async () => {
+  installMemoryStorage({});
+  const background = context.__backgroundTest;
+  await background.handleSaveNovelMemory({
+    scopeKey: "kakao:1", chapterId: "c1", chapterOrder: 1,
+    memoryDeltas: [{ summary: "第一章" }]
+  });
+  await background.handleSaveNovelMemory({
+    scopeKey: "kakao:1", chapterId: "c3", chapterOrder: 3,
+    memoryDeltas: [{ summary: "第三章" }]
+  });
+  const response = await background.handleGetNovelMemory({
+    scopeKey: "kakao:1", chapterId: "c2", chapterOrder: 2
+  });
+  assert.equal(response.ok, true);
+  assert.match(response.context.memory.summary, /第一章/u);
+  assert.doesNotMatch(response.context.memory.summary, /第三章/u);
 });
 test("offline term discovery cools down without surfacing a translation failure", async () => {
   const stored = {

@@ -428,11 +428,15 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
         }
       }]
     });
+    await context.__backgroundTest.requestLocalPaddleOcr({
+      ...baseRequest,
+      seamRows: [96, 96, 192]
+    });
   } finally {
     context.fetch = originalFetch;
   }
-  assert.equal(requestBodies.length, 3);
-  assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-appearance-layout-v2");
+  assert.equal(requestBodies.length, 4);
+  assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-appearance-layout-v4");
   assert.equal(requestBodies[0].return_cleaned_image, false);
   assert.equal(requestBodies[0].cleaned_mask_token, "");
   assert.equal(requestBodies[1].return_cleaned_image, true);
@@ -450,6 +454,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
   }]);
   assert.match(requestBodies[2].cleaned_mask_token, /^[a-f0-9]{32}$/);
   assert.notEqual(requestBodies[1].cleaned_mask_token, requestBodies[2].cleaned_mask_token);
+  assert.deepEqual(requestBodies[3].seam_rows, [96, 192]);
 });
 test("local OCR rejects an outdated geometry service before accepting plain OCR", async () => {
   const originalFetch = context.fetch;
@@ -641,4 +646,58 @@ test("identical OCR fingerprints share one provider request and then use the war
   assert.equal(second.ok, true);
   assert.equal(warm.cached, true);
   assert.equal(providerCalls, 1);
+});
+test("seam OCR keeps an anonymous multi-line body atomic across page slices", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 760, height: 320 };
+  const request = {
+    sourceType: "seam",
+    imageMeta: {
+      pageSpans: [{
+        pageId: "upper",
+        canvasBox: { x: 0, y: 0, w: 760, h: 160 },
+        pageBox: { x: 0, y: 840, w: 760, h: 160 },
+        pageWidth: 760,
+        pageHeight: 1000
+      }, {
+        pageId: "lower",
+        canvasBox: { x: 0, y: 160, w: 760, h: 160 },
+        pageBox: { x: 0, y: 0, w: 760, h: 160 },
+        pageWidth: 760,
+        pageHeight: 1000
+      }]
+    }
+  };
+  const candidate = (text, left, top, width, height, confidence = 0.96) => ({
+    original_text: text,
+    x: left / imageSize.width * 100,
+    y: top / imageSize.height * 100,
+    w: width / imageSize.width * 100,
+    h: height / imageSize.height * 100,
+    rawBox: { left, top, width, height },
+    confidence,
+    bg_type: "none",
+    region_id: "",
+    region_type: "effect_text",
+    source_line_count: 1,
+    rotation_deg: 0
+  });
+  const result = background.filterSeamOcrCandidates([
+    candidate("테스타 박문대", 190, 24, 170, 27),
+    candidate("어떤 상이든 받으면", 110, 89, 330, 38),
+    candidate("정말 기쁠 것 같습니다.", 125, 138, 310, 38),
+    candidate("선배님께서도 좋은 결과", 105, 187, 350, 37),
+    candidate("있으시길 바랍니다.", 130, 236, 280, 37),
+    candidate("11:03", 526, 269, 80, 20)
+  ], request, imageSize);
+
+  assert.equal(result.retained.length, 1);
+  assert.equal(result.retained[0].original_text,
+    "어떤 상이든 받으면\n정말 기쁠 것 같습니다.\n선배님께서도 좋은 결과\n있으시길 바랍니다.");
+  assert.equal(result.retained[0].source_line_count, 4);
+  assert.equal(result.retained[0].id, "seam-body:1-2-3-4");
+  assert.deepEqual(
+    result.rejected.map(item => item.candidate.original_text).sort(),
+    ["11:03", "테스타 박문대"].sort()
+  );
 });

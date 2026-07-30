@@ -242,6 +242,13 @@ test("v28 OCR cache invalidates old observation semantics and excludes translati
       ignoreSimplifiedChinese: true
     }
   });
+  const originalGeometryVersion = context.__backgroundTest.LOCAL_OCR_GEOMETRY_VERSION;
+  context.__backgroundTest.LOCAL_OCR_GEOMETRY_VERSION = `${originalGeometryVersion}-future`;
+  const newGeometryContract = build({
+    request,
+    settings
+  });
+  context.__backgroundTest.LOCAL_OCR_GEOMETRY_VERSION = originalGeometryVersion;
   const newCleanedMask = build({
     request: {
       ...request,
@@ -264,6 +271,7 @@ test("v28 OCR cache invalidates old observation semantics and excludes translati
   assert.notEqual(first, newImage);
   assert.notEqual(first, newRevision);
   assert.notEqual(first, newChineseFilter);
+  assert.notEqual(first, newGeometryContract, "OCR geometry contract changes must invalidate semantic OCR cache entries");
 });
 test("seam OCR preserves real line groups before joining a boundary-overshoot row to the next page", async () => {
   const background = context.__backgroundTest;

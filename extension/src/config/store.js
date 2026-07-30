@@ -5,8 +5,14 @@ import {
 
 export function createConfigurationStore({ storageGet, storageSet, glossaryCore }) {
   async function load() {
-    const raw = await storageGet([CONFIG_KEYS.ocr, CONFIG_KEYS.translation, CONFIG_KEYS.runtime, glossaryCore.STORAGE_KEY]);
-    const glossary = glossaryCore.normalizeGlossary(raw[glossaryCore.STORAGE_KEY]);
+    const keys = [CONFIG_KEYS.ocr, CONFIG_KEYS.translation, CONFIG_KEYS.runtime, glossaryCore.STORAGE_KEY];
+    if (glossaryCore.LEGACY_STORAGE_KEY) keys.push(glossaryCore.LEGACY_STORAGE_KEY);
+    const raw = await storageGet(keys);
+    const storedGlossary = raw[glossaryCore.STORAGE_KEY] ?? raw[glossaryCore.LEGACY_STORAGE_KEY];
+    const glossary = glossaryCore.normalizeGlossary(storedGlossary);
+    if (raw[glossaryCore.STORAGE_KEY] === undefined && storedGlossary !== undefined) {
+      await storageSet({ [glossaryCore.STORAGE_KEY]: glossary });
+    }
     return {
       ocr: normalizeOcrConfig(raw[CONFIG_KEYS.ocr]),
       translation: normalizeTranslationConfig(raw[CONFIG_KEYS.translation]),
@@ -21,7 +27,8 @@ export function createConfigurationStore({ storageGet, storageSet, glossaryCore 
     await storageSet({
       [CONFIG_KEYS.ocr]: config.ocr,
       [CONFIG_KEYS.translation]: config.translation,
-      [CONFIG_KEYS.runtime]: config.runtime
+      [CONFIG_KEYS.runtime]: config.runtime,
+      [glossaryCore.STORAGE_KEY]: config.glossary
     });
     return config;
   }

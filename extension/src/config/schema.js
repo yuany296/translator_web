@@ -35,7 +35,8 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   enabled: true, showBall: true, captureMode: "direct", renderMode: "overlay",
   pretranslateMode: "manual", ignoreSimplifiedChinese: false,
   overwriteFontScale: 1, overwriteCoverPadding: 1.2,
-  debugOverlayMode: "final", overwritePreviewMode: "full", termDiscoveryEnabled: true
+  debugOverlayMode: "final", overwritePreviewMode: "full", termDiscoveryEnabled: true,
+  floatingSide: "right", floatingYRatio: 0.72
 });
 
 const numberIn = (value, min, max, fallback) => {
@@ -105,6 +106,8 @@ export function normalizeRuntimeConfig(value = {}) {
     overwriteCoverPadding: numberIn(value.overwriteCoverPadding, 0, 1.2, 1.2),
     debugOverlayMode: ["raw", "filtered", "merged", "final"].includes(value.debugOverlayMode) ? value.debugOverlayMode : "final",
     overwritePreviewMode: ["full", "cover", "text"].includes(value.overwritePreviewMode) ? value.overwritePreviewMode : "full",
-    termDiscoveryEnabled: value.termDiscoveryEnabled !== false
+    termDiscoveryEnabled: value.termDiscoveryEnabled !== false,
+    floatingSide: value.floatingSide === "left" ? "left" : "right",
+    floatingYRatio: numberIn(value.floatingYRatio, 0, 1, DEFAULT_RUNTIME_CONFIG.floatingYRatio)
   };
 }

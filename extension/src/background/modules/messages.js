@@ -9,6 +9,14 @@ export function installMessages(runtime) {
         return runtime.handleOcrDataUrl(message);
       case "TRANSLATE_TEXT_BLOCKS":
         return runtime.handleTranslateTextBlocks(message);
+      case "TRANSLATE_NOVEL_CHUNK":
+        return runtime.handleTranslateNovelChunk(message);
+      case "GET_NOVEL_MEMORY":
+        return runtime.handleGetNovelMemory(message);
+      case "SAVE_NOVEL_MEMORY":
+        return runtime.handleSaveNovelMemory(message);
+      case "CLEAR_NOVEL_MEMORY":
+        return runtime.handleClearNovelMemory(message);
       case "GET_CACHE_STATS":
         return runtime.handleGetCacheStats();
       case "CLEAR_CACHE":
@@ -218,10 +226,20 @@ export function installMessages(runtime) {
           error: "请至少填写一个候选术语的译名"
         };
       }
-      const stored = await runtime.storageGet([runtime.STORAGE_KEYS.glossary, runtime.STORAGE_KEYS.glossaryPending]);
-      const glossary = runtime.glossaryCore.normalizeGlossary(stored[runtime.STORAGE_KEYS.glossary]);
+      const stored = await runtime.storageGet([
+        runtime.STORAGE_KEYS.glossary,
+        runtime.STORAGE_KEYS.glossaryLegacy,
+        runtime.STORAGE_KEYS.glossaryPending
+      ]);
+      const glossary = runtime.glossaryCore.normalizeGlossary(
+        stored[runtime.STORAGE_KEYS.glossary] ?? stored[runtime.STORAGE_KEYS.glossaryLegacy]
+      );
       const entries = [...glossary.entries];
-      const indexBySource = new Map(entries.map((entry, index) => [runtime.termDiscoveryCore.getSourceKey(entry.source), index]));
+      const indexBySource = new Map(entries.flatMap((entry, index) =>
+        entry.scope === "global"
+          ? [[runtime.termDiscoveryCore.getSourceKey(entry.source), index]]
+          : []
+      ));
       const confirmedSources = [];
       const pendingSourcesToRemove = [];
       for (const requested of requestedEntries) {

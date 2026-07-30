@@ -73,6 +73,8 @@ export function prepareContentRuntime(runtime) {
     runtime.state.captureMode = config.captureMode;
     runtime.state.renderMode = config.renderMode;
     runtime.state.pretranslateMode = config.pretranslateMode;
+    runtime.state.floatingSide = config.floatingSide;
+    runtime.state.floatingYRatio = config.floatingYRatio;
     runtime.ENABLE_PIPELINE_TRACE = ocr.localPaddle.debug === true;
     return config;
   };
@@ -98,7 +100,8 @@ export function prepareContentRuntime(runtime) {
     const renderChanged = config.renderMode !== runtime.state.renderMode;
     Object.assign(runtime.state, { enabled: config.enabled, showFloatingBall: config.showBall,
       captureMode: config.captureMode, renderMode: config.renderMode,
-      pretranslateMode: config.pretranslateMode });
+      pretranslateMode: config.pretranslateMode, floatingSide: config.floatingSide,
+      floatingYRatio: config.floatingYRatio });
     if (captureChanged) runtime.state.payloadCacheByTargetKey.clear();
     if (captureChanged || renderChanged) runtime.clearAllRenderedTargets();
     if (!config.enabled) runtime.state.autoTranslatePageEnabled = false;

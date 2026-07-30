@@ -163,6 +163,10 @@ export function installOcrPipeline(runtime) {
     }
     const sourceLanguage = runtime.normalizeLanguageTag(message && message.sourceLanguage, "auto");
     const targetLanguage = runtime.normalizeLanguageTag(message && message.targetLanguage, "zh-CN");
+    const translationOptions = message && message.translationOptions;
+    const glossaryContext = {
+      scopeKey: String(translationOptions && translationOptions.scopeKey || "")
+    };
     const outcome = await runtime.requestCanonicalTextTranslations({
       items: translatableItems,
       apiKey: settings.apiKey,
@@ -171,9 +175,9 @@ export function installOcrPipeline(runtime) {
       sourceLanguage,
       targetLanguage,
       promptVersion: String(message && message.promptVersion || runtime.CANONICAL_TRANSLATION_PROMPT_VERSION),
-      translationOptions: message && message.translationOptions,
+      translationOptions,
       glossary: settings.glossary,
-      glossaryFingerprint: settings.glossaryFingerprint
+      glossaryFingerprint: runtime.glossaryCore.getFingerprint(settings.glossary, glossaryContext)
     });
     const translations = [];
     const errors = [];

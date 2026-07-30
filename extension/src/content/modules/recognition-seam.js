@@ -222,11 +222,13 @@ export function installRecognitionSeam(runtime) {
         }
       };
     }
+    const translationOptions = runtime.getNovelImageTranslationOptions(context.reason);
     const response = await runtime.sendRuntimeMessage({
       type: "TRANSLATE_TEXT_BLOCKS",
       sourceLanguage: String(context.sourceLanguage || runtime.KAKAO_CANONICAL_SOURCE_LANGUAGE),
       targetLanguage: String(context.targetLanguage || runtime.KAKAO_CANONICAL_TARGET_LANGUAGE),
-      items: requestItems
+      items: requestItems,
+      ...(translationOptions ? { translationOptions } : {})
     });
     if (!response) return response;
     const translations = Array.isArray(response.translations) ? response.translations : Array.isArray(response.result && response.result.translations) ? response.result.translations : [];

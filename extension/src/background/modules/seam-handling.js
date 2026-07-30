@@ -22,6 +22,7 @@ export function installSeamHandling(runtime) {
     const direct = [];
     const upperEdge = [];
     const lowerEdge = [];
+    const descriptors = [];
     const rejected = [];
     input.forEach((candidate, index) => {
       const descriptor = runtime.describeSeamOcrCandidate(candidate, index, upperSegment, lowerSegment, imageSize, maxCrossHeight);
@@ -32,6 +33,7 @@ export function installSeamHandling(runtime) {
         });
         return;
       }
+      descriptors.push(descriptor);
       if (descriptor.crossesBoundary) {
         direct.push(descriptor);
         return;
@@ -44,32 +46,31 @@ export function installSeamHandling(runtime) {
         lowerEdge.push(descriptor);
         return;
       }
-      rejected.push({
-        candidate,
-        reason: "seam_not_cross_boundary"
-      });
     });
+    const regionGroups = runtime.buildSeamRegionCandidateGroups(descriptors, maxCrossHeight);
     const pairCandidates = [];
-    const directUpper = direct.filter(descriptor => runtime.getSeamDirectPairSide(descriptor) === "upper");
-    const directLower = direct.filter(descriptor => runtime.getSeamDirectPairSide(descriptor) === "lower");
-    [...upperEdge, ...directUpper].forEach(upper => {
-      [...lowerEdge, ...directLower].forEach(lower => {
+    const directUpper = direct.filter(descriptor => !regionGroups.usedIndices.has(descriptor.index) &&
+      runtime.getSeamDirectPairSide(descriptor) === "upper");
+    const directLower = direct.filter(descriptor => !regionGroups.usedIndices.has(descriptor.index) &&
+      runtime.getSeamDirectPairSide(descriptor) === "lower");
+    [...upperEdge, ...directUpper].filter(item => !regionGroups.usedIndices.has(item.index)).forEach(upper => {
+      [...lowerEdge, ...directLower].filter(item => !regionGroups.usedIndices.has(item.index)).forEach(lower => {
         if (upper.index === lower.index) return;
         const pair = runtime.buildSeamCrossPairCandidate(upper, lower, imageSize, maxCrossHeight);
         if (pair) pairCandidates.push(pair);
       });
     });
     pairCandidates.sort((left, right) => right.score - left.score || left.upper.index - right.upper.index || left.lower.index - right.lower.index);
-    const used = new Set();
-    const merged = [];
+    const used = new Set(regionGroups.usedIndices);
+    const merged = [...regionGroups.candidates];
     for (const pair of pairCandidates) {
       if (used.has(pair.upper.index) || used.has(pair.lower.index)) continue;
       used.add(pair.upper.index);
       used.add(pair.lower.index);
       merged.push(pair.candidate);
     }
-    for (const descriptor of [...upperEdge, ...lowerEdge]) {
-      if (!used.has(descriptor.index)) {
+    for (const descriptor of descriptors) {
+      if (!used.has(descriptor.index) && !descriptor.crossesBoundary) {
         rejected.push({
           candidate: descriptor.candidate,
           reason: "seam_not_cross_boundary"

@@ -88,6 +88,18 @@ export function installReaderInit(runtime) {
         });
         return true;
       }
+      if (message.type === "TRANSLATE_NOVEL_CHAPTER") {
+        runtime.translateNovelChapter().then(result => sendResponse(result)).catch(error => {
+          sendResponse({ ok: false, error: runtime.getErrorMessage(error) });
+        });
+        return true;
+      }
+      if (message.type === "RETRY_NOVEL_IMAGES") {
+        runtime.retryNovelImages().then(result => sendResponse(result)).catch(error => {
+          sendResponse({ ok: false, error: runtime.getErrorMessage(error) });
+        });
+        return true;
+      }
       if (message.type === "TOGGLE_PAGE_AUTO_TRANSLATE") {
         runtime.togglePageAutoTranslate(message.enabled).then(result => sendResponse({
           ok: true,
@@ -218,6 +230,7 @@ export function installReaderInit(runtime) {
       return;
     }
     runtime.ensureExtensionUiMounted();
+    runtime.reconcileKakaoNovelReader();
     runtime.scanNode(document.documentElement || document.body);
     runtime.syncAllOverlays();
   }
@@ -230,13 +243,16 @@ export function installReaderInit(runtime) {
       return;
     }
     if (node instanceof HTMLImageElement || node instanceof HTMLCanvasElement || runtime.isBackgroundImageTarget(node)) {
+      if (runtime.shouldSkipNovelMediaTarget(node)) return;
       runtime.registerTarget(node);
       return;
     }
     if (!(node instanceof Element)) {
       return;
     }
-    node.querySelectorAll(runtime.TARGET_SELECTOR).forEach(target => runtime.registerTarget(target));
+    node.querySelectorAll(runtime.TARGET_SELECTOR).forEach(target => {
+      if (!runtime.shouldSkipNovelMediaTarget(target)) runtime.registerTarget(target);
+    });
   }
   runtime.scanNode = scanNode;
 }

@@ -76,7 +76,8 @@ export function installSceneDispatch(runtime) {
   }
   runtime.isEmbeddedRenderMode = isEmbeddedRenderMode;
   function shouldUseEmbeddedRender(target) {
-    return runtime.isEmbeddedRenderMode() && !runtime.isBackgroundImageTarget(target);
+    const novelImage = runtime.isNovelImageTarget?.(target) === true;
+    return (runtime.isEmbeddedRenderMode() || novelImage) && !runtime.isBackgroundImageTarget(target);
   }
   runtime.shouldUseEmbeddedRender = shouldUseEmbeddedRender;
   function getExistingRenderedState(targetId) {

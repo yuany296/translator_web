@@ -5,6 +5,13 @@ export function installTargetFilter(runtime) {
     if (!runtime.isSupportedTarget(target) || !target.isConnected) {
       return false;
     }
+    if (runtime.isNovelImageTarget(target)) {
+      if (target instanceof HTMLImageElement && !target.complete) return false;
+      const novelRect = target.getBoundingClientRect();
+      const width = Number(target.naturalWidth || novelRect.width || 0);
+      const height = Number(target.naturalHeight || novelRect.height || 0);
+      return width >= 48 && height >= 32;
+    }
     if (!runtime.isSitePreferredTarget(target, {
       allowLoose: relaxed
     })) {

@@ -2,6 +2,8 @@ import { canonicalPipeline } from "../canonical/pipeline.js";
 import { reconciler } from "../canonical/reconciler.js";
 import { contentPhases } from "./modules/index.js";
 import { completeContentRuntime, prepareContentRuntime } from "./configure.js";
+import novelCore from "../shared/novel.js";
+import novelMemoryCore from "../shared/novel-memory.js";
 
 const existing = globalThis.__MANGA_TRANSLATOR_V3__;
 if (existing && !existing.invalidated) {
@@ -9,7 +11,9 @@ if (existing && !existing.invalidated) {
 } else {
   const runtime = Object.assign(Object.create(null), {
     KP: canonicalPipeline,
-    KR: reconciler
+    KR: reconciler,
+    novelCore,
+    novelMemoryCore
   });
   for (const install of contentPhases.functions) install(runtime);
   prepareContentRuntime(runtime);

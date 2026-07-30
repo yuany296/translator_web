@@ -3,6 +3,7 @@ import { installTermDiscovery } from "./term-discovery.js";
 import { installOcrPipeline } from "./ocr-pipeline.js";
 import { installOcrDispatch } from "./ocr-dispatch.js";
 import { installObservationResults } from "./observation-results.js";
+import { installSeamGrouping } from "./seam-grouping.js";
 import { installSeamHandling } from "./seam-handling.js";
 import { installCapture } from "./capture.js";
 import { installOcrProvider } from "./ocr-provider.js";
@@ -21,6 +22,8 @@ import { installTranslationProvider } from "./translation-provider.js";
 import { installTranslationHelpers } from "./translation-helpers.js";
 import { installTranslationCoalesce } from "./translation-coalesce.js";
 import { installTranslationUtils } from "./translation-utils.js";
+import { installNovelMemory } from "./novel-memory.js";
+import { installNovelTranslation } from "./novel-translation.js";
 import { installPlatformCache } from "./platform-cache.js";
 import { installPlatformUtils } from "./platform-utils.js";
 import { installPlatformStorage } from "./platform-storage.js";
@@ -33,6 +36,7 @@ export const backgroundInstallers = Object.freeze([
   installOcrPipeline,
   installOcrDispatch,
   installObservationResults,
+  installSeamGrouping,
   installSeamHandling,
   installCapture,
   installOcrProvider,
@@ -51,6 +55,8 @@ export const backgroundInstallers = Object.freeze([
   installTranslationHelpers,
   installTranslationCoalesce,
   installTranslationUtils,
+  installNovelMemory,
+  installNovelTranslation,
   installPlatformCache,
   installPlatformUtils,
   installPlatformStorage,
@@ -65,6 +71,7 @@ export const backgroundPhases = Object.freeze({
     installOcrPipeline,
     installOcrDispatch,
     installObservationResults,
+    installSeamGrouping,
     installSeamHandling,
     installCapture,
     installOcrProvider,
@@ -83,6 +90,8 @@ export const backgroundPhases = Object.freeze({
     installTranslationHelpers,
     installTranslationCoalesce,
     installTranslationUtils,
+    installNovelMemory,
+    installNovelTranslation,
     installPlatformCache,
     installPlatformUtils,
     installPlatformStorage

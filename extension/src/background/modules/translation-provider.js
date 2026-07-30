@@ -173,7 +173,7 @@ export function installTranslationProvider(runtime) {
         content: `You are a manga dialogue translator. Translate from ${sourceLanguage || "auto-detected source"} to ${targetLanguage || "zh-CN"}. Return JSON only and preserve every supplied id.`
       }, {
         role: "user",
-        content: [`Prompt version: ${promptVersion || runtime.CANONICAL_TRANSLATION_PROMPT_VERSION}`, `Translation options: ${runtime.stableSerialize(translationOptions && typeof translationOptions === "object" ? translationOptions : {})}`, runtime.buildOpenAICompatibleTranslationPrompt(items, glossary)].join("\n")
+        content: [`Prompt version: ${promptVersion || runtime.CANONICAL_TRANSLATION_PROMPT_VERSION}`, `Translation options: ${runtime.stableSerialize(translationOptions && typeof translationOptions === "object" ? translationOptions : {})}`, runtime.buildOpenAICompatibleTranslationPrompt(items, glossary, translationOptions)].join("\n")
       }],
       response_format: {
         type: "json_object"
@@ -265,7 +265,13 @@ export function installTranslationProvider(runtime) {
     return `${runtime.CACHE_PREFIX}block:${runtime.hashString([sourceImageId || "unknown-image", text, bbox, model || "", baseUrl || "", glossaryFingerprint || ""].join("|"))}`;
   }
   runtime.buildBlockTranslationCacheKey = buildBlockTranslationCacheKey;
-  async function sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body, requestTimeoutMs = runtime.TRANSLATION_REQUEST_TIMEOUT_MS) {
+  async function sendOpenAICompatibleTranslationRequest(
+    endpoint,
+    apiKey,
+    body,
+    requestTimeoutMs = runtime.TRANSLATION_REQUEST_TIMEOUT_MS,
+    requestOptions = {}
+  ) {
     const timeoutMs = Math.max(1, Number(requestTimeoutMs) || runtime.TRANSLATION_REQUEST_TIMEOUT_MS);
     const {
       response,
@@ -288,16 +294,46 @@ export function installTranslationProvider(runtime) {
       }
       throw new Error(reason);
     }
-    return payload && payload.choices && payload.choices[0] && payload.choices[0].message ? payload.choices[0].message.content : "";
+    const choice = payload && payload.choices && payload.choices[0];
+    const content = choice && choice.message ? choice.message.content : "";
+    if (!requestOptions.includeResponseMeta) return content;
+    const usage = payload && payload.usage || {};
+    return {
+      content,
+      responseMeta: {
+        id: String(payload && payload.id || "").slice(0, 180),
+        model: String(payload && payload.model || body.model || "").slice(0, 120),
+        finishReason: String(choice && choice.finish_reason || "").slice(0, 80),
+        promptTokens: Math.max(0, Number(usage.prompt_tokens) || 0),
+        completionTokens: Math.max(0, Number(usage.completion_tokens) || 0),
+        totalTokens: Math.max(0, Number(usage.total_tokens) || 0)
+      }
+    };
   }
   runtime.sendOpenAICompatibleTranslationRequest = sendOpenAICompatibleTranslationRequest;
-  function buildOpenAICompatibleTranslationPrompt(items, glossary = null) {
+  function buildOpenAICompatibleTranslationPrompt(items, glossary = null, context = null) {
     const rows = items.map(item => ({
       id: item.id,
       text: item.original_text
     }));
-    const glossaryPrompt = runtime.glossaryCore.buildPrompt(glossary, items);
-    return ["Translate each OCR block into Simplified Chinese as one complete manga bubble or narration box.", "Each input text may contain multiple OCR lines from the same bubble. Understand them together; do not translate line by line mechanically.", "Rewrite word order naturally for Chinese, merge broken OCR fragments when needed, and keep character names and tone natural for manga dialogue.", "If an input contains a model attachment label such as [Image #1], [Image#1], or Image 1, ignore that label and do not output it.", "Preserve the input id exactly. Return one translated_text per id.", "Return JSON only with this schema:", '{"translations":[{"id":"t0","translated_text":"..."}]}', ...(glossaryPrompt ? [glossaryPrompt] : []), "Input:", JSON.stringify(rows)].join("\n");
+    const glossaryPrompt = runtime.glossaryCore.buildPrompt(glossary, items, context);
+    const nearbyText = String(context && context.nearbyText || "").slice(0, 4000);
+    const memory = context && context.memory && typeof context.memory === "object"
+      ? runtime.stableSerialize(context.memory).slice(0, 8000) : "";
+    return [
+      "Translate each OCR block into Simplified Chinese as one complete manga bubble or narration box.",
+      "Each input text may contain multiple OCR lines from the same bubble. Understand them together; do not translate line by line mechanically.",
+      "Rewrite word order naturally for Chinese, merge broken OCR fragments when needed, and keep character names and tone natural for manga dialogue.",
+      "If an input contains a model attachment label such as [Image #1], [Image#1], or Image 1, ignore that label and do not output it.",
+      "Preserve the input id exactly. Return one translated_text per id.",
+      "Return JSON only with this schema:",
+      '{"translations":[{"id":"t0","translated_text":"..."}]}',
+      ...(nearbyText ? [`Nearby novel text for context: ${nearbyText}`] : []),
+      ...(memory ? [`Prior novel memory for terminology and continuity: ${memory}`] : []),
+      ...(glossaryPrompt ? [glossaryPrompt] : []),
+      "Input:",
+      JSON.stringify(rows)
+    ].join("\n");
   }
   runtime.buildOpenAICompatibleTranslationPrompt = buildOpenAICompatibleTranslationPrompt;
   async function decodeDataUrlImageSize(dataUrl) {

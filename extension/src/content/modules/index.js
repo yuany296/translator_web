@@ -21,7 +21,12 @@ import { installLifecyclePosition } from "./lifecycle-position.js";
 import { installLifecycleFontFit } from "./lifecycle-font-fit.js";
 import { installLifecycleOverlayCleanup } from "./lifecycle-overlay-cleanup.js";
 import { installLifecycleRestore } from "./lifecycle-restore.js";
+import { installNovelReader } from "./novel-reader.js";
+import { installNovelRenderer } from "./novel-renderer.js";
+import { installNovelImagePanel } from "./novel-image-panel.js";
+import { installNovelWorkflow } from "./novel-workflow.js";
 import { installControlsUi } from "./controls-ui.js";
+import { installControlsDual } from "./controls-dual.js";
 import { installControlsAutotranslate } from "./controls-autotranslate.js";
 import { installControlsUtils } from "./controls-utils.js";
 import { installTargetFilter } from "./target-filter.js";
@@ -57,7 +62,12 @@ export const contentInstallers = Object.freeze([
   installLifecycleFontFit,
   installLifecycleOverlayCleanup,
   installLifecycleRestore,
+  installNovelReader,
+  installNovelRenderer,
+  installNovelImagePanel,
+  installNovelWorkflow,
   installControlsUi,
+  installControlsDual,
   installControlsAutotranslate,
   installControlsUtils,
   installTargetFilter,
@@ -95,7 +105,12 @@ export const contentPhases = Object.freeze({
     installLifecycleFontFit,
     installLifecycleOverlayCleanup,
     installLifecycleRestore,
+    installNovelReader,
+    installNovelRenderer,
+    installNovelImagePanel,
+    installNovelWorkflow,
     installControlsUi,
+    installControlsDual,
     installControlsAutotranslate,
     installControlsUtils,
     installTargetFilter,

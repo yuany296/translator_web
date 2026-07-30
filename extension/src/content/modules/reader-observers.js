@@ -3,6 +3,9 @@ export function installReaderObservers(runtime) {
     if (!runtime.isSupportedTarget(target) || runtime.state.invalidated) {
       return;
     }
+    if (runtime.shouldSkipNovelMediaTarget(target)) {
+      return;
+    }
     if (!runtime.isSitePreferredTarget(target)) {
       return;
     }
@@ -236,6 +239,7 @@ export function installReaderObservers(runtime) {
       runtime.ensureExtensionUiMounted();
     }
     if (sawExternalMutation || shouldRepairUi) {
+      runtime.scheduleNovelReconcile("document-mutation");
       runtime.scheduleCrossPageGeometryRefresh();
       runtime.scheduleAheadPretranslation("mutation");
     }

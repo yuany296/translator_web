@@ -1,4 +1,12 @@
 export function installRendererEmbed(runtime) {
+  function getEmbeddedTranslatedLines(bubbles) {
+    const values = (Array.isArray(bubbles) ? bubbles : []).map(bubble =>
+      runtime.cleanRenderableText(bubble?.translated_text || "")
+    ).filter(Boolean);
+    return [...new Set(values)];
+  }
+  runtime.getEmbeddedTranslatedLines = getEmbeddedTranslatedLines;
+
   async function renderEmbeddedTranslation(target, targetKey, result, payload) {
     const bubbles = Array.isArray(result.bubbles) ? result.bubbles : [];
     const renderPayload = runtime.isDataUrl(result.cleanedImage) ? { ...payload, cleanedImage: result.cleanedImage } : payload;
@@ -22,13 +30,24 @@ export function installRendererEmbed(runtime) {
   }
   runtime.renderEmbeddedTranslation = renderEmbeddedTranslation;
   async function renderEmbeddedImageTarget(img, targetKey, bubbles, payload) {
-    const targetId = runtime.getTargetId(img);
     const cachedDataUrl = runtime.state.embeddedImageCache.get(targetKey);
     const baseDataUrl = runtime.isDataUrl(payload?.cleanedImage) ? payload.cleanedImage : await runtime.getEmbeddedBaseDataUrl(img, payload);
     const outputDataUrl = cachedDataUrl || (await runtime.composeEmbeddedImageDataUrl(baseDataUrl, bubbles));
     if (!cachedDataUrl) {
       runtime.rememberEmbeddedImageCache(targetKey, outputDataUrl);
     }
+    applyEmbeddedImageDataUrl(img, targetKey, outputDataUrl, {
+      bubbleCount: bubbles.length,
+      translatedLines: getEmbeddedTranslatedLines(bubbles)
+    });
+  }
+  runtime.renderEmbeddedImageTarget = renderEmbeddedImageTarget;
+
+  function applyEmbeddedImageDataUrl(img, targetKey, outputDataUrl, metadata = {}) {
+    if (!(img instanceof HTMLImageElement) || !runtime.isDataUrl(outputDataUrl)) {
+      throw new Error("Embedded image output is invalid");
+    }
+    const targetId = runtime.getTargetId(img);
     const existing = runtime.state.embeddedById.get(targetId);
     if (existing && existing.kind !== "image") {
       runtime.restoreEmbeddedForTarget(img);
@@ -52,10 +71,14 @@ export function installRendererEmbed(runtime) {
       targetKey,
       kind: "image",
       mode: "embedded",
-      bubbleCount: bubbles.length
+      outputDataUrl,
+      bubbleCount: Math.max(0, Number(metadata.bubbleCount) || 0),
+      translatedLines: Array.isArray(metadata.translatedLines)
+        ? [...new Set(metadata.translatedLines.map(String).map(value => value.trim()).filter(Boolean))]
+        : []
     });
   }
-  runtime.renderEmbeddedImageTarget = renderEmbeddedImageTarget;
+  runtime.applyEmbeddedImageDataUrl = applyEmbeddedImageDataUrl;
   async function renderEmbeddedCanvasTarget(canvas, targetKey, bubbles, payload) {
     const targetId = runtime.getTargetId(canvas);
     const existing = runtime.state.embeddedById.get(targetId);

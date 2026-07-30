@@ -96,6 +96,7 @@ export function installOcrDispatch(runtime) {
       sourceType: request && request.sourceType || "page",
       pageIds: request && request.pageIds || [],
       imageRevisionByPage: request && request.imageRevisionByPage || {},
+      geometryVersion: runtime.LOCAL_OCR_GEOMETRY_VERSION,
       coordinateModelVersion: runtime.OCR_COORDINATE_MODEL_VERSION,
       imageMeta: {
         width: Number(request && request.imageMeta && request.imageMeta.width) || 0,
@@ -200,6 +201,12 @@ export function installOcrDispatch(runtime) {
     if (mode === "enhanced" && imageSize.width * imageSize.height > 4000000) {
       mode = "fast";
     }
+    const seamRows = request.sourceType === "seam"
+      ? [...new Set((request.imageMeta?.pageSpans || []).flatMap(span => {
+        const box = span?.canvasBox;
+        return box ? [Number(box.top), Number(box.top) + Number(box.height)] : [];
+      }).map(value => Math.round(value)).filter(value => value > 0 && value < imageSize.height))].sort((left, right) => left - right)
+      : [];
     let ocrPayload = await runtime.requestLocalPaddleOcr({
       dataUrl: request.dataUrl,
       baseUrl: settings.localOcrBaseUrl || runtime.DEFAULT_LOCAL_OCR_BASE_URL,
@@ -208,6 +215,7 @@ export function installOcrDispatch(runtime) {
       params: runtime.getLocalOcrParams(settings),
       debug: settings.localOcrDebug === true,
       debugId: runtime.buildLocalOcrDebugId(request.targetKey || request.pageIds.join("-"), request.imageMeta),
+      seamRows,
       returnCleanedImage: request.requireCleanedImage === true || request.forceCleanedImageArtifact === true,
       cleanedMasks: request.cleanedMasks
     });

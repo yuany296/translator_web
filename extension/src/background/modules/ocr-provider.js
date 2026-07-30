@@ -91,6 +91,7 @@ export function installOcrProvider(runtime) {
     params,
     debug,
     debugId,
+    seamRows = [],
     returnCleanedImage = false,
     cleanedMasks = [],
     requestTimeoutMs = runtime.LOCAL_OCR_REQUEST_TIMEOUT_MS
@@ -119,6 +120,9 @@ export function installOcrProvider(runtime) {
           debug: debug === true,
           debug_id: debugId || "",
           ocr_geometry_version: runtime.LOCAL_OCR_GEOMETRY_VERSION,
+          seam_rows: [...new Set((Array.isArray(seamRows) ? seamRows : [])
+            .map(value => Math.round(Number(value)))
+            .filter(value => Number.isFinite(value) && value > 0))].slice(0, 4),
           return_cleaned_image: returnCleanedImage === true,
           cleaned_masks: normalizedCleanedMasks,
           cleaned_mask_token: cleanedMaskToken

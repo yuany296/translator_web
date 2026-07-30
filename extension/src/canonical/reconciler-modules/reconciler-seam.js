@@ -313,17 +313,6 @@ export function installReconcilerSeam(runtime) {
     return candidates.sort((left, right) => right.score - left.score || right.textOverlap - left.textOverlap || left.pageId.localeCompare(right.pageId))[0] || null;
   }
   runtime.seamPageContinuationRelation = seamPageContinuationRelation;
-  function joinContinuationText(leftText, rightText) {
-    const left = runtime.normalizeText(leftText);
-    const right = runtime.normalizeText(rightText);
-    if (!left) return right;
-    if (!right) return left;
-    if (left.includes(right)) return left;
-    if (right.includes(left)) return right;
-    const overlap = runtime.suffixPrefixOverlap(left, right);
-    return `${left}${right.slice(overlap)}`;
-  }
-  runtime.joinContinuationText = joinContinuationText;
   function hasStrongTextRelation(leftText, rightText) {
     const left = runtime.normalizeComparableText(leftText);
     const right = runtime.normalizeComparableText(rightText);

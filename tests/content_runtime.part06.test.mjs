@@ -312,6 +312,10 @@ test("cross-page geometry lays out one text frame from full page-space canonical
     (geometry.coverSegments[0].top + geometry.coverSegments[0].height);
   assert.equal(uncoveredGap, 24);
   assert.equal(Math.round(geometry.textFrame.height * 10) / 10, 247.2);
+  assert.ok(geometry.coverSegments[0].compositeIntersection,
+    "page-coordinate boxes inside the seam capture must retain cleaned-image coordinates");
+  assert.equal(geometry.coverSegments[1].compositeIntersection, undefined,
+    "page-coordinate boxes extending beyond the seam capture cannot sample unavailable pixels");
 });
 test("cross-page renderer has one layout call site and no legacy page-local seam windows", () => {
   const start = contentSource.indexOf("function applyCrossPageTextGeometry(");

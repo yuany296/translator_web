@@ -3,9 +3,11 @@ import { installCanonicalPageOcr } from "../canonical-pipeline-factory/canonical
 import { installCanonicalSeamOcr } from "../canonical-pipeline-factory/canonical-seam-ocr.js";
 import { installCanonicalTranslate } from "../canonical-pipeline-factory/canonical-translate.js";
 import { installCanonicalRender } from "../canonical-pipeline-factory/canonical-render.js";
+import { installCanonicalCleanedArtifacts } from "../canonical-pipeline-factory/canonical-cleaned-artifacts.js";
 
 export function installCanonicalBridge(runtime) {
-  const installers = [installCanonicalSetup, installCanonicalPageOcr, installCanonicalSeamOcr, installCanonicalTranslate, installCanonicalRender];
+  const installers = [installCanonicalSetup, installCanonicalPageOcr, installCanonicalSeamOcr,
+    installCanonicalCleanedArtifacts, installCanonicalTranslate, installCanonicalRender];
   runtime.createCanonicalPipeline = function createCanonicalPipeline(...args) {
     const scope = Object.assign(Object.create(null), { adapters: args[0] });
     for (const install of installers) install(runtime, scope);

@@ -187,18 +187,19 @@ export function installRendererCrossPage(runtime) {
       if (bgType === "solid") {
         node.style.background = String(item.bubble.bg_color || "rgba(255,255,255,0.96)");
         node.style.removeProperty("background-image");
-      } else if (segment.mapping === "page" && entry.surface.cleanedImageByPage?.[segment.pageId]) {
-        node.style.removeProperty("background");
-        node.style.backgroundImage = `url("${entry.surface.cleanedImageByPage[segment.pageId]}")`;
-        node.style.backgroundSize = `${segment.pageWidth}px ${segment.pageHeight}px`;
-        node.style.backgroundPosition = `${-segment.sourceLeft}px ${-segment.sourceTop}px`;
       } else if (segment.compositeIntersection && entry.surface.cleanedImage) {
         node.style.removeProperty("background");
         node.style.backgroundImage = `url("${entry.surface.cleanedImage}")`;
         node.style.backgroundSize = `${entry.surface.canvasWidth * segment.scaleX}px ${entry.surface.canvasHeight * segment.scaleY}px`;
         node.style.backgroundPosition = `${-segment.compositeIntersection.left * segment.scaleX}px ${-segment.compositeIntersection.top * segment.scaleY}px`;
+      } else if (segment.mapping === "page" && entry.surface.cleanedImageByPage?.[segment.pageId]) {
+        node.style.removeProperty("background");
+        node.style.backgroundImage = `url("${entry.surface.cleanedImageByPage[segment.pageId]}")`;
+        node.style.backgroundSize = `${segment.pageWidth}px ${segment.pageHeight}px`;
+        node.style.backgroundPosition = `${-segment.sourceLeft}px ${-segment.sourceTop}px`;
       } else {
-        node.style.background = String(item.bubble.bg_color || "rgba(255,255,255,0.96)");
+        // 复杂背景没有可映射的清理图时保持透明，避免用白色矩形破坏原图。
+        node.style.background = "transparent";
         node.style.removeProperty("background-image");
       }
     });
@@ -273,6 +274,44 @@ export function installRendererCrossPage(runtime) {
     runtime.state.crossPageOverlaysByRenderKey.delete(entry.surface.renderKey);
   }
 
+  function canReuseCrossPageSurfaceEntry(entry, surface, targets) {
+    if (!entry || String(entry.surface?.pairKey || "") !== String(surface?.pairKey || "") ||
+        entry.targets.some((target, index) => target !== targets[index]) ||
+        entry.bubbles.length !== surface.bubbles.length) return false;
+    return entry.bubbles.every((item, index) => {
+      const bubble = surface.bubbles[index] || {};
+      const canonicalId = String(bubble.canonicalId || bubble.canonical_id || "");
+      const translatedText = String(bubble.translatedText || bubble.translated_text || "");
+      return item.canonicalId === canonicalId &&
+        String(item.bubble.translated_text || "") === translatedText;
+    });
+  }
+
+  function updateCrossPageSurfaceEntry(entry, surface) {
+    const previous = entry.surface;
+    const previousKey = String(previous.renderKey || "");
+    const nextKey = String(surface.renderKey || "");
+    const layoutChanged = previous.layoutKey !== surface.layoutKey;
+    const showSource = runtime.state.seamSourceModeByRenderKey.get(nextKey) === true ||
+      runtime.state.seamSourceModeByRenderKey.get(previousKey) === true;
+    entry.surface = surface;
+    entry.bubbles.forEach((item, index) => {
+      item.bubble = runtime.projectionToRendererBubble(surface.bubbles[index]);
+      if (layoutChanged) item.layout = null;
+      item.overlay.dataset.seamRenderKey = nextKey;
+      item.textNode.dataset.seamRenderKey = nextKey;
+      item.overlay.classList.toggle("mt-show-source", showSource);
+      item.overlay.classList.toggle("mt-cross-page-debug",
+        runtime.hasRenderableOcrDebug({ debug: surface.debug }));
+    });
+    if (previousKey !== nextKey) {
+      runtime.state.crossPageOverlaysByRenderKey.delete(previousKey);
+      runtime.state.crossPageOverlaysByRenderKey.set(nextKey, entry);
+      runtime.state.seamSourceModeByRenderKey.delete(previousKey);
+      if (showSource) runtime.state.seamSourceModeByRenderKey.set(nextKey, true);
+    }
+  }
+
   function renderCrossPageSurfaces(surfaces) {
     const activeKeys = new Set();
     for (const surface of Array.isArray(surfaces) ? surfaces : []) {
@@ -280,13 +319,17 @@ export function installRendererCrossPage(runtime) {
       if (targets.some(target => !target || target.isConnected === false)) continue;
       activeKeys.add(surface.renderKey);
       let entry = runtime.state.crossPageOverlaysByRenderKey.get(surface.renderKey);
-      const reusable = entry && entry.targets.every((target, index) => target === targets[index]);
+      if (!entry) {
+        entry = [...runtime.state.crossPageOverlaysByRenderKey.values()].find(candidate =>
+          canReuseCrossPageSurfaceEntry(candidate, surface, targets));
+      }
+      const reusable = canReuseCrossPageSurfaceEntry(entry, surface, targets);
       if (!reusable) {
         if (entry) removeCrossPageSurfaceEntry(entry);
         entry = createCrossPageSurfaceEntry(surface, targets);
         if (!entry) continue;
         runtime.state.crossPageOverlaysByRenderKey.set(surface.renderKey, entry);
-      } else entry.surface = surface;
+      } else updateCrossPageSurfaceEntry(entry, surface);
       syncCrossPageSurfaceEntry(entry);
     }
     for (const [renderKey, entry] of runtime.state.crossPageOverlaysByRenderKey) {

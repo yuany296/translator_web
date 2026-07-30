@@ -461,7 +461,7 @@ async function settleWithin(promise, timeoutMs = 250) {
     if (timer) clearTimeout(timer);
   }
 }
-test("seam composite is cleaned once and atomically replaces both page projections", async () => {
+test("seam composite is recognized once, final-mask cleaned once, and atomically replaces both pages", async () => {
   const options = boundaryMergeHarnessOptions();
   options.seamObservations[0].visual = {
     ...options.seamObservations[0].visual,
@@ -569,9 +569,19 @@ test("seam composite is cleaned once and atomically replaces both page projectio
   await harness.pipeline.run(harness.targets.a);
   await harness.pipeline.run(harness.targets.b);
   const seamRequests = harness.ocrMetas.filter(meta => meta.sourceType === "seam");
-  assert.equal(seamRequests.length, 1);
+  assert.equal(seamRequests.length, 2);
   assert.equal(seamRequests[0].requireCleanedImage, true);
   assert.equal(seamRequests[0].forceCleanedImageArtifact, true);
+  assert.deepEqual(seamRequests[0].cleanedMasks, []);
+  assert.deepEqual(seamRequests[1].cleanedMasks, [{
+    coordinateSpace: "percent",
+    box: {
+      x: 24,
+      y: 42,
+      w: 52,
+      h: 20
+    }
+  }]);
   assert.equal(harness.ocrMetas.filter(meta => meta.sourceType === "page" && meta.forceCleanedImageArtifact).length, 0, "a usable composite artifact must suppress per-page cleaned artifacts");
   const seamState = harness.store.getSeamStates().find(state => state.status === "completed");
   assert.ok(seamState);

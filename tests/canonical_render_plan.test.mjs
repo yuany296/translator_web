@@ -405,3 +405,35 @@ test("projection plan removes only explicitly absorbed canonical ids", () => {
   assert.deepEqual([...plan.handledCanonicalIds].sort(), ["retired-fragment", "whole"]);
   assert.deepEqual(calls, [["retired-fragment", "whole"]]);
 });
+
+test("cleaned artifact plan requests only page cover boxes outside the seam capture", () => {
+  const index = {
+    surfaces: [{
+      segments: [{
+        pageId: "upper",
+        sourceCrop: { x: 0, y: 900, w: 1000, h: 100 },
+        naturalWidth: 1000,
+        naturalHeight: 1000
+      }, {
+        pageId: "lower",
+        sourceCrop: { x: 0, y: 0, w: 1000, h: 100 },
+        naturalWidth: 1000,
+        naturalHeight: 1000
+      }],
+      bubbles: [{
+        canonicalId: "whole",
+        bg_type: "none",
+        page_cover_boxes: [
+          { pageId: "upper", x: 20, y: 95, w: 60, h: 5 },
+          { pageId: "lower", x: 20, y: 0, w: 60, h: 16 }
+        ]
+      }]
+    }]
+  };
+  const plan = P.buildCleanedArtifactProjectionPlan(new Map(), index);
+  assert.equal(plan.has("upper"), false, "the composite already owns the complete upper cover");
+  assert.deepEqual(P.buildCanonicalCleanMasks(plan.get("lower")), [{
+    coordinateSpace: "percent",
+    box: { x: 20, y: 0, w: 60, h: 16 }
+  }]);
+});

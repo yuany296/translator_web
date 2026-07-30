@@ -396,6 +396,8 @@ test("continuation prefers a true cross-page seam observation", () => {
 test("continuation concatenation trims an exact suffix/prefix overlap", () => {
   assert.equal(R.joinContinuationText("abcdef", "defghi"), "abcdefghi");
   assert.equal(R.joinContinuationText("hello", "hello"), "hello");
+  assert.equal(R.joinContinuationText("<황혼 등급>.", "<황혼등급>."), "<황혼 등급>.");
+  assert.equal(R.joinContinuationText("앞 <황혼 등급>", "황혼등급> 뒤"), "앞 <황혼 등급> 뒤");
   assert.equal(R.joinContinuationText("", "next"), "next");
 });
 test("standalone seam prefix joins the longer lower-page continuation", () => {

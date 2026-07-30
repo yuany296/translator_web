@@ -204,17 +204,23 @@ function createCanonicalHarness(options = {}) {
       calls.push(`ocr:${meta.sourceType}:${meta.pageIds.join("+")}`);
       if (meta.sourceType === "seam") {
         if (options.seamFailure) throw new Error("seam unavailable");
+        const finalArtifactRequest = meta.forceCleanedImageArtifact === true &&
+          Array.isArray(meta.cleanedMasks) && meta.cleanedMasks.length > 0;
+        const seamCleanedImage = finalArtifactRequest && options.seamArtifactCleanedImage ||
+          options.seamCleanedImage;
+        const seamCleanedImageToken = finalArtifactRequest &&
+          options.seamArtifactCleanedImageToken || options.seamCleanedImageToken;
         return {
           ok: true,
           result: {
             observations: options.seamObservations || [],
             filteredObservations: [],
             edgeSignals: {},
-            ...(options.seamCleanedImage ? {
-              cleanedImage: options.seamCleanedImage
+            ...(seamCleanedImage ? {
+              cleanedImage: seamCleanedImage
             } : {}),
-            ...(options.seamCleanedImageToken ? {
-              cleanedImageToken: options.seamCleanedImageToken
+            ...(seamCleanedImageToken ? {
+              cleanedImageToken: seamCleanedImageToken
             } : {}),
             ...(options.seamDebug ? {
               debug: options.seamDebug
@@ -542,6 +548,110 @@ test("seam-only complex evidence can request page artifacts after warm page OCR"
   assert.equal(harness.calls.filter(call => call.startsWith("translate:")).length, 1);
   assert.equal(harness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
   assert.equal(harness.store.getPageHandle("page-b").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+});
+test("a composite seam requests a page artifact when its final cover extends beyond the capture", async () => {
+  const options = boundaryMergeHarnessOptions();
+  options.pageObservations.b[0].pageSpans[0].box.h = 18;
+  options.seamObservations[0].pageSpans[1].box.h = 18;
+  options.seamObservations[0].visual = {
+    ...options.seamObservations[0].visual,
+    bgType: "none",
+    box: { x: 24, y: 42, w: 52, h: 20 },
+    fillBox: { x: 24, y: 42, w: 52, h: 20 }
+  };
+  options.seamCleanedImage = "data:image/png;base64,c2VhbS1jbGVhbg==";
+  options.seamCleanedImageToken = "seam-artifact";
+  options.artifactCleanedImage = "data:image/png;base64,cGFnZS1jbGVhbg==";
+  options.seamPayload = {
+    dataUrl: "data:image/png;base64,c2VhbQ==",
+    width: 800,
+    height: 600,
+    coordinateSpace: "kakao-seam-v1",
+    seam: {
+      canvasWidth: 800,
+      canvasHeight: 600,
+      segments: [{
+        pageId: "page-a", drawRect: { x: 0, y: 0, w: 800, h: 300 },
+        sourceCrop: { x: 0, y: 1700, w: 800, h: 300 }, naturalWidth: 800, naturalHeight: 2000
+      }, {
+        pageId: "page-b", drawRect: { x: 0, y: 300, w: 800, h: 300 },
+        sourceCrop: { x: 0, y: 0, w: 800, h: 300 }, naturalWidth: 800, naturalHeight: 2000
+      }]
+    }
+  };
+  const harness = createCanonicalHarness(options);
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+  const pageArtifacts = harness.ocrMetas.filter(meta =>
+    meta.sourceType === "page" && meta.forceCleanedImageArtifact === true);
+  assert.deepEqual(pageArtifacts.map(meta => meta.pageIds[0]), ["page-b"]);
+  assert.deepEqual(pageArtifacts[0].cleanedMasks, [{
+    coordinateSpace: "percent",
+    box: { x: 20, y: 0, w: 20, h: 18 }
+  }]);
+  const surface = harness.renderInputs.findLast(input =>
+    input.seamSurfaces?.some(item => item.bubbles.length > 0)).seamSurfaces[0];
+  assert.equal(surface.cleanedImage, options.seamCleanedImage);
+  assert.equal(surface.cleanedImageByPage["page-a"], "");
+  assert.equal(surface.cleanedImageByPage["page-b"], options.artifactCleanedImage);
+});
+test("a composite seam refreshes its cleaned image with the final cross-page blue box", async () => {
+  const options = boundaryMergeHarnessOptions();
+  for (const observation of [
+    ...options.pageObservations.a,
+    ...options.pageObservations.b
+  ]) {
+    observation.visual = {
+      ...observation.visual,
+      bgType: "none"
+    };
+  }
+  options.seamObservations[0].visual = {
+    ...options.seamObservations[0].visual,
+    bgType: "none",
+    box: { x: 20, y: 30, w: 20, h: 40 },
+    fillBox: { x: 20, y: 30, w: 20, h: 40 }
+  };
+  options.seamCleanedImage = "data:image/png;base64,cHJvdmlzaW9uYWw=";
+  options.seamCleanedImageToken = "provisional";
+  options.seamArtifactCleanedImage = "data:image/png;base64,ZmluYWwtbWFzaw==";
+  options.seamArtifactCleanedImageToken = "final-mask";
+  options.seamPayload = {
+    dataUrl: "data:image/png;base64,c2VhbQ==",
+    width: 800,
+    height: 600,
+    coordinateSpace: "kakao-seam-v1",
+    seam: {
+      canvasWidth: 800,
+      canvasHeight: 600,
+      segments: [{
+        pageId: "page-a", drawRect: { x: 0, y: 0, w: 800, h: 300 },
+        sourceCrop: { x: 0, y: 1700, w: 800, h: 300 },
+        naturalWidth: 800, naturalHeight: 2000
+      }, {
+        pageId: "page-b", drawRect: { x: 0, y: 300, w: 800, h: 300 },
+        sourceCrop: { x: 0, y: 0, w: 800, h: 300 },
+        naturalWidth: 800, naturalHeight: 2000
+      }]
+    }
+  };
+  const harness = createCanonicalHarness(options);
+  await harness.pipeline.run(harness.targets.a);
+  await harness.pipeline.run(harness.targets.b);
+  const seamRequests = harness.ocrMetas.filter(meta => meta.sourceType === "seam");
+  assert.equal(seamRequests.length, 2);
+  assert.deepEqual(seamRequests[0].cleanedMasks, []);
+  assert.deepEqual(seamRequests[1].cleanedMasks, [{
+    coordinateSpace: "percent",
+    box: { x: 20, y: 30, w: 20, h: 40 }
+  }]);
+  const state = harness.store.getSeamStates().find(item => item.status === "completed");
+  assert.equal(state.cleanedImage, options.seamArtifactCleanedImage);
+  assert.equal(state.cleanedImageToken, options.seamArtifactCleanedImageToken);
+  assert.ok(state.cleanedImageArtifactKey);
+  const surface = harness.renderInputs.findLast(input =>
+    input.seamSurfaces?.some(item => item.bubbles.length > 0)).seamSurfaces[0];
+  assert.equal(surface.cleanedImage, options.seamArtifactCleanedImage);
 });
 test("late seam evidence reuses a cleaned artifact when the final blue mask is unchanged", async () => {
   const options = boundaryMergeHarnessOptions();

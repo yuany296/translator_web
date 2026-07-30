@@ -47,6 +47,7 @@ export function installPipelineApi(runtime) {
     buildStandbyCoverProjections: runtime.buildStandbyCoverProjections,
     projectionsRequireCleanedImage: runtime.projectionsRequireCleanedImage,
     buildCanonicalCleanMasks: runtime.buildCanonicalCleanMasks,
+    buildCleanedArtifactProjectionPlan: runtime.buildCleanedArtifactProjectionPlan,
     buildCleanedArtifactKey: runtime.buildCleanedArtifactKey,
     projectSeamBubbleToPage: runtime.projectSeamBubbleToPage,
     seamBubbleRequiresCleanedImage: runtime.seamBubbleRequiresCleanedImage,

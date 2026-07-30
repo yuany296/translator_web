@@ -113,13 +113,14 @@ function createRuntime(targets) {
       node.style.top = `${geometry.centerY}px`;
       node.style.transform = `translate(-50%, -50%) rotate(${geometry.rotation}deg)`;
     },
-    createBubbleNode(bubble) {
+    createBubbleNode(bubble, _index, options = {}) {
       const node = new FakeElement("div");
       node.className = "mt-bubble mt-text-layer";
       node.classList.add("mt-bubble", "mt-text-layer");
       node.dataset.alignment = bubble.alignment || "center";
       node.dataset.rotationDeg = String(bubble.rotation_deg || 0);
       node.dataset.sourceLineCount = String(bubble.source_line_count || 1);
+      node.dataset.seamRenderKey = String(options.seamRenderKey || "");
       node.textContent = bubble.translated_text;
       return node;
     },
@@ -138,6 +139,10 @@ function makeSurface() {
     canvasHeight: 520,
     pageIds: ["upper", "lower"],
     cleanedImage: "data:image/png;base64,AQID",
+    cleanedImageByPage: {
+      upper: "data:image/png;base64,VVBQRVI=",
+      lower: "data:image/png;base64,TE9XRVI="
+    },
     segments: [{
       pageId: "upper", drawRect: { x: 0, y: 0, w: 760, h: 260 },
       sourceCrop: { x: 0, y: 740, w: 760, h: 260 }, naturalWidth: 760, naturalHeight: 1000
@@ -148,6 +153,14 @@ function makeSurface() {
     bubbles: [{
       canonical_id: "canonical-one", x: 20, y: 35, w: 60, h: 30,
       fill_box: { x: 20, y: 35, w: 60, h: 30 },
+      page_text_boxes: [
+        { pageId: "upper", x: 20, y: 90, w: 60, h: 10 },
+        { pageId: "lower", x: 20, y: 0, w: 60, h: 30 }
+      ],
+      page_cover_boxes: [
+        { pageId: "upper", x: 20, y: 90, w: 60, h: 10 },
+        { pageId: "lower", x: 20, y: 0, w: 60, h: 30 }
+      ],
       bg_type: "none", translated_text: "完整译文", original_text: "source", source_line_count: 2
     }]
   };
@@ -199,6 +212,10 @@ test("one cross-page canonical owns one positive DOM overlay across resize and a
   const [text] = descendants(overlay, "mt-text-layer");
   const covers = descendants(overlay, "mt-cover-segment");
   assert.equal(covers.length, 2);
+  assert.match(covers[0].style.backgroundImage, /AQID/u,
+    "a page cover inside the seam capture must prefer the cleaned composite over a stale page artifact");
+  assert.match(covers[1].style.backgroundImage, /TE9XRVI=/u,
+    "a page cover extending beyond the seam capture must use the full-page cleaned artifact");
   const coverGap = Number.parseFloat(covers[1].style.top) -
     Number.parseFloat(covers[0].style.top) - Number.parseFloat(covers[0].style.height);
   assert.equal(coverGap, 24);
@@ -216,4 +233,26 @@ test("one cross-page canonical owns one positive DOM overlay across resize and a
   assert.ok(Number.parseFloat(text.style.fontSize) < firstFontSize);
   assert.ok(Number.parseFloat(overlay.style.left) >= 0);
   assert.ok(Number.parseFloat(overlay.style.top) >= 0);
+
+  const refreshedSurface = {
+    ...makeSurface(),
+    renderKey: "render-two",
+    cleanedImage: "data:image/png;base64,UkVGUkVTSEVE"
+  };
+  runtime.renderCrossPageSurfaces([refreshedSurface]);
+  const [refreshedOverlay] = descendants(host, "mt-cross-page-overlay");
+  assert.strictEqual(refreshedOverlay, overlay,
+    "a new cleaned artifact for the same seam must update the existing DOM");
+  assert.equal(descendants(host, "mt-cross-page-overlay").length, 1);
+  assert.equal(runtime.state.crossPageOverlaysByRenderKey.has("render-one"), false);
+  assert.equal(runtime.state.crossPageOverlaysByRenderKey.has("render-two"), true);
+  assert.equal(text.dataset.seamRenderKey, "render-two",
+    "the reused clickable text node must follow the current render key");
+  runtime.toggleSeamSourceMode(text.dataset.seamRenderKey);
+  assert.equal(refreshedOverlay.classList.contains("mt-show-source"), true,
+    "the refreshed overlay must still switch to its source image");
+  runtime.toggleSeamSourceMode(text.dataset.seamRenderKey);
+  assert.equal(refreshedOverlay.classList.contains("mt-show-source"), false);
+  assert.match(descendants(refreshedOverlay, "mt-cover-segment")[0].style.backgroundImage,
+    /UkVGUkVTSEVE/u);
 });

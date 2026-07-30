@@ -20,6 +20,31 @@ export function installReconcilerObservation(runtime) {
     return runtime.normalizeText(value).toLocaleLowerCase().replace(/\s+/gu, "");
   }
   runtime.normalizeComparableText = normalizeComparableText;
+  function sliceComparablePrefix(text, comparableLength) {
+    if (!(comparableLength > 0)) return runtime.normalizeText(text);
+    const characters = Array.from(runtime.normalizeText(text));
+    let consumed = 0;
+    let index = 0;
+    while (index < characters.length && consumed < comparableLength) {
+      consumed += Array.from(runtime.normalizeComparableText(characters[index])).length;
+      index += 1;
+    }
+    return characters.slice(index).join("");
+  }
+  runtime.sliceComparablePrefix = sliceComparablePrefix;
+  function joinContinuationText(leftText, rightText) {
+    const left = runtime.normalizeText(leftText);
+    const right = runtime.normalizeText(rightText);
+    if (!left) return right;
+    if (!right) return left;
+    const comparableLeft = runtime.normalizeComparableText(left);
+    const comparableRight = runtime.normalizeComparableText(right);
+    if (comparableLeft.includes(comparableRight)) return left;
+    if (comparableRight.includes(comparableLeft)) return right;
+    const overlap = runtime.suffixPrefixOverlap(comparableLeft, comparableRight);
+    return `${left}${runtime.sliceComparablePrefix(right, overlap)}`;
+  }
+  runtime.joinContinuationText = joinContinuationText;
   function stableSerialize(value) {
     if (value === null || typeof value !== "object") {
       return JSON.stringify(value);

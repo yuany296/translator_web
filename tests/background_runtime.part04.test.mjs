@@ -168,7 +168,7 @@ test("translated substring in a separate region is not collapsed", () => {
   }]);
   assert.equal(result.length, 2);
 });
-test("v25 OCR cache separates image evidence and excludes translation and render settings", () => {
+test("v28 OCR cache invalidates old observation semantics and excludes translation and render settings", () => {
   const build = context.__backgroundTest.buildOcrCacheKey;
   const request = {
     imageDigest: "digest-a",
@@ -257,12 +257,75 @@ test("v25 OCR cache separates image evidence and excludes translation and render
     },
     settings
   });
-  assert.match(first, /^mt_cache_v25:ocr:/);
+  assert.match(first, /^mt_cache_v28:ocr:/);
+  assert.doesNotMatch(first, /^mt_cache_v2[5-7]:ocr:/);
   assert.equal(first, translationAndRenderChanged);
   assert.equal(first, newCleanedMask, "render-only masks must not split semantic OCR cache entries");
   assert.notEqual(first, newImage);
   assert.notEqual(first, newRevision);
   assert.notEqual(first, newChineseFilter);
+});
+test("seam OCR preserves real line groups before joining a boundary-overshoot row to the next page", async () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 760, height: 192 };
+  const pageSpans = [{
+    pageId: "page-upper",
+    canvasBox: { x: 0, y: 0, w: 760, h: 96 },
+    pageBox: { x: 0, y: 904, w: 760, h: 96 },
+    pageWidth: 760,
+    pageHeight: 1000
+  }, {
+    pageId: "page-lower",
+    canvasBox: { x: 0, y: 96, w: 760, h: 96 },
+    pageBox: { x: 0, y: 0, w: 760, h: 96 },
+    pageWidth: 760,
+    pageHeight: 1000
+  }];
+  const item = (text, left, top, width, height, regionType = "effect_text") => ({
+    text,
+    score: 0.92,
+    box: { left, top, width, height },
+    region_type: regionType,
+    region_id: regionType === "caption_panel" ? "region-1" : "",
+    region_box: regionType === "caption_panel" ? { left: 369, top: 0, width: 391, height: 153 } : null,
+    bg_color: regionType === "caption_panel" ? "#000000" : "",
+    text_color: "#fcfcfc",
+    stroke_color: "#000000"
+  });
+  const debugSession = { filterReasons: [] };
+  const clustered = await background.buildLocalPaddleBubbleItems({
+    imageWidth: imageSize.width,
+    imageHeight: imageSize.height,
+    items: [
+      item("잡초(민들레", 59, 68, 216, 46),
+      item("추정)를", 288, 69, 139, 43),
+      item("뜯어서 기계에", 441, 68, 254, 45, "caption_panel"),
+      item("두번 투입.", 57, 145, 194, 46)
+    ]
+  }, imageSize, "", false, null, background.getDefaultOcrTuning(), debugSession, { pageSpans });
+  const request = {
+    sourceType: "seam",
+    pageIds: ["page-upper", "page-lower"],
+    imageRevisionByPage: { "page-upper": "revision-upper", "page-lower": "revision-lower" },
+    imageDigest: "real-boundary-overshoot",
+    imageMeta: { sourceType: "seam", pageSpans }
+  };
+  const result = background.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request,
+    imageSize,
+    normalized: clustered.map((entry, index) => background.normalizeBaiduOcrItem(entry, index, imageSize)).filter(Boolean),
+    ocrTuning: background.getDefaultOcrTuning(),
+    ocrDebug: debugSession,
+    ignoreSimplifiedChinese: false,
+    debug: false
+  });
+  assert.equal(result.observations.length, 1, JSON.stringify({
+    clustered,
+    filtered: result.filteredObservations
+  }, null, 2));
+  assert.match(result.observations[0].originalText.replace(/\s+/gu, ""), /잡초.*두번투입\./u);
+  assert.deepEqual(Array.from(result.observations[0].pageSpans, span => span.pageId), ["page-upper", "page-lower"]);
 });
 test("cleaned masks clamp, quantize, deduplicate, sort, and reject non-percent geometry", () => {
   const normalize = context.__backgroundTest.normalizeCleanedMasks;

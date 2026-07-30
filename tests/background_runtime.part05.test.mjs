@@ -242,6 +242,11 @@ test("seam OCR can join only compatible fragments immediately above and below th
   assert.equal(result.retained[0].source_line_count, 2);
   assert.equal(result.rejected.length, 1);
   assert.equal(result.rejected[0].reason, "seam_not_cross_boundary");
+  const completed = background.filterSeamOcrCandidates([
+    candidate("first sentence.", { left: 220, top: 76, width: 220, height: 16 }),
+    candidate("next sentence.", { left: 226, top: 100, width: 214, height: 16 })
+  ], request, imageSize);
+  assert.equal(completed.retained.length, 0);
 });
 test("seam OCR keeps boundary text when its reliable speech region crosses both pages", () => {
   const background = context.__backgroundTest;

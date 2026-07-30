@@ -50,8 +50,11 @@ export function installSeamHandling(runtime) {
       });
     });
     const pairCandidates = [];
-    upperEdge.forEach(upper => {
-      lowerEdge.forEach(lower => {
+    const directUpper = direct.filter(descriptor => runtime.getSeamDirectPairSide(descriptor) === "upper");
+    const directLower = direct.filter(descriptor => runtime.getSeamDirectPairSide(descriptor) === "lower");
+    [...upperEdge, ...directUpper].forEach(upper => {
+      [...lowerEdge, ...directLower].forEach(lower => {
+        if (upper.index === lower.index) return;
         const pair = runtime.buildSeamCrossPairCandidate(upper, lower, imageSize, maxCrossHeight);
         if (pair) pairCandidates.push(pair);
       });
@@ -73,7 +76,7 @@ export function installSeamHandling(runtime) {
         });
       }
     }
-    const retained = [...direct.map(item => item.candidate), ...merged].sort((left, right) => {
+    const retained = [...direct.filter(item => !used.has(item.index)).map(item => item.candidate), ...merged].sort((left, right) => {
       const leftBox = runtime.getSeamCandidateRawBox(left, imageSize);
       const rightBox = runtime.getSeamCandidateRawBox(right, imageSize);
       return (leftBox?.top || 0) - (rightBox?.top || 0) || (leftBox?.left || 0) - (rightBox?.left || 0) || String(left.original_text || "").localeCompare(String(right.original_text || ""));
@@ -84,6 +87,23 @@ export function installSeamHandling(runtime) {
     };
   }
   runtime.filterSeamOcrCandidates = filterSeamOcrCandidates;
+  function getSeamDirectPairSide(descriptor) {
+    const rawHeight = Math.max(1, Number(descriptor && descriptor.rawBox && descriptor.rawBox.height) || 1);
+    const upperHeight = Number(descriptor && descriptor.upperIntersection && descriptor.upperIntersection.height) || 0;
+    const lowerHeight = Number(descriptor && descriptor.lowerIntersection && descriptor.lowerIntersection.height) || 0;
+    const minimumBias = Math.max(1, rawHeight * 0.1);
+    if (upperHeight - lowerHeight >= minimumBias) return "upper";
+    if (lowerHeight - upperHeight >= minimumBias) return "lower";
+    return "";
+  }
+  runtime.getSeamDirectPairSide = getSeamDirectPairSide;
+  function resolveSeamCrossEdgeWindow(rawBox, maxCrossHeight) {
+    const lineHeight = Math.max(1, Number(rawBox && rawBox.height) || 1);
+    const adaptive = lineHeight * 1.35;
+    return Math.max(runtime.SEAM_CROSS_EDGE_WINDOW_PX,
+      Math.min(Math.max(runtime.SEAM_CROSS_EDGE_WINDOW_PX, maxCrossHeight * 0.45), adaptive));
+  }
+  runtime.resolveSeamCrossEdgeWindow = resolveSeamCrossEdgeWindow;
   function describeSeamOcrCandidate(candidate, index, upperSegment, lowerSegment, imageSize, maxCrossHeight) {
     const rawBox = runtime.getSeamCandidateRawBox(candidate, imageSize);
     const originalText = runtime.normalizeTranslationSourceText(candidate && candidate.original_text);
@@ -92,9 +112,11 @@ export function installSeamHandling(runtime) {
     const lowerIntersection = runtime.intersectObservationBoxes(rawBox, lowerSegment.canvasBox);
     const upperBottom = upperSegment.canvasBox.top + upperSegment.canvasBox.height;
     const lowerTop = lowerSegment.canvasBox.top;
+    // 分页可能切在两行之间；允许按当前字号扩展边缘窗口，避免固定 24px 漏掉正常行距。
+    const edgeWindow = runtime.resolveSeamCrossEdgeWindow(rawBox, maxCrossHeight);
     const textCrossesBoundary = Boolean(upperIntersection && lowerIntersection && rawBox.top < lowerTop && rawBox.top + rawBox.height > upperBottom && rawBox.height <= maxCrossHeight);
     const visualBox = runtime.getSeamCandidateVisualContributionBox(candidate, imageSize, maxCrossHeight);
-    const visualCrossesBoundary = Boolean(visualBox && runtime.intersectObservationBoxes(visualBox, upperSegment.canvasBox) && runtime.intersectObservationBoxes(visualBox, lowerSegment.canvasBox) && (upperIntersection && rawBox.top + rawBox.height >= upperBottom - runtime.SEAM_CROSS_EDGE_WINDOW_PX || lowerIntersection && rawBox.top <= lowerTop + runtime.SEAM_CROSS_EDGE_WINDOW_PX));
+    const visualCrossesBoundary = Boolean(visualBox && runtime.intersectObservationBoxes(visualBox, upperSegment.canvasBox) && runtime.intersectObservationBoxes(visualBox, lowerSegment.canvasBox) && (upperIntersection && rawBox.top + rawBox.height >= upperBottom - edgeWindow || lowerIntersection && rawBox.top <= lowerTop + edgeWindow));
     return {
       candidate,
       index,
@@ -102,8 +124,8 @@ export function installSeamHandling(runtime) {
       upperIntersection,
       lowerIntersection,
       crossesBoundary: textCrossesBoundary || visualCrossesBoundary,
-      upperEdgeOnly: Boolean(upperIntersection && !lowerIntersection && rawBox.top + rawBox.height >= upperBottom - runtime.SEAM_CROSS_EDGE_WINDOW_PX),
-      lowerEdgeOnly: Boolean(lowerIntersection && !upperIntersection && rawBox.top <= lowerTop + runtime.SEAM_CROSS_EDGE_WINDOW_PX)
+      upperEdgeOnly: Boolean(upperIntersection && !lowerIntersection && rawBox.top + rawBox.height >= upperBottom - edgeWindow),
+      lowerEdgeOnly: Boolean(lowerIntersection && !upperIntersection && rawBox.top <= lowerTop + edgeWindow)
     };
   }
   runtime.describeSeamOcrCandidate = describeSeamOcrCandidate;
@@ -116,12 +138,28 @@ export function installSeamHandling(runtime) {
     });
   }
   runtime.getSeamCandidateRawBox = getSeamCandidateRawBox;
+  function resolveSeamCrossPairMaxGap(upperBox, lowerBox, maxCrossHeight) {
+    const lineHeightSum = Math.max(2,
+      (Number(upperBox && upperBox.height) || 0) + (Number(lowerBox && lowerBox.height) || 0));
+    const adaptive = lineHeightSum * 0.8;
+    return Math.max(runtime.SEAM_CROSS_PAIR_MAX_GAP_PX,
+      Math.min(Math.max(runtime.SEAM_CROSS_PAIR_MAX_GAP_PX, maxCrossHeight * 0.45), adaptive));
+  }
+  runtime.resolveSeamCrossPairMaxGap = resolveSeamCrossPairMaxGap;
+  function seamPairTextCanContinue(upperText, upperCandidate, lowerCandidate) {
+    const upperEndsSentence = /[.!?。！？…]["'’”」』）》】]*$/u.test(upperText);
+    const upperRegionId = String(upperCandidate && upperCandidate.region_id || "");
+    const lowerRegionId = String(lowerCandidate && lowerCandidate.region_id || "");
+    return !upperEndsSentence || Boolean(upperRegionId && upperRegionId === lowerRegionId);
+  }
+  runtime.seamPairTextCanContinue = seamPairTextCanContinue;
   function buildSeamCrossPairCandidate(upper, lower, imageSize, maxCrossHeight) {
     const upperText = runtime.normalizeTranslationSourceText(upper && upper.candidate && upper.candidate.original_text);
     const lowerText = runtime.normalizeTranslationSourceText(lower && lower.candidate && lower.candidate.original_text);
     if (!upperText || !lowerText || upperText.replace(/\s+/gu, "") === lowerText.replace(/\s+/gu, "")) {
       return null;
     }
+    if (!runtime.seamPairTextCanContinue(upperText, upper.candidate, lower.candidate)) return null;
     const upperBox = upper.rawBox;
     const lowerBox = lower.rawBox;
     const horizontalOverlap = Math.max(0, Math.min(upperBox.left + upperBox.width, lowerBox.left + lowerBox.width) - Math.max(upperBox.left, lowerBox.left)) / Math.max(1, Math.min(upperBox.width, lowerBox.width));
@@ -129,7 +167,8 @@ export function installSeamHandling(runtime) {
     const verticalGap = lowerBox.top - (upperBox.top + upperBox.height);
     const upperRotation = Number(upper.candidate && upper.candidate.rotation_deg) || 0;
     const lowerRotation = Number(lower.candidate && lower.candidate.rotation_deg) || 0;
-    if (horizontalOverlap < runtime.SEAM_CROSS_MIN_HORIZONTAL_OVERLAP || heightRatio < runtime.SEAM_CROSS_MIN_HEIGHT_RATIO || verticalGap > runtime.SEAM_CROSS_PAIR_MAX_GAP_PX || Math.abs(upperRotation - lowerRotation) > runtime.SEAM_CROSS_MAX_ROTATION_DELTA_DEG) {
+    const maxPairGap = runtime.resolveSeamCrossPairMaxGap(upperBox, lowerBox, maxCrossHeight);
+    if (horizontalOverlap < runtime.SEAM_CROSS_MIN_HORIZONTAL_OVERLAP || heightRatio < runtime.SEAM_CROSS_MIN_HEIGHT_RATIO || verticalGap > maxPairGap || Math.abs(upperRotation - lowerRotation) > runtime.SEAM_CROSS_MAX_ROTATION_DELTA_DEG) {
       return null;
     }
     const rawBox = {
@@ -172,7 +211,7 @@ export function installSeamHandling(runtime) {
       upper,
       lower,
       candidate,
-      score: horizontalOverlap * 0.6 + heightRatio * 0.3 + (1 - Math.min(1, Math.max(0, verticalGap) / runtime.SEAM_CROSS_PAIR_MAX_GAP_PX)) * 0.1
+      score: horizontalOverlap * 0.6 + heightRatio * 0.3 + (1 - Math.min(1, Math.max(0, verticalGap) / maxPairGap)) * 0.1
     };
   }
   runtime.buildSeamCrossPairCandidate = buildSeamCrossPairCandidate;

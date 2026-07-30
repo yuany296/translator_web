@@ -70,14 +70,14 @@ export function installSceneCrossPage(runtime) {
   }
   runtime.mapCompositeRectToCrossPageRoot = mapCompositeRectToRoot;
 
-  function mapPageBoxToRoot(value, targetRects, rootRect) {
+  function mapPageBoxToRoot(surface, value, targetRects, rootRect) {
     const pageId = String(value?.pageId || "");
     const pageRect = targetRects.get(pageId);
     const box = runtime.normalizeSeamRect(value);
     if (!pageRect || !rootRect || !(pageRect.width > 0 && pageRect.height > 0) || !(box.w > 0 && box.h > 0)) return null;
     const sourceLeft = box.x / 100 * pageRect.width;
     const sourceTop = box.y / 100 * pageRect.height;
-    return {
+    const mapped = {
       pageId,
       mapping: "page",
       left: Math.max(0, pageRect.left + sourceLeft - rootRect.left),
@@ -88,6 +88,36 @@ export function installSceneCrossPage(runtime) {
       pageHeight: pageRect.height,
       sourceLeft,
       sourceTop
+    };
+    const segment = (Array.isArray(surface?.segments) ? surface.segments : [])
+      .find(item => String(item?.pageId || "") === pageId);
+    if (!runtime.isValidCrossPageSegment(segment)) return mapped;
+    const draw = runtime.normalizeSeamRect(segment.drawRect);
+    const crop = runtime.normalizeSeamRect(segment.sourceCrop);
+    const naturalWidth = Number(segment.naturalWidth);
+    const naturalHeight = Number(segment.naturalHeight);
+    const sourceBox = {
+      left: box.x / 100 * naturalWidth,
+      top: box.y / 100 * naturalHeight,
+      width: box.w / 100 * naturalWidth,
+      height: box.h / 100 * naturalHeight
+    };
+    const tolerance = 0.01;
+    const contained = sourceBox.left >= crop.x - tolerance &&
+      sourceBox.top >= crop.y - tolerance &&
+      sourceBox.left + sourceBox.width <= crop.x + crop.w + tolerance &&
+      sourceBox.top + sourceBox.height <= crop.y + crop.h + tolerance;
+    if (!contained) return mapped;
+    return {
+      ...mapped,
+      scaleX: crop.w / draw.w * pageRect.width / naturalWidth,
+      scaleY: crop.h / draw.h * pageRect.height / naturalHeight,
+      compositeIntersection: {
+        left: draw.x + (sourceBox.left - crop.x) * draw.w / crop.w,
+        top: draw.y + (sourceBox.top - crop.y) * draw.h / crop.h,
+        width: sourceBox.width * draw.w / crop.w,
+        height: sourceBox.height * draw.h / crop.h
+      }
     };
   }
 
@@ -158,8 +188,8 @@ export function installSceneCrossPage(runtime) {
     }).filter(Boolean);
     const pageTextBoxes = Array.isArray(bubble?.page_text_boxes) ? bubble.page_text_boxes : [];
     const pageCoverBoxes = Array.isArray(bubble?.page_cover_boxes) ? bubble.page_cover_boxes : [];
-    const textSegments = (pageTextBoxes.length ? pageTextBoxes.map(value => mapPageBoxToRoot(value, targetRects, rootRect)) : mapBox(textBox)).filter(Boolean);
-    const coverSegments = (pageCoverBoxes.length ? pageCoverBoxes.map(value => mapPageBoxToRoot(value, targetRects, rootRect)) : mapBox(coverBox)).filter(Boolean);
+    const textSegments = (pageTextBoxes.length ? pageTextBoxes.map(value => mapPageBoxToRoot(surface, value, targetRects, rootRect)) : mapBox(textBox)).filter(Boolean);
+    const coverSegments = (pageCoverBoxes.length ? pageCoverBoxes.map(value => mapPageBoxToRoot(surface, value, targetRects, rootRect)) : mapBox(coverBox)).filter(Boolean);
     const fallbackTextBounds = unionRects(textSegments);
     const polygonFrame = pageTextBoxes.length ? null : buildMappedPolygonFrame(surface, bubble, targetRects, rootRect);
     const textBounds = polygonFrame && polygonFrame.bounds || fallbackTextBounds;

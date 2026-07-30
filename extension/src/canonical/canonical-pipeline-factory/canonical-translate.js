@@ -61,12 +61,15 @@ export function installCanonicalTranslate(runtime, scope) {
             isPageAvailable: scope.isPageAvailable
           }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds));
           scope.store.setProjections(fallbackPlan.projections);
-          await scope.refreshRequiredCleanedArtifacts(fallbackPlan.projections);
+          await scope.refreshRequiredCleanedArtifacts(fallbackPlan.projections, fallbackPlan.seamSurfaceIndex);
           if (guardAllows()) {
+            const refreshedSeamSurfaceIndex = runtime.buildSeamRenderSurfaceIndex(scope.store, {
+              isPageAvailable: scope.isPageAvailable
+            });
             // 每页是否完整由当前 canonical revision 和 provisional projection 独立判断。
             // 不能用一个失败项把全章其他已完成页面也降级成 pending。
             await scope.renderAllCanonicalPages(`${reason}:translation-fallback`, guardAllows, {
-              seamSurfaceIndex: fallbackPlan.seamSurfaceIndex,
+              seamSurfaceIndex: refreshedSeamSurfaceIndex,
               fallbackProjectionsByPage: ordinaryFallbackProjections
             });
           }
@@ -90,16 +93,19 @@ export function installCanonicalTranslate(runtime, scope) {
       isPageAvailable: scope.isPageAvailable
     }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds));
     scope.store.setProjections(projectionPlan.projections);
-    await scope.refreshRequiredCleanedArtifacts(projectionPlan.projections);
+    await scope.refreshRequiredCleanedArtifacts(projectionPlan.projections, projectionPlan.seamSurfaceIndex);
     if (!guardAllows()) return {
       aborted: true
     };
+    const refreshedSeamSurfaceIndex = runtime.buildSeamRenderSurfaceIndex(scope.store, {
+      isPageAvailable: scope.isPageAvailable
+    });
     scope.trace("render", null, {
       reason
     });
     for (const pageId of focusPageIds) scope.store.setCanonicalPagePhase(pageId, runtime.CanonicalPhase.RENDERING);
     await scope.renderAllCanonicalPages(reason, guardAllows, {
-      seamSurfaceIndex: projectionPlan.seamSurfaceIndex,
+      seamSurfaceIndex: refreshedSeamSurfaceIndex,
       fallbackProjectionsByPage: ordinaryFallbackProjections
     });
     if (!guardAllows()) return {

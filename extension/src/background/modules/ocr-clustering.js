@@ -1,5 +1,5 @@
 export function installOcrClustering(runtime) {
-  function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debugEnabled = false, ocrDebug = null) {
+  function clusterLocalPaddleWords(words, imageSize, imageAnalysis, debugEnabled = false, ocrDebug = null, options = {}) {
     // 兼容直接调用聚类器的测试/诊断入口；生产链路显式分离布尔开关与可写会话对象。
     const legacyDebug = debugEnabled && typeof debugEnabled === "object" ? debugEnabled : null;
     const debugSession = ocrDebug && typeof ocrDebug === "object" ? ocrDebug : legacyDebug;
@@ -12,7 +12,10 @@ export function installOcrClustering(runtime) {
     const dedupeResult = runtime.dedupeLocalPaddleEntries(expandedEntries);
     const entries = dedupeResult.entries;
     const lineGroups = runtime.buildLocalPaddleLineGroups(entries);
-    const paragraphGroups = runtime.buildLocalPaddleParagraphGroups(lineGroups);
+    // 接缝需要在分页线两侧逐行判定；预先合成整段会把正常的跨页两行扩成超高块。
+    const paragraphGroups = options && options.preserveLineGroups === true
+      ? lineGroups.map(line => [line])
+      : runtime.buildLocalPaddleParagraphGroups(lineGroups);
     const clusters = paragraphGroups.map(group => group.flatMap(line => line.entries));
     // Detect region types for each cluster (chat/forum vs comic bubble)
     const clusterRegionTypes = runtime.inferLocalPaddleClusterRegionTypes(clusters);

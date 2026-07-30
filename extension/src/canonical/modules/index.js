@@ -14,6 +14,7 @@ import { installSeamResiduals } from "./seam-residuals.js";
 import { installSceneIndexBuilder } from "./scene-index-builder.js";
 import { installSceneIndexResolve } from "./scene-index-resolve.js";
 import { installSceneIndexUtils } from "./scene-index-utils.js";
+import { installCleanedArtifactPlan } from "./cleaned-artifact-plan.js";
 import { installDedupeGlobal } from "./dedupe-global.js";
 import { installConstantsFsm } from "./constants-fsm.js";
 import { installPipelineApi } from "./pipeline-api.js";
@@ -35,6 +36,7 @@ export const pipelineInstallers = Object.freeze([
   installSceneIndexBuilder,
   installSceneIndexResolve,
   installSceneIndexUtils,
+  installCleanedArtifactPlan,
   installDedupeGlobal,
   installConstantsFsm,
   installPipelineApi
@@ -58,6 +60,7 @@ export const pipelinePhases = Object.freeze({
     installSceneIndexBuilder,
     installSceneIndexResolve,
     installSceneIndexUtils,
+    installCleanedArtifactPlan,
     installDedupeGlobal
   ]),
   state: Object.freeze([installConstantsFsm]),

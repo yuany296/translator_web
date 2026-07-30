@@ -150,8 +150,10 @@ export function installLifecycleBubble(runtime) {
     node.addEventListener("click", event => {
       event.preventDefault();
       event.stopPropagation();
-      if (node.dataset.seamRenderKey) {
-        runtime.toggleSeamSourceMode(node.dataset.seamRenderKey);
+      const seamOverlay = node.closest(".mt-cross-page-overlay");
+      const seamRenderKey = String(seamOverlay?.dataset?.seamRenderKey || node.dataset.seamRenderKey || "");
+      if (seamRenderKey) {
+        runtime.toggleSeamSourceMode(seamRenderKey);
       } else {
         runtime.toggleOverlaySourceMode(node);
       }

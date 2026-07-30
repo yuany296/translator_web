@@ -107,6 +107,11 @@
         font: inherit;
         background: #ffffff;
       }
+      textarea.memory-json {
+        min-height: 360px;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        line-height: 1.5;
+      }
 
       textarea {
         min-height: 88px;
@@ -157,12 +162,14 @@
       }
 
       #statusText[data-error="true"],
-      #pendingStatusText[data-error="true"] {
+      #pendingStatusText[data-error="true"],
+      #memoryStatusText[data-error="true"] {
         color: #b42318;
       }
 
       #statusText[data-error="false"],
-      #pendingStatusText[data-error="false"] {
+      #pendingStatusText[data-error="false"],
+      #memoryStatusText[data-error="false"] {
         color: #047857;
       }
 
@@ -416,6 +423,7 @@
       <nav class="tabs" aria-label="术语库分区">
         <button id="officialTabBtn" class="tab-button active" type="button">正式术语</button>
         <button id="pendingTabBtn" class="tab-button" type="button">待确认（0）</button>
+        <button id="memoryTabBtn" class="tab-button" type="button">小说记忆</button>
       </nav>
 
       <section id="officialPanel" class="panel">
@@ -438,6 +446,7 @@
             <thead>
               <tr>
                 <th>启用</th>
+                <th>范围</th>
                 <th>原文术语</th>
                 <th>固定译文</th>
                 <th>备注</th>
@@ -466,12 +475,44 @@
           <div id="ignoredRows"></div>
         </div>
       </section>
+
+      <section id="memoryPanel" class="panel hidden">
+        <div class="toolbar">
+          <select id="memoryBookSelect" aria-label="选择小说作品"></select>
+          <button id="memorySaveBtn" class="primary" type="button">保存记忆</button>
+          <button id="memoryExportBtn" type="button">导出本书</button>
+          <button id="memoryImportBtn" type="button">导入本书</button>
+          <button id="memoryClearBtn" class="danger" type="button">清空本书</button>
+          <input id="memoryFileInput" class="hidden" type="file" accept=".json" />
+        </div>
+        <div class="field">
+          <label for="memoryJsonInput">最近章节累计记忆（JSON）</label>
+          <textarea id="memoryJsonInput" class="memory-json" spellcheck="false"></textarea>
+        </div>
+        <div class="summary">
+          <span id="memoryMetaText">暂无小说记忆</span>
+          <span id="memoryStatusText" aria-live="polite"></span>
+        </div>
+      </section>
     </main>
 
     <dialog id="termDialog">
       <form id="termForm" class="dialog-content">
         <h2 id="dialogTitle">新增术语</h2>
         <input id="termIdInput" type="hidden" />
+        <div class="field">
+          <label for="scopeInput">术语范围</label>
+          <select id="scopeInput">
+            <option value="global">全局</option>
+            <option value="series">本书</option>
+          </select>
+        </div>
+        <div id="seriesScopeFields" class="field hidden">
+          <label for="scopeKeyInput">作品标识（例如 kakao:65171279）</label>
+          <input id="scopeKeyInput" type="text" maxlength="160" />
+          <label for="scopeLabelInput">作品名称</label>
+          <input id="scopeLabelInput" type="text" maxlength="240" />
+        </div>
         <div class="field">
           <label for="sourceInput">原文术语</label>
           <input id="sourceInput" type="text" maxlength="120" required />

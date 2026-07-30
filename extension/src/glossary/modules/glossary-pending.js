@@ -107,8 +107,16 @@ export function installGlossaryPending(runtime) {
     }
     if (source === "server") return;
     try {
-      const stored = await runtime.storageGet([runtime.glossaryCore.STORAGE_KEY]);
-      runtime.glossary = runtime.glossaryCore.normalizeGlossary(stored[runtime.glossaryCore.STORAGE_KEY]);
+      const stored = await runtime.storageGet([
+        runtime.glossaryCore.STORAGE_KEY,
+        runtime.glossaryCore.LEGACY_STORAGE_KEY
+      ]);
+      const source = stored[runtime.glossaryCore.STORAGE_KEY] ??
+        stored[runtime.glossaryCore.LEGACY_STORAGE_KEY];
+      runtime.glossary = runtime.glossaryCore.normalizeGlossary(source);
+      if (stored[runtime.glossaryCore.STORAGE_KEY] === undefined && source !== undefined) {
+        await runtime.storageSet({ [runtime.glossaryCore.STORAGE_KEY]: runtime.glossary });
+      }
       runtime.renderGlossary();
     } catch (error) {
       runtime.setStatus(`读取术语库失败：${runtime.getErrorMessage(error)}`, true);
@@ -121,7 +129,8 @@ export function installGlossaryPending(runtime) {
       if (!query) {
         return true;
       }
-      return [entry.source, entry.target, entry.note].some(value => String(value || "").toLocaleLowerCase().includes(query));
+      return [entry.source, entry.target, entry.note, entry.scopeLabel, entry.scopeKey]
+        .some(value => String(value || "").toLocaleLowerCase().includes(query));
     });
     const enabledCount = runtime.glossary.entries.filter(entry => entry.enabled).length;
     runtime.countText.textContent = query ? `共 ${runtime.glossary.entries.length} 条，匹配 ${filtered.length} 条，启用 ${enabledCount} 条` : `共 ${runtime.glossary.entries.length} 条，启用 ${enabledCount} 条`;
@@ -140,6 +149,9 @@ export function installGlossaryPending(runtime) {
     enabledToggle.dataset.action = "toggle";
     enabledToggle.setAttribute("aria-label", `启用 ${entry.source}`);
     enabledCell.append(enabledToggle);
+    const scopeCell = document.createElement("td");
+    scopeCell.textContent = entry.scope === "series"
+      ? `本书 · ${entry.scopeLabel || entry.scopeKey}` : "全局";
     const sourceCell = document.createElement("td");
     sourceCell.textContent = entry.source;
     const targetCell = document.createElement("td");
@@ -152,7 +164,7 @@ export function installGlossaryPending(runtime) {
     actions.className = "row-actions";
     actions.append(runtime.createActionButton("编辑", "edit"), runtime.createActionButton("删除", "delete", "danger"));
     actionsCell.append(actions);
-    row.append(enabledCell, sourceCell, targetCell, noteCell, actionsCell);
+    row.append(enabledCell, scopeCell, sourceCell, targetCell, noteCell, actionsCell);
     return row;
   }
   runtime.createTermRow = createTermRow;
@@ -170,20 +182,33 @@ export function installGlossaryPending(runtime) {
   function openEditor(entry = null) {
     runtime.dialogTitle.textContent = entry ? "编辑术语" : "新增术语";
     runtime.termIdInput.value = entry ? entry.id : "";
+    runtime.scopeInput.value = entry?.scope === "series" ? "series" : "global";
+    runtime.scopeKeyInput.value = entry?.scopeKey || "";
+    runtime.scopeLabelInput.value = entry?.scopeLabel || "";
     runtime.sourceInput.value = entry ? entry.source : "";
     runtime.targetInput.value = entry ? entry.target : "";
     runtime.noteInput.value = entry ? entry.note : "";
     runtime.enabledInput.checked = entry ? entry.enabled : true;
+    runtime.updateScopeFields();
     runtime.termDialog.showModal();
     runtime.sourceInput.focus();
   }
   runtime.openEditor = openEditor;
+  function updateScopeFields() {
+    const series = runtime.scopeInput.value === "series";
+    runtime.seriesScopeFields.classList.toggle("hidden", !series);
+    runtime.scopeKeyInput.required = series;
+  }
+  runtime.updateScopeFields = updateScopeFields;
   async function saveEditor(event) {
     event.preventDefault();
     const id = String(runtime.termIdInput.value || "");
     const source = String(runtime.sourceInput.value || "").trim();
     const target = String(runtime.targetInput.value || "").trim();
-    const duplicate = runtime.glossary.entries.find(entry => entry.source === source && entry.id !== id);
+    const scope = runtime.scopeInput.value === "series" ? "series" : "global";
+    const scopeKey = scope === "series" ? runtime.scopeKeyInput.value.trim() : "";
+    const duplicate = runtime.glossary.entries.find(entry =>
+      entry.source === source && entry.scope === scope && entry.scopeKey === scopeKey && entry.id !== id);
     if (duplicate) {
       runtime.setStatus(`原文术语“${source}”已存在`, true);
       runtime.sourceInput.focus();
@@ -194,7 +219,10 @@ export function installGlossaryPending(runtime) {
       source,
       target,
       note: runtime.noteInput.value,
-      enabled: runtime.enabledInput.checked
+      enabled: runtime.enabledInput.checked,
+      scope,
+      scopeKey,
+      scopeLabel: runtime.scopeLabelInput.value
     });
     if (!nextEntry) {
       runtime.setStatus("原文术语和固定译文不能为空", true);
@@ -264,10 +292,12 @@ export function installGlossaryPending(runtime) {
           : runtime.glossaryCore.normalizeGlossary(JSON.parse(text)).entries;
         if (!imported.length) throw new Error("文件中没有有效术语");
         // Upsert: merge by source, keeping existing IDs
-        const merged = new Map(runtime.glossary.entries.map(e => [e.source, e]));
+        const mergeKey = entry => `${entry.scope}\u0000${entry.scopeKey}\u0000${entry.source}`;
+        const merged = new Map(runtime.glossary.entries.map(e => [mergeKey(e), e]));
         for (const entry of imported) {
-          const prev = merged.get(entry.source);
-          merged.set(entry.source, { ...entry, id: prev ? prev.id : (entry.id || runtime.createTermId()) });
+          const key = mergeKey(entry);
+          const prev = merged.get(key);
+          merged.set(key, { ...entry, id: prev ? prev.id : (entry.id || runtime.createTermId()) });
         }
         const result = Array.from(merged.values()).slice(0, runtime.glossaryCore.MAX_ENTRIES);
         await runtime.persistEntries(result, `已导入 ${imported.length} 条，合并后共 ${result.length} 条`);

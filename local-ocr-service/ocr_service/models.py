@@ -16,6 +16,7 @@ class OcrRequest(BaseModel):
     debug: bool = False
     debug_id: str = ""
     ocr_geometry_version: str = Field(default="", max_length=64)
+    seam_rows: list[int] = Field(default_factory=list, max_length=4)
     return_cleaned_image: bool = False
     cleaned_masks: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
     cleaned_mask_token: str = Field(default="", max_length=128)
@@ -46,6 +47,9 @@ class GlossaryEntryPayload(BaseModel):
     tgt_lng: str = ""
     note: str = ""
     enabled: bool = True
+    scope_type: str = "global"
+    scope_key: str = ""
+    scope_label: str = ""
 
 
 class GlossaryBatchPayload(BaseModel):

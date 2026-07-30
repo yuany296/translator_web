@@ -10,6 +10,7 @@ export function installGlossaryEditor(runtime) {
     runtime.exportCsvBtn.addEventListener("click", runtime.exportGlossaryCsv);
     runtime.clearBtn.addEventListener("click", runtime.clearGlossary);
     runtime.termForm.addEventListener("submit", runtime.saveEditor);
+    runtime.scopeInput.addEventListener("change", runtime.updateScopeFields);
     runtime.cancelBtn.addEventListener("click", () => runtime.termDialog.close());
     runtime.termRows.addEventListener("click", runtime.handleRowClick);
     runtime.termRows.addEventListener("change", runtime.handleRowToggle);
@@ -225,6 +226,14 @@ export function installGlossaryEditor(runtime) {
   runtime.dialogTitle = dialogTitle;
   const termIdInput = document.getElementById("termIdInput");
   runtime.termIdInput = termIdInput;
+  const scopeInput = document.getElementById("scopeInput");
+  runtime.scopeInput = scopeInput;
+  const scopeKeyInput = document.getElementById("scopeKeyInput");
+  runtime.scopeKeyInput = scopeKeyInput;
+  const scopeLabelInput = document.getElementById("scopeLabelInput");
+  runtime.scopeLabelInput = scopeLabelInput;
+  const seriesScopeFields = document.getElementById("seriesScopeFields");
+  runtime.seriesScopeFields = seriesScopeFields;
   const sourceInput = document.getElementById("sourceInput");
   runtime.sourceInput = sourceInput;
   const targetInput = document.getElementById("targetInput");

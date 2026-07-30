@@ -19,8 +19,10 @@ test("glossary normalization rejects invalid and duplicate source terms", () => 
 
   assert.equal(normalized.revision, 4);
   assert.deepEqual(JSON.parse(JSON.stringify(normalized.entries)), [
-    { id: "first", source: "성현", target: "成贤", note: "角色名", enabled: true },
-    { id: "disabled", source: "왕국", target: "王国", note: "", enabled: false }
+    { id: "first", source: "성현", target: "成贤", note: "角色名", enabled: true,
+      scope: "global", scopeKey: "", scopeLabel: "" },
+    { id: "disabled", source: "왕국", target: "王国", note: "", enabled: false,
+      scope: "global", scopeKey: "", scopeLabel: "" }
   ]);
 });
 
@@ -41,6 +43,32 @@ test("glossary prompt includes only enabled terms present in current OCR blocks"
   assert.doesNotMatch(prompt, /왕국/);
   assert.doesNotMatch(prompt, /마법사/);
   assert.ok(prompt.indexOf("성현 공작") < prompt.lastIndexOf('"성현"'));
+});
+
+test("Hangul glossary matching respects word boundaries and permits particles", () => {
+  const value = {
+    entries: [
+      { source: "양", target: "绵羊" },
+      { source: "문양", target: "纹样" },
+      { source: "이사", target: "理事" }
+    ]
+  };
+  const embedded = glossary.getRelevantEntries(value, [
+    { original_text: "외양만 보았고 모양새와 의기양양한 태도를 확인했다. 양손으로 이사장을 맞았다." }
+  ]);
+  assert.deepEqual(embedded.map(entry => entry.source), []);
+
+  const standalone = glossary.getRelevantEntries(value, [
+    { original_text: "양이 있고 문양을 확인했다. 이사가 말했다." }
+  ]);
+  assert.deepEqual(
+    standalone.map(entry => entry.source).sort(),
+    ["양", "문양", "이사"].sort()
+  );
+  assert.equal(glossary.matchesSourceTerm("외양만 문양이 모양새 의기양양", "양"), false);
+  assert.equal(glossary.matchesSourceTerm("양은 들판에 있다.", "양"), true);
+  assert.equal(glossary.matchesSourceTerm("이사장이 말했다.", "이사"), false);
+  assert.equal(glossary.matchesSourceTerm("이사가 말했다.", "이사"), true);
 });
 
 test("effective glossary changes produce a different fingerprint", () => {

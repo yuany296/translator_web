@@ -4,7 +4,7 @@ import os
 import sqlite3
 import threading
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_TGT_LNG = "zh-CN"
 
 
@@ -21,6 +21,12 @@ def normalize_tgt_lng(value: str) -> str:
     # Map short codes: zh → zh-CN, ko → ko-KR, ja → ja-JP, en → en-US
     mapping = {"zh": "zh-CN", "ko": "ko-KR", "ja": "ja-JP", "en": "en-US"}
     return mapping.get(v.lower(), v)
+
+
+def normalize_scope(scope_type: str, scope_key: str) -> tuple[str, str]:
+    """Normalize glossary scope while keeping legacy rows global."""
+    key = (scope_key or "").strip()[:160]
+    return ("series", key) if scope_type == "series" and key else ("global", "")
 
 
 class GlossaryBase:
@@ -57,6 +63,9 @@ class GlossaryBase:
                         note       TEXT NOT NULL DEFAULT '',
                         enabled    INTEGER NOT NULL DEFAULT 1,
                         source_key TEXT NOT NULL,
+                        scope_type TEXT NOT NULL DEFAULT 'global',
+                        scope_key  TEXT NOT NULL DEFAULT '',
+                        scope_label TEXT NOT NULL DEFAULT '',
                         created_at REAL NOT NULL,
                         updated_at REAL NOT NULL
                     );
@@ -98,6 +107,8 @@ class GlossaryBase:
                 """)
                 if cur_ver < 2:
                     self._migrate_v2(conn)
+                if cur_ver < 3:
+                    self._migrate_v3(conn)
                 conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
@@ -114,3 +125,20 @@ class GlossaryBase:
             conn.execute("ALTER TABLE glossary_entries ADD COLUMN tgt_lng TEXT NOT NULL DEFAULT '" + DEFAULT_TGT_LNG + "'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_tgt_lng ON glossary_entries(tgt_lng)")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique ON glossary_entries(source_key, tgt_lng)")
+
+    @staticmethod
+    def _migrate_v3(conn: sqlite3.Connection) -> None:
+        """Add per-series scope and replace the legacy uniqueness constraint."""
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(glossary_entries)").fetchall()]
+        if "scope_type" not in cols:
+            conn.execute("ALTER TABLE glossary_entries ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'global'")
+        if "scope_key" not in cols:
+            conn.execute("ALTER TABLE glossary_entries ADD COLUMN scope_key TEXT NOT NULL DEFAULT ''")
+        if "scope_label" not in cols:
+            conn.execute("ALTER TABLE glossary_entries ADD COLUMN scope_label TEXT NOT NULL DEFAULT ''")
+        conn.execute("DROP INDEX IF EXISTS idx_glossary_unique")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique_scope "
+            "ON glossary_entries(source_key, tgt_lng, scope_type, scope_key)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_scope ON glossary_entries(scope_type, scope_key)")

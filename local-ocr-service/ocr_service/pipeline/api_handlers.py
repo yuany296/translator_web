@@ -85,6 +85,9 @@ def glossary_upsert(payload: runtime.GlossaryEntryPayload) -> dict[str, runtime.
             note=getattr(payload, 'note', ''),
             enabled=getattr(payload, 'enabled', True),
             entry_id=getattr(payload, 'id', ''),
+            scope_type=getattr(payload, 'scope_type', 'global'),
+            scope_key=getattr(payload, 'scope_key', ''),
+            scope_label=getattr(payload, 'scope_label', ''),
         )
         return {'ok': True, 'entry': entry}
     except Exception as exc:
@@ -229,6 +232,9 @@ async def glossary_import_db(request: runtime.Request) -> dict[str, runtime.Any]
                 has_tgt = "tgt_lng" in cols
                 has_note = "note" in cols
                 has_enabled = "enabled" in cols
+                has_scope_type = "scope_type" in cols
+                has_scope_key = "scope_key" in cols
+                has_scope_label = "scope_label" in cols
                 select_cols = ["source", "target"]
                 if has_tgt:
                     select_cols.append("tgt_lng")
@@ -236,6 +242,12 @@ async def glossary_import_db(request: runtime.Request) -> dict[str, runtime.Any]
                     select_cols.append("note")
                 if has_enabled:
                     select_cols.append("enabled")
+                if has_scope_type:
+                    select_cols.append("scope_type")
+                if has_scope_key:
+                    select_cols.append("scope_key")
+                if has_scope_label:
+                    select_cols.append("scope_label")
                 rows = src.execute(f"SELECT {', '.join(select_cols)} FROM glossary_entries").fetchall()
                 entries = []
                 for row in rows:
@@ -249,6 +261,15 @@ async def glossary_import_db(request: runtime.Request) -> dict[str, runtime.Any]
                         ci += 1
                     if has_enabled:
                         entry["enabled"] = bool(row[ci])
+                        ci += 1
+                    if has_scope_type:
+                        entry["scope_type"] = row[ci] or "global"
+                        ci += 1
+                    if has_scope_key:
+                        entry["scope_key"] = row[ci] or ""
+                        ci += 1
+                    if has_scope_label:
+                        entry["scope_label"] = row[ci] or ""
                     entries.append(entry)
                 src.close()
             finally:
@@ -308,7 +329,16 @@ async def ocr(payload: runtime.OcrRequest) -> dict[str, runtime.Any]:
     image_bytes = runtime.decode_data_url(payload.image)
     params = runtime.normalize_ocr_params(payload)
     async with runtime._ocr_runtime_lock:
-        result = await runtime.asyncio.to_thread(runtime.run_ocr, image_bytes, lang, mode, params, bool(payload.debug), payload.debug_id)
+        result = await runtime.asyncio.to_thread(
+            runtime.run_ocr,
+            image_bytes,
+            lang,
+            mode,
+            params,
+            bool(payload.debug),
+            payload.debug_id,
+            payload.seam_rows,
+        )
     response = {'items': result['items'], 'boxes': result['boxes'], 'regions': result.get('regions', []), 'detectedRegions': result.get('detectedRegions', []), 'recognizedRegions': result.get('recognizedRegions', []), 'semanticBlocks': result.get('semanticBlocks', []), 'geometryReliability': result.get('geometryReliability', 'fallback'), 'lang': lang, 'mode': mode, 'ocrGeometryVersion': runtime.OCR_GEOMETRY_CONTRACT_VERSION, 'imageWidth': result['imageWidth'], 'imageHeight': result['imageHeight'], 'debug': result.get('debug', {}), 'counts': result.get('counts', {}), 'rawItems': result.get('rawItems', [])}
     if payload.return_cleaned_image:
         cleaned_image = runtime.build_cleaned_image_data_url(image_bytes, result['items'], payload.cleaned_masks)

@@ -5,7 +5,7 @@ import sqlite3
 import time
 from typing import Any
 
-from .common import normalize_source
+from .common import normalize_scope, normalize_source
 
 
 class TransferMixin:
@@ -59,13 +59,20 @@ class TransferMixin:
                     if not source or not target:
                         continue
                     eid = entry.get("id") or f"term-{now}-{hash(source)}"
+                    scope_type, scope_key = normalize_scope(
+                        entry.get("scope_type") or entry.get("scope") or "global",
+                        entry.get("scope_key") or entry.get("scopeKey") or "",
+                    )
+                    scope_label = entry.get("scope_label") or entry.get("scopeLabel") or ""
                     conn.execute(
                         """INSERT OR IGNORE INTO glossary_entries
-                           (id, source, target, note, enabled, source_key, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           (id, source, target, note, enabled, source_key, scope_type,
+                            scope_key, scope_label, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (eid, source, target, (entry.get("note") or "").strip(),
                          1 if entry.get("enabled") is not False else 0,
-                         normalize_source(source), now, now),
+                         normalize_source(source), scope_type, scope_key, scope_label,
+                         now, now),
                     )
                     count += 1
                 conn.commit()
@@ -83,6 +90,15 @@ class TransferMixin:
 
     @staticmethod
     def _row_to_entry(row: tuple[Any, ...]) -> dict[str, Any]:
+        if len(row) >= 12:
+            return {
+                "id": row[0], "source": row[1], "target": row[2],
+                "tgtLng": row[3], "note": row[4], "enabled": bool(row[5]),
+                "sourceKey": row[6], "scope": row[7], "scope_type": row[7],
+                "scopeKey": row[8], "scope_key": row[8],
+                "scopeLabel": row[9], "scope_label": row[9],
+                "createdAt": row[10], "updatedAt": row[11],
+            }
         return {
             "id": row[0],
             "source": row[1],

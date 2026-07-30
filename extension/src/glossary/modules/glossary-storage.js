@@ -10,12 +10,18 @@ export function installGlossaryStorage(runtime) {
     const targetIndex = hasHeader ? header.indexOf("target") : 1;
     const noteIndex = hasHeader ? header.indexOf("note") : 2;
     const enabledIndex = hasHeader ? header.indexOf("enabled") : 3;
+    const scopeIndex = hasHeader ? header.indexOf("scope") : -1;
+    const scopeKeyIndex = hasHeader ? header.indexOf("scope_key") : -1;
+    const scopeLabelIndex = hasHeader ? header.indexOf("scope_label") : -1;
     return runtime.glossaryCore.normalizeGlossary((hasHeader ? rows.slice(1) : rows).map(row => ({
       id: runtime.createTermId(),
       source: row[sourceIndex],
       target: row[targetIndex],
       note: noteIndex >= 0 ? row[noteIndex] : "",
-      enabled: enabledIndex < 0 || !/^(false|0|no|否)$/i.test(String(row[enabledIndex] || "").trim())
+      enabled: enabledIndex < 0 || !/^(false|0|no|否)$/i.test(String(row[enabledIndex] || "").trim()),
+      scope: scopeIndex >= 0 ? row[scopeIndex] : "global",
+      scopeKey: scopeKeyIndex >= 0 ? row[scopeKeyIndex] : "",
+      scopeLabel: scopeLabelIndex >= 0 ? row[scopeLabelIndex] : ""
     }))).entries;
   }
   runtime.parseCsvGlossary = parseCsvGlossary;
@@ -62,7 +68,11 @@ export function installGlossaryStorage(runtime) {
   }
   runtime.exportGlossaryJson = exportGlossaryJson;
   function exportGlossaryCsv() {
-    const rows = [["source", "target", "note", "enabled"], ...runtime.glossary.entries.map(entry => [entry.source, entry.target, entry.note, String(entry.enabled)])];
+    const rows = [["source", "target", "note", "enabled", "scope", "scope_key", "scope_label"],
+      ...runtime.glossary.entries.map(entry => [
+        entry.source, entry.target, entry.note, String(entry.enabled),
+        entry.scope, entry.scopeKey, entry.scopeLabel
+      ])];
     const csv = rows.map(row => row.map(runtime.escapeCsvCell).join(",")).join("\r\n");
     runtime.downloadFile(`manga-glossary-${runtime.formatDate()}.csv`, `\uFEFF${csv}`, "text/csv;charset=utf-8");
     runtime.setStatus(`已导出 ${runtime.glossary.entries.length} 条术语`, false);
@@ -109,7 +119,14 @@ export function installGlossaryStorage(runtime) {
         version: runtime.glossaryCore.SCHEMA_VERSION,
         revision: Math.max(1, Math.round((data.revision || data.last_updated || 0) * 1000)),
         updatedAt: Date.now(),
-        entries: data.entries.map(e => ({ id: e.id, source: e.source, target: e.target, note: e.note || "", enabled: e.enabled !== false }))
+        entries: data.entries.map(e => ({
+          id: e.id, source: e.source, target: e.target, note: e.note || "",
+          enabled: e.enabled !== false, scope: e.scope || e.scope_type,
+          scopeKey: e.scopeKey || e.scope_key, scopeLabel: e.scopeLabel || e.scope_label
+        }))
+      });
+      await runtime.storageSet({
+        [runtime.glossaryCore.STORAGE_KEY]: runtime.glossary
       });
       if (data.revision) runtime.setSyncRevision(Number(data.revision));
       runtime.renderGlossary();
@@ -121,11 +138,14 @@ export function installGlossaryStorage(runtime) {
     }
   }
   runtime.loadGlossaryFromServer = loadGlossaryFromServer;
-  async function saveEntryToServer(source, target, tgtLng, note, enabled, entryId) {
+  async function saveEntryToServer(source, target, tgtLng, note, enabled, entryId, scope = {}) {
     try {
       const body = { source: source.trim(), target: target.trim(), tgt_lng: tgtLng || "zh-CN" };
       if (note) body.note = note.trim();
       body.enabled = enabled !== false;
+      body.scope_type = scope.scope === "series" ? "series" : "global";
+      body.scope_key = body.scope_type === "series" ? String(scope.scopeKey || "") : "";
+      body.scope_label = body.scope_type === "series" ? String(scope.scopeLabel || "") : "";
       if (entryId && !entryId.startsWith("term-new-")) body.id = entryId;
       const resp = await fetch(`${serverBaseUrl}/glossary`, {
         method: "PUT",
@@ -214,7 +234,10 @@ export function installGlossaryStorage(runtime) {
       runtime.setStatus(message, false);
       // Sync to server in background
       try {
-        const batchEntries = next.entries.map(e => ({ source: e.source, target: e.target, note: e.note || "", enabled: e.enabled !== false }));
+        const batchEntries = next.entries.map(e => ({
+          source: e.source, target: e.target, note: e.note || "", enabled: e.enabled !== false,
+          scope_type: e.scope, scope_key: e.scopeKey, scope_label: e.scopeLabel
+        }));
         const resp = await fetch(`${runtime.getServerBaseUrl()}/glossary/batch`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

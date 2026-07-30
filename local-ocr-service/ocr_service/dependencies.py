@@ -77,7 +77,7 @@ values = {
     "SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE": 0.78,
     "VERTICAL_ORIENTATION_TIE_MARGIN": 0.08,
     "VERTICAL_CROP_MIN_ASPECT_RATIO": 1.4,
-    "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v2",
+    "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v4",
     "DEBUG_DIR": DATA_ROOT / "debug-ocr",
     "SERVICE_DEBUG_ROOT": DATA_ROOT / "debug",
     "CV2_AVAILABLE": CV2_AVAILABLE,

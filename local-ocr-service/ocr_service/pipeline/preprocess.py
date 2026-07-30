@@ -2,8 +2,19 @@ from __future__ import annotations
 
 from ..dependencies import runtime
 
-def create_ocr_image_variants(image_bytes: bytes, mode: str) -> list[dict[str, runtime.Any]]:
+def create_ocr_image_variants(
+    image_bytes: bytes,
+    mode: str,
+    seam_rows: list[int] | None=None,
+) -> list[dict[str, runtime.Any]]:
     variants = [{'name': 'original', 'path': runtime.write_temp_image_bytes(image_bytes), 'scale': 1.0}]
+    seam_recovery = runtime.build_seam_recovery_image_bytes(image_bytes, seam_rows)
+    if seam_recovery:
+        variants.append({
+            'name': 'seam_recovery',
+            'path': runtime.write_temp_image_bytes(seam_recovery),
+            'scale': 1.0,
+        })
     if mode != 'enhanced':
         return variants
     try:
@@ -19,6 +30,79 @@ def create_ocr_image_variants(image_bytes: bytes, mode: str) -> list[dict[str, r
     return variants
 
 runtime.create_ocr_image_variants = create_ocr_image_variants
+
+def normalize_seam_rows(values: list[int] | None, image_height: int) -> list[int]:
+    rows = {
+        max(1, min(image_height - 2, int(round(float(value)))))
+        for value in (values or [])
+        if image_height > 2
+    }
+    return sorted(rows)[:4]
+
+runtime.normalize_seam_rows = normalize_seam_rows
+
+def build_seam_recovery_image_bytes(
+    image_bytes: bytes,
+    seam_rows: list[int] | None,
+) -> bytes | None:
+    """移除接缝附近的长水平分隔线，并重连被切断的竖向文字笔画。"""
+    if not runtime.CV2_AVAILABLE:
+        return None
+    image = runtime.decode_cv_image(image_bytes)
+    image_height, image_width = image.shape[:2]
+    rows = runtime.normalize_seam_rows(seam_rows, image_height)
+    if not rows:
+        return None
+    gray = runtime.cv2.cvtColor(image, runtime.cv2.COLOR_BGR2GRAY)
+    binary = runtime.cv2.threshold(
+        gray,
+        0,
+        255,
+        runtime.cv2.THRESH_BINARY_INV + runtime.cv2.THRESH_OTSU,
+    )[1]
+    horizontal = runtime.cv2.morphologyEx(
+        binary,
+        runtime.cv2.MORPH_OPEN,
+        runtime.cv2.getStructuringElement(
+            runtime.cv2.MORPH_RECT,
+            (max(24, int(round(image_width * 0.1))), 1),
+        ),
+    )
+    has_separator = any(
+        max(
+            runtime.cv2.countNonZero(horizontal[y:y + 1])
+            for y in range(max(0, row - 4), min(image_height, row + 5))
+        ) >= image_width * 0.45
+        for row in rows
+    )
+    if not has_separator:
+        return None
+    without_lines = runtime.cv2.subtract(binary, horizontal)
+    reconnected = runtime.cv2.morphologyEx(
+        without_lines,
+        runtime.cv2.MORPH_CLOSE,
+        runtime.cv2.getStructuringElement(runtime.cv2.MORPH_RECT, (1, 5)),
+    )
+    recovered = runtime.cv2.bitwise_not(reconnected)
+    encoded, output = runtime.cv2.imencode('.png', recovered)
+    return output.tobytes() if encoded else None
+
+runtime.build_seam_recovery_image_bytes = build_seam_recovery_image_bytes
+
+def detection_touches_seam(
+    detection: dict[str, runtime.Any],
+    seam_rows: list[int] | None,
+) -> bool:
+    box = detection.get('box') if isinstance(detection, dict) else None
+    if not isinstance(box, dict):
+        return False
+    top = float(box.get('top') or 0)
+    height = max(1.0, float(box.get('height') or 0))
+    bottom = top + height
+    margin = max(3.0, height * 0.3)
+    return any(top - margin <= row <= bottom + margin for row in (seam_rows or []))
+
+runtime.detection_touches_seam = detection_touches_seam
 
 def build_enhanced_grayscale_image(image: runtime.Image.Image, invert: bool) -> runtime.Image.Image:
     gray = runtime.ImageOps.grayscale(image)

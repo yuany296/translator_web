@@ -5,9 +5,11 @@ export function installBackgroundState(runtime) {
   runtime.CONTENT_SCRIPT_FILES = CONTENT_SCRIPT_FILES;
   const STORAGE_KEYS = {
     glossary: runtime.glossaryCore.STORAGE_KEY,
+    glossaryLegacy: runtime.glossaryCore.LEGACY_STORAGE_KEY,
     glossaryPending: runtime.termDiscoveryCore.PENDING_STORAGE_KEY,
     glossaryIgnored: runtime.termDiscoveryCore.IGNORED_STORAGE_KEY,
-    glossaryStorage: "mt_glossary_storage"
+    glossaryStorage: "mt_glossary_storage",
+    novelMemory: runtime.novelMemoryCore.STORAGE_KEY
   };
   runtime.STORAGE_KEYS = STORAGE_KEYS;
   const DEFAULT_SETTINGS = {
@@ -45,7 +47,9 @@ export function installBackgroundState(runtime) {
     renderMode: "overlay",
     pretranslateMode: "manual",
     ignoreSimplifiedChinese: false,
-    termDiscoveryEnabled: true
+    termDiscoveryEnabled: true,
+    floatingSide: "right",
+    floatingYRatio: 0.72
   };
   runtime.DEFAULT_SETTINGS = DEFAULT_SETTINGS;
   const PROVIDERS = {

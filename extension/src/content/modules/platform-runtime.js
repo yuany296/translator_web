@@ -162,6 +162,16 @@ export function installPlatformRuntime(runtime) {
   }
   runtime.markInvalidated = markInvalidated;
   function destroy() {
+    runtime.restoreAllNovelText();
+    runtime.disconnectNovelReader();
+    if (runtime.state.floatingResizeBound && runtime.applyFloatingPosition) {
+      window.removeEventListener("resize", runtime.applyFloatingPosition);
+      runtime.state.floatingResizeBound = false;
+    }
+    if (runtime.state.novelProgressHideTimer) {
+      window.clearTimeout(runtime.state.novelProgressHideTimer);
+      runtime.state.novelProgressHideTimer = 0;
+    }
     runtime.markInvalidated("destroy called");
     if (runtime.state.overlayLayer && runtime.state.overlayLayer.isConnected) {
       runtime.state.overlayLayer.remove();
@@ -169,6 +179,7 @@ export function installPlatformRuntime(runtime) {
     if (runtime.state.floatingBallWrap && runtime.state.floatingBallWrap.isConnected) {
       runtime.state.floatingBallWrap.remove();
     }
+    runtime.clearNovelImagePanel?.(true);
   }
   runtime.destroy = destroy;
   function claimRuntimeOwnership() {
@@ -177,10 +188,15 @@ export function installPlatformRuntime(runtime) {
       return;
     }
     const previousOwner = root.getAttribute(runtime.RUNTIME_OWNER_ATTRIBUTE);
-    const staleUiExists = !!document.querySelector(".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe");
+    runtime.restoreAllNovelText();
+    const staleUiExists = !!document.querySelector(
+      ".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe, .mt-novel-image-panel"
+    );
     root.setAttribute(runtime.RUNTIME_OWNER_ATTRIBUTE, runtime.state.runtimeOwnerToken);
     root.setAttribute(runtime.RUNTIME_FEATURE_ATTRIBUTE, runtime.RUNTIME_FEATURE_VERSION);
-    document.querySelectorAll(".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe").forEach(node => node.remove());
+    document.querySelectorAll(
+      ".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe, .mt-novel-image-panel"
+    ).forEach(node => node.remove());
     if (previousOwner && previousOwner !== runtime.state.runtimeOwnerToken || staleUiExists) {
       document.querySelectorAll(runtime.TARGET_SELECTOR).forEach(target => {
         delete target.dataset.mtLastTranslatedKey;

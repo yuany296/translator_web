@@ -69,14 +69,30 @@ def decode_data_url(value: str) -> bytes:
 
 runtime.decode_data_url = decode_data_url
 
-def run_ocr(image_bytes: bytes, lang: str, mode: str, params: dict[str, float], debug: bool, debug_id: str) -> dict[str, runtime.Any]:
+def run_ocr(
+    image_bytes: bytes,
+    lang: str,
+    mode: str,
+    params: dict[str, float],
+    debug: bool,
+    debug_id: str,
+    seam_rows: list[int] | None=None,
+) -> dict[str, runtime.Any]:
     if mode in runtime.SUPPORTED_OCR_MODES and runtime.CV2_AVAILABLE and (runtime.TextDetection is not None) and (runtime.TextRecognition is not None):
         try:
-            return runtime.run_fast_perspective_ocr(image_bytes, lang, params, debug, debug_id, mode)
+            return runtime.run_fast_perspective_ocr(
+                image_bytes,
+                lang,
+                params,
+                debug,
+                debug_id,
+                mode,
+                seam_rows,
+            )
         except Exception as exc:
             print(f'[local-ocr] detect/crop/recognize failed, using fallback OCR: {exc}', flush=True)
     image_width, image_height = runtime.get_image_size(image_bytes)
-    variants = runtime.create_ocr_image_variants(image_bytes, mode)
+    variants = runtime.create_ocr_image_variants(image_bytes, mode, seam_rows)
     debug_paths: dict[str, str] = {}
     debug_enabled = debug or runtime.os.environ.get('LOCAL_OCR_DEBUG_ALWAYS', '1') != '0'
     debug_stem = runtime.safe_debug_stem(debug_id or f'{int(runtime.time.time() * 1000)}')

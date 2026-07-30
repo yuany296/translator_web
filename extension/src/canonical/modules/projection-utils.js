@@ -86,8 +86,16 @@ export function installProjectionUtils(runtime) {
     const rotationDeg = Number(rawVisual.rotationDeg ?? rawVisual.rotation_deg) || 0;
     const fontWeight = runtime.normalizeFontWeight(rawVisual.fontWeight ?? rawVisual.font_weight);
     const translationRole = String(rawVisual.translationRole || rawVisual.translation_role || "");
+    const lineCountObservations = [...linked, ...trustedMembers, selected].filter(Boolean);
+    const reportedLineCount = Math.max(1, ...lineCountObservations.map(observation =>
+      Number(observation?.visual?.sourceLineCount ?? observation?.visual?.source_line_count) || 1));
+    const fontHeightPercent = Math.max(0, ...lineCountObservations.map(observation =>
+      Number(observation?.visual?.fontHeightPercent ?? observation?.visual?.font_height_percent) || 0));
+    const geometryLineCount = fontHeightPercent > 0
+      ? runtime.clamp(Math.round(box.h / Math.max(0.1, fontHeightPercent * 1.18)), 1, 12)
+      : 1;
     const sourceLineCount = Math.max(linked.length, trustedMembers.length,
-      Number(rawVisual.sourceLineCount ?? rawVisual.source_line_count) || 1);
+      reportedLineCount, geometryLineCount);
     const visual = runtime.freezeCanonicalValue({
       ...rawVisual,
       fillBox: box,

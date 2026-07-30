@@ -118,6 +118,13 @@ export function installRendererCanvas(runtime) {
     return Boolean(target && target.isConnected !== false && taskActive);
   }
   runtime.shouldKeepLoadingOverlayAfterTimeout = shouldKeepLoadingOverlayAfterTimeout;
+  function getLoadingOverlayRecoveryDiagnostic(settled) {
+    return {
+      level: "info",
+      code: settled ? "loading-overlay-recovered-settled" : "loading-overlay-recovered-orphan"
+    };
+  }
+  runtime.getLoadingOverlayRecoveryDiagnostic = getLoadingOverlayRecoveryDiagnostic;
   function scheduleLoadingOverlayTimeout(overlayState) {
     if (!overlayState) return;
     if (overlayState.loadingTimeout) {
@@ -145,9 +152,10 @@ export function installRendererCanvas(runtime) {
         }).catch(() => {});
         return;
       }
-      console.warn("[MangaTranslator] Loading overlay timed out, clearing", {
-        targetKey: String(targetKey).slice(0, 80)
-      });
+      const diagnostic = runtime.getLoadingOverlayRecoveryDiagnostic(settled);
+      const diagnosticTargetKey = String(targetKey).slice(0, 80) || "unknown-target";
+      // 看门狗已经成功恢复 UI，不应以 console.warn 进入扩展错误列表。
+      console.info(`[MangaTranslator] Recovered stale loading overlay (${diagnostic.code}): ${diagnosticTargetKey}`);
       if (overlayState.mode === "loading") {
         overlayState.root.remove();
         runtime.state.overlaysById.delete(overlayState.targetId);
@@ -160,7 +168,7 @@ export function installRendererCanvas(runtime) {
       if (target.isConnected && runtime.state.autoTranslatePageEnabled && !settled) {
         runtime.scheduleAutoTranslateRetry(target);
       }
-      runtime.reportStatus("warn", "loading-overlay-timeout", {
+      runtime.reportStatus(diagnostic.level, diagnostic.code, {
         targetKey: String(targetKey).slice(0, 80),
         settled,
         taskActive

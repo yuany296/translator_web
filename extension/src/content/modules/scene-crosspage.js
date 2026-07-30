@@ -77,6 +77,13 @@ export function installSceneCrossPage(runtime) {
     if (!pageRect || !rootRect || !(pageRect.width > 0 && pageRect.height > 0) || !(box.w > 0 && box.h > 0)) return null;
     const sourceLeft = box.x / 100 * pageRect.width;
     const sourceTop = box.y / 100 * pageRect.height;
+    const segment = (Array.isArray(surface?.segments) ? surface.segments : [])
+      .find(item => String(item?.pageId || "") === pageId);
+    const validSegment = runtime.isValidCrossPageSegment(segment);
+    const draw = validSegment ? runtime.normalizeSeamRect(segment.drawRect) : null;
+    const crop = validSegment ? runtime.normalizeSeamRect(segment.sourceCrop) : null;
+    const naturalWidth = validSegment ? Number(segment.naturalWidth) : 0;
+    const naturalHeight = validSegment ? Number(segment.naturalHeight) : 0;
     const mapped = {
       pageId,
       mapping: "page",
@@ -87,15 +94,11 @@ export function installSceneCrossPage(runtime) {
       pageWidth: pageRect.width,
       pageHeight: pageRect.height,
       sourceLeft,
-      sourceTop
+      sourceTop,
+      scaleX: validSegment ? crop.w / draw.w * pageRect.width / naturalWidth : 0,
+      scaleY: validSegment ? crop.h / draw.h * pageRect.height / naturalHeight : 0
     };
-    const segment = (Array.isArray(surface?.segments) ? surface.segments : [])
-      .find(item => String(item?.pageId || "") === pageId);
-    if (!runtime.isValidCrossPageSegment(segment)) return mapped;
-    const draw = runtime.normalizeSeamRect(segment.drawRect);
-    const crop = runtime.normalizeSeamRect(segment.sourceCrop);
-    const naturalWidth = Number(segment.naturalWidth);
-    const naturalHeight = Number(segment.naturalHeight);
+    if (!validSegment) return mapped;
     const sourceBox = {
       left: box.x / 100 * naturalWidth,
       top: box.y / 100 * naturalHeight,
@@ -110,8 +113,6 @@ export function installSceneCrossPage(runtime) {
     if (!contained) return mapped;
     return {
       ...mapped,
-      scaleX: crop.w / draw.w * pageRect.width / naturalWidth,
-      scaleY: crop.h / draw.h * pageRect.height / naturalHeight,
       compositeIntersection: {
         left: draw.x + (sourceBox.left - crop.x) * draw.w / crop.w,
         top: draw.y + (sourceBox.top - crop.y) * draw.h / crop.h,
@@ -158,6 +159,36 @@ export function installSceneCrossPage(runtime) {
     return { left, top, width: right - left, height: bottom - top };
   }
 
+  function addSolidCoverBridges(bubble, segments) {
+    if (String(bubble?.bg_type || "").toLowerCase() !== "solid" || segments.length < 2) {
+      return segments;
+    }
+    const ordered = [...segments].sort((left, right) => left.top - right.top || left.left - right.left);
+    const bridges = [];
+    ordered.slice(1).forEach((segment, index) => {
+      const previous = ordered[index];
+      if (previous.pageId === segment.pageId) return;
+      const gap = segment.top - (previous.top + previous.height);
+      const overlapLeft = Math.max(previous.left, segment.left);
+      const overlapRight = Math.min(previous.left + previous.width, segment.left + segment.width);
+      const overlap = overlapRight - overlapLeft;
+      const overlapRatio = overlap / Math.max(1, Math.min(previous.width, segment.width));
+      const maxGap = Math.max(2, Math.min(32, Math.min(previous.height, segment.height) * 0.85));
+      if (!(gap > 0.5 && gap <= maxGap && overlapRatio >= 0.25)) return;
+      bridges.push({
+        pageId: `bridge:${previous.pageId}:${segment.pageId}:${index}`,
+        mapping: "bridge",
+        left: overlapLeft,
+        top: previous.top + previous.height,
+        width: overlap,
+        height: gap,
+        scaleX: (Number(previous.scaleX) + Number(segment.scaleX)) / 2,
+        scaleY: (Number(previous.scaleY) + Number(segment.scaleY)) / 2
+      });
+    });
+    return [...segments, ...bridges];
+  }
+
   function buildMappedPolygonFrame(surface, bubble, targetRects, rootRect) {
     if (!Array.isArray(bubble && bubble.polygon) || bubble.polygon.length < 4) return null;
     const points = bubble.polygon.slice(0, 4).map(point => mapCompositePointToRoot(surface, {
@@ -189,7 +220,9 @@ export function installSceneCrossPage(runtime) {
     const pageTextBoxes = Array.isArray(bubble?.page_text_boxes) ? bubble.page_text_boxes : [];
     const pageCoverBoxes = Array.isArray(bubble?.page_cover_boxes) ? bubble.page_cover_boxes : [];
     const textSegments = (pageTextBoxes.length ? pageTextBoxes.map(value => mapPageBoxToRoot(surface, value, targetRects, rootRect)) : mapBox(textBox)).filter(Boolean);
-    const coverSegments = (pageCoverBoxes.length ? pageCoverBoxes.map(value => mapPageBoxToRoot(surface, value, targetRects, rootRect)) : mapBox(coverBox)).filter(Boolean);
+    const mappedCoverSegments = (pageCoverBoxes.length ? pageCoverBoxes.map(value =>
+      mapPageBoxToRoot(surface, value, targetRects, rootRect)) : mapBox(coverBox)).filter(Boolean);
+    const coverSegments = addSolidCoverBridges(bubble, mappedCoverSegments);
     const fallbackTextBounds = unionRects(textSegments);
     const polygonFrame = pageTextBoxes.length ? null : buildMappedPolygonFrame(surface, bubble, targetRects, rootRect);
     const textBounds = polygonFrame && polygonFrame.bounds || fallbackTextBounds;
@@ -201,6 +234,9 @@ export function installSceneCrossPage(runtime) {
       width: textBounds.width,
       height: textBounds.height
     };
+    const scaleValues = textSegments.map(segment => Number(segment.scaleY)).filter(value => value > 0)
+      .sort((left, right) => left - right);
+    const scaleY = scaleValues.length ? scaleValues[Math.floor(scaleValues.length / 2)] : 1;
     return {
       outer: {
         left: Math.max(0, outer.left),
@@ -212,7 +248,8 @@ export function installSceneCrossPage(runtime) {
         centerX: frame.centerX - outer.left,
         centerY: frame.centerY - outer.top,
         width: frame.width,
-        height: frame.height
+        height: frame.height,
+        sourceImageHeight: Math.max(frame.height, Number(surface.canvasHeight) * scaleY)
       },
       coverSegments: coverSegments.map(segment => ({
         ...segment,

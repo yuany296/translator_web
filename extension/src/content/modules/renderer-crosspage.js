@@ -226,7 +226,8 @@ export function installRendererCrossPage(runtime) {
     let layout = item.layout || runtime.state.seamLayoutCache.get(cacheKey);
     if (!layout || layout.kind !== "cross-page") {
       const fontSize = runtime.fitBubbleFontSize(node, frame.width, frame.height, {},
-        runtime.getBubbleOriginalTextHeight(node, frame.height, frame.height));
+        runtime.getBubbleOriginalTextHeight(node, frame.height,
+          Number(frame.sourceImageHeight) || frame.height));
       layout = {
         kind: "cross-page",
         fontRatio: fontSize / Math.max(1, frame.width),

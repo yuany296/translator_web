@@ -78,6 +78,24 @@ export function installLifecycleRestore(runtime) {
     };
   }
   runtime.captureTargetSnapshot = captureTargetSnapshot;
+  function getCommittedEmbeddedOriginalSource(target, currentSrc) {
+    if (!(target instanceof HTMLImageElement) ||
+        target.dataset.mtEmbeddedActive !== "true" ||
+        !runtime.isDataUrl(currentSrc)) {
+      return "";
+    }
+    const targetId = runtime.state.targetIdByElement.get(target);
+    const embedded = targetId ? runtime.state.embeddedById.get(targetId) : null;
+    const outputKey = String(target.dataset.mtEmbeddedOutputKey || "");
+    if (!embedded || embedded.target !== target || embedded.kind !== "image" ||
+        embedded.mode !== "embedded" ||
+        String(embedded.targetKey || "") !== outputKey ||
+        String(embedded.outputDataUrl || "") !== currentSrc) {
+      return "";
+    }
+    return String(target.dataset.mtEmbeddedOriginalSource || "");
+  }
+  runtime.getCommittedEmbeddedOriginalSource = getCommittedEmbeddedOriginalSource;
   function isTargetSnapshotStillValid(target, snapshot) {
     if (!target || !target.isConnected || !snapshot) {
       return false;
@@ -89,7 +107,9 @@ export function installLifecycleRestore(runtime) {
       return false;
     }
     const currentSrc = target.currentSrc || target.src || "";
-    if (snapshot.currentSrc && currentSrc && snapshot.currentSrc !== currentSrc) {
+    // 扩展自己的嵌入提交会把图片地址改为 data URL；校验时仍以提交前原图为准。
+    const comparableSrc = getCommittedEmbeddedOriginalSource(target, currentSrc) || currentSrc;
+    if (snapshot.currentSrc && comparableSrc && snapshot.currentSrc !== comparableSrc) {
       return false;
     }
     const natW = target.naturalWidth || 0;

@@ -87,15 +87,18 @@ export function installCanonicalPageOcr(runtime, scope) {
       // 不同 imageRevision 的旧证据仍保留并由 ledger 标记 stale_revision。
       scope.store.replacePageRevisionObservations(pageRecord.pageId, pageRecord.imageRevision, evidence.observations, evidence.filteredObservations);
       const edgeSides = runtime.collectPageEdgeSides(pageRecord, evidence.observations, evidence.filteredObservations, evidence.edgeSignals);
-      let adjacentTargets = runtime.normalizeAdjacentTargets(preserveReadyPhase ? pageRecord.adjacentTargets : []);
-      try {
-        adjacentTargets = runtime.normalizeAdjacentTargets(await scope.findAdjacentTargets(target, pageRecord));
-      } catch (error) {
-        // 邻页发现只决定可选 seam，不得让成功的单页 OCR 失败。
-        scope.trace("neighbor-discovery-error", target, {
-          pageId: pageRecord.pageId,
-          error: runtime.getErrorMessage(error)
-        });
+      let adjacentTargets = [];
+      if (options.isolatedPage !== true) {
+        adjacentTargets = runtime.normalizeAdjacentTargets(preserveReadyPhase ? pageRecord.adjacentTargets : []);
+        try {
+          adjacentTargets = runtime.normalizeAdjacentTargets(await scope.findAdjacentTargets(target, pageRecord));
+        } catch (error) {
+          // 邻页发现只决定可选 seam，不得让成功的单页 OCR 失败。
+          scope.trace("neighbor-discovery-error", target, {
+            pageId: pageRecord.pageId,
+            error: runtime.getErrorMessage(error)
+          });
+        }
       }
       if (!scope.isCurrentJob(target, identity) || !scope.isCurrentPageRevision(pageRecord)) {
         return scope.cancelJob(target, identity, pageRecord.pageId, "sourceChanged during neighbor discovery");
@@ -122,10 +125,10 @@ export function installCanonicalPageOcr(runtime, scope) {
       pageOcrReady = true;
 
       // 普通内部 canonical 可以提前翻译；边缘 canonical 必须先等待邻页关系结算。
-      scope.ensureEdgeWait(pageRecord);
+      if (options.isolatedPage !== true) scope.ensureEdgeWait(pageRecord);
       // 延迟邻页只在双方 page handle 和 terminal 都 ready 后兑现；这样 seam 会在
       // 边缘 canonical 的普通投影放行之前取得所有权。
-      if (scope.notifyCanonicalPageReady) {
+      if (options.isolatedPage !== true && scope.notifyCanonicalPageReady) {
         try {
           await scope.notifyCanonicalPageReady(target, pageRecord);
         } catch (error) {
@@ -151,12 +154,16 @@ export function installCanonicalPageOcr(runtime, scope) {
 
       // A seam is an optional evidence request. It can never replace or clear page OCR.
       scope.loading(target, identity.targetKey, "处理跨页...");
-      const pairResult = await scope.processAdjacentPairs(pageRecord, () => scope.isCurrentJob(target, identity) && scope.isCurrentPageRevision(pageRecord));
+      const pairResult = options.isolatedPage === true
+        ? { aborted: false, pageIds: [] }
+        : await scope.processAdjacentPairs(pageRecord, () =>
+          scope.isCurrentJob(target, identity) && scope.isCurrentPageRevision(pageRecord)
+        );
       if (pairResult.aborted || !scope.isCurrentJob(target, identity) || !scope.isCurrentPageRevision(pageRecord)) {
         return scope.cancelJob(target, identity, pageRecord.pageId, "sourceChanged during seam processing");
       }
       const pairPageIds = pairResult.pageIds;
-      scope.releaseCompletedEdgeWaits();
+      if (options.isolatedPage !== true) scope.releaseCompletedEdgeWaits();
       scope.loading(target, identity.targetKey, "渲染结果...");
       const pairRefresh = await scope.refreshCanonicalState({
         reason: "pair-terminal",

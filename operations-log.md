@@ -616,3 +616,172 @@
 - 为图片运行时消息增加超时与可视区域截图降级；管线错误会恢复 loading 覆盖层。
 - 翻译队列通过微任务统一排空；旧代际任务不会清理当前代际的 loading 状态。
 - 跨页窗口仅裁剪页面本地片段，复合画布仍可跨页显示；扩展构建和全量本地测试均通过：414/414。
+
+## 2026-07-31 - Codex（三球统一悬浮球组 + 网页翻译 + IndexedDB 译文缓存）
+
+- 三个独立图标悬浮球（小说/漫画/网页）统一组件：`controls-triple.js` 负责三球创建与状态应用，`floating-position.js` 负责整组拖动/吸附/位置持久化（沿用 `mt_runtime_config_v1` 与 7px 拖动阈值），`floating-states.js` 提供纯函数状态模型（idle/loading/active/running/partial/cached/disabled/error 八态、check/stop/partial/cache/visible/hidden/error 角标、tooltip/aria-label 与三组菜单定义），`floating-menu.js` 提供统一右键/长按菜单（点击外部与 Escape 关闭、视口内定位、disabled 项），`novel-progress-panel.js` 承接原双球进度面板。不再使用"文/译/停/图"文字表示功能；主体图标永不因状态替换，状态只通过外圈、角标、透明度、tooltip 表达。
+- 用户提供的三个圆形 PNG 图标已复制到 `extension/public/assets/floating-actions/`（保留原文件名），路径集中配置在 `shared/floating-actions.js`；manifest 增加 `web_accessible_resources` 声明。小说/漫画/网页三球垂直排列成组，刷新后恢复上次位置；不可用球保留原位置并降低透明度，点击提示原因；漫画球空闲点击开始连续翻译、运行态显示停止角标、点击停止并保留覆盖层；漫画菜单区分"停止连续翻译 / 隐藏覆盖层 / 清除覆盖层"（显隐复用 `overlayHideDepth` 计数器）。
+- 网页翻译新链路：`webpage-scanner.js` 纯规则扫描可翻译文本节点（排除 script/code/pre/输入控件/按钮/可编辑区/隐藏节点/插件 UI/URL/邮箱/路径/纯标点/纯符号/已是简体中文/极短文本），`webpage-translate.js` 实现去重→查询 IndexedDB→`TRANSLATE_TEXT_BLOCKS` 批量翻译（稳定 ID 对齐）→`nodeValue` 替换→自动保存→完整恢复；恢复原文不删内存映射，再次点击直接复用；只翻译新增内容走 `onlyNew` 增量；`popstate/hashchange` 与 generation 令牌保证路由切换后旧响应不覆盖页面。
+- IndexedDB 译文缓存数据层接线完成：`installTranslationCacheStore` 补入 `backgroundPhases.functions`，`messages.js` 路由 GET/SAVE/DELETE/CLEAR 六类缓存消息，`installTranslationCacheClient` 注册进内容层；网页记录 ID 改为 `pageKey+sourceHash`（selectorHint/textIndex 保留为辅助字段，避免重扫后失配）。小说翻译改为缓存优先：`novel-cache.js` 按 workId+chapterId+sourceHash 批量查询命中段落后只调 API 补缺，成功后自动保存并保留上一版（`versions` 栈，manual > pinned > 最新 AI 优先级）；刷新后按全命中/部分命中/无命中给出 cached/partial/idle 状态，不用缓存时间判断有效性。
+- 强制更新入口：小说菜单"强制重新翻译当前章节"、网页菜单"强制更新网页翻译"；force 标志贯通内容层（跳过 IndexedDB 缓存）与背景层（`requestCanonicalTextTranslations`/`handleTranslateTextBlocks`/`handleTranslateNovelChunk` 均跳过平台缓存，默认 false 保持既有行为），强制翻译用 `retranslateCacheRecord` 保留旧版本。内容级菜单（单段重新翻译/编辑译文/复制译文/恢复上一版/管理译文/翻译选中文字）作为 disabled 占位与数据结构预留，未伪装成功。
+- 新增测试：`floating_states`（三球状态机/tooltip/菜单）、`webpage_scanner`（扫描规则）、`translation_cache`（标准化/哈希/ID 稳定性/版本优先级/客户端版本栈/接线契约）；`novel_core` 契约测试同步更新。文件长度门禁、JavaScript lint、构建与 Node 测试 `589/590` 通过（唯一失败 `seam OCR keeps an anonymous multi-line body atomic across page slices` 经 stash 基线验证为既有失败，与本次改动无关）。最新构建已写入 `dist/extension/`。
+
+## 2026-07-31 - Codex（运行时边界与架构一致性修复：正交状态 / 网页提示词 / 配置指纹 / 请求取消 / 节点状态）
+
+- 悬浮球改为正交状态模型（`floating-states.js` 重写）：availability（enabled/disabled/detecting）、phase（idle/loading/running/error）、displayMode（original/translated）、cacheCoverage（none/partial/full）、overlayVisibility（visible/hidden）五轴独立，`deriveFloatingActionPresentation` 纯函数统一推导 spinner/runningRing/badge/tooltip/ariaLabel。此前单一 status 枚举会互相覆盖：网页"已显示译文+正在翻译新增内容"丢对勾、漫画"运行中+覆盖层隐藏"无法表达、小说"译文+部分失败"与"原文+部分缓存"混淆——现在全部可同时表达；无任何散落未定义状态字符串。
+- 网页翻译独立模式：`TRANSLATE_TEXT_BLOCKS` 新增 `mode`（"comic" 默认 / "webpage"），网页专用提示词（不当作漫画对白、不合并 block、不增语气词、保持语义与稳定 ID），系统消息与 promptVersion（新增 `WEBPAGE_TRANSLATION_PROMPT_VERSION="webpage-zh-cn-v1"`）按模式分支；平台缓存 fingerprint 增加 `mode` 字段，漫画/网页相同原文不再共享缓存。提示词正文抽为可单测的 `buildWebpageTranslationPromptBody`。
+- 翻译配置指纹：`buildTranslationConfigFingerprint`（字段顺序固定、缺省明确、不含任何密钥），记录新增 `translationConfigFingerprint`；`classifyCacheMatch` 返回 exact/stale-config/missing。背景 `translation-config.js` 按模式计算当前指纹（model+promptVersion+glossaryVersion），`GET_TRANSLATION_CONFIG_FINGERPRINT` 消息供内容层查询；小说与网页缓存查询按指纹分类（旧配置译文仍可展示），保存时写入新指纹，强制更新用 `retranslateCacheRecord` 保留旧版本。旧记录缺 fingerprint 默认 ""→stale-config，不删缓存、不升级 DB version。
+- 真正的任务取消：背景 `translation-task-cancel.js` 维护 taskId→AbortController Map，`CANCEL_TRANSLATION_TASK` 消息中止进行中的 fetch（`fetchJsonWithTimeout` 支持外部 signal）；`TRANSLATE_TEXT_BLOCKS` 与 `TRANSLATE_NOVEL_CHUNK` 均按 taskId 注册并在完成/取消时清理 Map。内容层：恢复原文、路由变化、新任务启动、小说章节切换都会发送取消并递增 generation 令牌，AbortError 不显示为普通错误（cancelled 响应），取消失败时晚到结果也因 generation/pageKey 校验无法污染页面。
+- 网页 Text 节点状态改为 WeakMap+Set（`webpage-node-state.js`）：不再给父元素写 `data-mt-web-translated`（多文本节点同父元素误判、重渲染残留、兄弟文本被跳过的问题消除）；应用结果前逐项校验（isConnected、nodeValue 仍为发送时原文、generation、pageKey、仍需要译文），恢复原文前校验 nodeValue 仍等于插件写入的译文，网页自行更新过的节点直接释放记录、绝不覆盖新内容。
+- SPA 路由：`route-observer.js` 包装 `pushState/replaceState`（保留原方法与返回值、同 URL 去重、防重复安装、可卸载恢复）并监听 popstate/hashchange；卸载时恢复原始方法并移除监听；网页翻译与 `platform-runtime.destroy` 接入，路由变化后取消任务、清理节点映射、重算 pageKey 与缓存覆盖率。
+- 扫描器：BUTTON 移出排除列表（普通文本按钮可翻译，纯图标按钮无文本节点天然跳过，不改 value/title/aria-label）；简体中文判断改为保守规则——含简体特征字、无繁体特征字、无谚文/假名、非拉丁主导才跳过，韩文夹汉字、日文汉字+假名、繁体中文、混合拉丁文本不再因"出现汉字"被误跳过。
+- 测试新增/重写：正交状态 21 项场景（含全部验收组合）、扫描器按钮与语言规则、指纹稳定性/敏感性/密钥排除/分类/旧记录兼容、取消协议（abort/清理/幂等/AbortError 判定）、节点状态存储与恢复保护、路由观察（push/replace/pop/hash/去重/卸载）、翻译模式与提示词契约。验证结果：文件长度门禁、JavaScript lint、Pylint 10.00/10、扩展构建通过；Node 630 项 629 通过（唯一失败 `seam OCR keeps an anonymous multi-line body atomic across page slices` 经 stash 基线验证为既有失败，与本次无关）；Python 63 passed, 1 skipped。
+
+## 2026-07-31 - Codex（独立自检：真实浏览器 SPA 路由 / in-flight 取消 / 版本指纹 / 节点内存）
+
+- 独立自检发现并修复四类运行时问题。SPA 路由：content script 运行在 isolated world，route-observer 包装的 history.pushState 是 isolated world 的对象，网页主世界框架调用的是主世界的原生 history——在真实 Chrome（MCP）测试页实测主世界 history.pushState 为 [native code]，包装不会执行；popstate/hashchange 能跨 world 触发但 pushState/replaceState 不会。修复：buildMainWorldBridgeSource 生成轻量主世界桥脚本（包装真实 history 方法并 dispatch mt-route-change CustomEvent），injectMainWorldRouteBridge 注入，isolated 侧监听该事件并按 location.href 去重；只有路由通知进主世界，翻译逻辑不进主世界。桥源码与事件链路已单测，真实浏览器回归需手动重载扩展验证（扩展重载不在本环境能力内）。
+- in-flight 取消误伤：requestCanonicalTextTranslations 的 in-flight map 原先只存 Promise，AbortController 由首个消息持有——取消任务 A 会 abort 共享 fetch，把合并到同一请求的任务 B 一起杀掉。修复：新建 inflight-subscription.js 订阅者引用计数模型（entry 含 promise/controller/subscribers/bindings），每个 taskId 的信号 abort 时只移除自身订阅，批次级聚合 controller 仅在全部订阅者取消后 abort；完成后清理订阅与 Map。测试 background_inflight_cancel.test.mjs（vm + dist/test/background.iife.js）覆盖：双任务共享单请求、取消其一不影响另一个、全部取消才 abort、不同指纹不共享、完成后清理幂等——4/4 通过。
+- 配置指纹落到版本级：translationConfigFingerprint 从记录顶层扩展到每个 AI 版本（手动版可为空），pickActiveVersion 选中版本携带自身指纹，classifyCacheMatch 按活动版本（manual→exact，旧版无指纹→stale-config，缺当前指纹查询→exact）分类，记录级指纹仅作回退；buildRecordFromVersions 顶层指纹跟随活动版本。版本栈裁剪（trimVersions）保留 manual/pinned 版本，不再被切片误删。测试覆盖双版本异指纹、恢复旧版取旧指纹、手动版优先、强制重译不篡改旧版本、旧版本兼容、裁剪保护。
+- activeNodes 强引用泄漏：webpage-node-state.js 新增 pruneDisconnectedNodes（幂等，WeakMap/Set 双删）与 isNodeModifiedByPage（当前值既非原文也非译文→页面自行改写）；webpage-translate.js 在扫描前/应用后/恢复前调用 prune 并释放页面改写节点（重新扫描时按新原文处理）。测试覆盖断开清理、幂等、千节点压力后 Set 恢复合理大小、同节点不重复加入、改写识别。
+- 杂项：stableId 中字面 NUL 改为转义序列（文件不再被 grep 判为二进制）；图标加载失败时显示中性 SVG 占位（明确非正式图标）；背景 translation-task-cancel.js 支持 tabId 注册，tabs.onRemoved 时取消该 tab 全部任务（messages/handler 透传 sender.tab.id）；destroy 时取消长按定时器。
+- 验证：文件长度门禁、JavaScript lint、Pylint 10.00/10、扩展构建通过；Node 655 项 654 通过（唯一失败 seam OCR keeps an anonymous multi-line body atomic across page slices，第三次 stash 干净基线复核同为既有失败）；Python 63 passed, 1 skipped。真实浏览器（MCP Chrome）确认三球/图标/正交状态 aria-label 在 Kakao 页正常；SPA/取消/恢复/清理的真实环境回归需手动重载扩展后按测试页步骤执行。
+
+## 2026-07-31 - Codex（SPA 主世界桥真实浏览器修复：textContent 注入在 Chrome 中不执行）
+
+- 真实浏览器验证（MCP Chrome + 本地测试页）发现：上一轮的 SPA 主世界桥（content script 创建 script 元素 + textContent 内联）在真实 Chrome 中**不执行**——`document.documentElement.dataset.mtBridge="ok"` 证明 appendChild 成功，但执行探针 `mtBridgeExec` 缺失、`window.__mtRouteBridgeInstalled` 为 false、主世界 `history.pushState` 仍是 `[native code]`。同时实测确认事件接收侧完全正常：主世界手动 dispatch `mt-route-change`（伴随 URL 变化）能触发 isolated world 的 onRouteChange（网页球状态被清除）。
+- 修复：改用 Chrome 文档推荐的外部文件方式——新建 `extension/public/assets/route-bridge.js`（主世界桥，ES5 语法），`injectMainWorldRouteBridge` 改为 `script.src = chrome.runtime.getURL("assets/route-bridge.js")`，manifest `web_accessible_resources` 增加该文件（对受限 CSP 页面也更稳）。桥只做 history 包装 + CustomEvent 通知，不含任何翻译逻辑；`buildMainWorldBridgeSource` 保留为纯函数与文件内容一致（供测试）。
+- 真实浏览器端到端验证全部通过：扩展重载后主世界 `__mtRouteBridgeInstalled=true`、`history.pushState` 被包装；翻译页面 → 点击页面 pushState 按钮 → 网页球状态从"当前显示中文"清除为"点击翻译当前网页"；replaceState 后无残留状态且新页面重新翻译正常；网页自行把已翻译文本改成 "PAGE MODIFIED TEXT BY SCRIPT" 后点击恢复 → 新文本未被覆盖，球状态转为 partial（改写节点被释放）。
+- 测试：`route_observer.test.mjs` 增加外部文件注入测试（urlResolver 生成 chrome-extension:// URL、script.src 设置、appendChild/remove、mark ok、无 resolver 时 no-resolver 失败路径）。验证：文件长度门禁、JavaScript lint 通过；Node 657 项 656 通过（唯一失败 seam OCR 为第四次基线确认的既有失败）；Python 63 passed, 1 skipped。
+
+## 2026-08-01 - Codex（渐进翻译、SQLite 正式译文库与段落修订三阶段）
+
+- 第一阶段完成语言与显示配置：全局 `sourceLanguage/targetLanguage` 默认 `auto → zh-CN`，网页和小说直接继承，漫画按“识别块实际语言 → 显式 OCR 语言 → 全局源语言 → 自动检测”解析并按真实源语言分组；同语言对拒绝翻译，简繁语言标签仍可互转。术语结构升级为源语言、目标语言、global/work 作用域和 workId，旧术语按 `ko → zh-CN` 迁移，查询、去重、提示词及指纹均隔离语言对与作品。
+- 网页改为 24 项或约 1600 字符的小批队列、并发 2、单批重试一次；缓存命中和每批响应立即渲染，扫描/命中/完成/排队/失败均进入进度卡。正文块支持上下双语；链接、按钮和行内交互元素只显示 hover/focus 译文，不改 `innerHTML`；恢复原文前校验仍是扩展最后写入值。小说改为约 700 字顺序小批，每批返回即按段替换，后续失败不回滚已成功段落。
+- 网页、小说和漫画任务统一使用 taskId、generation 与页面/章节身份校验；切换语言、恢复原文、SPA 路由和新任务都会取消旧请求，迟到结果不能写入新页面。小说段落身份采用 `hash(chapterId, normalizedSourceHash, occurrenceIndex)`，Kakao `data-p-id` 只保存为 domAnchor；网页和漫画也使用范围、规范化原文哈希及稳定块身份，不依赖纯 DOM 顺序。
+- 第二阶段新增独立 `translations.db`：SQLite 是唯一正式译文库，启用 WAL、外键、非空 scopeKey 唯一索引和批量事务；记录保存 activeVersionId、单记录 `recordRevision`，meta 保存全局 `changeSeq`，版本不可变，删除为软删除。`applied_operations` 以 operationId 保证 commit/edit/select/delete 重试幂等；select/delete 强制 expectedRevision，冲突返回服务器当前正式记录。
+- IndexedDB 升级为正式快照、最近 1–2 版本、页面恢复信息、pendingOperations 和 syncMetadata。页面先显示 IndexedDB，再用 1 秒健康检查连接 SQLite；在线时顺序提交 pending，SQLite revision 始终覆盖本地快照。API 已返回但 SQLite 暂时提交失败时只保存 `commit_translation` 待提交预览，避免重复消耗 API；离线编辑重连后作为新版本上传，select/delete 冲突不会由本地自行决定活动版本。旧缓存首次在线时按检测后的真实源语言批量导入，迁移失败保留原数据重试。
+- FastAPI 新增 pair/health/query/operations/batch-import/versions/export/import 接口及 `translations.db` 管理层；服务仅绑定 `127.0.0.1`，除公共健康与配对外均校验 Bearer Token，配对保存令牌哈希和扩展 Origin，CORS 只允许已配对扩展。导入限制 10 MiB、5000 条记录及字段长度；完整版本历史可往返导入导出，普通清缓存不触碰 SQLite。
+- 小说侧栏已提供手工编辑、上下文重译、单轮 AI 指令修订、查看/选择/固定版本和软删除，显示 current/stale/manual/pinned/pending；另增独立“译文库”页面，可检索记录、查看完整版本、切换活动版本、删除、导入和导出。漫画翻译也接入同一正式库，按图片/页/块恢复信息查询，SQLite 确认后才作为正式覆盖层返回。
+- 第三阶段统一使用 `application/x-ndjson`：解析半行、多行同片、末行无换行、心跳、重复、损坏及超长行；服务适配 OpenAI-compatible 上游流，每段先事务写入 SQLite，再发 paragraph 事件。MV3 后台通过长连接 Port 转发并持有 AbortController；每任务只尝试一次 streaming，失败固定降级到 progressive-batch → paragraph-recovery → completed。网页 MutationObserver 对新增内容防抖续翻，忽略扩展/已管理/不安全节点；SPA 路由会取消旧任务并重建身份。
+- 降级与服务状态：2026-08-01 最终检查时本地服务未运行，扩展应进入“仅显示已缓存译文”模式。Port/心跳、取消与 NDJSON 边界已由自动化测试覆盖；尝试进行目标浏览器现场检查时，现有 Kakao 标签页正由另一个浏览器任务占用，未擅自接管或重载扩展，因此未触发“Port 实机中断后引入 offscreen document”的条件，本版保留明确的小批降级路径。
+- 最终验证：`scripts/verify.mjs`（即 `npm run verify` 的实际入口）完整通过——生产/入口/测试文件长度门禁、JavaScript lint、Pylint `10.00/10`（新增 translation_store 已纳入）、扩展构建、Node `676/676`、Python `72 passed, 1 skipped`。pytest 临时目录已清理；跳过项及 5 条依赖警告均为既有环境条件，无功能失败。
+
+## 2026-08-01 - Codex（恢复一次性本地服务配对码）
+
+- 用户撤销“取消配对码”修改后，当前树处于半撤销状态：服务端仍要求 Bearer Token，但启动阶段不再生成/打印配对码，配对 payload 只剩 token 且接口未校验配对码；扩展按钮传入 pairingCode，但后台缺少 `pairLocalService`，无凭据时反而尝试静默自动配对。manifest 还残留了两份相同 `key`。
+- 恢复完整一次性配对：服务每次启动生成或读取环境变量指定的六位码并打印 `[MangaTranslator] 本地服务配对码：xxxxxx`；pair 接口同时校验固定扩展 Origin、配对码和单次使用状态，错误码或重复使用返回 403；成功后才保存令牌哈希。扩展只允许用户显式输入配对码注册，保存生成的 256-bit token；服务重启时验证并复用该 token，缺失或失效时提示重新配对，不再静默注册。OCR、术语和译文接口继续共用同一认证令牌。
+- 新增 Node 回归覆盖配对码随请求发送、令牌持久化、无凭据不自动配对及服务重启复用；Python REST 回归增加错误码、正确码、单次使用和精确 Origin。移除 manifest 重复 key，并让文件长度门禁通用忽略 pytest 的 `tmp_` basetemp 目录，避免异常测试 ACL 阻断源码扫描。
+- 最终 `scripts/verify.mjs` 完整通过：文件长度门禁、JavaScript lint、Pylint `10.00/10`、扩展构建、Node `679/679`、Python `72 passed, 1 skipped`。本轮 pytest 创建的 `tmp_pairing_tests` 在 Codex 沙箱中出现不可读取 ACL，无法原地删除；已从门禁扫描中排除，不包含正式代码或数据库。
+
+## 2026-08-01 - Codex（恢复旧扩展 ID 与原配置）
+
+- 根因确认：为固定 CORS Origin 曾向 manifest 添加公钥 `key`，浏览器据此生成新 ID `meafnljlkppoanmkiomhhnelennoblij`，与原有无 key 的路径 ID `hihgkmkbdndlnbpleclokbijancgmiil` 不同。浏览器因此并存两份扩展；`chrome.storage.local` 按 ID 隔离，新 ID 显示空配置，服务端又写死新 Origin，导致旧 ID 无法访问本地接口。
+- 当前 manifest 已移除 `key`，重新构建的 `dist/extension` 会恢复旧 ID。服务端不再写死任何扩展 ID：CORS 只接受合法的 `chrome-extension://<32 位 a-p ID>` Origin，首次配对以一次性配对码保存实际 Origin；此后 token 与已配对 Origin 必须同时精确匹配，普通网页及其他扩展不能复用访问权限。
+- REST 回归直接使用旧 ID 配对，覆盖普通网页 Origin 拒绝、动态 CORS 响应、其他扩展 ID 令牌拒绝、流式与调试接口。最终 `scripts/verify.mjs` 完整通过：Node `679/679`、Python `72 passed, 1 skipped`，文件长度、JavaScript/Python lint 与扩展构建全部通过。
+
+## 2026-08-01 - Codex（精简弹窗与统一管理中心）
+
+- 弹窗改为无需滚动的高频操作面板，仅保留扩展启停、原文/目标语言、仅译文/双语、翻译当前可视区、状态反馈和完整设置入口；配置修改自动顺序保存，显式相同语言会阻止保存并展示错误。原 `popup.html` 保留兼容跳转，manifest 的 popup 与 options_ui 分别改指向 `quick-popup.html` 和 `settings.html`。
+- 新增侧栏式统一管理中心，包含常规、OCR、翻译服务、阅读与显示、术语库、译文库、维护与诊断七个栏目。OCR 不再提供独立语言；服务连接测试、译文库配对、缓存统计/确认清理及现有术语库、译文库均完成集成，旧数据页入口会跳转到对应栏目。
+- `translation.sourceLanguage` 成为唯一原文语言来源，并自动映射到 Paddle OCR：`auto/ja/ko/en/zh-CN/zh-TW` 对应 `auto/japan/korean/en/ch/chinese_cht`。旧配置会从 OCR 语言迁移；运行时、缓存和内容脚本均读取统一来源。本地 Paddle 显式支持英语、简体和繁体中文模型。
+- 新增统一 `runtime.displayMode`，迁移规则为旧网页或小说任一双语即双语，并镜像旧字段维持兼容；语言或显示模式变化会刷新内容状态并清理当前页面过期展示。网页、小说、漫画覆盖层与嵌入式渲染均按统一的仅译文/双语模式输出。
+- 新增和更新 Node/Python 回归，覆盖配置迁移、六种语言映射、Paddle 模型选择、弹窗控件边界、管理中心路由、旧页面跳转及漫画双语渲染。首次完整回归因沙箱无权读取既有 Paddle 模型缓存和临时数据库而失败；在允许访问本地测试资源后原样重跑，`scripts/verify.mjs` 全部通过：文件长度门禁、JavaScript lint、Pylint、扩展构建、Node `685/685`、Python `79 passed, 1 skipped`。
+
+## 2026-08-01 - Codex（区分首次配对与备用重新配对码）
+
+- 本地服务启动时只读检查 `translations.db` 中是否已经保存访问令牌哈希和扩展 Origin；首次未配对时显示“首次配对码”，已有配对时明确显示“无需再次输入”，并将本次随机码标记为仅在认证失效时使用的备用重新配对码。
+- 配对状态检测拆分到 `translation_store/pairing.py`，不会创建、修改或迁移译文库；原有令牌验证和一次性配对行为不变。当前正式数据库已验证为已配对状态。
+- 验证结果：配对持久化定向测试 `8 passed`；文件长度门禁、JavaScript/Python lint、扩展构建、Node `685/685`、Python `80 passed, 1 skipped` 全部通过。
+
+## 2026-08-01 - Codex（修复配对成功后状态检查 401）
+
+- 首轮修复增加的客户端“配对后额外 GET 健康检查”在真实扩展环境中稳定失败，导致服务已经保存令牌、扩展却将结果判为失败并要求再次重启；重复重启无法改善。该额外请求与真正的配对写入不属于同一事务，不适合作为配对成功判据。
+- 配对接口现在在同一个服务端流程中写入令牌哈希与扩展 Origin，立即通过 `verify_access` 回读验证，再返回 `verified: true` 和当前 changeSeq；扩展只在收到该服务端确认后保存令牌并显示“已配对 · 认证正常”，不再追加容易失败的第二次网络请求。
+- 后续独立状态检查若收到 401，或后台重启后发现持久化令牌已失效，会清除失效令牌并转换为中文恢复提示，不再直接显示英文服务器错误。新增回归覆盖服务端事务内回读确认、缺少确认时拒绝保存、失效令牌清理及后台重启恢复。
+- 完整 `scripts/verify.mjs` 通过：文件长度门禁、JavaScript/Python lint、扩展构建、Node `688/688`、Python `80 passed, 1 skipped`。
+
+## 2026-08-01 - Codex（迟到 401 不再删除新配对令牌）
+
+- 真实 Chrome 黑盒测试确认：配对接口已返回 200，但旧令牌发出的在途健康检查稍后返回 401，旧客户端会无条件清除 `chrome.storage.local` 中的令牌，因而把刚配对保存的新令牌一并删除，后续网页翻译全部显示“本地译文库认证已失效”。
+- 后台现在为每次本地服务请求固定捕获实际使用的令牌；401 只允许删除与该请求令牌完全相同的当前存储值。若用户已重新配对并写入新令牌，旧请求的迟到响应只能报告自身失败，不能再修改新认证状态。
+- 新增竞态回归：令牌 A 的延迟请求尚未结束时完成令牌 B 配对，再让 A 返回 401，验证 B 仍保存在扩展存储且后续认证请求正常。定向认证测试 `10/10` 通过；完整 `scripts/verify.mjs` 通过：文件长度门禁、JavaScript/Python lint、扩展构建、Node `689/689`、Python `80 passed, 1 skipped`。
+
+## 2026-08-01 - Codex（修复后台 GET 缺少 Origin 导致的假 401）
+
+- Edge 真实网页按钮验证进一步确认：配对 `POST /translations/pair` 返回 200 并在 SQLite 保存了正确令牌哈希和扩展 ID，但紧接着的 `GET /translations/health` 返回 401。根因不是令牌错误，而是 Chromium 扩展后台的简单 GET 不保证发送 `Origin`；服务端把空 Origin 当成令牌失效，客户端随后按安全规则清除了本来有效的令牌。
+- 配对响应中的实际扩展 Origin 现在与令牌一起保存在 `chrome.storage.local`；所有后续认证请求显式发送 `X-Manga-Translator-Origin`。服务端优先校验浏览器真实 `Origin`，仅在该头缺失时读取显式扩展 Origin，并继续同时验证 256-bit Bearer Token 与 SQLite 中的配对 Origin；CORS 只额外放行这一请求头。
+- 新增回归覆盖无浏览器 Origin 的认证 GET、错误显式 Origin 拒绝、持久令牌重启复用时携带配对 Origin。定向 Node `7/7`、Python译文库 `8/8` 通过；完整 `scripts/verify.mjs` 通过：文件长度、JavaScript/Python lint、扩展构建、Node `689/689`、Python `80 passed, 1 skipped`。
+
+## 2026-08-01 - Codex（修复网页进度卡触发自动续翻循环）
+
+- 修复后 Edge 黑盒验证成功：网页按钮点击后立即进入 working，首屏显示“扫描 3、排队 3”，约 1.8 秒后标题、正文和链接均逐项显示中文；服务健康检查、查询与三次正式提交全部返回 200，SQLite 得到 3 条 record、3 个不可变 version、3 个幂等 operation，changeSeq 为 3。
+- 同次验证发现完成进度被重置为全 0，服务日志持续产生健康检查。根因是 MutationObserver 的旧排除选择器与实际 `.mt-webpage-progress-panel`、`.mt-webpage-translation-tooltip`、双语节点及 `data-manga-translator-overlay` 不一致，扩展自己的进度 DOM 更新被误判为网页新增内容，形成空扫描循环；关闭测试标签后循环立即停止。
+- 观察器现统一识别所有扩展拥有的网页节点；进度、浮层、双语译文变动不再触发续翻，真实网页新增节点与非托管文本变化仍会触发。新增 3 个纯函数回归覆盖扩展变动、托管文本和真实页面变动。完整 `scripts/verify.mjs` 通过：Node `692/692`、Python `80 passed, 1 skipped`，文件长度、JavaScript/Python lint 与扩展构建全部通过。
+
+## 2026-08-01 - Codex（离线不再清除有效配对令牌）
+
+- 修复后的 Edge 缓存黑盒通过：同一网页再次点击时标题立即变为中文，进度稳定为“扫描 3、缓存 3、完成 3”；本地服务只增加 2 次健康检查和 1 次 SQLite 查询，operations、record、version 均未增加，随后连续 1 秒请求增量为 0，证明未重新调用翻译 API且观察器循环已停止。安全恢复原文也逐项恢复成功。
+- 停止本地服务并刷新网页后，IndexedDB 仍立即恢复 3 条译文，完成进度保持正确；未缓存网页则保持原文且不调用 AI。该未命中路径同时暴露出后台重启后会把网络连接失败等同于 401，并删除持久令牌的问题。
+- 令牌探测现在区分 `valid`、`invalid`、`offline` 和 `missing`：只有服务明确返回 401 才清除凭据；连接拒绝、超时和临时 5xx 均保留令牌并进入“本地服务未启动，当前仅显示已缓存译文”模式。新增回归验证离线后凭据原样保留，显式 401 仍会清除。
+- 完整 `scripts/verify.mjs` 通过：Node `693/693`、Python `80 passed, 1 skipped`，文件长度、JavaScript/Python lint 与扩展构建全部通过。
+
+## 2026-08-01 - Codex（服务重启无需重新配对与离线提示收尾）
+
+- 完成真实服务重启验收：停止并重新启动 `127.0.0.1:8765` 后，服务从正式 `translations.db` 识别到已保存配对，日志明确输出“无需再次输入配对码”；扩展未再次调用 `/translations/pair`，随后两次 `/translations/health` 与一次 `/translations/query` 均返回 200，证明 Bearer Token 与扩展 Origin 可跨服务进程重启继续使用。
+- Edge 黑盒复核已保存网页快照：`example.com` 从 IndexedDB/SQLite 命中 3 条缓存译文并立即恢复中文，服务端未新增翻译版本；测试产生的标签页已关闭，未触碰用户已有 Kakao 译文记录。
+- 将浏览器网络层可能抛出的 `AbortError`、连接拒绝和 `TypeError` 统一转换为“本地服务未启动，当前仅显示已缓存译文”，避免未缓存页面直接显示 `signal is aborted without reason`。新增回归验证配对后离线请求使用友好提示且仍保留持久令牌。
+- 最终 `scripts/verify.mjs` 完整通过：文件长度门禁、JavaScript/Python lint、扩展构建、Node `694/694`、Python `80 passed, 1 skipped`；无功能测试失败。
+
+## 2026-08-01 - Codex（扩展重载后的最终离线与重启黑盒验收）
+
+- 用户重载最新构建后，临时停止已确认监听 `127.0.0.1:8765` 的本地服务进程，在未缓存的 `example.org` 点击网页翻译：按钮立即进入 loading，最终显示“本地服务未启动，当前仅显示已缓存译文”；原文保持不变，进度为扫描 3、完成 0、失败 3，不再暴露 `signal is aborted without reason`。
+- 随后使用同一 Conda Python 与正式服务入口重新启动服务，服务从 `.local-data/translations.db` 识别出已保存配对并明确输出“无需再次输入配对码”。扩展未调用 `/translations/pair`，两次 `/translations/health` 与一次 `/translations/query` 均返回 200。
+- 重启后打开已缓存的 `example.com`，点击网页翻译即恢复 3 条中文译文，进度为“缓存 3、完成 3、失败 0”。SQLite 仍为 414 条 record、414 条 version、414 条 applied operation，`change_seq=414`，证明离线测试和缓存复用没有重复调用翻译 API、没有新增正式版本；数据库保存的 Origin 仍为当前扩展 ID `hihgkmkbdndlnbpleclokbijancgmiil`。
+- 测试创建的页面已关闭；本地服务已恢复运行，当前监听进程为 PID 11836。代码层最终验证仍为 Node `694/694`、Python `80 passed, 1 skipped`，扩展构建和全部门禁通过。
+
+## 2026-08-01 - Codex（网页持续翻译状态与可视区优先调度重构）
+
+- 按计划把网页翻译从“一次性整页任务”改为“当前标签页持续翻译模式”，六个阶段全部落地并完整验证。后台新增 `webpage-tab-controller.js`：每标签页一个控制器 `{mode: off|continuous, visibility: source|translated, currentPageKey, navigationGeneration}`，保存在后台内存与 `chrome.storage.session`（首次启用该存储区），按消息发送者取 tabId，`tabs.onRemoved` 关闭即结束持续模式；新增消息 `GET/SET/CLEAR_WEBPAGE_TAB_STATE`，SET 只接受 `{mode, visibility}`，pageKey 为内部路由报告（变化时递增 navigationGeneration）。
+- 每个路由建立独立 PageSession（`webpage-session.js`，LRU 保留最近 8 个，淘汰只释放 DOM/队列引用不删缓存）。任务携带 pageKey+generation+segmentKey；`adoptConnectedBindings` 把仍连接且文本仍等于原文或扩展译文的节点绑定迁移进新会话（Kakao 顶部导航保持中文），断开节点释放、被网页改写节点按新原文重新发现。路由观察器升级为路由事件对象 `{previousUrl, nextUrl, reason}`，覆盖 pushState/replaceState/popstate/hashchange/pageshow（bfcache 恢复即使 URL 不变也通知）；路由切换先递增 generation 并取消未发送任务，等待 DOM 安静 150ms（最长 1200ms）+ 两个动画帧后激活新会话。MutationObserver 只扫描新增子树与被改写文本节点，直接以 P3 动态内容交给调度器，不再整页 `translateWebpage({onlyNew:true})`。
+- 新增可视区优先调度器 `webpage-scheduler.js` + 启动流程 `webpage-startup.js`：快速发现视口与上下两屏立即查缓存（命中即渲染，未命中进 P0/P1），后台以 ≤8ms/200 节点的异步 TreeWalker 逐片扫描、每片发现立即入队；优先级 P0 可视区 / P1 上下两屏 / P2 其他 / P3 动态新增，滚动后未发送段立即重算优先级；两路并发但最多一路执行 P2/P3；批次上限 P0 8项/600字符、P1 12项/900字符、后台 24项/1600字符。段落状态分翻译/渲染/持久化三轴，断开节点或保存失败不再算翻译失败；服务离线为一次页面级故障，段进入 blocked（先入队再标记），可见时每 30 秒先确认服务恢复再重试，用户操作或下一次路由立即重试；部分响应只对缺失项重试一次，仍缺失才计真实失败。
+- 缓存身份升级：`shared/translation-cache.js` 新增 `normalizePageKey`（去 hash、排序查询参数、删除 utm_*/gclid/fbclid/msclkid/yclid 等纯跟踪参数，保留可能决定内容的参数；Kakao `/` 与 `/menu/10010/` 不同页）、`buildBindingKey`（pageKey+原文哈希+最近语义容器签名+容器内局部序号，替换随扫描顺序漂移的全局 occurrenceIndex）、`buildTranslationKey`（规范化原文+解析源语言+目标语言+上下文指纹，短文本如 “Open” 不跨上下文误复用）与 `buildWebpageRecordIdFromBinding`。IndexedDB 升 v3（新增 `mode_translationKey` 索引，旧记录不删除），SQLite 译文库 schema 升 v3（`binding_key`/`translation_key` 列 + `idx_translation_key` 索引，幂等 ALTER 迁移）。双读顺序：精确 bindingKey id → 旧 occurrenceIndex id → 原文哈希索引+页面字段过滤 → translationKey 跨页面复用；旧记录命中后保留全部版本惰性写入新键，手动/固定版本优先级不变。
+- 悬浮球改为按控制器+PageSession 推导：正在翻译可视区 / 可视区已准备后台继续 / 显示原文持续翻译仍开启 / 当前页面完成 / 失败·离线·待保存；进度面板显示“可视区 X/Y、页面后台 X/Y、待保存、真实失败”，不再展示逐节点失败。主按钮：关闭→开启持续翻译并显示译文；持续+译文→显示原文（后台继续翻译）；持续+原文→重新显示译文；菜单新增独立“停止持续翻译”。内容 init 读取控制器：持续模式跨刷新/链接跳转/SPA 路由自动恢复会话并翻译可视区；网页翻译只在顶层文档运行，子 frame 不创建控制器。
+- 新增回归：`webpage_tab_controller`（后台控制器 8 项：默认态/校验/tab 隔离/pageKey 报告/session 持久化/关标签清理/消息路由）、`webpage_session`（会话 LRU 淘汰只释放引用、adopt 三分类、生成代际守卫、三轴进度 11 项）、`webpage_scheduler`（首批仅 P0 且 8 项上限、后台扫描入队、滚动 P2 升 P0、两路并发但 P2/P3 单路、离线 blocked+重试、部分响应只计最终缺失、迟到响应只保存不渲染、返回旧页内存命中不调 API 8 项）、`webpage_tab_state`（顶层文档判定/子 frame 无控制器/持续模式自动恢复 7 项）、`webpage_cache_identity`（pageKey 规范化、bindingKey/translationKey 稳定性、双读键差异、迁移保留版本优先级 9 项）、路由事件对象与 pageshow（16 项）、MutationObserver 新增子树扫描（8 项），并按新语义重写悬浮球状态测试。实现中修复三处真实缺陷：调度器结算后段未出队导致 `isWebpageQueueBusy` 永远为真、`createWebpageScanWalker` 默认参数与守卫不匹配、视口坐标用视口相对系（`getBoundingClientRect`）而滚动重算曾用文档坐标。
+- 完整 `scripts/verify.mjs` 全部通过：文件长度门禁（新模块均在 400 行内）、JavaScript lint、Pylint、扩展构建、Node `750/750`、Python `80 passed, 1 skipped`；最新构建已写入 `dist/extension/`。真实浏览器端到端（重载扩展后刷新普通页面、Kakao SPA 跳转导航栏保持中文、刷新恢复持续模式）仍需用户在扩展管理页重载后复核。
+
+## 2026-08-03 - Codex（网页持续翻译计划自动化复验）
+
+- 重新核对当前未提交工作区，确认标签页控制器、PageSession、可视区调度器、增量 DOM 观察、稳定缓存身份、IndexedDB/SQLite v3 迁移和悬浮球新状态均已接入构建入口，没有覆盖或回退既有在制改动。
+- 网页专项自动化 `143/143` 通过，覆盖 Kakao 共享导航节点跨 SPA 路由迁移、完整导航持续模式恢复、P0 首批与滚动提权、后台单通道、迟到响应隔离、离线 blocked、旧缓存双读、顶层 frame 限制及显示原文不停止持续翻译。
+- 沙箱外完整 `scripts/verify.mjs` 通过：文件长度门禁、JavaScript/Python lint、扩展构建、Node `750/750`、Python `80 passed, 1 skipped`。首次沙箱内 Python 失败仅因无法读取用户目录中的 PaddleOCR 模型和创建临时数据库，授权读取现有本地资源后全部通过。
+- 尝试补充真实浏览器黑盒时，Playwright 环境缺少 `npx`，Chrome 控制插件又缺少随包文档，均无法按工具规范建立会话；因此没有宣称完成真实 Kakao 点击验收。构建产物已更新到 `dist/extension/`，浏览器端仍需在扩展管理页重载后复核 `/` → `/menu/10010/` 的共享导航栏保持中文。
+
+## 2026-08-04 - Codex（SQLite v3 迁移与网页首屏延迟修复）
+
+- 真实 Kakao 验收首次触发旧版正式译文库迁移时，`SCHEMA_SQL` 在 `ALTER TABLE` 补齐 `translation_key` 前先创建 `idx_translation_key`，导致 `/translations/pair` 抛出 `sqlite3.OperationalError: no such column: translation_key`。现将 v3 索引创建移到幂等补列之后；新增真实 v2 表结构升级回归，翻译存储定向测试 `9/9` 通过，本地服务已重启并正常监听 `127.0.0.1:8765`。
+- Chrome 黑盒确认持续模式与路由状态模型生效：首页可视内容出现中文后点击已翻译的“网络小说”，URL 立即切换为 `/menu/10011/`，该共享导航绑定在跳转瞬间与 5 秒后均保持中文，持续翻译状态未关闭；新路由继续显示缓存译文。但实测同时确认首屏补全过慢，较长时间只有少数缓存项可见。
+- 延迟根因在实现中得到确认：每个翻译批次显示后仍 `await` 最多 8 个经后台 `writeQueue` 串行执行的 SQLite 提交；每次首屏同步还先等待失败积压冲刷与旧缓存迁移；缓存回退按原文哈希和 translationKey 逐项跨进程查询；模型批量漏项只整批重试一次，最终大量项目永久失败。
+- 首屏关键路径现只保留缓存批量读取与远程翻译：SQLite 提交改为真正异步收尾，积压冲刷/旧库迁移使用单飞后台维护调度器，哈希与 translationKey 回退合并为一次 IndexedDB/消息批量查询；批量翻译漏项拆为最多 4 路单项补偿，成功项立即渲染，持久化状态独立显示为待保存/已保存/失败。
+- 性能专项回归 `29/29` 通过；完整 `scripts/verify.mjs` 通过文件长度门禁、JavaScript/Python lint、扩展构建、Node `753/753`、Python `81 passed, 1 skipped`。最新产物已写入 `dist/extension/`；Chrome 安全策略拒绝接管 `chrome://extensions`，因此新版首屏计时需用户在扩展管理页点一次“重新加载”后继续。
+
+## 2026-08-04 - Codex（取消网页与漫画的短文本过滤）
+
+- 网页扫描不再以字符长度判定可译性：单个韩文、日文、中文、拉丁字母均可进入可视区优先队列；仅保留纯标点/符号、URL/路径、代码等与长度无关的语义过滤。
+- 漫画 OCR 链路同步取消单字、小面积、孤立布局和拉丁拟声词的长度性丢弃；补齐韩文音素兼容区、现代 Jamo 与扩展 Jamo 识别。`A`、`1`、`ㄱ`、单音节回答和漫画拟声词现在均保留并参与翻译。
+- 过滤边界改为显式噪声：纯符号、已知乱码、无效几何框，以及与长度无关的低于 `0.4` OCR 置信度；不再根据“太短”推断无意义。
+- 定向回归 `65/65` 通过；完整 `npm run verify` 通过文件长度门禁、JavaScript/Python lint、扩展构建、Node `755/755`、Python `81 passed, 1 skipped`。最新 Chrome 扩展产物已写入 `dist/extension/`。
+- 重载后 Chrome 真实验收确认二十多项可视区缓存译文能立即显示，但新短标签仍保留韩文；页面反馈明确显示“本地服务未启动”，而实际 `127.0.0.1:8765/health` 正常。根因是 MV3 后台冷启动时先验证已保存认证、再请求健康状态，两段共用 `1s` 超时导致在线服务被误判离线，页面因而只显示缓存。健康检查窗口已调整为 `5s`，新增两段各 `600ms` 的冷启动时序回归；专项 `30/30` 与完整 `npm run verify` 均通过，Node 用例增至 `756/756`，Python `81 passed, 1 skipped`。
+
+## 2026-08-04 - Codex（Chrome 本机设备访问权限恢复）
+
+- 第二次重载后的真实 Chrome 验收仍显示页面级离线提示；直接访问 `127.0.0.1:8765/health` 约 `173ms` 且服务健康，证明剩余问题不是服务耗时。Chrome 142+ 的 Local Network Access 会限制扩展 Origin 到 loopback 的请求，且扩展 Service Worker 不能自行弹出授权，必须先由可见扩展页面发起本机请求。
+- 管理中心的“检查状态”“配对”和本地 Paddle OCR 连接测试现先由可见扩展设置页请求 `/health`。首次实现误将 `127.0.0.1` 声明为 `targetAddressSpace: local`，Chrome 因地址空间不匹配直接拒绝且不会弹窗；现按 Chrome 145 的拆分权限改为 `targetAddressSpace: loopback`，从而触发“访问本机设备”提示。用户允许后，同一扩展 Origin 的后台请求可继续工作；连接失败提示也不再把权限拒绝误报成服务未启动。
+- 新增设置页 loopback 探测回归，覆盖地址规范化、Local Network Access 请求属性、浏览器阻断提示与拒绝非 loopback 地址。完整 `npm run verify` 通过：文件长度门禁、JavaScript/Python lint、扩展构建、Node `759/759`、Python `81 passed, 1 skipped`。最新产物已写入 `dist/extension/`；真实短标签与 SPA 验收等待用户重载并在设置页完成一次本机设备授权。
+- 用户完成 loopback 授权后，设置页已从“无法访问本地服务”推进到“本地译文库尚未配对”，证明 Chrome 本机设备访问链路恢复。原监听进程没有可读取的本次启动日志，无法取得其备用码；在确认 PID 33084 是唯一 `127.0.0.1:8765` 监听者后仅重启本地服务，并把新日志写入 `C:\tmp\translator-service-lna-pairing-20260804.*.log`。新进程 PID 5252 已健康监听，`/health` 返回 PaddleOCR、`gpu:0`、`ok: true`；正式 `translations.db` 原样保留并被识别为已有配对。
+
+## 2026-08-04 - Codex（修复后台分片被错误去重与完成状态失真）
+
+- 配对后的真实 Chrome 验收确认本地服务已在线：`推荐`、`书籍`、`按日连载` 等短标签可正常翻译；从 Kakao 首页进入 `/menu/10011/` 后，共享导航译文没有消失，新路由约 1.8 秒内继续补齐译文。剩余韩文仅出现在 1×1 的 `.blind` 无障碍辅助节点。
+- 同次验收发现首页仍可能只完成少量文本便提前显示“当前页面翻译完成”。根因是后台 TreeWalker 每片返回的原始节点直接进入调度器，没有先调用 `enrichWebpageEntries` 生成 `bindingKey`/`translationKey`/稳定记录 ID；首条以 `undefined` 作为 Map 键注册后，同片及后续节点会被错误判定为同一段并跳过。
+- 后台分片现在先补全缓存身份，并在整个流式扫描期间共享容器内与全局出现次数状态，避免跨 200 节点分片的重复原文重新从局部序号 0 开始。缓存命中也会先注册 PageSession segment，再标记翻译、渲染和持久化状态；SQLite 同步记录统一走调度器缓存命中路径，进度不再漏算已缓存节点或过早宣布完成。
+- 新增回归覆盖 TreeWalker 原始节点逐项补全、流式分片身份连续性、缓存命中进入三轴进度。扩展构建成功并更新 `dist/extension/`；本轮定向测试命令因 Codex 本地执行额度限制未获批准，真实 Chrome 复验需在扩展管理页重新加载最新构建后继续。

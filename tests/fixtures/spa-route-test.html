@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>SPA Route Test</title>
+</head>
+<body>
+  <main>
+    <h1>SPA route observer test page</h1>
+    <p id="content">이 페이지는 SPA 라우트 테스트용입니다. 여기의 텍스트가 번역되어야 합니다.</p>
+    <button id="push" type="button">pushState</button>
+    <button id="replace" type="button">replaceState</button>
+    <p id="url-label">URL: <span id="current-url"></span></p>
+  </main>
+  <script>
+    // 观察扩展注入的 script 元素（用于调试主世界桥）
+    window.__scriptLog = [];
+    new MutationObserver(function (mutations) {
+      for (var m of mutations) {
+        for (var n of m.addedNodes) {
+          if (n.tagName === "SCRIPT") {
+            window.__scriptLog.push({
+              src: n.src || "",
+              hasBridgeAttr: n.hasAttribute("data-mt-route-bridge"),
+              textPrefix: (n.textContent || "").slice(0, 40)
+            });
+          }
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  </script>
+  <script>
+    function updateUrl() {
+      document.getElementById("current-url").textContent = location.pathname;
+    }
+    updateUrl();
+    setInterval(updateUrl, 200);
+    document.getElementById("push").addEventListener("click", function () {
+      history.pushState({ from: "button" }, "", "/page-b");
+    });
+    document.getElementById("replace").addEventListener("click", function () {
+      history.replaceState({ from: "button" }, "", "/page-c");
+    });
+  </script>
+</body>
+</html>

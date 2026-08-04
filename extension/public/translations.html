@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>译文库 · Manga Translator</title>
+  <style>
+    :root { font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; color: #172033; background: #f4f7fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { width: min(1320px, calc(100% - 40px)); margin: 28px auto; }
+    header, .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header { justify-content: space-between; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 24px; }
+    button, input { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 11px; background: white; }
+    button { cursor: pointer; }
+    button.danger { color: #b91c1c; }
+    input[type="search"] { min-width: 280px; }
+    #status { margin: 12px 0; color: #475569; }
+    .table-wrap { overflow: auto; border: 1px solid #dbe3ef; border-radius: 12px; background: white; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #edf1f7; vertical-align: top; }
+    th { position: sticky; top: 0; background: #f8fafc; }
+    td.source, td.translation { min-width: 240px; white-space: pre-wrap; }
+    td.actions { white-space: nowrap; }
+    .tag { display: inline-block; padding: 2px 6px; border-radius: 999px; background: #e2e8f0; }
+    dialog { width: min(760px, calc(100% - 40px)); border: 0; border-radius: 12px; box-shadow: 0 20px 60px #0f172a40; }
+    dialog::backdrop { background: #0f172a66; }
+    .version { padding: 10px 0; border-bottom: 1px solid #e2e8f0; white-space: pre-wrap; }
+    .embedded { background: white; }
+    .embedded main { width: 100%; margin: 0; padding: 18px; }
+    .embedded h1 { font-size: 17px; }
+  </style>
+</head>
+<body>
+<main>
+  <header><div><h1>SQLite 正式译文库</h1><div id="status">正在连接本地服务…</div></div>
+    <div class="toolbar"><input id="search" type="search" placeholder="搜索原文、译文、作品或章节" />
+      <button id="refresh">刷新</button><button id="export">导出 JSON</button>
+      <button id="import">导入 JSON</button><input id="file" type="file" accept="application/json" hidden /></div>
+  </header>
+  <div class="table-wrap"><table><thead><tr><th>模式</th><th>范围</th><th>语言</th><th>原文</th><th>活动译文</th><th>版本</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
+</main>
+<dialog id="versions"><h2>版本历史</h2><div id="versionRows"></div><p><button id="closeDialog">关闭</button></p></dialog>
+<script src="translations.js"></script>
+</body>
+</html>

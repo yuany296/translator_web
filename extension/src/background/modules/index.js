@@ -24,6 +24,13 @@ import { installTranslationCoalesce } from "./translation-coalesce.js";
 import { installTranslationUtils } from "./translation-utils.js";
 import { installNovelMemory } from "./novel-memory.js";
 import { installNovelTranslation } from "./novel-translation.js";
+import { installTranslationCacheStore } from "./translation-cache-store.js";
+import { installTranslationConfig } from "./translation-config.js";
+import { installTranslationTaskCancel } from "./translation-task-cancel.js";
+import { installWebpageTabController } from "./webpage-tab-controller.js";
+import { installTranslationService } from "./translation-service.js";
+import { installTranslationStream } from "./translation-stream.js";
+import { installComicTranslationStore } from "./comic-translation-store.js";
 import { installPlatformCache } from "./platform-cache.js";
 import { installPlatformUtils } from "./platform-utils.js";
 import { installPlatformStorage } from "./platform-storage.js";
@@ -57,6 +64,10 @@ export const backgroundInstallers = Object.freeze([
   installTranslationUtils,
   installNovelMemory,
   installNovelTranslation,
+  installTranslationCacheStore,
+  installTranslationService,
+  installTranslationStream,
+  installComicTranslationStore,
   installPlatformCache,
   installPlatformUtils,
   installPlatformStorage,
@@ -93,6 +104,13 @@ export const backgroundPhases = Object.freeze({
     installNovelMemory,
     installNovelTranslation,
     installPlatformCache,
+    installTranslationCacheStore,
+    installTranslationService,
+    installTranslationStream,
+    installComicTranslationStore,
+    installTranslationConfig,
+    installTranslationTaskCancel,
+    installWebpageTabController,
     installPlatformUtils,
     installPlatformStorage
   ]),

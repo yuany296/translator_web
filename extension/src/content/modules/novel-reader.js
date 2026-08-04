@@ -19,6 +19,14 @@ export function installNovelReader(runtime) {
         imageStatus: "idle",
         showTranslation: true,
         chapterKey: "",
+        cacheStatus: "none",
+        cacheCheckedKey: "",
+        cacheAnalysisPending: false,
+        cacheBadgeUntil: 0,
+        cacheSavedIds: new Set(),
+        taskId: "",
+        serviceOnline: false,
+        pendingParagraphs: new Set(),
         progress: {
           textDone: 0,
           textTotal: 0,
@@ -104,15 +112,31 @@ export function installNovelReader(runtime) {
     if (!surface) return null;
     const locationInfo = runtime.novelCore.parseKakaoNovelLocation(location.href, document.title);
     if (!locationInfo) return null;
+    const occurrences = new Map();
     const paragraphs = orderParagraphs(
       [...surface.root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphNode)
-    ).map(({ node, id, index }) => ({
-      id,
-      index,
-      kind: /^H[1-6]$/u.test(node.tagName) ? "title" : "paragraph",
-      original_text: getOriginalParagraphText(node),
-      node
-    }));
+    ).map(({ node, id, index }) => {
+      const originalText = getOriginalParagraphText(node);
+      const normalized = runtime.normalizeTranslationCacheText(originalText);
+      const normalizedSourceHash = runtime.computeTranslationCacheHash(normalized);
+      const occurrenceIndex = occurrences.get(normalizedSourceHash) || 0;
+      occurrences.set(normalizedSourceHash, occurrenceIndex + 1);
+      const paragraphKey = runtime.computeTranslationCacheHash(
+        `${locationInfo.chapterId}\u0000${normalizedSourceHash}\u0000${occurrenceIndex}`
+      );
+      return {
+        id,
+        paragraphKey,
+        domAnchor: id,
+        occurrenceIndex,
+        rawSourceHash: runtime.computeTranslationCacheHash(originalText),
+        normalizedSourceHash,
+        index,
+        kind: /^H[1-6]$/u.test(node.tagName) ? "title" : "paragraph",
+        original_text: originalText,
+        node
+      };
+    });
     return {
       ...locationInfo,
       seriesTitle: getSeriesTitle(locationInfo.chapterTitle),

@@ -150,7 +150,7 @@ export function installGlossaryPending(runtime) {
     enabledToggle.setAttribute("aria-label", `启用 ${entry.source}`);
     enabledCell.append(enabledToggle);
     const scopeCell = document.createElement("td");
-    scopeCell.textContent = entry.scope === "series"
+    scopeCell.textContent = entry.scope === "work"
       ? `本书 · ${entry.scopeLabel || entry.scopeKey}` : "全局";
     const sourceCell = document.createElement("td");
     sourceCell.textContent = entry.source;
@@ -182,7 +182,7 @@ export function installGlossaryPending(runtime) {
   function openEditor(entry = null) {
     runtime.dialogTitle.textContent = entry ? "编辑术语" : "新增术语";
     runtime.termIdInput.value = entry ? entry.id : "";
-    runtime.scopeInput.value = entry?.scope === "series" ? "series" : "global";
+    runtime.scopeInput.value = entry?.scope === "work" ? "series" : "global";
     runtime.scopeKeyInput.value = entry?.scopeKey || "";
     runtime.scopeLabelInput.value = entry?.scopeLabel || "";
     runtime.sourceInput.value = entry ? entry.source : "";
@@ -205,10 +205,17 @@ export function installGlossaryPending(runtime) {
     const id = String(runtime.termIdInput.value || "");
     const source = String(runtime.sourceInput.value || "").trim();
     const target = String(runtime.targetInput.value || "").trim();
-    const scope = runtime.scopeInput.value === "series" ? "series" : "global";
-    const scopeKey = scope === "series" ? runtime.scopeKeyInput.value.trim() : "";
+    const scope = runtime.scopeInput.value === "series" ? "work" : "global";
+    const scopeKey = scope === "work" ? runtime.scopeKeyInput.value.trim() : "";
+    const stored = await runtime.storageGet(["mt_translation_config_v1"]);
+    const translation = stored.mt_translation_config_v1 || {};
+    const sourceLanguage = entryLanguage(id, "sourceLanguage")
+      || (translation.sourceLanguage === "auto" ? "ko" : translation.sourceLanguage) || "ko";
+    const targetLanguage = entryLanguage(id, "targetLanguage") || translation.targetLanguage || "zh-CN";
     const duplicate = runtime.glossary.entries.find(entry =>
-      entry.source === source && entry.scope === scope && entry.scopeKey === scopeKey && entry.id !== id);
+      entry.source === source && entry.sourceLanguage === sourceLanguage
+      && entry.targetLanguage === targetLanguage && entry.scope === scope
+      && entry.scopeKey === scopeKey && entry.id !== id);
     if (duplicate) {
       runtime.setStatus(`原文术语“${source}”已存在`, true);
       runtime.sourceInput.focus();
@@ -218,6 +225,8 @@ export function installGlossaryPending(runtime) {
       id: id || runtime.createTermId(),
       source,
       target,
+      sourceLanguage,
+      targetLanguage,
       note: runtime.noteInput.value,
       enabled: runtime.enabledInput.checked,
       scope,
@@ -237,6 +246,9 @@ export function installGlossaryPending(runtime) {
     runtime.termDialog.close();
   }
   runtime.saveEditor = saveEditor;
+  function entryLanguage(id, key) {
+    return runtime.glossary.entries.find(entry => entry.id === id)?.[key] || "";
+  }
   async function handleRowClick(event) {
     const button = event.target.closest("button[data-action]");
     const row = event.target.closest("tr[data-term-id]");

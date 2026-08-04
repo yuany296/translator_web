@@ -4,7 +4,8 @@ import os
 import sqlite3
 import threading
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+DEFAULT_SRC_LNG = "ko"
 DEFAULT_TGT_LNG = "zh-CN"
 
 
@@ -23,10 +24,16 @@ def normalize_tgt_lng(value: str) -> str:
     return mapping.get(v.lower(), v)
 
 
+def normalize_src_lng(value: str) -> str:
+    value = (value or DEFAULT_SRC_LNG).strip()
+    mapping = {"korean": "ko", "japan": "ja", "japanese": "ja", "english": "en"}
+    return mapping.get(value.lower(), value)
+
+
 def normalize_scope(scope_type: str, scope_key: str) -> tuple[str, str]:
     """Normalize glossary scope while keeping legacy rows global."""
     key = (scope_key or "").strip()[:160]
-    return ("series", key) if scope_type == "series" and key else ("global", "")
+    return ("work", key) if scope_type in {"series", "work"} and key else ("global", "")
 
 
 class GlossaryBase:
@@ -59,6 +66,7 @@ class GlossaryBase:
                         id         TEXT PRIMARY KEY,
                         source     TEXT NOT NULL,
                         target     TEXT NOT NULL,
+                        src_lng    TEXT NOT NULL DEFAULT 'ko',
                         tgt_lng    TEXT NOT NULL DEFAULT 'zh-CN',
                         note       TEXT NOT NULL DEFAULT '',
                         enabled    INTEGER NOT NULL DEFAULT 1,
@@ -109,6 +117,8 @@ class GlossaryBase:
                     self._migrate_v2(conn)
                 if cur_ver < 3:
                     self._migrate_v3(conn)
+                if cur_ver < 4:
+                    self._migrate_v4(conn)
                 conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
@@ -142,3 +152,17 @@ class GlossaryBase:
             "ON glossary_entries(source_key, tgt_lng, scope_type, scope_key)"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_scope ON glossary_entries(scope_type, scope_key)")
+
+    @staticmethod
+    def _migrate_v4(conn: sqlite3.Connection) -> None:
+        """Add source language and make the language pair part of identity."""
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(glossary_entries)").fetchall()]
+        if "src_lng" not in cols:
+            conn.execute("ALTER TABLE glossary_entries ADD COLUMN src_lng TEXT NOT NULL DEFAULT 'ko'")
+        conn.execute("UPDATE glossary_entries SET scope_type='work' WHERE scope_type='series'")
+        conn.execute("DROP INDEX IF EXISTS idx_glossary_unique_scope")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique_language_scope "
+            "ON glossary_entries(source_key, src_lng, tgt_lng, scope_type, scope_key)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_src_lng ON glossary_entries(src_lng)")

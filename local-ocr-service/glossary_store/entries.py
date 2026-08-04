@@ -5,10 +5,10 @@ import sqlite3
 import time
 from typing import Any
 
-from .common import normalize_scope, normalize_source, normalize_tgt_lng
+from .common import normalize_scope, normalize_source, normalize_src_lng, normalize_tgt_lng
 
 ENTRY_COLUMNS = (
-    "id, source, target, tgt_lng, note, enabled, source_key, "
+    "id, source, target, src_lng, tgt_lng, note, enabled, source_key, "
     "scope_type, scope_key, scope_label, created_at, updated_at"
 )
 
@@ -104,7 +104,7 @@ class EntriesMixin:
                 conn.close()
 
     def upsert_entry(
-        self, source: str, target: str, tgt_lng: str = "",
+        self, source: str, target: str, tgt_lng: str = "", src_lng: str = "",
         note: str = "", enabled: bool = True, entry_id: str = "",
         scope_type: str = "global", scope_key: str = "", scope_label: str = "",
     ) -> dict[str, Any]:
@@ -114,15 +114,16 @@ class EntriesMixin:
             raise ValueError("source and target are required")
         src_key = normalize_source(src)
         lng = normalize_tgt_lng(tgt_lng)
+        source_lng = normalize_src_lng(src_lng)
         normalized_scope, normalized_key = normalize_scope(scope_type, scope_key)
         now = time.time()
         with self._lock:
             conn = sqlite3.connect(self._path, check_same_thread=False)
             try:
                 existing = conn.execute(
-                    "SELECT id FROM glossary_entries WHERE source_key = ? AND tgt_lng = ? "
+                    "SELECT id FROM glossary_entries WHERE source_key = ? AND src_lng = ? AND tgt_lng = ? "
                     "AND scope_type = ? AND scope_key = ?",
-                    (src_key, lng, normalized_scope, normalized_key),
+                    (src_key, source_lng, lng, normalized_scope, normalized_key),
                 ).fetchone()
                 if existing:
                     eid = existing[0]
@@ -136,9 +137,9 @@ class EntriesMixin:
                     eid = entry_id or f"term-{now}-{hash(src)}"
                     conn.execute(
                         "INSERT INTO glossary_entries "
-                        "(id, source, target, tgt_lng, note, enabled, source_key, scope_type, "
-                        "scope_key, scope_label, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (eid, src, target.strip(), lng, note.strip(), 1 if enabled else 0,
+                        "(id, source, target, src_lng, tgt_lng, note, enabled, source_key, scope_type, "
+                        "scope_key, scope_label, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (eid, src, target.strip(), source_lng, lng, note.strip(), 1 if enabled else 0,
                          src_key, normalized_scope, normalized_key, scope_label.strip(), now, now),
                     )
                 conn.commit()
@@ -166,7 +167,8 @@ class EntriesMixin:
                         if not src or not tgt:
                             stats["skipped"] += 1
                             continue
-                        entry_lng = normalize_tgt_lng(entry.get("tgt_lng") or tgt_lng)
+                        entry_lng = normalize_tgt_lng(entry.get("targetLanguage") or entry.get("tgt_lng") or tgt_lng)
+                        entry_source_lng = normalize_src_lng(entry.get("sourceLanguage") or entry.get("src_lng"))
                         src_key = normalize_source(src)
                         scope_type, scope_key = normalize_scope(
                             entry.get("scope_type") or entry.get("scope") or "global",
@@ -176,9 +178,9 @@ class EntriesMixin:
                             entry.get("scope_label") or entry.get("scopeLabel") or ""
                         ).strip()
                         existing = conn.execute(
-                            "SELECT id FROM glossary_entries WHERE source_key = ? AND tgt_lng = ? "
+                            "SELECT id FROM glossary_entries WHERE source_key = ? AND src_lng = ? AND tgt_lng = ? "
                             "AND scope_type = ? AND scope_key = ?",
-                            (src_key, entry_lng, scope_type, scope_key),
+                            (src_key, entry_source_lng, entry_lng, scope_type, scope_key),
                         ).fetchone()
                         note = (entry.get("note") or "").strip()
                         enabled = 0 if entry.get("enabled") is False else 1
@@ -193,9 +195,9 @@ class EntriesMixin:
                             eid = entry.get("id") or f"batch-{now}-{idx}"
                             conn.execute(
                                 "INSERT INTO glossary_entries "
-                                "(id, source, target, tgt_lng, note, enabled, source_key, scope_type, "
-                                "scope_key, scope_label, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                                (eid, src, tgt, entry_lng, note, enabled, src_key,
+                                "(id, source, target, src_lng, tgt_lng, note, enabled, source_key, scope_type, "
+                                "scope_key, scope_label, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (eid, src, tgt, entry_source_lng, entry_lng, note, enabled, src_key,
                                  scope_type, scope_key, scope_label, now, now),
                             )
                             stats["added"] += 1
@@ -211,20 +213,20 @@ class EntriesMixin:
         return stats
 
     def add_entry(
-        self, source: str, target: str, tgt_lng: str = "",
+        self, source: str, target: str, tgt_lng: str = "", src_lng: str = "",
         note: str = "", enabled: bool = True, entry_id: str = "",
         scope_type: str = "global", scope_key: str = "", scope_label: str = "",
     ) -> str:
         """Deprecated — prefer upsert_entry. Returns the entry id."""
         result = self.upsert_entry(
-            source=source, target=target, tgt_lng=tgt_lng, note=note,
+            source=source, target=target, tgt_lng=tgt_lng, src_lng=src_lng, note=note,
             enabled=enabled, entry_id=entry_id, scope_type=scope_type,
             scope_key=scope_key, scope_label=scope_label,
         )
         return result.get("id", "")
 
     def update_entry(self, entry_id: str, *, source: str = "", target: str = "",
-                     tgt_lng: str = "", note: str | None = None,
+                     tgt_lng: str = "", src_lng: str = "", note: str | None = None,
                      enabled: bool | None = None, scope_type: str = "",
                      scope_key: str = "", scope_label: str | None = None) -> bool:
         """Update fields of an existing entry. Returns True if updated."""
@@ -241,6 +243,9 @@ class EntriesMixin:
         if tgt_lng:
             fields.append("tgt_lng = ?")
             params.append(normalize_tgt_lng(tgt_lng))
+        if src_lng:
+            fields.append("src_lng = ?")
+            params.append(normalize_src_lng(src_lng))
         if note is not None:
             fields.append("note = ?")
             params.append(note.strip())

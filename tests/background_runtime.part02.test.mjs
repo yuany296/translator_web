@@ -724,12 +724,16 @@ test("mojibake or weak tiny OCR fragments remain filtered as noise", async () =>
     }]
   }, imageSize, "", false);
   assert.equal(meaningful.length, 1, "legal short Hangul should survive without a speech-bubble region");
+  const isolatedJamo = await context.__backgroundTest.buildLocalPaddleBubbleItems({
+    imageWidth: imageSize.width,
+    imageHeight: imageSize.height,
+    items: [{ text: "ㄱ", score: 0.8876966834068298,
+      box: { left: 288, top: 1246, width: 46, height: 46 } }]
+  }, imageSize, "", false);
+  assert.equal(isolatedJamo.length, 1, "single jamo is text, not length-based noise");
   const cases = [{
     name: "mojibake short fragment",
     text: "\u979a?"
-  }, {
-    name: "isolated jamo",
-    text: "ㄱ"
   }, {
     name: "caption panel",
     text: "\u979a?",

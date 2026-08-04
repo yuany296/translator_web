@@ -47,9 +47,13 @@ function fill(configuration) {
   byId("translationModel").value = translation.model;
   byId("translationKey").value = translation.apiKey;
   byId("translationUrl").value = translation.baseUrl;
+  byId("sourceLanguage").value = translation.sourceLanguage;
+  byId("targetLanguage").value = translation.targetLanguage;
   byId("captureMode").value = runtime.captureMode;
   byId("renderMode").value = runtime.renderMode;
   byId("pretranslateMode").value = runtime.pretranslateMode;
+  byId("webpageDisplayMode").value = runtime.webpageDisplayMode;
+  byId("novelDisplayMode").value = runtime.novelDisplayMode;
   byId("runtimeEnabled").checked = runtime.enabled;
   byId("showBall").checked = runtime.showBall;
   byId("termDiscoveryEnabled").checked = runtime.termDiscoveryEnabled;
@@ -73,13 +77,15 @@ function collect(section, current) {
   };
   if (section === "translation") return {
     provider: "openai_compatible", model: value("translationModel"),
-    apiKey: value("translationKey"), baseUrl: value("translationUrl")
+    apiKey: value("translationKey"), baseUrl: value("translationUrl"),
+    sourceLanguage: value("sourceLanguage"), targetLanguage: value("targetLanguage")
   };
   return {
     ...current.runtime, enabled: checked("runtimeEnabled"), showBall: checked("showBall"),
     termDiscoveryEnabled: checked("termDiscoveryEnabled"),
     captureMode: value("captureMode"), renderMode: value("renderMode"),
-    pretranslateMode: value("pretranslateMode")
+    pretranslateMode: value("pretranslateMode"),
+    webpageDisplayMode: value("webpageDisplayMode"), novelDisplayMode: value("novelDisplayMode")
   };
 }
 
@@ -124,6 +130,24 @@ document.addEventListener("click", async (event) => {
       setStatus("global", "OCR 与翻译缓存已清除");
     }
     if (event.target.id === "glossaryBtn") chrome.runtime.openOptionsPage();
+    if (event.target.id === "translationLibraryBtn") {
+      void chrome.tabs.create({ url: chrome.runtime.getURL("translations.html") });
+    }
+    if (event.target.id === "pairLocalServiceBtn") {
+      setStatus("localService", "正在配对…");
+      const response = await send({
+        type: "PAIR_LOCAL_SERVICE", pairingCode: value("localServicePairingCode")
+      });
+      if (!response.ok) throw new Error(response.error || "本地服务配对失败");
+      byId("localServicePairingCode").value = "";
+      setStatus("localService", "本地译文库已配对");
+    }
+    if (event.target.id === "checkLocalServiceBtn") {
+      const response = await send({ type: "GET_TRANSLATION_SERVICE_STATUS" });
+      setStatus("localService", response.ok
+        ? `译文库在线 · revision ${response.changeSeq || 0}`
+        : response.error || "译文库离线", !response.ok);
+    }
     if (event.target.id === "translateBtn") {
       const tab = await activeTab();
       const response = await chrome.tabs.sendMessage(tab.id, { type: "MANUAL_TRANSLATE_VISIBLE" });

@@ -1,6 +1,6 @@
 const STORAGE_KEY = "mt_glossary_v2";
 const LEGACY_STORAGE_KEY = "mt_glossary_v1";
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const MAX_ENTRIES = 500;
 const MAX_SOURCE_LENGTH = 120;
 const MAX_TARGET_LENGTH = 120;
@@ -17,7 +17,7 @@ function normalizeGlossary(value) {
     if (!entry) {
       continue;
     }
-    const dedupeKey = `${entry.scope}\u0000${entry.scopeKey}\u0000${entry.source}`;
+    const dedupeKey = `${entry.sourceLanguage}\u0000${entry.targetLanguage}\u0000${entry.scope}\u0000${entry.scopeKey}\u0000${entry.source}`;
     if (seenSources.has(dedupeKey)) {
       continue;
     }
@@ -40,18 +40,23 @@ function normalizeGlossaryEntry(value, index = 0) {
   if (!source || !target) {
     return null;
   }
-  const scopeKey = normalizeScopeKey(value.scopeKey);
-  const scope = value.scope === "series" && scopeKey ? "series" : "global";
-  const fallbackId = `term-${index}-${hashString(`${scope}\u0000${scopeKey}\u0000${source}\u0000${target}`)}`;
+  const scopeKey = normalizeScopeKey(value.workId || value.scopeKey);
+  const scope = ["work", "series"].includes(value.scope) && scopeKey ? "work" : "global";
+  const sourceLanguage = String(value.sourceLanguage || value.src_lng || "ko").slice(0, 24);
+  const targetLanguage = String(value.targetLanguage || value.tgt_lng || "zh-CN").slice(0, 24);
+  const fallbackId = `term-${index}-${hashString(`${sourceLanguage}\u0000${targetLanguage}\u0000${scope}\u0000${scopeKey}\u0000${source}\u0000${target}`)}`;
   return {
     id: normalizeIdentifier(value.id) || fallbackId,
     source,
     target,
+    sourceLanguage,
+    targetLanguage,
     note: normalizeField(value.note, MAX_NOTE_LENGTH),
     enabled: value.enabled !== false,
     scope,
-    scopeKey: scope === "series" ? scopeKey : "",
-    scopeLabel: scope === "series" ? normalizeField(value.scopeLabel, MAX_NOTE_LENGTH) : ""
+    workId: scope === "work" ? scopeKey : "",
+    scopeKey: scope === "work" ? scopeKey : "",
+    scopeLabel: scope === "work" ? normalizeField(value.scopeLabel, MAX_NOTE_LENGTH) : ""
   };
 }
 function normalizeField(value, maxLength) {
@@ -65,12 +70,15 @@ function normalizeScopeKey(value) {
 }
 function getEnabledEntries(value, context = null) {
   const scopeKey = normalizeScopeKey(context && context.scopeKey);
+  const sourceLanguage = String(context && context.sourceLanguage || "");
+  const targetLanguage = String(context && context.targetLanguage || "");
   const entries = normalizeGlossary(value).entries.filter(entry => entry.enabled && (
-    entry.scope === "global" || scopeKey && entry.scope === "series" && entry.scopeKey === scopeKey
-  ));
+    entry.scope === "global" || scopeKey && entry.scope === "work" && entry.scopeKey === scopeKey
+  ) && (!sourceLanguage || sourceLanguage === "auto" || entry.sourceLanguage === sourceLanguage)
+    && (!targetLanguage || entry.targetLanguage === targetLanguage));
   const effective = new Map();
   entries.filter(entry => entry.scope === "global").forEach(entry => effective.set(entry.source, entry));
-  entries.filter(entry => entry.scope === "series").forEach(entry => effective.set(entry.source, entry));
+  entries.filter(entry => entry.scope === "work").forEach(entry => effective.set(entry.source, entry));
   return [...effective.values()].sort((left, right) => right.source.length - left.source.length || left.source.localeCompare(right.source));
 }
 function matchesSourceTerm(sourceText, sourceTerm) {
@@ -113,8 +121,11 @@ function buildPrompt(value, items, context = null) {
   return ["Mandatory terminology glossary:", "When the source text contains a listed source term, use its target translation exactly.", "Do not replace a glossary target with a synonym, alternate spelling, or transliteration.", "Apply the longest matching source term first. The glossary overrides general translation preferences.", JSON.stringify(rows)].join("\n");
 }
 function getFingerprint(value, context = null) {
-  const rows = getEnabledEntries(value, context).map(entry => [entry.scope, entry.scopeKey, entry.source, entry.target, entry.note]);
-  return `g2-${hashString(JSON.stringify(rows))}`;
+  const rows = getEnabledEntries(value, context).map(entry => [
+    entry.sourceLanguage, entry.targetLanguage, entry.scope, entry.scopeKey,
+    entry.source, entry.target, entry.note
+  ]);
+  return `g3-${hashString(JSON.stringify(rows))}`;
 }
 function hashString(value) {
   const text = String(value || "");

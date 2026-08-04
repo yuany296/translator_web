@@ -141,7 +141,7 @@ test("confirming a pending candidate writes the formal glossary and removes ever
   assert.equal(response.ok, true);
   assert.equal(stored.mt_glossary_v2.entries.length, 2);
   assert.equal(stored.mt_glossary_v2.entries.find(entry => entry.scope === "global").target, "成贤");
-  assert.equal(stored.mt_glossary_v2.entries.find(entry => entry.scope === "series").target, "晟玄");
+  assert.equal(stored.mt_glossary_v2.entries.find(entry => entry.scope === "work").target, "晟玄");
   assert.equal(stored.mt_glossary_pending_v1.chapters.every(chapter => chapter.candidates.length === 0), true);
 });
 test("confirming an edited source stores the correction and removes the original partial candidate", async () => {
@@ -298,7 +298,8 @@ test("offline term discovery cools down without surfacing a translation failure"
     mt_glossary_ignored_v1: {
       sources: []
     },
-    mt_local_ocr_base_url: "http://127.0.0.1:8765"
+    mt_local_ocr_base_url: "http://127.0.0.1:8765",
+    mt_local_service_auth_v1: { token: "test-local-service-token" }
   };
   context.chrome.storage.local.get = (keys, callback) => {
     callback(Object.fromEntries(keys.map(key => [key, stored[key]])));

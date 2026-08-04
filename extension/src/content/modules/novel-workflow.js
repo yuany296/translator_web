@@ -1,40 +1,10 @@
 export function installNovelWorkflow(runtime) {
-  function collectTextDiagnostics(state, response) {
-    if (!Array.isArray(response && response.diagnostics)) return;
-    state.textDiagnostics.push(...response.diagnostics);
-    state.textDiagnostics = state.textDiagnostics.slice(-160);
-  }
-
-  function publishTextDiagnostics(state, finalErrors, finalWarnings) {
-    const observedErrors = state.textDiagnostics.flatMap(item =>
-      Array.isArray(item && item.validationErrors) ? item.validationErrors : []
-    );
-    const requestFailures = state.textDiagnostics
-      .filter(item => ["request_failed", "parse_failed"].includes(item && item.status))
-      .map(item => ({
-        id: Array.isArray(item.itemIds) ? item.itemIds.join(",") : "",
-        code: item.status,
-        error: item.error || ""
-      }));
-    const summary = runtime.novelCore.summarizeTranslationErrors([
-      ...observedErrors,
-      ...requestFailures
-    ]);
-    const warningSummary = runtime.novelCore.summarizeTranslationWarnings(finalWarnings);
-    state.lastTextErrors = runtime.novelCore.summarizeTranslationErrors(finalErrors).errors;
-    state.progress.textDiagnostic = summary.text;
-    state.progress.textWarning = warningSummary.text;
-    state.progress.textDiagnosticDetails = {
-      finalErrors: state.lastTextErrors,
-      finalWarnings: warningSummary.warnings,
-      observedErrors: summary.errors,
-      attempts: state.textDiagnostics
-    };
-    console.info("[MangaTranslator] Novel text diagnostics", state.progress.textDiagnosticDetails);
-  }
-
   function getTranslatableParagraphs(chapter) {
-    return chapter.paragraphs.filter(item => /[\uac00-\ud7af]/u.test(item.original_text));
+    const targetLanguage = runtime.getTargetLanguage?.() || "zh-CN";
+    return chapter.paragraphs.filter(item => {
+      const sourceLanguage = runtime.resolveSourceLanguage?.(item.original_text) || "auto";
+      return String(item.original_text || "").trim() && (sourceLanguage === "auto" || sourceLanguage !== targetLanguage);
+    });
   }
 
   function importRenderedTranslations(chapter, state) {
@@ -50,10 +20,19 @@ export function installNovelWorkflow(runtime) {
   function resetForChapter(chapter, state) {
     const chapterKey = `${chapter.scopeKey}:${chapter.chapterId}`;
     if (state.chapterKey === chapterKey) return;
+    if (state.taskId) {
+      runtime.cancelNovelTranslationStream?.(state.taskId);
+      void runtime.sendRuntimeMessage({ type: "CANCEL_TRANSLATION_TASK", taskId: state.taskId }).catch(() => {});
+      state.taskId = "";
+    }
     state.chapterKey = chapterKey;
     state.translations.clear();
     state.memoryDeltas = [];
     state.textDiagnostics = [];
+    state.cacheSavedIds.clear();
+    state.pendingParagraphs.clear();
+    state.streamState = "idle";
+    state.cacheStatus = "none";
     state.lastTextErrors = [];
     state.imageJobs.clear();
     state.imageContexts.clear();
@@ -87,30 +66,82 @@ export function installNovelWorkflow(runtime) {
     };
   }
 
-  function applyChunkTranslations(chapter, state, response) {
+  function buildNovelRecordKey(chapter, item) {
+    const normalized = runtime.normalizeTranslationCacheText(item.original_text);
+    return runtime.buildNovelCacheRecordId(
+      chapter.seriesId, chapter.chapterId,
+      runtime.computeTranslationCacheHash(normalized), item.paragraphKey,
+      runtime.resolveSourceLanguage?.(item.original_text) || "auto"
+    );
+  }
+  runtime.buildNovelRecordKey = buildNovelRecordKey;
+  runtime.resetNovelForChapter = resetForChapter;
+
+  async function applyChunkTranslations(chapter, state, response, fingerprint) {
     for (const row of response?.translations || []) {
       const text = String(row?.translated_text || "").trim();
       if (!text) continue;
-      state.translations.set(String(row.id), text);
-      runtime.renderNovelTranslation(
-        chapter.paragraphs.find(item => item.id === String(row.id))?.node,
-        text,
-        true
-      );
+      const item = chapter.paragraphs.find(candidate => candidate.id === String(row.id));
+      if (!item) continue;
+      const recordKey = buildNovelRecordKey(chapter, item);
+      const operation = runtime.createTranslationOperation("commit_translation", recordKey, {
+        mode: "novel", scopeKey: chapter.scopeKey, segmentKey: item.paragraphKey,
+        workId: chapter.seriesId, chapterId: chapter.chapterId,
+        rawSourceText: item.original_text,
+        normalizedSourceText: runtime.normalizeTranslationCacheText(item.original_text),
+        rawSourceHash: item.rawSourceHash,
+        normalizedSourceHash: item.normalizedSourceHash,
+        configuredSourceLanguage: runtime.getConfiguredSourceLanguage?.() || "auto",
+        resolvedSourceLanguage: runtime.resolveSourceLanguage?.(item.original_text) || "auto",
+        targetLanguage: runtime.getTargetLanguage?.() || "zh-CN",
+        translatedText: text, source: "api", configFingerprint: fingerprint
+      });
+      const committed = await runtime.commitTranslationOperation(operation);
+      const officialText = String(committed?.record?.activeVersion?.translatedText || text);
+      state.translations.set(item.id, officialText);
+      runtime.renderNovelTranslation(item.node, officialText, true);
+      item.node.dataset.mtNovelStatus = committed?.pending ? "pending" : "current";
+      if (committed?.pending) state.pendingParagraphs.add(item.id);
+      else state.pendingParagraphs.delete(item.id);
     }
   }
 
-  async function translateNovelText(chapter) {
+  async function translateNovelText(chapter, options = {}) {
     const state = runtime.getNovelState();
+    state.taskId = `novel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const allItems = getTranslatableParagraphs(chapter);
-    importRenderedTranslations(chapter, state);
-    const pending = allItems.filter(item => !state.translations.has(item.id));
+    if (options.force) {
+      state.translations.clear();
+    } else {
+      importRenderedTranslations(chapter, state);
+      await runtime.applyCachedNovelTranslations?.(chapter, state);
+    }
+    const recordKeys = allItems.map(item => buildNovelRecordKey(chapter, item));
+    const service = await runtime.ensureTranslationServiceOnline(recordKeys);
+    state.serviceOnline = service.ok === true;
+    if (!options.force) {
+      const serverByKey = new Map((service.records || []).map(record => [record.recordKey, record]));
+      allItems.forEach(item => {
+        const snapshot = serverByKey.get(buildNovelRecordKey(chapter, item));
+        const translated = String(snapshot?.activeVersion?.translatedText || "").trim();
+        if (!translated) return;
+        state.translations.set(item.id, translated);
+        runtime.renderNovelTranslation(item.node, translated, true);
+      });
+    }
+    let pending = allItems.filter(item => !state.translations.has(item.id));
     state.progress.textTotal = allItems.length;
     state.progress.textDone = allItems.length - pending.length;
     if (!pending.length) {
       state.textStatus = "complete";
       runtime.setNovelTextStatus?.("complete", state.progress);
       return { ok: true, completed: true, translated: allItems.length };
+    }
+    if (!service.ok) {
+      state.textStatus = "partial";
+      state.progress.textPhase = service.error || "本地服务未启动，当前仅显示已缓存译文";
+      runtime.setNovelTextStatus?.("partial", state.progress);
+      return { ok: false, offline: true, translated: state.translations.size, error: state.progress.textPhase };
     }
     state.textStatus = "working";
     state.progress.textPhase = "正在读取本书术语与前文记忆…";
@@ -130,6 +161,13 @@ export function installNovelWorkflow(runtime) {
     let chapterMemory = contextResponse?.context?.memory || {};
     let errors = [];
     const warnings = new Map();
+    const fingerprint = await runtime.getTranslationConfigFingerprint("novel");
+    const stream = await runtime.attemptNovelTranslationStream(chapter, state, pending, fingerprint, {
+      memory: chapterMemory, previousTranslation: buildChunkContext(allItems, pending, state).previousTranslation
+    });
+    if (stream.cancelled) return { ok: false, cancelled: true };
+    pending = allItems.filter(item => !state.translations.has(item.id));
+    if (pending.length && state.streamState !== "paragraph-recovery") state.streamState = "progressive-batch";
     for (const chunk of runtime.novelCore.buildChunks(pending)) {
       const firstOrdinal = allItems.findIndex(item => item.id === chunk[0].id) + 1;
       const lastOrdinal = allItems.findIndex(item => item.id === chunk.at(-1).id) + 1;
@@ -147,6 +185,10 @@ export function installNovelWorkflow(runtime) {
           chapterOrder: chapter.chapterOrder,
           memoryRevision,
           memory: chapterMemory,
+          force: options.force === true,
+          taskId: state.taskId,
+          sourceLanguage: runtime.getConfiguredSourceLanguage?.() || "auto",
+          targetLanguage: runtime.getTargetLanguage?.() || "zh-CN",
           ...nearby,
           items: chunk.map(({ id, index, kind, original_text }) => ({
             id, index, kind, original_text
@@ -155,13 +197,13 @@ export function installNovelWorkflow(runtime) {
       } catch (error) {
         response = { ok: false, error: runtime.getErrorMessage(error) };
       }
-      collectTextDiagnostics(state, response);
+      runtime.collectTextDiagnostics?.(state, response);
       if (!response?.ok) {
         errors.push(...chunk.map(item => ({ id: item.id, error: response?.error || "translation_failed" })));
         continue;
       }
       (response.warnings || []).forEach(warning => warnings.set(String(warning.id), warning));
-      applyChunkTranslations(chapter, state, response);
+      await applyChunkTranslations(chapter, state, response, fingerprint);
       if (response.memory_delta) {
         state.memoryDeltas.push(response.memory_delta);
         chapterMemory = runtime.novelMemoryCore.mergeMemory(chapterMemory, response.memory_delta);
@@ -192,6 +234,10 @@ export function installNovelWorkflow(runtime) {
             chapterOrder: chapter.chapterOrder,
             memoryRevision,
             memory: chapterMemory,
+            force: options.force === true,
+            taskId: state.taskId,
+            sourceLanguage: runtime.getConfiguredSourceLanguage?.() || "auto",
+            targetLanguage: runtime.getTargetLanguage?.() || "zh-CN",
             ...nearby,
             items: [{
               id: item.id,
@@ -203,13 +249,13 @@ export function installNovelWorkflow(runtime) {
         } catch (error) {
           response = { ok: false, error: runtime.getErrorMessage(error) };
         }
-        collectTextDiagnostics(state, response);
+        runtime.collectTextDiagnostics?.(state, response);
         if (!response?.ok) {
           repairErrors.push({ id: item.id, error: response?.error || "repair_failed" });
           continue;
         }
         (response.warnings || []).forEach(warning => warnings.set(String(warning.id), warning));
-        applyChunkTranslations(chapter, state, response);
+        await applyChunkTranslations(chapter, state, response, fingerprint);
         if (response.memory_delta) {
           state.memoryDeltas.push(response.memory_delta);
           chapterMemory = runtime.novelMemoryCore.mergeMemory(chapterMemory, response.memory_delta);
@@ -226,10 +272,11 @@ export function installNovelWorkflow(runtime) {
     const finalWarnings = [...warnings.values()]
       .filter(warning => state.translations.has(String(warning.id)));
     state.textStatus = completed ? "complete" : "partial";
+    state.streamState = completed ? "completed" : "paragraph-recovery";
     state.progress.textPhase = completed
       ? "正文精翻完成"
-      : `仍有 ${missing.length} 段未完成，再点“文”可继续补翻`;
-    publishTextDiagnostics(state, errors, finalWarnings);
+      : `仍有 ${missing.length} 段未完成，再点小说球可继续补翻`;
+    runtime.publishTextDiagnostics?.(state, errors, finalWarnings);
     state.showTranslation = true;
     runtime.setNovelTranslationVisibility(true);
     runtime.setNovelTextStatus?.(state.textStatus, state.progress);
@@ -255,111 +302,30 @@ export function installNovelWorkflow(runtime) {
     return { ok: completed, completed, translated: state.translations.size, errors, warnings: finalWarnings };
   }
 
-  function buildNovelImageOptions(chapter, item, retry, memoryContext) {
-    const options = {
-      scopeKey: chapter.scopeKey,
-      seriesId: chapter.seriesId,
-      chapterId: chapter.chapterId,
-      chapterOrder: chapter.chapterOrder,
-      nearbyText: item.context.nearbyText,
-      memoryRevision: Number(memoryContext?.revision || 0),
-      memory: memoryContext?.memory || {}
-    };
-    runtime.getNovelState().imageContexts.set(item.contextId, options);
-    return {
-      manual: true,
-      force: retry,
-      relaxed: true,
-      allowOffscreen: true,
-      isolatedPage: true,
-      renderMode: runtime.RENDER_MODE_EMBEDDED,
-      reason: `novel-image:${item.contextId}`
-    };
-  }
-
-  async function translateNovelImages(chapter, retry = false) {
-    const state = runtime.getNovelState();
-    const images = runtime.collectKakaoNovelImages(chapter.surface, chapter.paragraphs);
-    const pending = images.filter(item => retry
-      ? ["failed", "empty"].includes(state.imageJobs.get(item.target)?.status) || !state.imageJobs.has(item.target)
-      : !state.imageJobs.has(item.target));
-    state.progress.imageTotal = images.length;
-    if (!pending.length) {
-      state.imageStatus = images.some(item => state.imageJobs.get(item.target)?.status === "failed")
-        ? "partial" : "complete";
-      state.progress.imagePhase = state.imageStatus === "complete"
-        ? "正文图片处理完成" : "部分正文图片处理失败";
-      runtime.setNovelImageStatus?.(state.imageStatus, state.progress);
-      return { ok: state.imageStatus === "complete", total: images.length };
-    }
-    state.imageStatus = "working";
-    state.progress.imagePhase = `正在识别正文图片 0/${images.length}…`;
-    runtime.setNovelImageStatus?.("working", state.progress);
-    let memoryContext = null;
-    try {
-      const response = await runtime.sendRuntimeMessage({
-        type: "GET_NOVEL_MEMORY",
-        scopeKey: chapter.scopeKey,
-        chapterId: chapter.chapterId,
-        chapterOrder: chapter.chapterOrder
-      });
-      memoryContext = response?.context || null;
-    } catch {
-      memoryContext = null;
-    }
-    const tasks = pending.map(item => async () => {
-      state.imageJobs.set(item.target, { status: "working" });
-      runtime.updateNovelImageResult?.(item, null, "working");
-      const result = await runtime.translateTarget(
-        item.target,
-        buildNovelImageOptions(chapter, item, retry, memoryContext)
-      );
-      const summary = runtime.updateNovelImageResult?.(item, result) || {
-        status: result?.ok ? "complete" : "failed",
-        error: result?.error || result?.reason || ""
-      };
-      state.imageJobs.set(item.target, { status: summary.status, error: summary.error || "" });
-      state.progress.imageDone = images.filter(image =>
-        ["complete", "empty"].includes(state.imageJobs.get(image.target)?.status)
-      ).length;
-      state.progress.imagePhase = `正在识别正文图片 ${state.progress.imageDone}/${images.length}…`;
-      runtime.setNovelImageStatus?.("working", state.progress);
-      return result;
-    });
-    await runtime.runWithConcurrency(tasks, 2);
-    const failed = images.filter(item => state.imageJobs.get(item.target)?.status === "failed");
-    const empty = images.filter(item => state.imageJobs.get(item.target)?.status === "empty");
-    state.imageStatus = failed.length ? "partial" : "complete";
-    state.progress.imagePhase = failed.length
-      ? `仍有 ${failed.length} 张正文图片失败`
-      : "正文图片处理完成";
-    runtime.setNovelImageStatus?.(state.imageStatus, state.progress);
-    if (failed.length || empty.length) runtime.openNovelImagePanel?.();
-    else runtime.renderNovelImagePanel?.(false);
-    return { ok: failed.length === 0, total: images.length, failed: failed.length, empty: empty.length };
-  }
-  runtime.translateNovelImages = translateNovelImages;
-
-  async function translateNovelChapter() {
+  async function translateNovelChapter(options = {}) {
     const surface = runtime.reconcileKakaoNovelReader();
     const chapter = runtime.extractKakaoNovelChapter(surface);
     if (!chapter) return { ok: false, unavailable: true, error: "当前页面不是可识别的 Kakao 小说章节" };
     const state = runtime.getNovelState();
     resetForChapter(chapter, state);
     if (state.textStatus === "working") return { ok: true, reused: true };
-    if (state.textStatus === "complete") {
+    if (options.missingOnly && state.textStatus === "complete") {
+      return { ok: true, completed: true, reused: true };
+    }
+    if (state.textStatus === "complete" && !options.force) {
       state.showTranslation = !state.showTranslation;
       runtime.setNovelTranslationVisibility(state.showTranslation);
       return { ok: true, toggled: true, showTranslation: state.showTranslation };
     }
-    if (state.imageStatus === "idle") {
-      void translateNovelImages(chapter).catch(error => {
-        state.imageStatus = "partial";
-        runtime.setNovelImageStatus?.("partial", state.progress, runtime.getErrorMessage(error));
-      });
-    }
     try {
-      return await translateNovelText(chapter);
+      const result = await translateNovelText(chapter, { force: options.force === true });
+      if (state.serviceOnline && state.imageStatus === "idle") {
+        void runtime.translateNovelImages(chapter).catch(error => {
+          state.imageStatus = "partial";
+          runtime.setNovelImageStatus?.("partial", state.progress, runtime.getErrorMessage(error));
+        });
+      }
+      return result;
     } catch (error) {
       state.textStatus = "partial";
       runtime.setNovelTextStatus?.("partial", state.progress, runtime.getErrorMessage(error));
@@ -367,22 +333,6 @@ export function installNovelWorkflow(runtime) {
     }
   }
   runtime.translateNovelChapter = translateNovelChapter;
-
-  async function retryNovelImages() {
-    const surface = runtime.reconcileKakaoNovelReader();
-    const chapter = runtime.extractKakaoNovelChapter(surface);
-    if (!chapter) return { ok: false, unavailable: true };
-    resetForChapter(chapter, runtime.getNovelState());
-    if (runtime.getNovelState().imageStatus === "working") return { ok: true, reused: true };
-    return translateNovelImages(chapter, true);
-  }
-  runtime.retryNovelImages = retryNovelImages;
-
-  function getNovelImageTranslationOptions(reason) {
-    const match = String(reason || "").match(/^novel-image:(.+)$/u);
-    return match ? runtime.getNovelState().imageContexts.get(match[1]) || null : null;
-  }
-  runtime.getNovelImageTranslationOptions = getNovelImageTranslationOptions;
 
   function onNovelSurfaceChanged(surface) {
     if (!surface) return;

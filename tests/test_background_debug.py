@@ -79,13 +79,26 @@ def test_parameter_validation_rejects_inverted_sampling_scales() -> None:
         raise AssertionError("expected invalid near/far ordering to fail")
 
 
-def test_debug_background_http_endpoint_is_isolated_and_callable() -> None:
+def test_debug_background_http_endpoint_is_isolated_and_callable(tmp_path) -> None:
     import server
     from fastapi.testclient import TestClient
 
+    client = TestClient(server.app)
+    origin = "chrome-extension://hihgkmkbdndlnbpleclokbijancgmiil"
+    token = "d" * 64
+    server.runtime.TRANSLATION_PAIRING_CODE = "debug-pair-code"
+    server.runtime._translation_pairing_used = False
+    server.runtime._translation_store = server.runtime.TranslationStore(str(tmp_path / "translations.db"))
+    paired = client.post(
+        "/translations/pair",
+        headers={"Origin": origin},
+        json={"pairingCode": "debug-pair-code", "token": token},
+    )
+    assert paired.status_code == 200
     encoded = base64.b64encode(_image_bytes()).decode("ascii")
-    response = TestClient(server.app).post(
+    response = client.post(
         "/debug-background",
+        headers={"Origin": origin, "Authorization": f"Bearer {token}"},
         json={
             "image": f"data:image/png;base64,{encoded}",
             "ocr": _ocr(),

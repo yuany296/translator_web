@@ -127,6 +127,7 @@ export function installTermDiscovery(runtime) {
     try {
       const response = await fetch(url, {
         ...options,
+        ...await runtime.withLocalServiceAuth(options),
         signal: controller.signal
       });
       const payload = await runtime.safeJson(response);
@@ -153,10 +154,11 @@ export function installTermDiscovery(runtime) {
     try {
       const response = await fetch(url, {
         ...options,
+        ...await runtime.withLocalServiceAuth(options),
         signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
-          ...options.headers
+          ...(await runtime.withLocalServiceAuth(options)).headers
         }
       });
       const payload = await runtime.safeJson(response);

@@ -5,9 +5,8 @@ export function installOcrClustering(runtime) {
     const debugSession = ocrDebug && typeof ocrDebug === "object" ? ocrDebug : legacyDebug;
     const debugMode = debugEnabled === true || Boolean(legacyDebug);
     const rawEntries = words.map((item, index) => runtime.buildLocalPaddleClusterEntry(item, index, imageSize, imageAnalysis, debugMode)).filter(entry => entry && entry.kind !== "noise");
-    // 独立的拉丁标志属于画面装饰，不进入蓝框、翻译或覆盖层；原始候选仍由
-    // ocrDebug.rawItems 保留，因此调试红框不会丢失。
-    const contentEntries = rawEntries.filter(entry => !runtime.isDecorativeLatinMarkEntry(entry, rawEntries) && !runtime.isLikelyLocalPaddleUiArtifactEntry(entry, rawEntries, imageSize));
+    // 文本长度和孤立布局都不是噪声依据；拟声词、单字回答和短标签必须进入翻译链路。
+    const contentEntries = rawEntries;
     const expandedEntries = runtime.expandLocalPaddleChatTimeEntries(contentEntries);
     const dedupeResult = runtime.dedupeLocalPaddleEntries(expandedEntries);
     const entries = dedupeResult.entries;

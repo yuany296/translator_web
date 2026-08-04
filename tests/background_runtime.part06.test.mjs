@@ -35,7 +35,9 @@ vm.runInContext(`${source}\nglobalThis.__backgroundTest = MtBackgroundModule.bac
   filename: "background.iife.js"
 });
 function installMemoryStorage(initial = {}) {
-  const stored = JSON.parse(JSON.stringify(initial));
+  const stored = JSON.parse(JSON.stringify({
+    mt_local_service_auth_v1: { token: "test-local-service-token" }, ...initial
+  }));
   context.chrome.runtime.lastError = null;
   context.chrome.storage.local.get = (keys, callback) => {
     if (keys === null) {
@@ -56,6 +58,13 @@ function installMemoryStorage(initial = {}) {
     callback();
   };
   return stored;
+}
+function bypassLocalServiceAuth() {
+  const original = context.__backgroundTest.withLocalServiceAuth;
+  context.__backgroundTest.withLocalServiceAuth = async options => options;
+  return () => {
+    context.__backgroundTest.withLocalServiceAuth = original;
+  };
 }
 function separatedConfiguration({
   ocrProvider = "local_paddle",
@@ -381,6 +390,7 @@ test("low-confidence Vision OCR timeout includes stalled JSON body reads", async
 });
 test("local OCR forwards the cleaned-image artifact flag to the service", async () => {
   const originalFetch = context.fetch;
+  const restoreAuth = bypassLocalServiceAuth();
   const requestBodies = [];
   context.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
@@ -434,6 +444,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
     });
   } finally {
     context.fetch = originalFetch;
+    restoreAuth();
   }
   assert.equal(requestBodies.length, 4);
   assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-appearance-layout-v4");
@@ -458,6 +469,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
 });
 test("local OCR rejects an outdated geometry service before accepting plain OCR", async () => {
   const originalFetch = context.fetch;
+  const restoreAuth = bypassLocalServiceAuth();
   context.fetch = async () => ({
     ok: true,
     status: 200,
@@ -480,10 +492,12 @@ test("local OCR rejects an outdated geometry service before accepting plain OCR"
     }), /OCR.*版本.*重启.*local-ocr-service/);
   } finally {
     context.fetch = originalFetch;
+    restoreAuth();
   }
 });
 test("local OCR rejects a cleaned artifact when an old service does not acknowledge artifact support", async () => {
   const originalFetch = context.fetch;
+  const restoreAuth = bypassLocalServiceAuth();
   context.fetch = async () => ({
     ok: true,
     status: 200,
@@ -508,10 +522,12 @@ test("local OCR rejects a cleaned artifact when an old service does not acknowle
     }), /local-ocr-service/);
   } finally {
     context.fetch = originalFetch;
+    restoreAuth();
   }
 });
 test("local OCR body timeout rejects instead of returning an empty authoritative payload", async () => {
   const originalFetch = context.fetch;
+  const restoreAuth = bypassLocalServiceAuth();
   let requestSignal = null;
   context.fetch = async (_url, init) => {
     requestSignal = init.signal;
@@ -545,10 +561,12 @@ test("local OCR body timeout rejects instead of returning an empty authoritative
     assert.equal(requestSignal && requestSignal.aborted, true);
   } finally {
     context.fetch = originalFetch;
+    restoreAuth();
   }
 });
 test("local OCR rejects an invalid successful JSON body instead of treating it as no text", async () => {
   const originalFetch = context.fetch;
+  const restoreAuth = bypassLocalServiceAuth();
   context.fetch = async () => ({
     ok: true,
     status: 200,
@@ -570,6 +588,7 @@ test("local OCR rejects an invalid successful JSON body instead of treating it a
     }), /无效 JSON/);
   } finally {
     context.fetch = originalFetch;
+    restoreAuth();
   }
 });
 test("local OCR debug preserves raw detector boxes even when final OCR items are empty", async () => {
@@ -697,7 +716,7 @@ test("seam OCR keeps an anonymous multi-line body atomic across page slices", ()
   assert.equal(result.retained[0].source_line_count, 4);
   assert.equal(result.retained[0].id, "seam-body:1-2-3-4");
   assert.deepEqual(
-    result.rejected.map(item => item.candidate.original_text).sort(),
+    Array.from(result.rejected, item => item.candidate.original_text).sort(),
     ["11:03", "테스타 박문대"].sort()
   );
 });

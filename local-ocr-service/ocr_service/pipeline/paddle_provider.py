@@ -40,6 +40,10 @@ def get_recognition_model_name(lang: str) -> str:
         return 'korean_PP-OCRv5_mobile_rec'
     if lang == 'japan':
         return 'japan_PP-OCRv3_mobile_rec'
+    if lang == 'en':
+        return 'en_PP-OCRv5_mobile_rec'
+    if lang in {'ch', 'chinese_cht'}:
+        return 'PP-OCRv5_server_rec'
     return 'PP-OCRv5_mobile_rec'
 
 runtime.get_recognition_model_name = get_recognition_model_name

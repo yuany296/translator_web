@@ -164,6 +164,13 @@ export function installPlatformRuntime(runtime) {
   function destroy() {
     runtime.restoreAllNovelText();
     runtime.disconnectNovelReader();
+    runtime.uninstallWebpageRouteObserver?.();
+    runtime.cancelFloatingLongPress?.();
+    try {
+      runtime.onWebpageRouteChange?.();
+    } catch {
+      // 上下文可能已失效，取消消息尽力而为
+    }
     if (runtime.state.floatingResizeBound && runtime.applyFloatingPosition) {
       window.removeEventListener("resize", runtime.applyFloatingPosition);
       runtime.state.floatingResizeBound = false;
@@ -190,12 +197,12 @@ export function installPlatformRuntime(runtime) {
     const previousOwner = root.getAttribute(runtime.RUNTIME_OWNER_ATTRIBUTE);
     runtime.restoreAllNovelText();
     const staleUiExists = !!document.querySelector(
-      ".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe, .mt-novel-image-panel"
+      ".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe, .mt-novel-image-panel, .mt-floating-menu"
     );
     root.setAttribute(runtime.RUNTIME_OWNER_ATTRIBUTE, runtime.state.runtimeOwnerToken);
     root.setAttribute(runtime.RUNTIME_FEATURE_ATTRIBUTE, runtime.RUNTIME_FEATURE_VERSION);
     document.querySelectorAll(
-      ".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe, .mt-novel-image-panel"
+      ".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe, .mt-novel-image-panel, .mt-floating-menu"
     ).forEach(node => node.remove());
     if (previousOwner && previousOwner !== runtime.state.runtimeOwnerToken || staleUiExists) {
       document.querySelectorAll(runtime.TARGET_SELECTOR).forEach(target => {

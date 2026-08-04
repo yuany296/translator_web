@@ -10,12 +10,13 @@ const excluded = new Set([
 const entrypoints = new Set([
   "extension/src/background/index.js", "extension/src/content/index.js",
   "extension/src/popup/index.js", "extension/src/glossary/index.js",
+  "extension/src/quick-popup/index.js", "extension/src/settings/index.js",
   "local-ocr-service/server.py", "local-ocr-service/ocr_service/api.py"
 ]);
 
 function walk(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    if (excluded.has(entry.name)) return [];
+    if (excluded.has(entry.name) || entry.isDirectory() && entry.name.startsWith("tmp_")) return [];
     const absolute = path.join(directory, entry.name);
     return entry.isDirectory() ? walk(absolute) : [absolute];
   });

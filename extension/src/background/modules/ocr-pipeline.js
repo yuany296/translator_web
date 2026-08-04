@@ -117,7 +117,8 @@ export function installOcrPipeline(runtime) {
     return task;
   }
   runtime.handleOcrDataUrl = handleOcrDataUrl;
-  async function handleTranslateTextBlocks(message) {
+  async function handleTranslateTextBlocks(message, sender = {}) {
+    const mode = message && message.mode === "webpage" ? "webpage" : "comic";
     const rawItems = Array.isArray(message && message.items) ? message.items : [];
     if (rawItems.some(item => !String(item && item.id || "").trim())) {
       return {
@@ -155,30 +156,73 @@ export function installOcrPipeline(runtime) {
       };
     }
     const settings = await runtime.loadSettings();
-    if (!settings.apiKey) {
-      return {
-        ok: false,
-        error: "Translation API Key is missing. Please configure it in popup."
-      };
-    }
     const sourceLanguage = runtime.normalizeLanguageTag(message && message.sourceLanguage, "auto");
     const targetLanguage = runtime.normalizeLanguageTag(message && message.targetLanguage, "zh-CN");
     const translationOptions = message && message.translationOptions;
     const glossaryContext = {
       scopeKey: String(translationOptions && translationOptions.scopeKey || "")
     };
-    const outcome = await runtime.requestCanonicalTextTranslations({
-      items: translatableItems,
-      apiKey: settings.apiKey,
-      baseUrl: settings.baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL,
-      model: settings.model || runtime.DEFAULT_TRANSLATION_MODEL,
-      sourceLanguage,
-      targetLanguage,
-      promptVersion: String(message && message.promptVersion || runtime.CANONICAL_TRANSLATION_PROMPT_VERSION),
-      translationOptions,
-      glossary: settings.glossary,
-      glossaryFingerprint: runtime.glossaryCore.getFingerprint(settings.glossary, glossaryContext)
-    });
+    const force = message && message.force === true;
+    const descriptors = mode === "comic" ? runtime.buildComicTranslationDescriptors(
+      translatableItems, sourceLanguage, targetLanguage, translationOptions
+        || {}
+    ) : [];
+    let outcome = new Map();
+    let serviceOnline = true;
+    let serviceError = "";
+    const bypassOfficialLibrary = Boolean(runtime.backgroundTestHooks?.requestCanonicalTranslationBatch)
+      || !globalThis.indexedDB;
+    if (mode === "comic" && !bypassOfficialLibrary) {
+      const official = force
+        ? await runtime.getTranslationServiceStatus()
+        : await runtime.loadOfficialComicTranslations(descriptors);
+      serviceOnline = official.online ?? official.ok === true;
+      serviceError = official.error || "本地服务未启动，当前仅显示已缓存译文";
+      if (official.outcome) outcome = official.outcome;
+    }
+    const requestItems = translatableItems.filter(item =>
+      !outcome.has(runtime.canonicalTranslationItemKey(item))
+    );
+    if (requestItems.length && (!serviceOnline || !settings.apiKey)) {
+      const error = !serviceOnline ? serviceError
+        : "Translation API Key is missing. Please configure it in popup.";
+      requestItems.forEach(item => outcome.set(runtime.canonicalTranslationItemKey(item), { error }));
+    }
+    const taskId = String(message && message.taskId || "");
+    const controller = taskId ? new AbortController() : null;
+    if (controller) runtime.registerTaskAbort(taskId, controller, sender && sender.tab && sender.tab.id);
+    try {
+      const requested = requestItems.length && serviceOnline && settings.apiKey
+        ? await runtime.requestCanonicalTextTranslations({
+        items: requestItems,
+        apiKey: settings.apiKey,
+        baseUrl: settings.baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL,
+        model: settings.model || runtime.DEFAULT_TRANSLATION_MODEL,
+        sourceLanguage,
+        targetLanguage,
+        promptVersion: String(message && message.promptVersion || (mode === "webpage" ? runtime.WEBPAGE_TRANSLATION_PROMPT_VERSION : runtime.CANONICAL_TRANSLATION_PROMPT_VERSION)),
+        translationOptions,
+        glossary: settings.glossary,
+        glossaryFingerprint: runtime.glossaryCore.getFingerprint(settings.glossary, glossaryContext),
+        force,
+        mode,
+        signal: controller ? controller.signal : null,
+        taskId
+      }) : new Map();
+      requested.forEach((value, key) => outcome.set(key, value));
+    } catch (error) {
+      if (controller) runtime.unregisterTaskAbort(taskId, controller);
+      if (runtime.isAbortError(error)) {
+        return { ok: false, cancelled: true, translations: [], errors: [] };
+      }
+      throw error;
+    }
+    if (controller) runtime.unregisterTaskAbort(taskId, controller);
+    const configFingerprint = mode === "comic"
+      ? await runtime.getTranslationConfigFingerprint("comic") : "";
+    const pendingRecordKeys = mode === "comic" && serviceOnline && !bypassOfficialLibrary
+      ? await runtime.commitOfficialComicTranslations(descriptors, outcome, configFingerprint)
+      : new Set();
     const translations = [];
     const errors = [];
     items.forEach(item => {
@@ -201,7 +245,9 @@ export function installOcrPipeline(runtime) {
         revision: item.revision,
         translated_text: runtime.cleanDecorativeSymbols(row.translatedText),
         translationFingerprint: row.translationFingerprint,
-        cached: row.cached === true
+        cached: row.cached === true,
+        pending: descriptors.some(descriptor => descriptor.item.id === item.id
+          && pendingRecordKeys.has(descriptor.recordKey))
       });
     });
     return {

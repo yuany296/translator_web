@@ -16,6 +16,7 @@ import { buildRenderSceneForBubbles } from "../extension/src/rendering/scene-bui
 import { detectReaderProfile } from "../extension/src/readers/profile.js";
 import { configureBackgroundRuntime } from "../extension/src/background/configure.js";
 import { ProviderRegistry } from "../extension/src/background/providers/registry.js";
+import { normalizeRuntimeConfig } from "../extension/src/config/schema.js";
 
 function orientedPolygon(center, axisLength, thickness, angleDeg) {
   const angle = angleDeg * Math.PI / 180;
@@ -158,6 +159,17 @@ test("scene builder keeps cleanup geometry separate from oriented text placement
   assert.ok(text.layout.fontSize <= 42);
 });
 
+test("comic bilingual scene lays out OCR source together with translated text", () => {
+  const scene = buildRenderSceneForBubbles({
+    id: "bilingual", surface: { id: "p1", type: "page", width: 1000, height: 1000 },
+    bubbles: [{ block_id: "b1", x: 10, y: 10, w: 60, h: 30,
+      original_text: "こんにちは", translated_text: "你好", font_height_percent: 6 }],
+    displayMode: "bilingual", measure: (value, size) => value.length * size * 0.2
+  });
+  const text = scene.layers.find((layer) => layer.type === "text");
+  assert.equal(text.layout.text, "こんにちは\n你好");
+});
+
 test("low-confidence cleanup regions cannot enlarge immutable text placement", () => {
   const bubble = {
     block_id: "b-low", canonical_id: "c-low", x: 20, y: 30, w: 40, h: 5,
@@ -240,6 +252,43 @@ test("translation configuration saves independently without changing OCR configu
   assert.deepEqual(Object.keys(writes[0]), ["mt_translation_config_v1"]);
   assert.equal((await store.load()).ocr.provider, "baidu");
   assert.equal((await store.load()).translation.apiKey, "new");
+});
+
+test("configuration migrates legacy OCR language and mirrors unified display mode", async () => {
+  const stored = {
+    mt_ocr_config_v1: { localPaddle: { lang: "korean" } },
+    mt_translation_config_v1: { model: "m1" },
+    mt_runtime_config_v1: { webpageDisplayMode: "translated", novelDisplayMode: "bilingual" },
+    [glossaryCore.STORAGE_KEY]: { entries: [] }
+  };
+  const store = createConfigurationStore({
+    glossaryCore,
+    storageGet: async (keys) => Object.fromEntries(keys.map(key => [key, stored[key]])),
+    storageSet: async (value) => Object.assign(stored, value)
+  });
+  const config = await store.load();
+  assert.equal(config.translation.sourceLanguage, "ko");
+  assert.equal(config.ocr.localPaddle.lang, "korean");
+  assert.equal(config.runtime.displayMode, "bilingual");
+  assert.equal(config.runtime.webpageDisplayMode, "bilingual");
+  assert.equal(config.runtime.novelDisplayMode, "bilingual");
+  assert.equal(normalizeRuntimeConfig({ displayMode: "translated", novelDisplayMode: "bilingual" }).displayMode, "translated");
+});
+
+test("explicit unified source language overrides a stale OCR language", async () => {
+  const stored = {
+    mt_ocr_config_v1: { localPaddle: { lang: "korean" } },
+    mt_translation_config_v1: { sourceLanguage: "zh-TW", targetLanguage: "zh-CN" },
+    mt_runtime_config_v1: {}, [glossaryCore.STORAGE_KEY]: { entries: [] }
+  };
+  const store = createConfigurationStore({
+    glossaryCore,
+    storageGet: async keys => Object.fromEntries(keys.map(key => [key, stored[key]])),
+    storageSet: async value => Object.assign(stored, value)
+  });
+  const config = await store.load();
+  assert.equal(config.translation.sourceLanguage, "zh-TW");
+  assert.equal(config.ocr.localPaddle.lang, "chinese_cht");
 });
 
 test("configured translation provider preserves the canonical batch array contract", async () => {

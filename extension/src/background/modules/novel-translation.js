@@ -3,6 +3,7 @@ const CACHE_PREFIX = "mt_cache_v23:novel:";
 const REQUEST_TIMEOUT_MS = 90_000;
 
 export function installNovelTranslation(runtime) {
+  runtime.NOVEL_TRANSLATION_PROMPT_VERSION = PROMPT_VERSION;
   function normalizeDiagnosticError(error) {
     return runtime.getErrorMessage(error).slice(0, 500);
   }
@@ -67,7 +68,7 @@ export function installNovelTranslation(runtime) {
     });
     return [
       `Prompt version: ${PROMPT_VERSION}`,
-      "Translate this Korean web-novel passage into polished Simplified Chinese.",
+      `Translate this web-novel passage from ${context.sourceLanguage || "auto-detected source"} into ${context.targetLanguage || "zh-CN"}.`,
       "Preserve paragraph ids and paragraph boundaries. Keep voice, viewpoint, relationships, honorifics, and suspense consistent.",
       "Use the previous translation and nearby context only for continuity; never add events absent from the source.",
       "Return JSON only with translations and memory_delta.",
@@ -79,11 +80,14 @@ export function installNovelTranslation(runtime) {
       `Nearby following text: ${String(context.afterText || "").slice(0, 3000)}`,
       ...(Array.isArray(context.retryErrors) && context.retryErrors.length
         ? [`Retry corrections required: ${runtime.stableSerialize(context.retryErrors)}`] : []),
+      ...(context.revisionInstruction
+        ? [`User revision instruction for this single request: ${String(context.revisionInstruction).slice(0, 4000)}`]
+        : []),
       `Input: ${JSON.stringify(rows)}`
     ].join("\n");
   }
 
-  async function requestModel(items, context, glossary, configuration, diagnostics) {
+  async function requestModel(items, context, glossary, configuration, diagnostics, signal = null) {
     const diagnostic = {
       itemIds: items.map(item => item.id),
       status: "started",
@@ -116,7 +120,7 @@ export function installNovelTranslation(runtime) {
       temperature: 0,
       messages: [{
         role: "system",
-        content: "You are a Korean web-novel literary translator and continuity editor. Return strict JSON only."
+        content: "You are a web-novel literary translator and continuity editor. Return strict JSON only."
       }, {
         role: "user",
         content: buildPrompt(items, context, glossary)
@@ -126,14 +130,14 @@ export function installNovelTranslation(runtime) {
     const endpoint = runtime.buildOpenAICompatibleEndpoint(translation.baseUrl);
     try {
       let envelope = await runtime.sendOpenAICompatibleTranslationRequest(
-        endpoint, translation.apiKey, body, REQUEST_TIMEOUT_MS, { includeResponseMeta: true }
+        endpoint, translation.apiKey, body, REQUEST_TIMEOUT_MS, { includeResponseMeta: true, signal }
       );
       if (!envelope || !envelope.content) {
         const fallback = { ...body };
         delete fallback.response_format;
         diagnostic.usedJsonMode = false;
         envelope = await runtime.sendOpenAICompatibleTranslationRequest(
-          endpoint, translation.apiKey, fallback, REQUEST_TIMEOUT_MS, { includeResponseMeta: true }
+          endpoint, translation.apiKey, fallback, REQUEST_TIMEOUT_MS, { includeResponseMeta: true, signal }
         );
       }
       const content = runtime.extractOpenAIMessageText(envelope && envelope.content);
@@ -162,28 +166,32 @@ export function installNovelTranslation(runtime) {
       memoryRevision: Number(message.memoryRevision ?? memoryContext.revision) || 0,
       previousTranslation: message.previousTranslation,
       beforeText: message.beforeText,
-      afterText: message.afterText
+      afterText: message.afterText,
+      revisionInstruction: String(message.revisionInstruction || "").slice(0, 4000),
+      sourceLanguage: String(message.sourceLanguage || configuration.translation.sourceLanguage || "auto"),
+      targetLanguage: String(message.targetLanguage || configuration.translation.targetLanguage || "zh-CN")
     };
     const glossary = configuration.glossary;
     const glossaryFingerprint = runtime.glossaryCore.getFingerprint(glossary, context);
     return { context, glossary, glossaryFingerprint };
   }
 
-  async function translatePending(items, context, glossary, configuration) {
+  async function translatePending(items, context, glossary, configuration, signal = null) {
     const diagnostics = [];
     let first;
     let requestRetried = false;
     try {
-      first = await requestModel(items, context, glossary, configuration, diagnostics);
+      first = await requestModel(items, context, glossary, configuration, diagnostics, signal);
     } catch (error) {
+      if (signal && signal.aborted) throw error;
       requestRetried = true;
       first = await requestModel(items, {
         ...context,
         retryErrors: [{ code: "request_failed", error: runtime.getErrorMessage(error) }]
-      }, glossary, configuration, diagnostics);
+      }, glossary, configuration, diagnostics, signal);
     }
     const relevant = runtime.glossaryCore.getRelevantEntries(glossary, items, context);
-    const checked = runtime.novelCore.validateTranslations(items, first && first.translations, relevant);
+    const checked = runtime.novelCore.validateTranslations(items, first && first.translations, relevant, context);
     attachValidationErrors(diagnostics, checked.errors);
     const byId = new Map(checked.accepted.map(row => [row.id, row]));
     const warnings = new Map();
@@ -201,10 +209,10 @@ export function installNovelTranslation(runtime) {
           const retry = await requestModel([item], {
             ...context,
             retryErrors: itemErrors
-          }, glossary, configuration, diagnostics);
+          }, glossary, configuration, diagnostics, signal);
           const retryRelevant = runtime.glossaryCore.getRelevantEntries(glossary, [item], context);
           const rechecked = runtime.novelCore.validateTranslations(
-            [item], retry && retry.translations, retryRelevant
+            [item], retry && retry.translations, retryRelevant, context
           );
           attachValidationErrors(diagnostics, rechecked.errors);
           const accepted = rechecked.accepted.find(row => row.id === item.id);
@@ -253,7 +261,7 @@ export function installNovelTranslation(runtime) {
     };
   }
 
-  async function handleTranslateNovelChunk(message = {}) {
+  async function handleTranslateNovelChunk(message = {}, sender = {}) {
     try {
       const items = normalizeRequestItems(message.items);
       if (!items.length || items.length !== (Array.isArray(message.items) ? message.items.length : 0)) {
@@ -266,16 +274,19 @@ export function installNovelTranslation(runtime) {
         items,
         model: configuration.translation.model,
         baseUrl: configuration.translation.baseUrl,
+        sourceLanguage: context.sourceLanguage,
+        targetLanguage: context.targetLanguage,
         scopeKey: context.scopeKey,
         glossaryFingerprint,
         memoryRevision: context.memoryRevision,
         memory: context.memory,
         previousTranslation: context.previousTranslation,
         beforeText: context.beforeText,
-        afterText: context.afterText
+        afterText: context.afterText,
+        revisionInstruction: context.revisionInstruction
       };
       const cacheKey = buildCacheKey("chunk", cachePayload);
-      const cached = await runtime.getCache(cacheKey);
+      const cached = message.force === true ? null : await runtime.getCache(cacheKey);
       if (cached && Array.isArray(cached.translations)) {
         return {
           ok: true,
@@ -288,7 +299,20 @@ export function installNovelTranslation(runtime) {
           }]
         };
       }
-      const result = await translatePending(items, context, glossary, configuration);
+      const taskId = String(message && message.taskId || "");
+      const controller = taskId ? new AbortController() : null;
+      if (controller) runtime.registerTaskAbort(taskId, controller, sender && sender.tab && sender.tab.id);
+      let result;
+      try {
+        result = await translatePending(items, context, glossary, configuration, controller ? controller.signal : null);
+      } catch (error) {
+        if (runtime.isAbortError(error)) {
+          return { ok: false, cancelled: true, translations: [], errors: [], warnings: [], diagnostics: [] };
+        }
+        throw error;
+      } finally {
+        if (controller) runtime.unregisterTaskAbort(taskId, controller);
+      }
       const cacheValue = {
         translations: result.translations,
         memory_delta: result.memoryDelta,

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>漫画翻译器 · 管理中心</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">译</span><div><b>漫画翻译器</b><small>管理中心</small></div></div>
+    <nav aria-label="设置栏目">
+      <button data-route="general" type="button"><span>⌂</span>常规</button>
+      <button data-route="ocr" type="button"><span>▣</span>OCR</button>
+      <button data-route="translation" type="button"><span>文</span>翻译服务</button>
+      <button data-route="reading" type="button"><span>◐</span>阅读与显示</button>
+      <div class="nav-label">数据</div>
+      <button data-route="glossary" type="button"><span>术</span>术语库</button>
+      <button data-route="translations" type="button"><span>库</span>译文库</button>
+      <div class="nav-label">系统</div>
+      <button data-route="maintenance" type="button"><span>⚙</span>维护与诊断</button>
+    </nav>
+    <div class="sidebar-foot"><i></i><span>所有配置保存在本机</span></div>
+  </aside>
+
+  <main class="workspace">
+    <header class="workspace-header">
+      <div><p class="breadcrumb">设置 / <span id="routeCrumb">常规</span></p><h1 id="routeTitle">常规设置</h1><p id="routeSubtitle">配置日常翻译使用的默认行为。</p></div>
+      <span id="settingsStatus" class="header-status" role="status" aria-live="polite"></span>
+    </header>
+
+    <section class="settings-panel" data-panel="general">
+      <article class="setting-card">
+        <div class="card-title"><div><h2>扩展状态</h2><p>关闭后将停止自动识别并清理当前覆盖层。</p></div><label class="switch-row"><input id="runtimeEnabled" type="checkbox" /><span></span><b>启用翻译</b></label></div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>默认语言</h2><p>同一组语言同时用于漫画 OCR、小说、网页和翻译服务。</p></div><span id="ocrLanguageHint" class="pill"></span></div>
+        <div class="form-grid two">
+          <label>原文语言<select id="sourceLanguage"><option value="auto">自动识别</option><option value="ja">日语</option><option value="ko">韩语</option><option value="en">英语</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁体中文</option></select></label>
+          <label>目标语言<select id="targetLanguage"><option value="zh-CN">简体中文</option><option value="zh-TW">繁体中文</option><option value="en">英语</option><option value="ja">日语</option><option value="ko">韩语</option></select></label>
+        </div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>显示内容</h2><p>统一应用到漫画、小说和网页。</p></div></div>
+        <fieldset class="choice-cards"><legend class="sr-only">显示内容</legend>
+          <label><input type="radio" name="displayMode" value="translated" /><span><b>仅译文</b><small>隐藏原文，专注阅读译文</small></span></label>
+          <label><input type="radio" name="displayMode" value="bilingual" /><span><b>双语</b><small>同时保留原文和译文</small></span></label>
+        </fieldset>
+      </article>
+      <div class="panel-actions"><button id="saveGeneralBtn" class="primary" type="button">保存常规设置</button><span id="generalStatus" class="inline-status"></span></div>
+    </section>
+
+    <section class="settings-panel hidden" data-panel="ocr">
+      <article class="setting-card">
+        <div class="card-title"><div><h2>OCR 服务</h2><p>语言由“常规”中的原文语言自动决定。</p></div></div>
+        <div class="form-grid two"><label>OCR Provider<select id="ocrProvider"><option value="local_paddle">Local Paddle</option><option value="baidu">百度 OCR</option></select></label><label id="ocrModeField">识别模式<select id="ocrMode"><option value="fast">快速</option><option value="enhanced">增强</option></select></label></div>
+        <div id="localPaddleFields">
+          <label>本地服务地址<input id="ocrBaseUrl" type="url" /></label>
+          <div class="form-grid three"><label>检测阈值<input id="detThresh" type="number" min="0.01" max="0.99" step="0.01" /></label><label>文本框阈值<input id="detBoxThresh" type="number" min="0.01" max="0.99" step="0.01" /></label><label>扩张比例<input id="detUnclipRatio" type="number" min="1" max="5" step="0.1" /></label></div>
+          <label class="check-row"><input id="ocrDebug" type="checkbox" /><span>保存 OCR 调试信息</span></label>
+        </div>
+        <div id="baiduFields" class="form-grid two hidden"><label>百度 API Key<input id="baiduAk" type="password" /></label><label>百度 Secret Key<input id="baiduSk" type="password" /></label></div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>结果筛选</h2><p>用于过滤低质量或异常尺寸的识别框。</p></div></div>
+        <div class="form-grid four"><label>置信度<input id="confidenceThreshold" type="number" min="0" max="1" step="0.01" /></label><label>最小面积<input id="minBoxArea" type="number" min="0" step="1" /></label><label>最大面积比<input id="maxBoxArea" type="number" min="0.001" max="1" step="0.01" /></label><label>合并行距<input id="mergeLineGap" type="number" min="0.2" max="8" step="0.05" /></label><label>最小宽度<input id="minBoxWidth" type="number" min="0" step="1" /></label><label>最小高度<input id="minBoxHeight" type="number" min="0" step="1" /></label><label>最大宽高比<input id="maxAspectRatio" type="number" min="1" max="100" step="1" /></label></div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>Vision 弱结果修复</h2><p>仅修复低置信度文字，不改变 OCR 几何。</p></div><label class="switch-row"><input id="visionEnabled" type="checkbox" /><span></span><b>启用</b></label></div>
+        <div class="form-grid two"><label>Model<input id="visionModel" type="text" /></label><label>Base URL<input id="visionUrl" type="url" /></label></div><label>API Key<input id="visionKey" type="password" /></label>
+      </article>
+      <div class="panel-actions"><button id="saveOcrBtn" class="primary" type="button">保存 OCR 设置</button><button id="testOcrBtn" type="button">测试连接</button><span id="ocrStatus" class="inline-status"></span></div>
+    </section>
+
+    <section class="settings-panel hidden" data-panel="translation">
+      <article class="setting-card">
+        <div class="card-title"><div><h2>OpenAI-compatible 服务</h2><p>用于漫画、小说和网页的正式翻译请求。</p></div></div>
+        <div class="form-grid two"><label>Model<input id="translationModel" type="text" /></label><label>Base URL<input id="translationUrl" type="url" /></label></div><label>API Key<input id="translationKey" type="password" autocomplete="off" /></label>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>本地正式译文库</h2><p>首次点击“检查状态”时，请在 Chrome 的“访问本机设备”提示中选择允许。</p></div></div>
+        <div class="pair-row"><input id="pairingCode" type="password" inputmode="numeric" autocomplete="off" placeholder="输入六位配对码" /><button id="pairServiceBtn" type="button">配对</button><button id="checkServiceBtn" type="button">检查状态</button></div>
+        <span id="serviceStatus" class="inline-status"></span>
+      </article>
+      <div class="panel-actions"><button id="saveTranslationBtn" class="primary" type="button">保存翻译服务</button><button id="testTranslationBtn" type="button">测试连接</button><span id="translationStatus" class="inline-status"></span></div>
+    </section>
+
+    <section class="settings-panel hidden" data-panel="reading">
+      <article class="setting-card">
+        <div class="card-title"><div><h2>翻译策略</h2><p>设置阅读过程中默认如何发起任务。</p></div></div>
+        <div class="form-grid three"><label>预翻译模式<select id="pretranslateMode"><option value="manual">手动翻译</option><option value="ahead">领先预翻译（后续 6 张）</option><option value="continuous">连续到章节末尾</option></select></label><label>取图方式<select id="captureMode"><option value="direct">直接读取</option><option value="screenshot">可视区截图</option></select></label><label>漫画渲染<select id="renderMode"><option value="overlay">DOM 覆盖</option><option value="embedded">嵌入图片</option></select></label></div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>阅读辅助</h2><p>管理悬浮入口、术语发现和文本处理。</p></div></div>
+        <div class="toggle-list"><label><span><b>显示悬浮按钮</b><small>在页面右侧显示漫画、小说和网页操作入口</small></span><input id="showBall" type="checkbox" /></label><label><span><b>自动发现候选术语</b><small>翻译后将可能的人名与专有词加入待确认列表</small></span><input id="termDiscoveryEnabled" type="checkbox" /></label><label><span><b>忽略简体中文内容</b><small>扫描网页时跳过确认是简体中文的文本</small></span><input id="ignoreSimplifiedChinese" type="checkbox" /></label></div>
+        <div class="form-grid three"><label>悬浮侧边<select id="floatingSide"><option value="right">右侧</option><option value="left">左侧</option></select></label><label>译文缩放<input id="overwriteFontScale" type="number" min="0.5" max="2.5" step="0.05" /></label><label>覆盖范围<input id="overwriteCoverPadding" type="number" min="0" max="1.2" step="0.05" /></label></div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>调试显示</h2><p>普通使用建议保持默认。</p></div></div>
+        <div class="form-grid two"><label>OCR 覆盖阶段<select id="debugOverlayMode"><option value="raw">原始</option><option value="filtered">过滤后</option><option value="merged">合并后</option><option value="final">最终</option></select></label><label>覆盖预览<select id="overwritePreviewMode"><option value="full">完整</option><option value="cover">仅遮盖</option><option value="text">仅文字</option></select></label></div>
+      </article>
+      <div class="panel-actions"><button id="saveReadingBtn" class="primary" type="button">保存阅读设置</button><span id="readingStatus" class="inline-status"></span></div>
+    </section>
+
+    <section class="settings-panel library-panel hidden" data-panel="glossary"><iframe id="glossaryFrame" title="术语库" data-src="glossary.html?embedded=1"></iframe></section>
+    <section class="settings-panel library-panel hidden" data-panel="translations"><iframe id="translationsFrame" title="译文库" data-src="translations.html?embedded=1"></iframe></section>
+
+    <section class="settings-panel hidden" data-panel="maintenance">
+      <div class="diagnostic-grid">
+        <article class="setting-card"><div class="card-title"><div><h2>本地服务</h2><p>检查 OCR 与 SQLite 译文库的连接。</p></div></div><div class="diagnostic-actions"><button id="probeOcrBtn" type="button">检查 OCR</button><button id="probeTranslationStoreBtn" type="button">检查译文库</button></div><span id="maintenanceServiceStatus" class="inline-status"></span></article>
+        <article class="setting-card"><div class="card-title"><div><h2>临时缓存</h2><p id="cacheSummary">正在读取缓存统计…</p></div></div><div class="danger-zone"><div><b>清除临时缓存</b><small>不会删除 SQLite 正式译文库或术语库。</small></div><button id="clearCacheBtn" class="danger" type="button">清除缓存</button></div><span id="cacheStatus" class="inline-status"></span></article>
+      </div>
+    </section>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>

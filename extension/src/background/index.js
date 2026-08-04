@@ -2,6 +2,7 @@ import glossaryCore from "../shared/glossary.js";
 import termDiscoveryCore from "../shared/term-discovery.js";
 import novelCore from "../shared/novel.js";
 import novelMemoryCore from "../shared/novel-memory.js";
+import languages from "../shared/languages.js";
 import Utils from "../shared/utils.js";
 import { backgroundPhases } from "./modules/index.js";
 import { configureBackgroundRuntime } from "./configure.js";
@@ -12,6 +13,7 @@ export function createBackgroundRuntime(overrides = {}) {
     termDiscoveryCore,
     novelCore,
     novelMemoryCore,
+    languages,
     Utils
   }, overrides);
   for (const install of [...backgroundPhases.functions, ...backgroundPhases.state]) install(runtime);

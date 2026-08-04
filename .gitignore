@@ -41,6 +41,8 @@ test.py
 !tests/fixtures/kakao-canonical/*.png
 !extension/public/icons/
 !extension/public/icons/*.png
+!extension/public/assets/floating-actions/
+!extension/public/assets/floating-actions/*.png
 
 # === Local OCR service temp files ===
 local-ocr-service/__pycache__/

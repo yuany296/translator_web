@@ -35,7 +35,9 @@ export function installLifecycleBubble(runtime) {
     const coverOnly = projectionRole === "cover_only";
     const originalText = runtime.cleanRenderableText(bubble.original_text || "");
     const translatedText = coverOnly ? "" : runtime.cleanRenderableText(bubble.translated_text || "") || originalText;
-    if (!coverOnly && !translatedText) {
+    const displayText = runtime.state.displayMode === "bilingual" && originalText
+      && originalText !== translatedText ? `${originalText}\n${translatedText}` : translatedText;
+    if (!coverOnly && !displayText) {
       return null;
     }
     const bgType = runtime.normalizeBgType(bubble.bg_type);
@@ -49,7 +51,7 @@ export function installLifecycleBubble(runtime) {
     if (options.textOnly) node.classList.add("mt-text-layer");
     node.dataset.mangaTranslatorOverlay = "true";
     node.dataset.index = String(index);
-    node.dataset.mode = coverOnly ? "cover" : "translated";
+    node.dataset.mode = coverOnly ? "cover" : runtime.state.displayMode;
     node.dataset.projectionRole = projectionRole;
     node.dataset.original = originalText;
     node.dataset.translated = translatedText;
@@ -142,10 +144,12 @@ export function installLifecycleBubble(runtime) {
       unit: "%",
       allowVerticalOverflow: bubble.stitch_overflow === true
     });
-    node.textContent = coverOnly ? "" : runtime.formatTranslationForOriginalLines(translatedText, Number(node.dataset.sourceLineCount));
+    node.textContent = coverOnly ? "" : runtime.formatTranslationForOriginalLines(
+      displayText, Number(node.dataset.sourceLineCount)
+    );
     node.title = coverOnly ? "" : originalText || translatedText;
     if (!coverOnly) {
-      runtime.applyBubbleTextLayout(node, translatedText);
+      runtime.applyBubbleTextLayout(node, displayText);
     }
     node.addEventListener("click", event => {
       event.preventDefault();

@@ -1,11 +1,11 @@
 export function installOcrLines(runtime) {
   function isMeaningfulOcrText(text) {
     const raw = String(text || "").normalize("NFKC").trim();
-    return !!raw && /[\uac00-\ud7af\u3130-\u318f\u3040-\u30ff\u3400-\u9fffA-Za-z0-9]/u.test(raw);
+    return !!raw && /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff\u3040-\u30ff\u3400-\u9fffA-Za-z0-9]/u.test(raw);
   }
   runtime.isMeaningfulOcrText = isMeaningfulOcrText;
   function hasMeaningfulKoreanOrCjkText(text) {
-    return /[\uac00-\ud7af\u3040-\u30ff\u3400-\u9fff]/u.test(String(text || ""));
+    return /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff\u3040-\u30ff\u3400-\u9fff]/u.test(String(text || ""));
   }
   runtime.hasMeaningfulKoreanOrCjkText = hasMeaningfulKoreanOrCjkText;
   function isReliableMeaningfulShortOcrText(text) {
@@ -13,7 +13,7 @@ export function installOcrLines(runtime) {
     if (!runtime.isMeaningfulOcrText(raw)) {
       return false;
     }
-    if (/[\uac00-\ud7af\u3040-\u30ff]/u.test(raw)) {
+    if (/[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff\u3040-\u30ff]/u.test(raw)) {
       return true;
     }
     if (/[\u3400-\u9fff]/u.test(raw)) {
@@ -361,8 +361,8 @@ export function installOcrLines(runtime) {
   }
   runtime.areLocalPaddleLineRegionsCompatible = areLocalPaddleLineRegionsCompatible;
   function areLocalPaddleScriptsCompatible(leftText, rightText) {
-    const leftHangul = /[\uac00-\ud7af]/.test(leftText);
-    const rightHangul = /[\uac00-\ud7af]/.test(rightText);
+    const leftHangul = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/.test(leftText);
+    const rightHangul = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/.test(rightText);
     const leftHan = /[\u3400-\u9fff]/.test(leftText);
     const rightHan = /[\u3400-\u9fff]/.test(rightText);
     return !(leftHangul && rightHan && !rightHangul || rightHangul && leftHan && !leftHangul);

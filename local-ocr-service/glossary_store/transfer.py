@@ -5,7 +5,7 @@ import sqlite3
 import time
 from typing import Any
 
-from .common import normalize_scope, normalize_source
+from .common import normalize_scope, normalize_source, normalize_src_lng, normalize_tgt_lng
 
 
 class TransferMixin:
@@ -66,10 +66,13 @@ class TransferMixin:
                     scope_label = entry.get("scope_label") or entry.get("scopeLabel") or ""
                     conn.execute(
                         """INSERT OR IGNORE INTO glossary_entries
-                           (id, source, target, note, enabled, source_key, scope_type,
-                            scope_key, scope_label, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (eid, source, target, (entry.get("note") or "").strip(),
+                           (id, source, target, src_lng, tgt_lng, note, enabled, source_key,
+                            scope_type, scope_key, scope_label, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (eid, source, target,
+                         normalize_src_lng(entry.get("sourceLanguage") or entry.get("src_lng")),
+                         normalize_tgt_lng(entry.get("targetLanguage") or entry.get("tgt_lng")),
+                         (entry.get("note") or "").strip(),
                          1 if entry.get("enabled") is not False else 0,
                          normalize_source(source), scope_type, scope_key, scope_label,
                          now, now),
@@ -90,14 +93,16 @@ class TransferMixin:
 
     @staticmethod
     def _row_to_entry(row: tuple[Any, ...]) -> dict[str, Any]:
-        if len(row) >= 12:
+        if len(row) >= 13:
             return {
                 "id": row[0], "source": row[1], "target": row[2],
-                "tgtLng": row[3], "note": row[4], "enabled": bool(row[5]),
-                "sourceKey": row[6], "scope": row[7], "scope_type": row[7],
-                "scopeKey": row[8], "scope_key": row[8],
-                "scopeLabel": row[9], "scope_label": row[9],
-                "createdAt": row[10], "updatedAt": row[11],
+                "sourceLanguage": row[3], "src_lng": row[3],
+                "targetLanguage": row[4], "tgtLng": row[4], "tgt_lng": row[4],
+                "note": row[5], "enabled": bool(row[6]),
+                "sourceKey": row[7], "scope": row[8], "scope_type": row[8],
+                "workId": row[9], "scopeKey": row[9], "scope_key": row[9],
+                "scopeLabel": row[10], "scope_label": row[10],
+                "createdAt": row[11], "updatedAt": row[12],
             }
         return {
             "id": row[0],

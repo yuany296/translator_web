@@ -5,17 +5,12 @@ export function installOcrItemFilter(runtime) {
     if (!box || !text) {
       return true;
     }
-    if (runtime.isReliableShortSpeechBubbleItem(item)) {
-      return false;
-    }
-    const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
-    const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
-    const areaRatio = box.width * box.height / Math.max(1, imageWidth * imageHeight);
-    return runtime.countScriptChars(text) <= 1 && (areaRatio < 0.012 || box.width <= imageWidth * 0.08);
+    // 长度不是噪声依据；低置信度、符号和损坏文本由其他过滤阶段判断。
+    return false;
   }
   runtime.shouldDropUnmergedLocalPaddleFragment = shouldDropUnmergedLocalPaddleFragment;
   function countScriptChars(text) {
-    return (String(text || "").match(/[\uac00-\ud7af\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
+    return (String(text || "").match(/[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
   }
   runtime.countScriptChars = countScriptChars;
   function isReliableShortSpeechBubbleItem(item) {

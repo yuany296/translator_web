@@ -8,7 +8,8 @@ export function installPlatformUtils(runtime) {
 
   function normalizeLocalOcrLang(value) {
     const text = String(value || "").trim().toLowerCase();
-    return ["japan", "korean"].includes(text) ? text : runtime.DEFAULT_LOCAL_OCR_LANG;
+    return ["japan", "korean", "en", "ch", "chinese_cht"].includes(text)
+      ? text : runtime.DEFAULT_LOCAL_OCR_LANG;
   }
   runtime.normalizeLocalOcrLang = normalizeLocalOcrLang;
 

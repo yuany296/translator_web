@@ -280,41 +280,16 @@ export function installOcrDisplayGeometry(runtime) {
     if (runtime.shouldDropLowConfidenceLocalPaddleText(text, Number(item.confidence || 0))) {
       return true;
     }
-    const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
-    const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
-    const areaRatio = box.width * box.height / Math.max(1, imageWidth * imageHeight);
-    if (!runtime.isReliableMeaningfulShortOcrText(text) && runtime.countScriptChars(text) <= 1 && areaRatio < 0.003 && Number(item.confidence || 0) < 0.98) {
-      return true;
-    }
     return false;
   }
   runtime.shouldDropLocalPaddleNoiseItem = shouldDropLocalPaddleNoiseItem;
   function shouldDropLowConfidenceLocalPaddleText(text, confidence) {
     const raw = String(text || "").trim();
     const score = Number(confidence || 0);
-    if (!raw || score >= 0.72) {
+    if (!raw) {
       return false;
     }
-    const hangul = (raw.match(/[\uac00-\ud7af]/g) || []).length;
-    const jamo = (raw.match(/[\u3130-\u318f]/g) || []).length;
-    const latin = (raw.match(/[A-Za-z]/g) || []).length;
-    const script = runtime.countScriptChars(raw);
-    if (runtime.isReliableMeaningfulShortOcrText(raw) && score >= 0.45) {
-      return false;
-    }
-    if (latin > 0 && script <= 3) {
-      return true;
-    }
-    if (hangul <= 1 && jamo > 0) {
-      return true;
-    }
-    if (hangul <= 2 && score < 0.5) {
-      return true;
-    }
-    if (hangul <= 1 && score < 0.62) {
-      return true;
-    }
-    return false;
+    return score > 0 && score < 0.4;
   }
   runtime.shouldDropLowConfidenceLocalPaddleText = shouldDropLowConfidenceLocalPaddleText;
 

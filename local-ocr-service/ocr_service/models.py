@@ -44,6 +44,7 @@ class GlossaryEntryPayload(BaseModel):
     id: str = ""
     source: str
     target: str
+    src_lng: str = "ko"
     tgt_lng: str = ""
     note: str = ""
     enabled: bool = True
@@ -55,6 +56,7 @@ class GlossaryEntryPayload(BaseModel):
 class GlossaryBatchPayload(BaseModel):
     entries: list[dict[str, Any]] = Field(default_factory=list, max_length=5000)
     tgt_lng: str = ""
+    src_lng: str = "ko"
 
 
 class GlossaryConfirmPayload(BaseModel):
@@ -78,6 +80,36 @@ class GlossaryAddPendingPayload(BaseModel):
 
 class GlossaryImportPayload(BaseModel):
     entries: list = Field(default_factory=list, max_length=1000)
+
+
+class TranslationPairPayload(BaseModel):
+    pairingCode: str = Field(min_length=6, max_length=128)
+    token: str = Field(min_length=32, max_length=512)
+
+
+class TranslationQueryPayload(BaseModel):
+    recordKeys: list[str] = Field(default_factory=list, max_length=500)
+    includeDeleted: bool = False
+
+
+class TranslationOperationsPayload(BaseModel):
+    operations: list[dict[str, Any]] = Field(default_factory=list, min_length=1, max_length=500)
+
+
+class TranslationImportPayload(BaseModel):
+    records: list[dict[str, Any]] = Field(default_factory=list, max_length=5000)
+    confirmation: str = Field(default="", max_length=80)
+
+
+class TranslationStreamPayload(BaseModel):
+    taskId: str = Field(min_length=1, max_length=160)
+    items: list[dict[str, Any]] = Field(default_factory=list, min_length=1, max_length=200)
+    upstream: dict[str, Any]
+    sourceLanguage: str = Field(default="auto", max_length=24)
+    targetLanguage: str = Field(default="zh-CN", max_length=24)
+    configFingerprint: str = Field(default="", max_length=200)
+    context: dict[str, Any] = Field(default_factory=dict)
+    glossary: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
 
 
 runtime.__dict__.update({name: value for name, value in globals().items() if isinstance(value, type) and issubclass(value, BaseModel)})

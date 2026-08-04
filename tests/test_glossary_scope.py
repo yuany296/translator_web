@@ -23,7 +23,7 @@ def test_glossary_keeps_global_and_per_book_entries(tmp_path: Path) -> None:
     )
 
     assert global_entry["scope"] == "global"
-    assert book_entry["scope"] == "series"
+    assert book_entry["scope"] == "work"
     assert book_entry["scopeKey"] == "kakao:65171279"
     assert {entry["target"] for entry in database.get_entries()} == {"成贤", "晟玄"}
 

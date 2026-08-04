@@ -205,6 +205,19 @@ export function installRecognitionSeam(runtime) {
     };
   }
   runtime.normalizeOcrObservationResult = normalizeOcrObservationResult;
+  function getComicTranslationStorageOptions(existing = null) {
+    if (existing) return existing;
+    const pageKey = runtime.getStableChapterUrl?.() || String(location.href).split("#")[0];
+    const pathParts = String(location.pathname || "").split("/").filter(Boolean);
+    return {
+      scopeKey: `comic:${runtime.hashSourceIdentity(pageKey)}`,
+      workId: `${location.hostname}:${pathParts[0] || "page"}`,
+      chapterId: pathParts.at(-1) || runtime.hashSourceIdentity(pageKey),
+      pageKey,
+      configuredSourceLanguage: runtime.getConfiguredSourceLanguage?.() || "auto"
+    };
+  }
+  runtime.getComicTranslationStorageOptions = getComicTranslationStorageOptions;
   async function requestCanonicalTranslations(items, context = {}) {
     const requestItems = (Array.isArray(items) ? items : []).map(item => ({
       id: String(item && item.id || ""),
@@ -222,19 +235,44 @@ export function installRecognitionSeam(runtime) {
         }
       };
     }
-    const translationOptions = runtime.getNovelImageTranslationOptions(context.reason);
-    const response = await runtime.sendRuntimeMessage({
-      type: "TRANSLATE_TEXT_BLOCKS",
-      sourceLanguage: String(context.sourceLanguage || runtime.KAKAO_CANONICAL_SOURCE_LANGUAGE),
-      targetLanguage: String(context.targetLanguage || runtime.KAKAO_CANONICAL_TARGET_LANGUAGE),
-      items: requestItems,
-      ...(translationOptions ? { translationOptions } : {})
+    const translationOptions = runtime.getComicTranslationStorageOptions(
+      runtime.getNovelImageTranslationOptions(context.reason)
+    );
+    const configured = String(context.sourceLanguage || runtime.getConfiguredSourceLanguage?.()
+      || runtime.KAKAO_CANONICAL_SOURCE_LANGUAGE);
+    const ocrLanguage = String(context.ocrLanguage || runtime.state.ocrLanguage || "auto");
+    const targetLanguage = String(context.targetLanguage || runtime.getTargetLanguage?.()
+      || runtime.KAKAO_CANONICAL_TARGET_LANGUAGE);
+    const groups = new Map();
+    const originalsById = new Map((Array.isArray(items) ? items : [])
+      .map(item => [String(item?.id || ""), item]));
+    requestItems.forEach(item => {
+      const original = originalsById.get(item.id) || {};
+      const recognized = original.resolvedSourceLanguage || original.recognizedLanguage
+        || original.detectedLanguage || original.language || (ocrLanguage === "auto" ? "" : ocrLanguage);
+      const sourceLanguage = runtime.resolveSourceLanguage?.(item.original_text, recognized) || configured;
+      if (sourceLanguage !== "auto" && sourceLanguage === targetLanguage) return;
+      if (!groups.has(sourceLanguage)) groups.set(sourceLanguage, []);
+      groups.get(sourceLanguage).push(item);
     });
-    if (!response) return response;
-    const translations = Array.isArray(response.translations) ? response.translations : Array.isArray(response.result && response.result.translations) ? response.result.translations : [];
-    const errors = Array.isArray(response.errors) ? response.errors : Array.isArray(response.result && response.result.errors) ? response.result.errors : [];
-    if (!response.ok && !(response.partial === true && translations.length > 0)) {
-      return response;
+    const responses = await Promise.all([...groups].map(([sourceLanguage, groupItems]) =>
+      runtime.sendRuntimeMessage({
+        type: "TRANSLATE_TEXT_BLOCKS",
+        sourceLanguage,
+        targetLanguage,
+        items: groupItems,
+        taskId: String(context.taskId || ""),
+        ...(translationOptions ? { translationOptions } : {})
+      }).catch(error => ({ ok: false, error: runtime.getErrorMessage(error), errors: [{ error: runtime.getErrorMessage(error) }] }))
+    ));
+    const translations = responses.flatMap(response => Array.isArray(response?.translations)
+      ? response.translations : Array.isArray(response?.result?.translations) ? response.result.translations : []);
+    const errors = responses.flatMap(response => Array.isArray(response?.errors)
+      ? response.errors : Array.isArray(response?.result?.errors) ? response.result.errors
+        : response?.error ? [{ error: response.error }] : []);
+    const partial = errors.length > 0 || responses.some(response => response?.partial === true);
+    if (!translations.length && errors.length) {
+      return { ok: false, partial, translations, errors, error: errors[0]?.error || "translation_failed" };
     }
     const normalized = {
       translations: translations.map(item => ({
@@ -246,10 +284,9 @@ export function installRecognitionSeam(runtime) {
         cached: item && item.cached === true
       })).filter(item => item.id && item.translated_text),
       errors,
-      partial: response.partial === true || response.result && response.result.partial === true || errors.length > 0
+      partial
     };
     return {
-      ...response,
       ok: true,
       partial: normalized.partial,
       result: normalized

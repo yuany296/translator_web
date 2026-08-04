@@ -475,24 +475,22 @@ test("manifest exposes only built entries from dist extension", () => {
   }
   const buildSource = fs.readFileSync(path.join(root, "scripts", "build-extension.mjs"), "utf8");
   assert.match(buildSource, /format: "esm"/);
-  assert.match(buildSource, /\["content", "popup", "glossary"\]/);
+  assert.match(buildSource, /\["content", "popup", "quick-popup", "settings", "glossary", "translations"\]/);
+  assert.equal(manifest.action.default_popup, "quick-popup.html");
+  assert.equal(manifest.options_ui.page, "settings.html");
 });
-test("popup independently saves OCR, translation and runtime settings and keeps manual translation", () => {
+test("default popup is compact and delegates advanced configuration to settings", () => {
   const root = path.resolve(import.meta.dirname, "..");
-  const popupSource = fs.readFileSync(path.join(root, "extension", "src", "popup", "controller.js"), "utf8");
-  const popupHtml = fs.readFileSync(path.join(root, "extension", "public", "popup.html"), "utf8");
-  assert.match(popupSource, /SAVE_CONFIGURATION", section, value: collect\(section, configuration\)/);
-  assert.match(popupSource, /section === "ocr"/);
-  assert.match(popupSource, /section === "translation"/);
-  assert.match(popupSource, /TEST_OCR_CONFIGURATION/);
-  assert.match(popupSource, /TEST_TRANSLATION_CONFIGURATION/);
+  const popupSource = fs.readFileSync(path.join(root, "extension", "src", "quick-popup", "controller.js"), "utf8");
+  const popupHtml = fs.readFileSync(path.join(root, "extension", "public", "quick-popup.html"), "utf8");
+  assert.match(popupSource, /SAVE_CONFIGURATION/);
+  assert.match(popupSource, /sourceLanguage/);
+  assert.match(popupSource, /displayMode/);
   assert.match(popupSource, /type: "MANUAL_TRANSLATE_VISIBLE"/);
-  assert.match(popupSource, /pretranslateMode: value\("pretranslateMode"\)/);
-  assert.match(popupSource, /runtime\.pretranslateMode/);
-  assert.match(popupHtml, /value="manual">手动翻译/);
-  assert.match(popupHtml, /value="ahead">领先预翻译/);
-  assert.match(popupHtml, /value="continuous">连续预翻译/);
-  assert.doesNotMatch(popupSource, /TRANSLATE_DATA_URL|baidu_deepseek|local_paddle_deepseek/);
+  assert.match(popupSource, /openOptionsPage/);
+  assert.match(popupHtml, /id="runtimeEnabled"/);
+  assert.match(popupHtml, /name="displayMode"/);
+  assert.doesNotMatch(popupHtml, /API Key|ocrProvider|clearCacheBtn|glossaryBtn|translationLibraryBtn|pretranslateMode/);
 });
 
 /* =================================================================

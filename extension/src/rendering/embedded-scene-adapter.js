@@ -45,7 +45,8 @@ export function drawEmbeddedBubbleScene(runtime, context, width, height, bubbles
     id: `embedded:${width}x${height}`,
     surface: { id: "embedded", type: "page", width, height },
     bubbles,
-    measure
+    measure,
+    displayMode: runtime.state.displayMode
   });
   const drawText = (ctx, text, x, y, layer) => {
     ctx.textAlign = "center";

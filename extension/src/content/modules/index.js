@@ -25,8 +25,25 @@ import { installNovelReader } from "./novel-reader.js";
 import { installNovelRenderer } from "./novel-renderer.js";
 import { installNovelImagePanel } from "./novel-image-panel.js";
 import { installNovelWorkflow } from "./novel-workflow.js";
+import { installNovelStreamClient } from "./novel-stream-client.js";
+import { installNovelStreamWorkflow } from "./novel-stream-workflow.js";
+import { installNovelImageWorkflow } from "./novel-image-workflow.js";
 import { installControlsUi } from "./controls-ui.js";
-import { installControlsDual } from "./controls-dual.js";
+import { installControlsTriple } from "./controls-triple.js";
+import { installFloatingMenu } from "./floating-menu.js";
+import { installFloatingPosition } from "./floating-position.js";
+import { installNovelProgressPanel } from "./novel-progress-panel.js";
+import { installNovelDiagnostics } from "./novel-diagnostics.js";
+import { installNovelRevisionPanel } from "./novel-revision-panel.js";
+import { installNovelCache } from "./novel-cache.js";
+import { installWebpageSession } from "./webpage-session.js";
+import { installWebpageTabState } from "./webpage-tab-state.js";
+import { installWebpageScheduler } from "./webpage-scheduler.js";
+import { installWebpageStartup } from "./webpage-startup.js";
+import { installWebpageTranslate } from "./webpage-translate.js";
+import { installWebpageObserver } from "./webpage-observer.js";
+import { installWebpageLifecycle } from "./webpage-lifecycle.js";
+import { installTranslationCacheClient } from "./translation-cache-client.js";
 import { installControlsAutotranslate } from "./controls-autotranslate.js";
 import { installControlsUtils } from "./controls-utils.js";
 import { installTargetFilter } from "./target-filter.js";
@@ -66,8 +83,25 @@ export const contentInstallers = Object.freeze([
   installNovelRenderer,
   installNovelImagePanel,
   installNovelWorkflow,
+  installNovelStreamClient,
+  installNovelStreamWorkflow,
+  installNovelImageWorkflow,
   installControlsUi,
-  installControlsDual,
+  installControlsTriple,
+  installFloatingMenu,
+  installFloatingPosition,
+  installNovelProgressPanel,
+  installNovelDiagnostics,
+  installNovelRevisionPanel,
+  installNovelCache,
+  installWebpageSession,
+  installWebpageTabState,
+  installWebpageScheduler,
+  installWebpageStartup,
+  installWebpageTranslate,
+  installWebpageObserver,
+  installWebpageLifecycle,
+  installTranslationCacheClient,
   installControlsAutotranslate,
   installControlsUtils,
   installTargetFilter,
@@ -109,8 +143,25 @@ export const contentPhases = Object.freeze({
     installNovelRenderer,
     installNovelImagePanel,
     installNovelWorkflow,
+    installNovelStreamClient,
+    installNovelStreamWorkflow,
+    installNovelImageWorkflow,
     installControlsUi,
-    installControlsDual,
+    installControlsTriple,
+    installFloatingMenu,
+    installFloatingPosition,
+    installNovelProgressPanel,
+    installNovelDiagnostics,
+    installNovelRevisionPanel,
+    installNovelCache,
+    installWebpageSession,
+    installWebpageTabState,
+    installWebpageScheduler,
+    installWebpageStartup,
+    installWebpageTranslate,
+    installWebpageObserver,
+    installWebpageLifecycle,
+    installTranslationCacheClient,
     installControlsAutotranslate,
     installControlsUtils,
     installTargetFilter,

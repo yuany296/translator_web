@@ -55,6 +55,7 @@ export function installReaderInit(runtime) {
     runtime.ensureOverlayLayer();
     runtime.createFloatingBall();
     runtime.bindRuntimeMessages();
+    await runtime.initializeWebpageTabSession?.();
     runtime.bindStorageListener();
     runtime.bindViewportSync();
     runtime.startObservers();

@@ -2,6 +2,23 @@ import {
   CONFIG_KEYS, OCR_PROVIDERS, normalizeOcrConfig,
   normalizeRuntimeConfig, normalizeTranslationConfig
 } from "./schema.js";
+import languages from "../shared/languages.js";
+
+function hasOwn(value, key) {
+  return !!value && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function normalizeUnifiedConfiguration(raw) {
+  const rawOcr = raw[CONFIG_KEYS.ocr] || {};
+  const rawTranslation = raw[CONFIG_KEYS.translation] || {};
+  const migratedSource = hasOwn(rawTranslation, "sourceLanguage")
+    ? rawTranslation.sourceLanguage
+    : languages.ocrLanguageToTranslationLanguage(rawOcr.localPaddle?.lang, "auto");
+  const translation = normalizeTranslationConfig({ ...rawTranslation, sourceLanguage: migratedSource });
+  const ocr = normalizeOcrConfig(rawOcr);
+  ocr.localPaddle.lang = languages.translationLanguageToOcrLanguage(translation.sourceLanguage);
+  return { ocr, translation, runtime: normalizeRuntimeConfig(raw[CONFIG_KEYS.runtime]) };
+}
 
 export function createConfigurationStore({ storageGet, storageSet, glossaryCore }) {
   async function load() {
@@ -10,13 +27,12 @@ export function createConfigurationStore({ storageGet, storageSet, glossaryCore 
     const raw = await storageGet(keys);
     const storedGlossary = raw[glossaryCore.STORAGE_KEY] ?? raw[glossaryCore.LEGACY_STORAGE_KEY];
     const glossary = glossaryCore.normalizeGlossary(storedGlossary);
+    const unified = normalizeUnifiedConfiguration(raw);
     if (raw[glossaryCore.STORAGE_KEY] === undefined && storedGlossary !== undefined) {
       await storageSet({ [glossaryCore.STORAGE_KEY]: glossary });
     }
     return {
-      ocr: normalizeOcrConfig(raw[CONFIG_KEYS.ocr]),
-      translation: normalizeTranslationConfig(raw[CONFIG_KEYS.translation]),
-      runtime: normalizeRuntimeConfig(raw[CONFIG_KEYS.runtime]),
+      ...unified,
       glossary,
       glossaryFingerprint: glossaryCore.getFingerprint(glossary)
     };
@@ -52,8 +68,11 @@ export function toLegacySettings(config) {
     provider: ocr.provider,
     ocrProvider: ocr.provider, translationProvider: translation.provider,
     model: translation.model, apiKey: translation.apiKey, baseUrl: translation.baseUrl,
+    sourceLanguage: translation.sourceLanguage, targetLanguage: translation.targetLanguage,
     baiduApiKey: ocr.baidu.apiKey, baiduSecretKey: ocr.baidu.secretKey,
-    localOcrBaseUrl: local.baseUrl, localOcrLang: local.lang, localOcrMode: local.mode,
+    localOcrBaseUrl: local.baseUrl,
+    localOcrLang: languages.translationLanguageToOcrLanguage(translation.sourceLanguage),
+    localOcrMode: local.mode,
     localOcrDetThresh: local.detThresh, localOcrDetBoxThresh: local.detBoxThresh,
     localOcrDetUnclipRatio: local.detUnclipRatio, localOcrDebug: local.debug,
     ocrConfidenceThreshold: tuning.confidenceThreshold, ocrMinBoxArea: tuning.minBoxArea,

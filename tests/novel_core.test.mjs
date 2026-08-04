@@ -6,9 +6,8 @@ import glossary from "../extension/src/shared/glossary.js";
 import novel from "../extension/src/shared/novel.js";
 import novelMemory from "../extension/src/shared/novel-memory.js";
 import {
-  buildFloatingControlView,
   buildNovelProgressView
-} from "../extension/src/content/modules/controls-dual.js";
+} from "../extension/src/content/modules/novel-progress-panel.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -136,13 +135,17 @@ test("novel memory reads only an earlier checkpoint and isolates books", () => {
   assert.doesNotMatch(middle.memory.summary, /第三章|另一本/u);
 });
 
-test("novel UI contracts expose two grouped controls and independent image retry", () => {
+test("novel UI contracts expose three icon-only grouped controls and independent image retry", () => {
   const controls = fs.readFileSync(
-    path.join(root, "extension", "src", "content", "modules", "controls-dual.js"), "utf8"
+    path.join(root, "extension", "src", "content", "modules", "controls-triple.js"), "utf8"
   );
   const workflow = fs.readFileSync(
     path.join(root, "extension", "src", "content", "modules", "novel-workflow.js"), "utf8"
   );
+  const imageWorkflow = fs.readFileSync(
+    path.join(root, "extension", "src", "content", "modules", "novel-image-workflow.js"), "utf8"
+  );
+  const workflowSources = `${workflow}\n${imageWorkflow}`;
   const panel = fs.readFileSync(
     path.join(root, "extension", "src", "content", "modules", "novel-image-panel.js"), "utf8"
   );
@@ -152,16 +155,19 @@ test("novel UI contracts expose two grouped controls and independent image retry
   const embedded = fs.readFileSync(
     path.join(root, "extension", "src", "content", "modules", "renderer-embed.js"), "utf8"
   );
-  assert.match(controls, /append\(feedback, textBall, imageBall\)/u);
-  assert.match(controls, /persistSnappedPosition/u);
+  assert.match(controls, /append\(feedback, novelBall, comicBall, webpageBall\)/u);
+  const position = fs.readFileSync(
+    path.join(root, "extension", "src", "content", "modules", "floating-position.js"), "utf8"
+  );
+  assert.match(position, /persistSnappedPosition/u);
   assert.ok(
-    controls.indexOf("drag.moved = true") < controls.indexOf("wrap.setPointerCapture?.(event.pointerId)"),
+    position.indexOf("drag.moved = true") < position.indexOf("wrap.setPointerCapture?.(event.pointerId)"),
     "pointer capture must start only after the drag threshold so button clicks still fire"
   );
-  assert.match(workflow, /void translateNovelImages\(chapter\)/u);
-  assert.match(workflow, /isolatedPage: true/u);
-  assert.match(workflow, /renderMode: runtime\.RENDER_MODE_EMBEDDED/u);
-  assert.match(workflow, /retryNovelImages/u);
+  assert.match(workflow, /void runtime\.translateNovelImages\(chapter\)/u);
+  assert.match(workflowSources, /isolatedPage: true/u);
+  assert.match(workflowSources, /renderMode: runtime\.RENDER_MODE_EMBEDDED/u);
+  assert.match(workflowSources, /retryNovelImages/u);
   assert.match(workflow, /SAVE_NOVEL_MEMORY/u);
   assert.match(workflow, /memoryRevision/u);
   assert.match(workflow, /novelMemoryCore\.mergeMemory/u);
@@ -174,19 +180,28 @@ test("novel UI contracts expose two grouped controls and independent image retry
   assert.match(embedded, /translatedLines/u);
 });
 
-test("dual floating control restores manga translate and stop labels", () => {
-  assert.deepEqual(buildFloatingControlView(false, false), {
-    imageLabel: "译",
-    imageTitle: "翻译当前视口漫画目标"
-  });
-  assert.deepEqual(buildFloatingControlView(false, true), {
-    imageLabel: "停",
-    imageTitle: "关闭本页自动翻译"
-  });
-  assert.deepEqual(buildFloatingControlView(true, true), {
-    imageLabel: "图",
-    imageTitle: "翻译漫画或重试小说正文图片"
-  });
+test("floating actions are icon-driven and never switch function text labels", () => {
+  const states = fs.readFileSync(
+    path.join(root, "extension", "src", "content", "modules", "floating-states.js"), "utf8"
+  );
+  const actions = fs.readFileSync(
+    path.join(root, "extension", "src", "shared", "floating-actions.js"), "utf8"
+  );
+  // 三个球统一从图标配置取资源，状态只能驱动角标/外圈/tooltip，不能替换主体图标。
+  assert.match(actions, /novel: "assets\/floating-actions\//u);
+  assert.match(actions, /comic: "assets\/floating-actions\//u);
+  assert.match(actions, /webpage: "assets\/floating-actions\//u);
+  assert.match(states, /AVAILABILITY = Object\.freeze\(\["enabled", "disabled", "detecting"\]\)/u);
+  assert.match(states, /TASK_PHASE = Object\.freeze\(\["idle", "loading", "running", "error"\]\)/u);
+  assert.match(states, /DISPLAY_MODE = Object\.freeze\(\["original", "translated"\]\)/u);
+  assert.match(states, /CACHE_COVERAGE = Object\.freeze\(\["none", "partial", "full"\]\)/u);
+  assert.match(states, /OVERLAY_VISIBILITY = Object\.freeze\(\["visible", "hidden"\]\)/u);
+  assert.doesNotMatch(states, /textContent/u);
+  // 状态通过 badge/tooltip/ariaLabel 表达，不通过修改按钮文字。
+  assert.match(states, /badge: .*"check"/u);
+  assert.match(states, /badge: "stop"/u);
+  assert.match(states, /当前显示中文，点击恢复原文/u);
+  assert.match(states, /漫画翻译运行中/u);
 });
 
 test("novel progress view explains ordered translation while the visible page is pending", () => {

@@ -1,4 +1,5 @@
 import { TRANSLATION_PROVIDERS, normalizeTranslationConfig } from "../../config/schema.js";
+import languages from "../../shared/languages.js";
 
 export function createTranslationProviders(runtime, registry) {
   registry.register({
@@ -8,6 +9,9 @@ export function createTranslationProviders(runtime, registry) {
       const normalized = normalizeTranslationConfig(config);
       if (!normalized.apiKey) return "翻译 API Key 未配置";
       if (!normalized.model) return "翻译模型未配置";
+      if (languages.isSameLanguagePair(normalized.sourceLanguage, normalized.targetLanguage)) {
+        return "源语言与目标语言不能相同（简体与繁体互转除外）";
+      }
       return "";
     },
     async checkHealth(config) {

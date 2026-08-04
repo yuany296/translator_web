@@ -81,6 +81,7 @@ def glossary_upsert(payload: runtime.GlossaryEntryPayload) -> dict[str, runtime.
         db = runtime.get_glossary_db()
         entry = db.upsert_entry(
             source=payload.source, target=payload.target,
+            src_lng=getattr(payload, 'src_lng', 'ko'),
             tgt_lng=getattr(payload, 'tgt_lng', ''),
             note=getattr(payload, 'note', ''),
             enabled=getattr(payload, 'enabled', True),

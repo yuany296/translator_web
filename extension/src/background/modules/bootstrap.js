@@ -1,4 +1,5 @@
 export function installBootstrap(runtime) {
+  chrome.runtime.onConnect?.addListener(port => runtime.handleTranslationStreamPort?.(port));
   chrome.runtime.onInstalled.addListener(async details => {
     try {
       await runtime.ensureDefaultSettings();

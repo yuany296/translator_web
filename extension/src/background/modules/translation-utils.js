@@ -74,7 +74,7 @@ export function installTranslationUtils(runtime) {
     if (/[0-9A-Za-z]/.test(raw)) {
       return false;
     }
-    if (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(raw)) {
+    if (/[\u4e00-\u9fff\u3040-\u30ff\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/.test(raw)) {
       return false;
     }
     return /^[\p{P}\p{S}\s]+$/u.test(raw);
@@ -87,7 +87,7 @@ export function installTranslationUtils(runtime) {
     }
 
     // Keep Japanese/Korean text to avoid false filtering.
-    if (/[\u3040-\u30ff]/.test(raw) || /[\uac00-\ud7af]/.test(raw)) {
+    if (/[\u3040-\u30ff]/.test(raw) || /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/.test(raw)) {
       return false;
     }
     const hanChars = raw.match(/[\u4e00-\u9fff]/g) || [];

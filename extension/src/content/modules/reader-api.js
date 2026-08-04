@@ -45,8 +45,12 @@ export function installReaderApi(runtime) {
     scheduleAutoTranslateRetry: runtime.scheduleAutoTranslateRetry,
     reportPipelineError: runtime.reportKakaoPipelineError,
     tracePipeline: runtime.tracePipeline,
-    targetLanguage: runtime.KAKAO_CANONICAL_TARGET_LANGUAGE,
-    sourceLanguage: runtime.KAKAO_CANONICAL_SOURCE_LANGUAGE,
+    get targetLanguage() {
+      return runtime.getTargetLanguage?.() || runtime.KAKAO_CANONICAL_TARGET_LANGUAGE;
+    },
+    get sourceLanguage() {
+      return runtime.getConfiguredSourceLanguage?.() || runtime.KAKAO_CANONICAL_SOURCE_LANGUAGE;
+    },
     edgeWaitTimeoutMs: 8000
   }) : null;
   runtime.kakaoCanonicalPipeline = kakaoCanonicalPipeline;

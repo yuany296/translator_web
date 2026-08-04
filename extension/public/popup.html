@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta http-equiv="refresh" content="0; url=quick-popup.html" />
   <title>漫画 OCR 翻译器 · Next</title>
   <style>
     :root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
@@ -54,14 +55,25 @@
     <div class="field"><label for="translationModel">Model</label><input id="translationModel" type="text" /></div>
     <div class="field"><label for="translationKey">API Key</label><input id="translationKey" type="password" /></div>
     <div class="field"><label for="translationUrl">Base URL</label><input id="translationUrl" type="text" /></div>
+    <div class="grid">
+      <div class="field"><label for="sourceLanguage">源语言</label><select id="sourceLanguage"><option value="auto">自动识别</option><option value="ko">韩语</option><option value="ja">日语</option><option value="en">英语</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁体中文</option></select></div>
+      <div class="field"><label for="targetLanguage">目标语言</label><select id="targetLanguage"><option value="zh-CN">简体中文</option><option value="zh-TW">繁体中文</option><option value="en">英语</option><option value="ja">日语</option><option value="ko">韩语</option></select></div>
+    </div>
     <div class="actions"><button class="primary" data-save="translation">保存翻译</button><button data-test="translation">测试翻译</button></div>
     <div id="translationStatus" class="status"></div>
+    <div class="field"><label for="localServicePairingCode">本地服务配对码</label><input id="localServicePairingCode" type="password" autocomplete="off" /></div>
+    <div class="actions"><button id="pairLocalServiceBtn">配对本地译文库</button><button id="checkLocalServiceBtn">检查译文库</button></div>
+    <div id="localServiceStatus" class="status"></div>
   </section>
   <section class="card">
     <div class="card-head"><h2>运行设置</h2><span>阅读与渲染</span></div>
     <div class="grid">
       <div class="field"><label for="captureMode">取图</label><select id="captureMode"><option value="direct">直接读取</option><option value="screenshot">可视区截图</option></select></div>
       <div class="field"><label for="renderMode">渲染</label><select id="renderMode"><option value="overlay">DOM 覆盖</option><option value="embedded">嵌入图片</option></select></div>
+    </div>
+    <div class="grid">
+      <div class="field"><label for="webpageDisplayMode">网页文字</label><select id="webpageDisplayMode"><option value="translated">仅译文</option><option value="bilingual">双语对照</option></select></div>
+      <div class="field"><label for="novelDisplayMode">小说文字</label><select id="novelDisplayMode"><option value="translated">仅译文</option><option value="bilingual">双语对照</option></select></div>
     </div>
     <div class="field">
       <label for="pretranslateMode">翻译模式</label>
@@ -78,7 +90,7 @@
     <div class="actions"><button class="primary" data-save="runtime">保存运行设置</button></div>
     <div id="runtimeStatus" class="status"></div>
   </section>
-  <div class="footer"><button id="translateBtn" class="run">翻译当前可视区</button><button id="glossaryBtn">术语表</button><button id="clearCacheBtn">清缓存</button></div>
+  <div class="footer"><button id="translateBtn" class="run">翻译当前可视区</button><button id="glossaryBtn">术语表</button><button id="translationLibraryBtn">译文库</button><button id="clearCacheBtn">清缓存</button></div>
   <div id="globalStatus" class="status"></div>
   <script src="popup.js"></script>
 </body>

@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -35,6 +36,7 @@ from fastapi import HTTPException, Request
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from term_extractor import extract_term_candidates, get_term_extractor_status
 from glossary_db import GlossaryDB
+from translation_store import TranslationStore, has_saved_pairing
 
 try:
     from paddleocr import PaddleOCR, TextDetection, TextRecognition
@@ -65,7 +67,7 @@ from .runtime import runtime
 DATA_ROOT = Path(__file__).resolve().parents[2] / ".local-data"
 values = {
     **{name: value for name, value in globals().items() if not name.startswith("__")},
-    "SUPPORTED_LANGS": {"auto", "japan", "korean"},
+    "SUPPORTED_LANGS": {"auto", "japan", "korean", "en", "ch", "chinese_cht"},
     "SUPPORTED_OCR_MODES": {"fast", "enhanced"},
     "OCR_PREPROCESS_SCALE": 2,
     "DEFAULT_OCR_DEVICE": "gpu:0",
@@ -87,6 +89,24 @@ values = {
     "_ocr_client_lock": threading.Lock(),
     "_ocr_runtime_lock": asyncio.Lock(),
     "GLOSSARY_DB_PATH": os.environ.get("GLOSSARY_DB_PATH", str(DATA_ROOT / "glossary.db")),
+    "TRANSLATION_DB_PATH": os.environ.get("TRANSLATION_DB_PATH", str(DATA_ROOT / "translations.db")),
+    "EXTENSION_ORIGIN_PATTERN": r"^chrome-extension://[a-p]{32}$",
+    "TRANSLATION_PAIRING_CODE": os.environ.get(
+        "MT_TRANSLATION_PAIRING_CODE", f"{secrets.randbelow(1_000_000):06d}"
+    ),
+    "_translation_pairing_used": False,
+    "TranslationStore": TranslationStore,
     "_glossary_db": None,
+    "_translation_store": None,
+    "_translation_stream_provider": None,
 }
 runtime.__dict__.update(values)
+if has_saved_pairing(runtime.TRANSLATION_DB_PATH):
+    print("[MangaTranslator] 已检测到已保存配对，无需再次输入配对码。", flush=True)
+    print(
+        f"[MangaTranslator] 备用重新配对码（仅认证失效时使用）："
+        f"{runtime.TRANSLATION_PAIRING_CODE}",
+        flush=True,
+    )
+else:
+    print(f"[MangaTranslator] 首次配对码：{runtime.TRANSLATION_PAIRING_CODE}", flush=True)

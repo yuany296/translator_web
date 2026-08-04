@@ -1,4 +1,12 @@
 export function installGlossaryStorage(runtime) {
+  async function getServiceHeaders(json = false) {
+    const stored = await runtime.storageGet(["mt_local_service_auth_v1"]);
+    const token = String(stored.mt_local_service_auth_v1?.token || "");
+    return {
+      ...(json ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+  }
   function parseCsvGlossary(text) {
     const rows = runtime.parseCsvRows(String(text || "").replace(/^\uFEFF/, ""));
     if (rows.length === 0) {
@@ -9,6 +17,8 @@ export function installGlossaryStorage(runtime) {
     const sourceIndex = hasHeader ? header.indexOf("source") : 0;
     const targetIndex = hasHeader ? header.indexOf("target") : 1;
     const noteIndex = hasHeader ? header.indexOf("note") : 2;
+    const sourceLanguageIndex = hasHeader ? header.indexOf("source_language") : -1;
+    const targetLanguageIndex = hasHeader ? header.indexOf("target_language") : -1;
     const enabledIndex = hasHeader ? header.indexOf("enabled") : 3;
     const scopeIndex = hasHeader ? header.indexOf("scope") : -1;
     const scopeKeyIndex = hasHeader ? header.indexOf("scope_key") : -1;
@@ -17,6 +27,8 @@ export function installGlossaryStorage(runtime) {
       id: runtime.createTermId(),
       source: row[sourceIndex],
       target: row[targetIndex],
+      sourceLanguage: sourceLanguageIndex >= 0 ? row[sourceLanguageIndex] : "ko",
+      targetLanguage: targetLanguageIndex >= 0 ? row[targetLanguageIndex] : "zh-CN",
       note: noteIndex >= 0 ? row[noteIndex] : "",
       enabled: enabledIndex < 0 || !/^(false|0|no|否)$/i.test(String(row[enabledIndex] || "").trim()),
       scope: scopeIndex >= 0 ? row[scopeIndex] : "global",
@@ -68,9 +80,10 @@ export function installGlossaryStorage(runtime) {
   }
   runtime.exportGlossaryJson = exportGlossaryJson;
   function exportGlossaryCsv() {
-    const rows = [["source", "target", "note", "enabled", "scope", "scope_key", "scope_label"],
+    const rows = [["source", "target", "source_language", "target_language", "note", "enabled", "scope", "scope_key", "scope_label"],
       ...runtime.glossary.entries.map(entry => [
-        entry.source, entry.target, entry.note, String(entry.enabled),
+        entry.source, entry.target, entry.sourceLanguage, entry.targetLanguage,
+        entry.note, String(entry.enabled),
         entry.scope, entry.scopeKey, entry.scopeLabel
       ])];
     const csv = rows.map(row => row.map(runtime.escapeCsvCell).join(",")).join("\r\n");
@@ -83,7 +96,9 @@ export function installGlossaryStorage(runtime) {
     if (!confirm(`确定清空全部 ${runtime.glossary.entries.length} 条术语吗？此操作同时清空服务端数据库。`)) return;
     runtime.clearBtn.disabled = true;
     try {
-      const resp = await fetch(`${runtime.getServerBaseUrl()}/glossary/clear`, { method: "POST" });
+      const resp = await fetch(`${runtime.getServerBaseUrl()}/glossary/clear`, {
+        method: "POST", headers: await getServiceHeaders()
+      });
       if (!resp.ok) throw new Error(`服务器错误 ${resp.status}`);
       const data = await resp.json();
       if (!data.ok) throw new Error(data.error || "清空失败");
@@ -111,7 +126,9 @@ export function installGlossaryStorage(runtime) {
   };
   async function loadGlossaryFromServer() {
     try {
-      const resp = await fetch(`${serverBaseUrl}/glossary?limit=2000`);
+      const resp = await fetch(`${serverBaseUrl}/glossary?limit=2000`, {
+        headers: await getServiceHeaders()
+      });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       if (!data.ok || !Array.isArray(data.entries)) throw new Error("Invalid server response");
@@ -121,6 +138,8 @@ export function installGlossaryStorage(runtime) {
         updatedAt: Date.now(),
         entries: data.entries.map(e => ({
           id: e.id, source: e.source, target: e.target, note: e.note || "",
+          sourceLanguage: e.sourceLanguage || e.src_lng || "ko",
+          targetLanguage: e.targetLanguage || e.tgtLng || e.tgt_lng || "zh-CN",
           enabled: e.enabled !== false, scope: e.scope || e.scope_type,
           scopeKey: e.scopeKey || e.scope_key, scopeLabel: e.scopeLabel || e.scope_label
         }))
@@ -141,15 +160,18 @@ export function installGlossaryStorage(runtime) {
   async function saveEntryToServer(source, target, tgtLng, note, enabled, entryId, scope = {}) {
     try {
       const body = { source: source.trim(), target: target.trim(), tgt_lng: tgtLng || "zh-CN" };
+      const stored = await runtime.storageGet(["mt_translation_config_v1"]);
+      body.src_lng = stored.mt_translation_config_v1?.sourceLanguage === "auto"
+        ? "ko" : stored.mt_translation_config_v1?.sourceLanguage || "ko";
       if (note) body.note = note.trim();
       body.enabled = enabled !== false;
-      body.scope_type = scope.scope === "series" ? "series" : "global";
-      body.scope_key = body.scope_type === "series" ? String(scope.scopeKey || "") : "";
-      body.scope_label = body.scope_type === "series" ? String(scope.scopeLabel || "") : "";
+      body.scope_type = scope.scope === "work" ? "work" : "global";
+      body.scope_key = body.scope_type === "work" ? String(scope.scopeKey || "") : "";
+      body.scope_label = body.scope_type === "work" ? String(scope.scopeLabel || "") : "";
       if (entryId && !entryId.startsWith("term-new-")) body.id = entryId;
       const resp = await fetch(`${serverBaseUrl}/glossary`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: await getServiceHeaders(true),
         body: JSON.stringify(body)
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
@@ -158,7 +180,9 @@ export function installGlossaryStorage(runtime) {
       const savedEntry = data.entry || {};
       // Refresh local revision
       try {
-        const healthResp = await fetch(`${serverBaseUrl}/glossary/health`);
+        const healthResp = await fetch(`${serverBaseUrl}/glossary/health`, {
+          headers: await getServiceHeaders()
+        });
         const healthData = await healthResp.json();
         if (healthData.revision) runtime.setSyncRevision(Number(healthData.revision));
       } catch (_) {}
@@ -170,7 +194,9 @@ export function installGlossaryStorage(runtime) {
   runtime.saveEntryToServer = saveEntryToServer;
   async function deleteEntryFromServer(entryId) {
     try {
-      const resp = await fetch(`${serverBaseUrl}/glossary/${encodeURIComponent(entryId)}`, { method: "DELETE" });
+      const resp = await fetch(`${serverBaseUrl}/glossary/${encodeURIComponent(entryId)}`, {
+        method: "DELETE", headers: await getServiceHeaders()
+      });
       if (resp.status === 404) return { ok: true };
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       return { ok: true };
@@ -183,7 +209,9 @@ export function installGlossaryStorage(runtime) {
     try {
       const form = new FormData();
       form.append("file", file);
-      const resp = await fetch(`${serverBaseUrl}/glossary/import-db`, { method: "POST", body: form });
+      const resp = await fetch(`${serverBaseUrl}/glossary/import-db`, {
+        method: "POST", headers: await getServiceHeaders(), body: form
+      });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
       return data;
@@ -236,11 +264,12 @@ export function installGlossaryStorage(runtime) {
       try {
         const batchEntries = next.entries.map(e => ({
           source: e.source, target: e.target, note: e.note || "", enabled: e.enabled !== false,
+          src_lng: e.sourceLanguage, tgt_lng: e.targetLanguage,
           scope_type: e.scope, scope_key: e.scopeKey, scope_label: e.scopeLabel
         }));
         const resp = await fetch(`${runtime.getServerBaseUrl()}/glossary/batch`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: await getServiceHeaders(true),
           body: JSON.stringify({ entries: batchEntries, tgt_lng: "zh-CN" })
         });
         const data = await resp.json();

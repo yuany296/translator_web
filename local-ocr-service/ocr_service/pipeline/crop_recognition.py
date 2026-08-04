@@ -149,7 +149,11 @@ def count_target_script_chars(text: str, lang: str) -> int:
     raw = str(text or '')
     if lang == 'korean':
         return len([char for char in raw if '가' <= char <= '\ud7af'])
-    return len([char for char in raw if '\u3040' <= char <= 'ヿ' or '一' <= char <= '鿿'])
+    if lang == 'japan':
+        return len([char for char in raw if '\u3040' <= char <= 'ヿ' or '一' <= char <= '鿿'])
+    if lang == 'en':
+        return len([char for char in raw if char.isascii() and char.isalpha()])
+    return len([char for char in raw if '一' <= char <= '鿿'])
 
 runtime.count_target_script_chars = count_target_script_chars
 

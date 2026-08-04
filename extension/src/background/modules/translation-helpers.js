@@ -164,47 +164,8 @@ export function installTranslationHelpers(runtime) {
     return false;
   }
   runtime.shouldDropSymbolOnlyBubble = shouldDropSymbolOnlyBubble;
-  function shouldDropMeaninglessAlphabeticBubble(item) {
-    const original = String(item && item.original_text ? item.original_text : "").trim();
-    const translated = String(item && item.translated_text ? item.translated_text : "").trim();
-    if (!original) {
-      return false;
-    }
-    const originalCompact = original.replace(/\s+/g, "");
-    const translatedCompact = translated.replace(/\s+/g, "");
-    if (!runtime.isLatinOnlyFragment(originalCompact)) {
-      return false;
-    }
-    if (runtime.isMeaningfulLatinToken(originalCompact)) {
-      return false;
-    }
-    const lowerOriginal = originalCompact.toLowerCase();
-    const lowerTranslated = translatedCompact.toLowerCase();
-
-    // Very short alphabetic fragments are usually OCR noise.
-    if (lowerOriginal.length <= 2) {
-      return true;
-    }
-
-    // Repeated same letter (aaa/zzz) tends to be decorative noise.
-    if (/^(.)\1{2,}$/i.test(lowerOriginal)) {
-      return true;
-    }
-
-    // Common meaningless filler tokens.
-    if (/^(ah|oh|uh|hm|hmm|mm|ng|ha|haha|heh|eh|uhh|huh|zzz|lol|wow)$/i.test(lowerOriginal)) {
-      return true;
-    }
-
-    // If model effectively kept the same Latin text, treat short fragments as noise.
-    if (lowerTranslated === lowerOriginal && lowerOriginal.length <= 7) {
-      return true;
-    }
-
-    // Consonant-heavy short tokens are likely OCR artifacts.
-    if (lowerOriginal.length <= 6 && !/[aeiou]/i.test(lowerOriginal)) {
-      return true;
-    }
+  function shouldDropMeaninglessAlphabeticBubble() {
+    // 字母、拟声词和语气词即使很短也可能是有效漫画文本。
     return false;
   }
   runtime.shouldDropMeaninglessAlphabeticBubble = shouldDropMeaninglessAlphabeticBubble;
@@ -223,36 +184,8 @@ export function installTranslationHelpers(runtime) {
     if (runtime.isReliableShortSpeechBubbleItem(item)) {
       return false;
     }
-    const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);
-    const imageHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
-    const areaRatio = box.width * box.height / Math.max(1, imageWidth * imageHeight);
     const score = Number(item.confidence || 0);
-    const scriptChars = runtime.countScriptChars(text);
-    const meaningfulText = runtime.isMeaningfulOcrText(text);
-    const hangulChars = (text.match(/[\uac00-\ud7af]/g) || []).length;
-    const cjkChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-    const digitChars = (text.match(/\d/g) || []).length;
-    const compactText = text.replace(/[^\uac00-\ud7af\u3040-\u30ff\u4e00-\u9fffA-Za-z0-9]/g, "");
-    const verySmall = areaRatio < 0.0045 || box.width < imageWidth * 0.065 || box.height < imageHeight * 0.018;
-    if (/^\d+$/.test(text) && text.length <= 3) {
-      return true;
-    }
-    if (digitChars >= 1 && compactText.length <= 2 && areaRatio < 0.01) {
-      return true;
-    }
-    if (!meaningfulText && scriptChars <= 1 && areaRatio < 0.012) {
-      return true;
-    }
-    if (scriptChars <= 2 && verySmall && score < 0.96 && !runtime.isReliableMeaningfulShortOcrText(text)) {
-      return true;
-    }
-    if (hangulChars === 0 && cjkChars > 0 && text.length <= 4 && areaRatio < 0.02) {
-      return true;
-    }
-    if (hangulChars === 0 && scriptChars <= 3 && score < 0.82) {
-      return true;
-    }
-    return false;
+    return !runtime.isMeaningfulOcrText(text) || score > 0 && score < 0.4;
   }
   runtime.shouldDropLocalPaddleCandidateBubble = shouldDropLocalPaddleCandidateBubble;
   function getNormalizedCandidatePixelBox(item, imageSize) {

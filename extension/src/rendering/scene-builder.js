@@ -113,7 +113,10 @@ export function buildBubbleTextLayer(bubble, surface, options = {}) {
     bubbleRegion: bubbleRegion(bubble, surface),
     writingMode: resolveWritingMode(bubble)
   });
-  const text = String(bubble?.translated_text || "").trim();
+  const translatedText = String(bubble?.translated_text || "").trim();
+  const originalText = String(bubble?.original_text || bubble?.originalText || "").trim();
+  const text = options.displayMode === "bilingual" && originalText && originalText !== translatedText
+    ? `${originalText}\n${translatedText}` : translatedText;
   const layout = layoutInPlacement(text, placement, {
     measure: options.measure,
     minFontSize: options.minFontSize || 10,
@@ -136,7 +139,9 @@ export function buildBubbleTextLayer(bubble, surface, options = {}) {
   };
 }
 
-export function buildRenderSceneForBubbles({ id, surface, bubbles = [], measure, minFontSize }) {
+export function buildRenderSceneForBubbles({
+  id, surface, bubbles = [], measure, minFontSize, displayMode = "translated"
+}) {
   const layers = [];
   const activeFamilies = new Set();
   for (const [index, bubble] of bubbles.entries()) {
@@ -149,7 +154,7 @@ export function buildRenderSceneForBubbles({ id, surface, bubbles = [], measure,
     }
     if (activeFamilies.has(family)) continue;
     activeFamilies.add(family);
-    const textLayer = buildBubbleTextLayer(bubble, surface, { measure, minFontSize });
+    const textLayer = buildBubbleTextLayer(bubble, surface, { measure, minFontSize, displayMode });
     if (textLayer.type !== "text") {
       layers.push(textLayer);
       continue;

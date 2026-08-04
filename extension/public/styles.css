@@ -370,18 +370,18 @@
   right: 18px;
   bottom: 96px;
   z-index: 2147483600;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   pointer-events: none;
 }
 .mt-floating-ball-wrap.mt-floating-ball-pair {
-  width: 40px;
-  height: 88px;
+  width: 36px;
+  height: 80px;
   touch-action: none;
 }
 .mt-floating-ball-pair .mt-floating-text { top: 0; }
 .mt-floating-ball-pair .mt-floating-image {
-  top: 48px;
+  top: 44px;
   background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
   box-shadow: 0 8px 18px rgba(79, 70, 229, 0.34);
 }
@@ -391,12 +391,12 @@
   transition: none;
 }
 .mt-floating-ball-wrap[data-side="left"] .mt-floating-feedback {
-  left: 48px;
+  left: 44px;
   right: auto;
 }
 .mt-novel-progress-panel {
   position: absolute;
-  right: 48px;
+  right: 44px;
   bottom: 0;
   width: min(330px, calc(100vw - 96px));
   box-sizing: border-box;
@@ -410,7 +410,7 @@
   pointer-events: none;
 }
 .mt-floating-ball-wrap[data-side="left"] .mt-novel-progress-panel {
-  left: 48px;
+  left: 44px;
   right: auto;
 }
 .mt-floating-ball-wrap[data-progress-placement="below"] .mt-novel-progress-panel {
@@ -481,6 +481,13 @@
 .mt-floating-ball.mt-unavailable {
   opacity: 0.38;
 }
+.mt-floating-ball.mt-auto-enabled {
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  box-shadow: 0 6px 14px rgba(5, 150, 105, 0.38);
+}
+.mt-floating-ball.mt-auto-enabled:hover {
+  box-shadow: 0 8px 18px rgba(5, 150, 105, 0.46);
+}
 .mt-novel-source[hidden],
 .mt-novel-translation[hidden] {
   display: none !important;
@@ -492,6 +499,117 @@
   white-space: pre-wrap;
   font: inherit;
   color: inherit;
+}
+.mt-webpage-progress-panel {
+  position: absolute;
+  right: 44px;
+  bottom: 0;
+  width: min(360px, calc(100vw - 96px));
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  border-radius: 14px;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.97);
+  box-shadow: 0 16px 42px rgba(15, 23, 42, 0.38);
+  font: 500 13px/1.55 system-ui, sans-serif;
+  pointer-events: none;
+}
+.mt-floating-ball-wrap[data-side="left"] .mt-webpage-progress-panel { left: 44px; right: auto; }
+.mt-webpage-progress-panel[hidden] { display: none; }
+.mt-webpage-progress-panel strong { display: block; margin-bottom: 4px; color: #f8fafc; }
+.mt-webpage-progress-panel.mt-partial { border-color: rgba(251, 191, 36, 0.55); }
+.mt-webpage-progress-panel.mt-complete { border-color: rgba(74, 222, 128, 0.52); }
+.mt-webpage-bilingual-translation {
+  display: block;
+  margin: 0.35em 0 0.65em;
+  padding-left: 0.7em;
+  border-left: 2px solid rgba(99, 102, 241, 0.58);
+  color: inherit;
+  opacity: 0.9;
+  white-space: pre-wrap;
+}
+.mt-webpage-translation-tooltip {
+  position: fixed;
+  z-index: 2147483646;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.97);
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.42);
+  font: 500 13px/1.45 system-ui, sans-serif;
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+.mt-webpage-translation-tooltip[hidden] { display: none; }
+.mt-novel-revision-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 2147483644;
+  width: min(440px, 92vw);
+  height: 100vh;
+  box-sizing: border-box;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.985);
+  box-shadow: -12px 0 42px rgba(15, 23, 42, 0.42);
+  font: 500 13px/1.5 system-ui, sans-serif;
+}
+.mt-novel-revision-panel[hidden] { display: none; }
+.mt-novel-revision-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+}
+.mt-novel-revision-panel > header button,
+.mt-novel-revision-actions button,
+.mt-novel-version-list button {
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 8px;
+  padding: 5px 8px;
+  color: #e2e8f0;
+  background: rgba(51, 65, 85, 0.88);
+  cursor: pointer;
+}
+.mt-novel-revision-status { padding: 9px 16px; color: #93c5fd; }
+.mt-novel-revision-body { height: calc(100vh - 88px); overflow: auto; padding: 0 14px 20px; }
+.mt-novel-revision-card {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.72);
+}
+.mt-novel-revision-source { color: #94a3b8; white-space: pre-wrap; }
+.mt-novel-revision-card textarea { min-height: 82px; resize: vertical; }
+.mt-novel-revision-card textarea,
+.mt-novel-revision-card input {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  padding: 8px;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.72);
+}
+.mt-novel-revision-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.mt-novel-version-list > div { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+.mt-novel-version-list span { flex: 1; color: #94a3b8; font-size: 11px; }
+.mt-novel-version-status { justify-self: start; border-radius: 999px; padding: 2px 7px; background: #334155; }
+.mt-novel-version-status[data-status="pending"] { color: #fde68a; }
+.mt-novel-version-status[data-status="manual"] { color: #c4b5fd; }
+.mt-novel-version-status[data-status="pinned"] { color: #86efac; }
+.mt-novel-version-status[data-status="stale"] { color: #fdba74; }
+.mt-novel-source-bilingual {
+  display: block;
+  margin-bottom: 0.42em;
+  opacity: 0.72;
 }
 .mt-novel-image-panel {
   position: fixed; top: 84px; right: 78px; z-index: 2147483590;
@@ -527,7 +645,7 @@
 .mt-novel-image-result.mt-empty .mt-novel-image-result-text { color: #fde68a; }
 .mt-novel-image-panel-empty { padding: 16px 8px; color: #94a3b8; text-align: center; }
 .mt-floating-feedback {
-  position: absolute; right: 48px; bottom: 0; width: max-content; max-width: min(360px, calc(100vw - 96px));
+  position: absolute; right: 44px; bottom: 0; width: max-content; max-width: min(360px, calc(100vw - 96px));
   padding: 9px 12px; border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 10px;
   color: #fff; background: rgba(15, 23, 42, 0.96); box-shadow: 0 8px 24px rgba(15, 23, 42, 0.3);
   font: 500 13px/1.45 system-ui, sans-serif; text-align: left; overflow-wrap: anywhere; pointer-events: none;
@@ -542,15 +660,15 @@
   position: absolute;
   left: 0;
   top: 0;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border: 0;
   border-radius: 999px;
   z-index: 2147483600;
   color: #ffffff;
   font-weight: 700;
-  font-size: 15px;
-  line-height: 40px;
+  font-size: 13px;
+  line-height: 36px;
   text-align: center;
   cursor: pointer;
   user-select: none;
@@ -578,14 +696,14 @@
 
 .mt-floating-close {
   position: absolute;
-  right: -5px;
-  top: -5px;
-  width: 18px;
-  height: 18px;
+  right: -4px;
+  top: -4px;
+  width: 16px;
+  height: 16px;
   border: 0;
   border-radius: 999px;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 11px;
+  line-height: 16px;
   text-align: center;
   color: #ffffff;
   background: rgba(15, 23, 42, 0.85);
@@ -638,4 +756,152 @@
   to {
     opacity: 1;
   }
+}
+
+/* ============ 三球组（小说 / 漫画 / 网页） ============ */
+.mt-floating-ball-wrap.mt-floating-ball-group {
+  width: 36px;
+  height: 116px;
+  touch-action: none;
+}
+.mt-floating-ball-group .mt-floating-novel { top: 0; }
+.mt-floating-ball-group .mt-floating-comic { top: 40px; }
+.mt-floating-ball-group .mt-floating-webpage { top: 80px; }
+.mt-floating-ball-group .mt-floating-ball {
+  background: rgba(15, 23, 42, 0.78);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.3);
+  line-height: 1;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.mt-floating-ball-group .mt-floating-ball:hover {
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.42);
+}
+.mt-floating-ball-group.mt-dragging .mt-floating-ball {
+  cursor: grabbing;
+  transform: scale(1.02);
+  transition: none;
+}
+.mt-floating-ball .mt-floating-icon {
+  position: absolute;
+  inset: 5px;
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border: 0;
+  border-radius: 0;
+  pointer-events: none;
+  user-select: none;
+  filter: none !important;
+  transform: none !important;
+  mix-blend-mode: normal !important;
+}
+.mt-floating-ball .mt-floating-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: 999px;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.mt-floating-ball .mt-floating-ring[hidden] { display: none; }
+.mt-floating-ball.mt-status-working .mt-floating-ring,
+.mt-floating-ball.mt-status-loading .mt-floating-ring {
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #ffffff;
+  animation: mt-ring-spin 1s linear infinite;
+}
+.mt-floating-ball.mt-status-running .mt-floating-ring {
+  border: 2px solid rgba(74, 222, 128, 0.9);
+  animation: mt-ring-pulse 2.4s ease-in-out infinite;
+}
+.mt-floating-ball .mt-floating-badge {
+  position: absolute;
+  right: -3px;
+  top: -3px;
+  width: 15px;
+  height: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #1e88e5;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.mt-floating-ball .mt-floating-badge[hidden] { display: none; }
+.mt-floating-ball .mt-floating-badge[data-badge="check"] { background: #2e7d32; }
+.mt-floating-ball .mt-floating-badge[data-badge="cache"] { background: #1565c0; }
+.mt-floating-ball .mt-floating-badge[data-badge="partial"] { background: #ef6c00; }
+.mt-floating-ball .mt-floating-badge[data-badge="error"] { background: #c62828; }
+.mt-floating-ball .mt-floating-badge[data-badge="stop"] {
+  top: auto;
+  bottom: -3px;
+  background: #c62828;
+}
+.mt-floating-ball.mt-status-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  animation: none;
+}
+.mt-floating-ball.mt-status-running .mt-floating-icon {
+  opacity: 1;
+}
+.mt-floating-ball:focus-visible,
+.mt-floating-menu-item:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+.mt-floating-ball.mt-status-disabled:focus-visible {
+  outline-color: rgba(255, 255, 255, 0.55);
+}
+
+/* ============ 统一菜单 ============ */
+.mt-floating-menu {
+  position: fixed;
+  z-index: 2147483601;
+  min-width: 172px;
+  max-width: 280px;
+  padding: 4px;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  color: #e5e7eb;
+  background: rgba(17, 20, 28, 0.97);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  font: 400 13px/1.5 system-ui, "Microsoft YaHei", sans-serif;
+  pointer-events: auto;
+}
+.mt-floating-menu[hidden] { display: none; }
+.mt-floating-menu-item {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-floating-menu-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+.mt-floating-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@keyframes mt-ring-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes mt-ring-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }

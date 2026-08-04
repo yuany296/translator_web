@@ -1,3 +1,5 @@
+import languages from "../shared/languages.js";
+
 export const CONFIG_KEYS = Object.freeze({
   ocr: "mt_ocr_config_v1",
   translation: "mt_translation_config_v1",
@@ -28,7 +30,9 @@ export const DEFAULT_TRANSLATION_CONFIG = Object.freeze({
   provider: TRANSLATION_PROVIDERS.OPENAI_COMPATIBLE,
   apiKey: "",
   baseUrl: "https://api.deepseek.com",
-  model: "deepseek-chat"
+  model: "deepseek-chat",
+  sourceLanguage: "auto",
+  targetLanguage: "zh-CN"
 });
 
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
@@ -36,7 +40,8 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   pretranslateMode: "manual", ignoreSimplifiedChinese: false,
   overwriteFontScale: 1, overwriteCoverPadding: 1.2,
   debugOverlayMode: "final", overwritePreviewMode: "full", termDiscoveryEnabled: true,
-  floatingSide: "right", floatingYRatio: 0.72
+  floatingSide: "right", floatingYRatio: 0.72,
+  displayMode: "translated", webpageDisplayMode: "translated", novelDisplayMode: "translated"
 });
 
 const numberIn = (value, min, max, fallback) => {
@@ -60,7 +65,7 @@ export function normalizeOcrConfig(value = {}) {
     baidu: { apiKey: text(baidu.apiKey), secretKey: text(baidu.secretKey) },
     localPaddle: {
       baseUrl: httpUrl(local.baseUrl, DEFAULT_OCR_CONFIG.localPaddle.baseUrl),
-      lang: ["auto", "japan", "korean"].includes(local.lang) ? local.lang : "auto",
+      lang: ["auto", "japan", "korean", "en", "ch", "chinese_cht"].includes(local.lang) ? local.lang : "auto",
       mode: ["fast", "enhanced"].includes(local.mode) ? local.mode : "fast",
       debug: local.debug === true,
       detThresh: numberIn(local.detThresh, 0.01, 0.99, 0.3),
@@ -86,15 +91,22 @@ export function normalizeOcrConfig(value = {}) {
 }
 
 export function normalizeTranslationConfig(value = {}) {
+  const sourceLanguage = languages.normalizeSourceLanguage(value.sourceLanguage);
+  const targetLanguage = languages.normalizeTargetLanguage(value.targetLanguage);
   return {
     provider: TRANSLATION_PROVIDERS.OPENAI_COMPATIBLE,
     apiKey: text(value.apiKey),
     baseUrl: httpUrl(value.baseUrl, DEFAULT_TRANSLATION_CONFIG.baseUrl),
-    model: text(value.model, DEFAULT_TRANSLATION_CONFIG.model)
+    model: text(value.model, DEFAULT_TRANSLATION_CONFIG.model),
+    sourceLanguage,
+    targetLanguage
   };
 }
 
 export function normalizeRuntimeConfig(value = {}) {
+  const legacyBilingual = value.webpageDisplayMode === "bilingual" || value.novelDisplayMode === "bilingual";
+  const displayMode = value.displayMode === "bilingual" || value.displayMode === undefined && legacyBilingual
+    ? "bilingual" : "translated";
   return {
     enabled: value.enabled !== false,
     showBall: value.showBall !== false,
@@ -108,6 +120,10 @@ export function normalizeRuntimeConfig(value = {}) {
     overwritePreviewMode: ["full", "cover", "text"].includes(value.overwritePreviewMode) ? value.overwritePreviewMode : "full",
     termDiscoveryEnabled: value.termDiscoveryEnabled !== false,
     floatingSide: value.floatingSide === "left" ? "left" : "right",
-    floatingYRatio: numberIn(value.floatingYRatio, 0, 1, DEFAULT_RUNTIME_CONFIG.floatingYRatio)
+    floatingYRatio: numberIn(value.floatingYRatio, 0, 1, DEFAULT_RUNTIME_CONFIG.floatingYRatio),
+    displayMode,
+    // 旧字段继续镜像统一值，保证升级期间的旧内容脚本不会读到冲突配置。
+    webpageDisplayMode: displayMode,
+    novelDisplayMode: displayMode
   };
 }

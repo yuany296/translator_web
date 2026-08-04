@@ -8,9 +8,9 @@ export function installMessages(runtime) {
       case "OCR_DATA_URL":
         return runtime.handleOcrDataUrl(message);
       case "TRANSLATE_TEXT_BLOCKS":
-        return runtime.handleTranslateTextBlocks(message);
+        return runtime.handleTranslateTextBlocks(message, sender);
       case "TRANSLATE_NOVEL_CHUNK":
-        return runtime.handleTranslateNovelChunk(message);
+        return runtime.handleTranslateNovelChunk(message, sender);
       case "GET_NOVEL_MEMORY":
         return runtime.handleGetNovelMemory(message);
       case "SAVE_NOVEL_MEMORY":
@@ -21,6 +21,26 @@ export function installMessages(runtime) {
         return runtime.handleGetCacheStats();
       case "CLEAR_CACHE":
         return runtime.handleClearCache();
+      case "GET_TRANSLATION_CACHE":
+      case "GET_TRANSLATION_CACHE_BATCH":
+      case "GET_TRANSLATION_CACHE_BY_HASH":
+      case "GET_TRANSLATION_CACHE_BY_TRANSLATION_KEY":
+      case "GET_WEBPAGE_TRANSLATION_CACHE_FALLBACKS":
+      case "SAVE_TRANSLATION_CACHE":
+      case "SAVE_TRANSLATION_CACHE_BATCH":
+      case "DELETE_TRANSLATION_CACHE":
+      case "CLEAR_TRANSLATION_CACHE_MODE":
+        return runtime.handleTranslationCacheMessage(message);
+      case "GET_TRANSLATION_CONFIG_FINGERPRINT":
+        return runtime.getTranslationConfigFingerprint(message && message.mode).then(fingerprint => ({ ok: true, fingerprint }));
+      case "CANCEL_TRANSLATION_TASK":
+        return runtime.handleCancelTranslationTask(message);
+      case "GET_WEBPAGE_TAB_STATE":
+        return runtime.handleGetWebpageTabState(message, sender);
+      case "SET_WEBPAGE_TAB_STATE":
+        return runtime.handleSetWebpageTabState(message, sender);
+      case "CLEAR_WEBPAGE_TAB_STATE":
+        return runtime.handleClearWebpageTabState(message, sender);
       case "REPORT_STATUS":
         return runtime.handleReportStatus(message, sender);
       case "GET_TAB_STATUS":
@@ -214,6 +234,7 @@ export function installMessages(runtime) {
   runtime.handleSetTermDiscoveryEnabled = handleSetTermDiscoveryEnabled;
   async function handleConfirmTermCandidates(message) {
     return runtime.enqueueTermDiscoveryMutation(async () => {
+      const configuration = await runtime.loadConfiguration();
       const requestedEntries = (Array.isArray(message.entries) ? message.entries : []).map(entry => ({
         source: runtime.termDiscoveryCore.normalizeSource(entry && entry.source),
         candidateSource: runtime.termDiscoveryCore.normalizeSource(entry && (entry.candidateSource || entry.source)),
@@ -235,19 +256,26 @@ export function installMessages(runtime) {
         stored[runtime.STORAGE_KEYS.glossary] ?? stored[runtime.STORAGE_KEYS.glossaryLegacy]
       );
       const entries = [...glossary.entries];
+      const targetLanguage = configuration.translation.targetLanguage;
       const indexBySource = new Map(entries.flatMap((entry, index) =>
-        entry.scope === "global"
-          ? [[runtime.termDiscoveryCore.getSourceKey(entry.source), index]]
+        entry.scope === "global" && entry.targetLanguage === targetLanguage
+          ? [[`${entry.sourceLanguage}>${entry.targetLanguage}:${runtime.termDiscoveryCore.getSourceKey(entry.source)}`, index]]
           : []
       ));
       const confirmedSources = [];
       const pendingSourcesToRemove = [];
       for (const requested of requestedEntries) {
-        const sourceKey = runtime.termDiscoveryCore.getSourceKey(requested.source);
+        const resolvedSource = runtime.languages.resolveSourceLanguage(
+          configuration.translation.sourceLanguage, requested.source
+        );
+        const sourceLanguage = resolvedSource === "auto" ? "ko" : resolvedSource;
+        const sourceKey = `${sourceLanguage}>${targetLanguage}:${runtime.termDiscoveryCore.getSourceKey(requested.source)}`;
         const entry = runtime.glossaryCore.normalizeGlossaryEntry({
           id: `term-auto-${runtime.hashString(`${requested.source}\u0000${Date.now()}\u0000${confirmedSources.length}`)}`,
           source: requested.source,
           target: requested.target,
+          sourceLanguage,
+          targetLanguage,
           note: requested.note,
           enabled: true
         });
@@ -293,12 +321,17 @@ export function installMessages(runtime) {
         const serverUrl = await runtime.isGlossaryServerMode();
         if (serverUrl) {
           for (const entry of requestedEntries) {
+            const resolvedSource = runtime.languages.resolveSourceLanguage(
+              configuration.translation.sourceLanguage, entry.source
+            );
             await runtime.callGlossaryApi(serverUrl, "/glossary", {
               method: "PUT",
               body: JSON.stringify({
                 source: entry.source,
                 target: entry.target,
-                note: entry.note
+                note: entry.note,
+                src_lng: resolvedSource === "auto" ? "ko" : resolvedSource,
+                tgt_lng: targetLanguage
               })
             }).catch(() => {});
           }

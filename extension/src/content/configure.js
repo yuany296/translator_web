@@ -1,4 +1,7 @@
-import { CONFIG_KEYS, normalizeOcrConfig, normalizeRuntimeConfig } from "../config/schema.js";
+import {
+  CONFIG_KEYS, normalizeOcrConfig, normalizeRuntimeConfig, normalizeTranslationConfig
+} from "../config/schema.js";
+import languages from "../shared/languages.js";
 import { detectReaderProfile } from "../readers/profile.js";
 import { applyDomTextLayer, renderDomScene } from "../rendering/dom-renderer.js";
 import { renderEmbeddedScene } from "../rendering/embedded-renderer.js";
@@ -35,7 +38,8 @@ function buildProjectionScenes(runtime, input) {
       return projection.active !== false && role !== "standby" && role !== "text_standby";
     }).map(runtime.projectionToRendererBubble);
     scenes.set(pageId, buildRenderSceneForBubbles({
-      id: `page:${pageId}`, surface, bubbles, measure: sceneMeasure(runtime)
+      id: `page:${pageId}`, surface, bubbles, measure: sceneMeasure(runtime),
+      displayMode: runtime.state.displayMode
     }));
   }
   return scenes;
@@ -49,10 +53,11 @@ export function prepareContentRuntime(runtime) {
     target && runtime.isSupportedTarget(target)
   );
   runtime.buildRenderSceneForBubbles = (input) => buildRenderSceneForBubbles({
-    ...input, measure: input.measure || sceneMeasure(runtime)
+    ...input, measure: input.measure || sceneMeasure(runtime),
+    displayMode: input.displayMode || runtime.state.displayMode
   });
   runtime.buildBubbleTextLayer = (bubble, surface) => buildBubbleTextLayer(bubble, surface, {
-    measure: sceneMeasure(runtime)
+    measure: sceneMeasure(runtime), displayMode: runtime.state.displayMode
   });
   runtime.renderDomScene = renderDomScene;
   runtime.renderEmbeddedScene = renderEmbeddedScene;
@@ -65,9 +70,10 @@ export function prepareContentRuntime(runtime) {
   };
 
   runtime.loadLocalSettings = async () => {
-    const stored = await runtime.storageGet([CONFIG_KEYS.runtime, CONFIG_KEYS.ocr]);
+    const stored = await runtime.storageGet([CONFIG_KEYS.runtime, CONFIG_KEYS.ocr, CONFIG_KEYS.translation]);
     const config = normalizeRuntimeConfig(stored[CONFIG_KEYS.runtime]);
     const ocr = normalizeOcrConfig(stored[CONFIG_KEYS.ocr]);
+    const translation = normalizeTranslationConfig(stored[CONFIG_KEYS.translation]);
     runtime.state.enabled = config.enabled;
     runtime.state.showFloatingBall = config.showBall;
     runtime.state.captureMode = config.captureMode;
@@ -75,9 +81,20 @@ export function prepareContentRuntime(runtime) {
     runtime.state.pretranslateMode = config.pretranslateMode;
     runtime.state.floatingSide = config.floatingSide;
     runtime.state.floatingYRatio = config.floatingYRatio;
+    runtime.state.displayMode = config.displayMode;
+    runtime.state.webpageDisplayMode = config.displayMode;
+    runtime.state.novelDisplayMode = config.displayMode;
+    runtime.state.sourceLanguage = translation.sourceLanguage;
+    runtime.state.targetLanguage = translation.targetLanguage;
+    runtime.state.ocrLanguage = languages.translationLanguageToOcrLanguage(translation.sourceLanguage);
     runtime.ENABLE_PIPELINE_TRACE = ocr.localPaddle.debug === true;
-    return config;
+    return { ...config, translation };
   };
+  runtime.getConfiguredSourceLanguage = () => runtime.state.sourceLanguage || "auto";
+  runtime.getTargetLanguage = () => runtime.state.targetLanguage || "zh-CN";
+  runtime.resolveSourceLanguage = (value, recognized = "") => languages.resolveSourceLanguage(
+    runtime.getConfiguredSourceLanguage(), value, recognized
+  );
   runtime.updateRuntimeConfiguration = async (patch) => {
     const stored = await runtime.storageGet([CONFIG_KEYS.runtime]);
     const current = normalizeRuntimeConfig(stored[CONFIG_KEYS.runtime]);
@@ -89,21 +106,57 @@ export function prepareContentRuntime(runtime) {
     if (areaName !== "local") return;
     const runtimeChange = changes[CONFIG_KEYS.runtime];
     const ocrChange = changes[CONFIG_KEYS.ocr];
-    if (!runtimeChange && !ocrChange) return;
+    const translationChange = changes[CONFIG_KEYS.translation];
+    if (!runtimeChange && !ocrChange && !translationChange) return;
     if (ocrChange) {
-      runtime.ENABLE_PIPELINE_TRACE = normalizeOcrConfig(ocrChange.newValue).localPaddle.debug === true;
+      const ocr = normalizeOcrConfig(ocrChange.newValue);
+      runtime.ENABLE_PIPELINE_TRACE = ocr.localPaddle.debug === true;
       if (!runtime.ENABLE_PIPELINE_TRACE) globalThis.__MT_PIPELINE_TRACE__ = [];
     }
-    if (!runtimeChange) return;
+    if (translationChange) {
+      const translation = normalizeTranslationConfig(translationChange.newValue);
+      const languageChanged = translation.sourceLanguage !== runtime.state.sourceLanguage
+        || translation.targetLanguage !== runtime.state.targetLanguage;
+      runtime.state.sourceLanguage = translation.sourceLanguage;
+      runtime.state.targetLanguage = translation.targetLanguage;
+      runtime.state.ocrLanguage = languages.translationLanguageToOcrLanguage(translation.sourceLanguage);
+      if (languageChanged) {
+        runtime.restoreWebpageTranslation?.();
+        runtime.restoreAllNovelText?.();
+        runtime.clearAllRenderedTargets?.();
+        const novel = runtime.getNovelState?.();
+        if (novel?.taskId) {
+          runtime.cancelNovelTranslationStream?.(novel.taskId);
+          void runtime.sendRuntimeMessage({ type: "CANCEL_TRANSLATION_TASK", taskId: novel.taskId }).catch(() => {});
+          novel.taskId = "";
+          novel.textStatus = "idle";
+          novel.translations.clear();
+        }
+        const webpage = runtime.getWebpageState?.();
+        if (webpage) {
+          webpage.cacheCheckedKey = "";
+          webpage.pageKey = runtime.normalizeTranslationCacheUrl();
+        }
+        void runtime.analyzeWebpageCacheStatus?.();
+      }
+    }
+    if (!runtimeChange) {
+      runtime.updateFloatingBallState?.();
+      return;
+    }
     const config = normalizeRuntimeConfig(runtimeChange.newValue);
     const captureChanged = config.captureMode !== runtime.state.captureMode;
     const renderChanged = config.renderMode !== runtime.state.renderMode;
+    const displayChanged = config.displayMode !== runtime.state.displayMode;
     Object.assign(runtime.state, { enabled: config.enabled, showFloatingBall: config.showBall,
       captureMode: config.captureMode, renderMode: config.renderMode,
       pretranslateMode: config.pretranslateMode, floatingSide: config.floatingSide,
-      floatingYRatio: config.floatingYRatio });
+      floatingYRatio: config.floatingYRatio, displayMode: config.displayMode,
+      webpageDisplayMode: config.displayMode, novelDisplayMode: config.displayMode });
+    runtime.refreshWebpageDisplayMode?.();
+    runtime.setNovelTranslationVisibility?.(runtime.getNovelState?.().showTranslation !== false);
     if (captureChanged) runtime.state.payloadCacheByTargetKey.clear();
-    if (captureChanged || renderChanged) runtime.clearAllRenderedTargets();
+    if (captureChanged || renderChanged || displayChanged) runtime.clearAllRenderedTargets();
     if (!config.enabled) runtime.state.autoTranslatePageEnabled = false;
     runtime.ensureExtensionUiMounted();
     if (config.enabled) {

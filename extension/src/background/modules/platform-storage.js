@@ -78,6 +78,15 @@ export function installPlatformStorage(runtime) {
     const controller = new AbortController();
     let timeoutId = 0;
     let timedOut = false;
+    const externalSignal = options.signal;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      }
+    }
     const timeout = new Promise((_resolve, reject) => {
       timeoutId = setTimeout(() => {
         timedOut = true;
@@ -86,8 +95,10 @@ export function installPlatformStorage(runtime) {
       }, timeoutMs);
     });
     const request = (async () => {
+      const requestInit = runtime.isLocalServiceEndpoint?.(endpoint)
+        ? await runtime.withLocalServiceAuth(init || {}) : (init || {});
       const response = await fetch(endpoint, {
-        ...(init || {}),
+        ...requestInit,
         signal: controller.signal
       });
       let payload = null;
@@ -113,6 +124,9 @@ export function installPlatformStorage(runtime) {
       throw error;
     } finally {
       clearTimeout(timeoutId);
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
     }
   }
   runtime.fetchJsonWithTimeout = fetchJsonWithTimeout;
@@ -140,6 +154,15 @@ export function installPlatformStorage(runtime) {
     });
   }
   runtime.storageSet = storageSet;
+
+  runtime.isLocalServiceEndpoint = endpoint => {
+    try {
+      const url = new URL(String(endpoint || ""));
+      return ["127.0.0.1", "localhost"].includes(url.hostname) && url.port === "8765";
+    } catch {
+      return false;
+    }
+  };
   function storageRemove(keys) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.remove(keys, () => {

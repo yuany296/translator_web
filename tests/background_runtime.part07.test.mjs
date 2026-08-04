@@ -390,7 +390,7 @@ test("conflicting lower-confidence OCR read is removed but a real adjacent row r
   assert.doesNotMatch(text, /벗었는/);
   assert.match(text, /치킨타임/);
 });
-test("isolated Latin marks stay in raw debug data but never become a translated overlay", async () => {
+test("isolated Latin text remains translatable instead of being treated as short decorative noise", async () => {
   const ocrDebug = {};
   const payloadItems = [{
     text: "치킨은",
@@ -430,7 +430,7 @@ test("isolated Latin marks stay in raw debug data but never become a translated 
     height: 900
   }, "", false, null, undefined, ocrDebug);
   assert.equal(ocrDebug.rawItems.some(item => item.text === "TOTN"), true);
-  assert.equal(result.some(item => /TOTN/.test(item.words)), false);
+  assert.equal(result.some(item => /TOTN/.test(item.words)), true);
   assert.equal(result.some(item => /치킨은/.test(item.words)), true);
 });
 test("Korean relative time splits nickname, time and body without overlapping roles", async () => {
@@ -548,7 +548,7 @@ test("strongly slanted equal-size rows group by their text axes instead of AABB 
   assert.equal(result[0].words, "첫 번째 긴 문장입니다\n두 번째 줄\n세 번째 문장도 이어집니다");
   assert.ok(Math.abs(result[0].rotation_deg + 14) < 0.1);
 });
-test("comment footer glyphs cannot enlarge or contaminate a body cluster", async () => {
+test("short footer text remains translatable and a separate region stays independent", async () => {
   const panel = {
     region_id: "large-white-card",
     region_type: "speech_bubble",
@@ -581,9 +581,10 @@ test("comment footer glyphs cannot enlarge or contaminate a body cluster", async
       })
     ]
   }, { width: 919, height: 568 }, "", false);
-  assert.equal(result.length, 1, JSON.stringify(result.map(row => row.words)));
-  assert.equal(result[0].words, "벌써 3시간이 넘어가고 있다\n치킨은 시킨거니\n애들 왜 이렇게 팬사랑이 넘쳐");
-  assert.ok(result[0].location.top + result[0].location.height < 400, JSON.stringify(result[0].location));
+  assert.equal(result.length, 2, JSON.stringify(result.map(row => row.words)));
+  const body = result.find(row => row.words !== "1");
+  assert.equal(body.words, "벌써 3시간이 넘어가고 있다\n치킨은 시킨거니\n애들 왜 이렇게 팬사랑이 넘쳐\n그");
+  assert.equal(result.some(row => row.words === "1"), true);
 });
 test("reliable solid speech regions keep cleanup on the final blue text box", async () => {
   const result = await context.__backgroundTest.buildLocalPaddleBubbleItems({

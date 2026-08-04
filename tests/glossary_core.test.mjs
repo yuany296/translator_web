@@ -18,7 +18,9 @@ test("glossary normalization rejects invalid and duplicate source terms", () => 
   });
 
   assert.equal(normalized.revision, 4);
-  assert.deepEqual(JSON.parse(JSON.stringify(normalized.entries)), [
+  assert.deepEqual(JSON.parse(JSON.stringify(normalized.entries.map(
+    ({ sourceLanguage, targetLanguage, workId, ...entry }) => entry
+  ))), [
     { id: "first", source: "성현", target: "成贤", note: "角色名", enabled: true,
       scope: "global", scopeKey: "", scopeLabel: "" },
     { id: "disabled", source: "왕국", target: "王国", note: "", enabled: false,
@@ -81,20 +83,20 @@ test("effective glossary changes produce a different fingerprint", () => {
   assert.equal(glossary.buildPrompt(disabled, [{ original_text: "성현" }]), "");
 });
 
-test("extension exposes the glossary page and removes direct vision providers", () => {
+test("extension exposes the management center and removes direct vision providers", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension", "public", "manifest.json"), "utf8"));
-  const popup = fs.readFileSync(path.join(root, "extension", "public", "popup.html"), "utf8");
-  const popupScript = fs.readFileSync(path.join(root, "extension", "src", "popup", "controller.js"), "utf8");
+  const settings = fs.readFileSync(path.join(root, "extension", "public", "settings.html"), "utf8");
+  const settingsScript = fs.readFileSync(path.join(root, "extension", "src", "settings", "controller.js"), "utf8");
 
-  assert.equal(manifest.options_ui.page, "glossary.html");
+  assert.equal(manifest.options_ui.page, "settings.html");
   assert.ok(!manifest.host_permissions.includes("https://api.anthropic.com/*"));
-  assert.match(popup, /value="baidu"/);
-  assert.match(popup, /value="local_paddle"/);
-  assert.doesNotMatch(popup, /baidu_deepseek|local_paddle_deepseek|value="anthropic"/);
-  assert.doesNotMatch(popupScript, /baidu_deepseek|local_paddle_deepseek|anthropic/);
+  assert.match(settings, /value="baidu"/);
+  assert.match(settings, /value="local_paddle"/);
+  assert.doesNotMatch(settings, /baidu_deepseek|local_paddle_deepseek|value="anthropic"/);
+  assert.doesNotMatch(settingsScript, /baidu_deepseek|local_paddle_deepseek|anthropic/);
 });
 
-test("glossary and popup expose pending-term confirmation controls", () => {
+test("management center exposes glossary and pending-term confirmation controls", () => {
   const glossaryPage = fs.readFileSync(path.join(root, "extension", "public", "glossary.html"), "utf8");
   const glossarySource = path.join(root, "extension", "src", "glossary");
   const glossaryScript = [
@@ -103,7 +105,7 @@ test("glossary and popup expose pending-term confirmation controls", () => {
       .filter((name) => name.endsWith(".js"))
       .map((name) => fs.readFileSync(path.join(glossarySource, "modules", name), "utf8"))
   ].join("\n");
-  const popup = fs.readFileSync(path.join(root, "extension", "public", "popup.html"), "utf8");
+  const settings = fs.readFileSync(path.join(root, "extension", "public", "settings.html"), "utf8");
 
   assert.match(glossaryPage, /id="pendingTabBtn"/);
   assert.match(glossaryPage, /id="confirmFilledBtn"/);
@@ -112,6 +114,7 @@ test("glossary and popup expose pending-term confirmation controls", () => {
   assert.match(glossaryScript, /RESTORE_IGNORED_TERM/);
   assert.match(glossaryScript, /candidate-source-input/);
   assert.match(glossaryScript, /candidateSource/);
-  assert.match(popup, /id="glossaryBtn"/);
-  assert.match(popup, /id="termDiscoveryEnabled"/);
+  assert.match(settings, /data-route="glossary"/);
+  assert.match(settings, /id="glossaryFrame"/);
+  assert.match(settings, /id="termDiscoveryEnabled"/);
 });

@@ -141,26 +141,7 @@ export function installOcrRegions(runtime) {
     if (!box || !text || !debug && runtime.shouldDropLocalPaddleNoiseItem(item, imageSize)) {
       return null;
     }
-    const areaRatio = box.width * box.height / Math.max(1, (Number(imageSize && imageSize.width) || 1) * (Number(imageSize && imageSize.height) || 1));
-    if (!debug && /^[xX×]+$/.test(text) && areaRatio < 0.02) {
-      return {
-        item,
-        index,
-        box,
-        text,
-        kind: "noise"
-      };
-    }
-    if (!debug && /^[A-Za-z]$/.test(text) && !runtime.isMeaningfulLatinToken(text)) {
-      return {
-        item,
-        index,
-        box,
-        text,
-        kind: "noise"
-      };
-    }
-    if (!debug && runtime.countScriptChars(text) === 0 && !/[0-9A-Za-z]/.test(text)) {
+    if (!debug && runtime.isSymbolOnlyText(text)) {
       return {
         item,
         index,

@@ -204,7 +204,10 @@ export function installRendererEmbed(runtime) {
   function drawEmbeddedBubbles(ctx, canvasWidth, canvasHeight, bubbles, options = {}) {
     const textOptions = options && typeof options === "object" ? options : {};
     bubbles.forEach(bubble => {
-      const rawText = runtime.cleanRenderableText(bubble.translated_text || bubble.original_text || "");
+      const translatedText = runtime.cleanRenderableText(bubble.translated_text || bubble.original_text || "");
+      const originalText = runtime.cleanRenderableText(bubble.original_text || "");
+      const rawText = runtime.state.displayMode === "bilingual" && originalText
+        && originalText !== translatedText ? `${originalText}\n${translatedText}` : translatedText;
       const text = runtime.formatTranslationForOriginalLines(
         rawText,
         Number(bubble.source_line_count) || 1

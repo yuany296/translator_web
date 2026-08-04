@@ -74,11 +74,9 @@ export function installOcrCandidates(runtime) {
     const areaRatio = area / Math.max(1, imageWidth * imageHeight);
     const confidence = Number(item.confidence || item.score || 0);
     const aspectRatio = Math.max(box.width / Math.max(1, box.height), box.height / Math.max(1, box.width));
-    const scriptChars = runtime.countScriptChars(text);
     const reliableShortSpeechBubble = runtime.isReliableShortSpeechBubbleItem(item);
     if (!reliableShortSpeechBubble && confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
-      const stronglyUncertainMeaningfulText = runtime.isReliableMeaningfulShortOcrText(text) && confidence < 0.45;
-      if (!meaningfulText || stronglyUncertainMeaningfulText || areaRatio < 0.0012) {
+      if (!meaningfulText || confidence < 0.4 || areaRatio < 0.0012) {
         return "low-confidence";
       }
     }
@@ -94,9 +92,6 @@ export function installOcrCandidates(runtime) {
     const maxAspectRatio = Number(tuning.maxAspectRatio || 100);
     if (aspectRatio > maxAspectRatio && !runtime.isReadableHorizontalOcrLine(item, box, text, maxAspectRatio)) {
       return "bad-aspect-ratio";
-    }
-    if (!reliableShortSpeechBubble && !runtime.isReliableMeaningfulShortOcrText(text) && scriptChars <= 1 && areaRatio < 0.003 && confidence < 0.98) {
-      return "tiny-single-character";
     }
     if (!reliableShortSpeechBubble && !meaningfulText && runtime.shouldDropLowConfidenceLocalPaddleText(text, confidence)) {
       return "weak-script-confidence";
@@ -130,11 +125,9 @@ export function installOcrCandidates(runtime) {
     const reliableShortSpeechBubble = runtime.isReliableShortSpeechBubbleItem(item);
     if (!reliableShortSpeechBubble && confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
       const text = String(item.original_text || "");
-      const scriptChars = runtime.countScriptChars(text);
       const meaningfulText = runtime.isMeaningfulOcrText(text);
       const areaRatio = box.width * box.height / Math.max(1, (Number(imageSize && imageSize.width) || 1) * (Number(imageSize && imageSize.height) || 1));
-      const stronglyUncertainMeaningfulText = runtime.isReliableMeaningfulShortOcrText(text) && confidence < 0.45;
-      if (!meaningfulText || stronglyUncertainMeaningfulText || areaRatio < 0.0012) {
+      if (!meaningfulText || confidence < 0.4 || areaRatio < 0.0012) {
         return "low-confidence-final";
       }
     }

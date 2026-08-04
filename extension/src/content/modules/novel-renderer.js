@@ -26,12 +26,18 @@ export function installNovelRenderer(runtime) {
     if (!node || !String(translatedText || "").trim()) return false;
     const { source, translation } = ensureNovelWrappers(node);
     translation.textContent = String(translatedText).trim();
-    source.hidden = showTranslation;
-    translation.hidden = !showTranslation;
+    applyVisibility(source, translation, showTranslation);
     node.dataset.mtNovelTranslated = "true";
     return true;
   }
   runtime.renderNovelTranslation = renderNovelTranslation;
+
+  function applyVisibility(source, translation, showTranslation) {
+    const bilingual = runtime.state.displayMode === "bilingual";
+    source.hidden = showTranslation && !bilingual;
+    translation.hidden = !showTranslation;
+    source.classList.toggle("mt-novel-source-bilingual", showTranslation && bilingual);
+  }
 
   function setNovelTranslationVisibility(showTranslation) {
     const surface = runtime.getNovelState().surface || runtime.findKakaoNovelSurface();
@@ -40,8 +46,7 @@ export function installNovelRenderer(runtime) {
       const source = node.querySelector(":scope > .mt-novel-source");
       const translation = node.querySelector(":scope > .mt-novel-translation");
       if (!source || !translation) return;
-      source.hidden = showTranslation;
-      translation.hidden = !showTranslation;
+      applyVisibility(source, translation, showTranslation);
     });
     runtime.getNovelState().showTranslation = showTranslation;
   }

@@ -10,7 +10,8 @@ const steps = [
   ["Python lint", node, [
     "scripts/run-python-tool.mjs", "-m", "pylint", "--rcfile=.pylintrc",
     "local-ocr-service/server.py", "local-ocr-service/glossary_db.py",
-    "local-ocr-service/glossary_store", "local-ocr-service/ocr_service",
+    "local-ocr-service/glossary_store", "local-ocr-service/translation_store",
+    "local-ocr-service/ocr_service",
     "local-ocr-service/term_extractor.py",
   ]],
   ["扩展构建", node, ["scripts/build-extension.mjs"]],

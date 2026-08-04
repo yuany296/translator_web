@@ -1,6 +1,6 @@
 import glossaryCore from "./glossary.js";
 
-const CHUNK_TARGET_CHARS = 2400;
+const CHUNK_TARGET_CHARS = 700;
 const MAX_PARAGRAPH_CHARS = 12000;
 
 function parseKakaoNovelLocation(url, title = "") {
@@ -49,7 +49,7 @@ function buildChunks(items, targetChars = CHUNK_TARGET_CHARS) {
   return chunks;
 }
 
-function validateTranslations(items, rows, glossaryEntries = []) {
+function validateTranslations(items, rows, glossaryEntries = [], languages = {}) {
   const expected = new Map((Array.isArray(items) ? items : []).map(item => [String(item.id), item]));
   const accepted = [];
   const glossaryFallbacks = [];
@@ -60,9 +60,22 @@ function validateTranslations(items, rows, glossaryEntries = []) {
     const translatedText = String(row && row.translated_text || "").trim();
     if (!expected.has(id) || !translatedText || seen.has(id)) continue;
     const original = String(expected.get(id).original_text || "");
-    const hangulCount = (translatedText.match(/[\uac00-\ud7af]/gu) || []).length;
-    const hanCount = (translatedText.match(/[\u3400-\u9fff]/gu) || []).length;
-    if (/[\uac00-\ud7af]/u.test(original) && hangulCount >= 4 && hangulCount > hanCount) {
+    const configuredSource = String(languages.sourceLanguage || "auto");
+    const sourceLanguage = configuredSource !== "auto" ? configuredSource
+      : /[\uac00-\ud7af]/u.test(original) ? "ko"
+        : /[\u3040-\u30ff]/u.test(original) ? "ja"
+          : /[a-z]/iu.test(original) ? "en" : "auto";
+    const targetLanguage = String(languages.targetLanguage || "zh-CN");
+    const sourceScript = sourceLanguage === "ko" ? /[\uac00-\ud7af]/gu
+      : sourceLanguage === "ja" ? /[\u3040-\u30ff]/gu : null;
+    const targetScript = targetLanguage === "ko" ? /[\uac00-\ud7af]/gu
+      : targetLanguage === "ja" ? /[\u3040-\u30ff]/gu
+        : targetLanguage.startsWith("zh") ? /[\u3400-\u9fff]/gu : /[a-z]/giu;
+    const sourceCount = sourceScript ? (translatedText.match(sourceScript) || []).length : 0;
+    const originalSourceCount = sourceScript ? (original.match(sourceScript) || []).length : 0;
+    const targetCount = (translatedText.match(targetScript) || []).length;
+    if (sourceScript && sourceLanguage !== targetLanguage && originalSourceCount > 0
+      && sourceCount >= 4 && sourceCount > targetCount) {
       errors.push({ id, code: "source_language_leak" });
       continue;
     }

@@ -72,18 +72,28 @@ export function installControlsUi(runtime) {
     runtime.updateFloatingBallState();
   }
   runtime.ensureExtensionUiMounted = ensureExtensionUiMounted;
+  function getOverlayLayerVisibility() {
+    const layer = runtime.state.overlayLayer;
+    return !layer || !(runtime.state.overlayHideDepth > 0 || layer.style.visibility === "hidden");
+  }
+  runtime.getOverlayLayerVisibility = getOverlayLayerVisibility;
+  function setOverlayLayerVisibility(visible) {
+    const layer = runtime.state.overlayLayer;
+    if (!layer) return;
+    const depth = runtime.state.overlayHideDepth;
+    runtime.state.overlayHideDepth = visible ? Math.max(0, depth - 1) : depth + 1;
+    if (runtime.state.overlayHideDepth === 0) layer.style.visibility = "";
+    else if (visible && depth === 0) layer.style.visibility = "hidden";
+  }
+  runtime.setOverlayLayerVisibility = setOverlayLayerVisibility;
   function stopExtensionUiEvent(event) {
-    if (!event) {
-      return;
-    }
+    if (!event) return;
     event.preventDefault();
     event.stopPropagation();
   }
   runtime.stopExtensionUiEvent = stopExtensionUiEvent;
   function stopExtensionUiPropagation(event) {
-    if (!event) {
-      return;
-    }
+    if (!event) return;
     event.stopPropagation();
   }
   runtime.stopExtensionUiPropagation = stopExtensionUiPropagation;
@@ -228,9 +238,7 @@ export function installControlsUi(runtime) {
         });
       }
       if (targets.length === 0) {
-        await runtime.reportStatus("info", "no visible manga target", {
-          pageUrl: location.href
-        });
+        await runtime.reportStatus("info", "no visible manga target", { pageUrl: location.href });
         const result = {
           visibleCount: 0,
           successCount: 0,
@@ -311,9 +319,7 @@ export function installControlsUi(runtime) {
     runtime.updateFloatingBallState();
     if (!runtime.state.autoTranslatePageEnabled) {
       runtime.clearAutoTranslateRetryTimers();
-      await runtime.reportStatus("info", "page auto translate stopped", {
-        pageUrl: location.href
-      });
+      await runtime.reportStatus("info", "page auto translate stopped", { pageUrl: location.href });
       return {
         enabled: false,
         visibleCount: 0,

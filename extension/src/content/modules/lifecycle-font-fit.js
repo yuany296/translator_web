@@ -121,7 +121,19 @@ export function installLifecycleFontFit(runtime) {
     probe.style.width = `${width}px`;
     probe.style.height = `${height}px`;
     probe.style.fontSize = `${fontSize}px`;
-    probe.textContent = text;
+    probe.replaceChildren();
+    // node.children 是 HTMLCollection,没有数组方法;必须 Array.from 才能 .some。
+    const hasInnerContent = Array.from(node.children || []).some(child => child.className === "mt-bubble-content");
+    if (hasInnerContent) {
+      // 气泡文字在 .mt-bubble-content 内层渲染：探针复制同样的两层结构，
+      // 保证行距/换行测量与实际节点一致。
+      const inner = document.createElement("div");
+      inner.className = "mt-bubble-content";
+      inner.textContent = text;
+      probe.appendChild(inner);
+    } else {
+      probe.textContent = text;
+    }
     return probe;
   }
   runtime.prepareBubbleMeasureProbe = prepareBubbleMeasureProbe;

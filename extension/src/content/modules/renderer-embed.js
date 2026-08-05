@@ -29,10 +29,24 @@ export function installRendererEmbed(runtime) {
     throw new Error("Unsupported embedded render target");
   }
   runtime.renderEmbeddedTranslation = renderEmbeddedTranslation;
+  function getEmbeddedDisplayScale(target) {
+    const displayWidth = Number(target && target.clientWidth || 0);
+    const naturalWidth = Number(target && (target.naturalWidth || target.width) || 0);
+    if (!displayWidth || !naturalWidth || displayWidth >= naturalWidth) return 1;
+    return naturalWidth / displayWidth;
+  }
+  runtime.getEmbeddedDisplayScale = getEmbeddedDisplayScale;
+  function embeddedDisplayOptions(target) {
+    const scale = getEmbeddedDisplayScale(target);
+    return scale > 1
+      ? { textScale: scale, maxFont: Math.max(16, Math.round(52 * scale)), widthUsage: 0.82, heightUsage: 0.68 }
+      : {};
+  }
+  runtime.embeddedDisplayOptions = embeddedDisplayOptions;
   async function renderEmbeddedImageTarget(img, targetKey, bubbles, payload) {
     const cachedDataUrl = runtime.state.embeddedImageCache.get(targetKey);
     const baseDataUrl = runtime.isDataUrl(payload?.cleanedImage) ? payload.cleanedImage : await runtime.getEmbeddedBaseDataUrl(img, payload);
-    const outputDataUrl = cachedDataUrl || (await runtime.composeEmbeddedImageDataUrl(baseDataUrl, bubbles));
+    const outputDataUrl = cachedDataUrl || (await runtime.composeEmbeddedImageDataUrl(baseDataUrl, bubbles, embeddedDisplayOptions(img)));
     if (!cachedDataUrl) {
       runtime.rememberEmbeddedImageCache(targetKey, outputDataUrl);
     }
@@ -94,7 +108,7 @@ export function installRendererEmbed(runtime) {
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-    runtime.drawEmbeddedBubbles(ctx, canvas.width, canvas.height, bubbles);
+    runtime.drawEmbeddedBubbles(ctx, canvas.width, canvas.height, bubbles, embeddedDisplayOptions(canvas));
     ctx.restore();
     runtime.state.embeddedById.set(targetId, {
       target: canvas,
@@ -278,6 +292,8 @@ export function installRendererEmbed(runtime) {
       ctx.translate(centerX, centerY);
       ctx.rotate(rotation * Math.PI / 180);
       const renderColors = runtime.getBubbleRenderColors(bubble, bgType);
+      // OCR 原文字高（占整页图高度的百分比）→ canvas 像素，作为目标字号
+      const sourceFontHeightPercent = Number(bubble.font_height_percent || bubble.fontHeightPercent || bubble.visual && (bubble.visual.fontHeightPercent || bubble.visual.font_height_percent) || 0);
       runtime.drawFittedText(ctx, text, {
         x: -box.w / 2,
         y: -box.h / 2,
@@ -285,6 +301,7 @@ export function installRendererEmbed(runtime) {
         h: box.h
       }, bgType, {
         ...textOptions,
+        preferredFont: sourceFontHeightPercent > 0 ? canvasHeight * sourceFontHeightPercent / 100 : 0,
         textColor: renderColors.textColor,
         strokeColor: renderColors.strokeColor
       });

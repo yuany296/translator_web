@@ -21,8 +21,9 @@ export function installRendererCanvas(runtime) {
 
   function drawFittedText(ctx, text, box, bgType, options = {}) {
     const textScale = Number(options.textScale || 1);
-    const minFont = Number(options.minFont || 6);
-    const maxFont = Number(options.maxFont || 30);
+    const minFont = Number(options.minFont || 8);
+    const maxFont = Number(options.maxFont || 52);
+    const preferredFont = Number(options.preferredFont || 0);
     const maxWidth = Math.max(6, box.w * Number(options.widthUsage || 0.82));
     const maxHeight = Math.max(6, box.h * Number(options.heightUsage || 0.68));
     const family = '"Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", sans-serif';
@@ -33,6 +34,11 @@ export function installRendererCanvas(runtime) {
       box.h * 0.68 * textScale,
       box.w * 0.38 * textScale
     ));
+    if (preferredFont > 0) {
+      // 以 OCR 测得的原文字高为目标字号（canvas 像素，无需 textScale），
+      // 译文装不下时才向下缩小，与 DOM 覆盖层的 fitBubbleFontSize 行为一致。
+      high = Math.min(high, preferredFont * 1.08);
+    }
     for (let index = 0; index < 9; index += 1) {
       const size = (low + high) / 2;
       ctx.font = `600 ${size}px ${family}`;

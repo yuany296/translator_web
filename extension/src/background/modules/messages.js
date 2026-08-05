@@ -11,6 +11,8 @@ export function installMessages(runtime) {
         return runtime.handleTranslateTextBlocks(message, sender);
       case "TRANSLATE_NOVEL_CHUNK":
         return runtime.handleTranslateNovelChunk(message, sender);
+      case "EXTRACT_TERM_FROM_CONTEXT":
+        return runtime.handleExtractTermFromContext(message);
       case "GET_NOVEL_MEMORY":
         return runtime.handleGetNovelMemory(message);
       case "SAVE_NOVEL_MEMORY":
@@ -21,6 +23,8 @@ export function installMessages(runtime) {
         return runtime.handleGetCacheStats();
       case "CLEAR_CACHE":
         return runtime.handleClearCache();
+      case "CLEAR_DUPLICATE_TRANSLATIONS":
+        return runtime.dedupeTranslationCacheRecords();
       case "GET_TRANSLATION_CACHE":
       case "GET_TRANSLATION_CACHE_BATCH":
       case "GET_TRANSLATION_CACHE_BY_HASH":
@@ -62,6 +66,8 @@ export function installMessages(runtime) {
         return runtime.handleConfirmTermCandidates(message);
       case "IGNORE_TERM_CANDIDATE":
         return runtime.handleIgnoreTermCandidate(message);
+      case "IGNORE_TERM_CANDIDATES":
+        return runtime.handleIgnoreTermCandidates(message);
       case "RESTORE_IGNORED_TERM":
         return runtime.handleRestoreIgnoredTerm(message);
       case "START_LOCAL_OCR":
@@ -81,9 +87,7 @@ export function installMessages(runtime) {
   async function handleDiscoverTerms(message) {
     return runtime.enqueueTermDiscoveryMutation(async () => {
       const configuration = await runtime.loadConfiguration();
-      const stored = await runtime.storageGet([
-        runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored
-      ]);
+      const stored = await runtime.storageGet([runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored]);
       if (configuration.runtime.termDiscoveryEnabled === false) {
         return {
           ok: true,
@@ -93,8 +97,9 @@ export function installMessages(runtime) {
       }
       const pageUrl = String(message.pageUrl || "").trim();
       const targetKey = String(message.targetKey || "").trim();
-      const pending = runtime.termDiscoveryCore.normalizePendingStore(stored[runtime.STORAGE_KEYS.glossaryPending]);
-      const blocks = runtime.termDiscoveryCore.getUnprocessedBlocks(pending, pageUrl, message.blocks, targetKey);
+      // 自动忽略来源（小说名等）先于冷却/去重早退写入，保证提取器离线时也生效。
+      const { store, ignored } = await runtime.applyAutoIgnoreSources(stored, message.autoIgnoreSources, pageUrl);
+      const blocks = runtime.termDiscoveryCore.getUnprocessedBlocks(store, pageUrl, message.blocks, targetKey);
       if (blocks.length === 0) {
         return {
           ok: true,
@@ -123,13 +128,13 @@ export function installMessages(runtime) {
               id: block.id,
               text: block.originalText
             })),
-            user_terms: [...configuration.glossary.entries.map(entry => entry.source), ...pending.chapters.flatMap(chapter => chapter.candidates).filter(candidate => candidate.kind === "person").map(candidate => candidate.source)].slice(0, 200)
+            user_terms: [...configuration.glossary.entries.map(entry => entry.source), ...store.chapters.flatMap(chapter => chapter.candidates).filter(candidate => candidate.kind === "person").map(candidate => candidate.source)].slice(0, 200)
           })
         });
         runtime.markTermExtractorOnline();
         const nextPending = runtime.termDiscoveryCore.mergeDiscoveryResult({
-          store: pending,
-          ignored: stored[runtime.STORAGE_KEYS.glossaryIgnored],
+          store,
+          ignored,
           glossary: configuration.glossary,
           pageUrl,
           pageTitle: message.pageTitle,
@@ -160,7 +165,7 @@ export function installMessages(runtime) {
         } catch (_) {}
         return {
           ok: true,
-          added: runtime.termDiscoveryCore.getPendingCount(nextPending) - runtime.termDiscoveryCore.getPendingCount(pending),
+          added: runtime.termDiscoveryCore.getPendingCount(nextPending) - runtime.termDiscoveryCore.getPendingCount(store),
           pendingCount: runtime.termDiscoveryCore.getPendingCount(nextPending),
           status: runtime.getTermExtractorStatusSnapshot()
         };

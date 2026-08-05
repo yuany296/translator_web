@@ -137,7 +137,13 @@ export function installLifecyclePosition(runtime) {
     runtime.syncLoadingOverlayCardPosition(overlayState, rect, targetVisibleRect);
 
     // 画面平移只更新根节点坐标；尺寸不变时不重新测量文字，避免滚动期间抖动。
-    if (!changes.sizeChanged) {
+    // 但字号尚未适配过的气泡（首次 sync 时覆盖层不可见导致 fit 被跳过，inline
+    // fontSize 为空会继承页面默认字号）或此前 rect 无效而挂起的气泡，
+    // 尺寸恢复有效后必须补一次适配，否则字号会被钉死在默认值/最小可读值上。
+    const pendingFontFit = overlayState.bubbleNodes.some(
+      node => node.dataset.mtFontPending === "1" || !node.style.fontSize
+    );
+    if (!changes.sizeChanged && !pendingFontFit) {
       return;
     }
 
@@ -164,6 +170,13 @@ export function installLifecyclePosition(runtime) {
           allowVerticalOverflow: true
         });
       }
+      if (bubbleWidthPx < 2 || bubbleHeightPx < 2) {
+        // 覆盖层不可见（rect 为 0）时不做字号适配：此时按面积计算会把字号
+        // 压到最小可读值，之后滚动回视口也不会重新适配。
+        node.dataset.mtFontPending = "1";
+        return;
+      }
+      node.dataset.mtFontPending = "";
       const fittedSize = runtime.fitBubbleFontSize(node, bubbleWidthPx, bubbleHeightPx, {
         backgroundTarget: overlayState.isBackgroundTarget
       }, runtime.getBubbleOriginalTextHeight(node, bubbleHeightPx, rect.height));

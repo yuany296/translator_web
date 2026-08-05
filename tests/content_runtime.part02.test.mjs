@@ -717,3 +717,22 @@ test("Kakao short adjacent pages are attached as full neighboring slices", () =>
   assert.equal(plan.previousShortPageAttachment, true);
   assert.equal(plan.nextShortPageAttachment, true);
 });
+test("novel chapter translation schedules a sampled term-discovery message with the series title ignored", () => {
+  const message = runtime.__test.buildNovelDiscoveryMessage({
+    scopeKey: "kakao:65171279",
+    chapterId: "70081892",
+    seriesTitle: "달의 끝에서"
+  }, [{ id: "hash-p0", originalText: "원문 0", translatedText: "月之尽头" }], "https://page.kakao.com/content/65171279/viewer/70081892", "달의 끝에서 12화");
+  assert.equal(message.type, "DISCOVER_TERMS");
+  assert.equal(message.targetKey, "novel-kakao:65171279:70081892");
+  assert.deepEqual(message.autoIgnoreSources, ["달의 끝에서"]);
+  assert.equal(message.blocks[0].id, "hash-p0");
+  assert.equal(message.blocks[0].originalText, "원문 0");
+});
+test("novel revision panel wires the add-term flow with AI extraction", () => {
+  assert.match(contentSource, /EXTRACT_TERM_FROM_CONTEXT/);
+  assert.match(contentSource, /CONFIRM_TERM_CANDIDATES/);
+  assert.match(contentSource, /mt-novel-revision-term/);
+  assert.match(contentSource, /提取韩文原文/);
+  assert.match(contentSource, /selectionStart/);
+});

@@ -55,9 +55,16 @@ test("partial batch retries every missing item independently with bounded concur
   assert.equal(result.translations.size, 6);
 });
 
-test("unchanged source-script text is not accepted as a translated cache hit", () => {
-  assert.equal(isUsableWebpageTranslation("추천", "추천", "zh-CN"), false);
-  assert.equal(isUsableWebpageTranslation("추천", "推荐", "zh-CN"), true);
-  assert.equal(isUsableWebpageTranslation("BL", "BL", "zh-CN"), true, "专有缩写可以原样保留");
-  assert.equal(isUsableWebpageTranslation("책", "", "zh-CN"), false);
+test("webpage accepts any non-empty string (protocol-only validation)", () => {
+  // 1. 专名保持不变：글개미 → 글개미 → accepted，不重试不失败
+  assert.equal(isUsableWebpageTranslation("글개미"), true, "专名保留韩文也接受");
+  // 2. 整句保持不变：同样接受（不判内容质量）
+  assert.equal(isUsableWebpageTranslation("최신화 업데이트 완료"), true);
+  // 3. 部分翻译：译文非空即接受
+  assert.equal(isUsableWebpageTranslation("网络小说 · 奇幻 · 글개미"), true);
+  // 4. 空译文 / 非字符串：协议级失败
+  assert.equal(isUsableWebpageTranslation(""), false, "trim 后为空仍判失败（协议级）");
+  assert.equal(isUsableWebpageTranslation("   "), false);
+  assert.equal(isUsableWebpageTranslation(null), false, "非字符串仍判失败（协议级）");
+  assert.equal(isUsableWebpageTranslation(undefined), false);
 });

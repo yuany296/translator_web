@@ -90,14 +90,8 @@ test("content retry scheduler and canonical pipeline share one initialized Store
   assert.ok(storeInit >= 0 && storeInit < retryInit && retryInit < pipelineInit);
 });
 test("rotated aligned bubbles use a center transform anchor without changing text alignment", () => {
-  const style = {
-    setProperty(name, value) {
-      this[name] = value;
-    }
-  };
-  const node = {
-    style
-  };
+  const style = { setProperty(name, value) { this[name] = value; } };
+  const node = { style };
   runtime.__test.applyBubbleAnchorStyle(node, {
     alignment: "left",
     x: 10,
@@ -113,14 +107,8 @@ test("rotated aligned bubbles use a center transform anchor without changing tex
   assert.match(node.style["--mt-base-transform"], /translate\(-50%, -50%\) rotate\(-18\.00deg\)/);
 });
 test("rotated polygon bubbles use the polygon centroid instead of its axis-aligned corner", () => {
-  const style = {
-    setProperty(name, value) {
-      this[name] = value;
-    }
-  };
-  const node = {
-    style
-  };
+  const style = { setProperty(name, value) { this[name] = value; } };
+  const node = { style };
   runtime.__test.applyBubbleAnchorStyle(node, {
     alignment: "left",
     x: 51,
@@ -135,6 +123,15 @@ test("rotated polygon bubbles use the polygon centroid instead of its axis-align
   assert.equal(node.style.left, "74.7%");
   assert.equal(node.style.top, "64.3%");
   assert.equal(node.style.transformOrigin, "center center");
+});
+test("near-horizontal bubbles stay center-anchored even when OCR infers left alignment", () => {
+  const style = { setProperty(name, value) { this[name] = value; } };
+  const node = { style };
+  runtime.__test.applyBubbleAnchorStyle(node, { alignment: "left", x: 10, y: 20, w: 30, h: 12, rotation: 0, unit: "%" });
+  assert.equal(node.style.left, "25%");
+  assert.equal(node.style.top, "26%");
+  assert.equal(node.style.transformOrigin, "center center");
+  assert.match(node.style["--mt-base-transform"], /translate\(-50%, -50%\) rotate\(0\.00deg\)/);
 });
 test("Korean source text stays horizontal after translation even in a tall rotated box", () => {
   const node = {

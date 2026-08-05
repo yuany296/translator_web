@@ -108,17 +108,10 @@ export function installWebpageTabState(runtime) {
         runtime.updateFloatingBallState?.();
       }
     }).catch(() => {});
-    if (controller.mode !== "continuous") {
-      runtime.updateFloatingBallState?.();
-      return { skipped: true, reason: "mode-off" };
-    }
-    // 持续模式：跨刷新 / 完整链接跳转 / SPA 路由后自动恢复，创建当前页面会话并翻译可视区
-    const session = runtime.getOrCreateWebpageSession(pageKey, controller.navigationGeneration);
-    session.active = true;
-    state.session = session;
+    // 不再自动恢复持续翻译：用户未点击翻译就不进入翻译状态。
+    // 持久化的 controller 仅用于悬浮球状态展示，翻译由用户点击触发。
     runtime.updateFloatingBallState?.();
-    void runtime.translateWebpage().catch(() => {});
-    return { resumed: true, mode: controller.mode, visibility: controller.visibility };
+    return { skipped: true, reason: "no-auto-resume" };
   }
   runtime.initializeWebpageTabSession = initializeWebpageTabSession;
 }

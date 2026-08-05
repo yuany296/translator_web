@@ -25,6 +25,7 @@ import { installNovelReader } from "./novel-reader.js";
 import { installNovelRenderer } from "./novel-renderer.js";
 import { installNovelImagePanel } from "./novel-image-panel.js";
 import { installNovelWorkflow } from "./novel-workflow.js";
+import { installNovelTermDiscovery } from "./novel-term-discovery.js";
 import { installNovelStreamClient } from "./novel-stream-client.js";
 import { installNovelStreamWorkflow } from "./novel-stream-workflow.js";
 import { installNovelImageWorkflow } from "./novel-image-workflow.js";
@@ -41,6 +42,7 @@ import { installWebpageTabState } from "./webpage-tab-state.js";
 import { installWebpageScheduler } from "./webpage-scheduler.js";
 import { installWebpageStartup } from "./webpage-startup.js";
 import { installWebpageTranslate } from "./webpage-translate.js";
+import { installWebpageNodeLoading } from "./webpage-node-loading.js";
 import { installWebpageObserver } from "./webpage-observer.js";
 import { installWebpageLifecycle } from "./webpage-lifecycle.js";
 import { installTranslationCacheClient } from "./translation-cache-client.js";
@@ -83,6 +85,7 @@ export const contentInstallers = Object.freeze([
   installNovelRenderer,
   installNovelImagePanel,
   installNovelWorkflow,
+  installNovelTermDiscovery,
   installNovelStreamClient,
   installNovelStreamWorkflow,
   installNovelImageWorkflow,
@@ -99,6 +102,7 @@ export const contentInstallers = Object.freeze([
   installWebpageScheduler,
   installWebpageStartup,
   installWebpageTranslate,
+  installWebpageNodeLoading,
   installWebpageObserver,
   installWebpageLifecycle,
   installTranslationCacheClient,
@@ -143,6 +147,7 @@ export const contentPhases = Object.freeze({
     installNovelRenderer,
     installNovelImagePanel,
     installNovelWorkflow,
+    installNovelTermDiscovery,
     installNovelStreamClient,
     installNovelStreamWorkflow,
     installNovelImageWorkflow,
@@ -159,6 +164,7 @@ export const contentPhases = Object.freeze({
     installWebpageScheduler,
     installWebpageStartup,
     installWebpageTranslate,
+    installWebpageNodeLoading,
     installWebpageObserver,
     installWebpageLifecycle,
     installTranslationCacheClient,

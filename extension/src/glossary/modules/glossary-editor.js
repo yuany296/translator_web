@@ -17,6 +17,7 @@ export function installGlossaryEditor(runtime) {
     runtime.officialTabBtn.addEventListener("click", () => runtime.switchTab("official"));
     runtime.pendingTabBtn.addEventListener("click", () => runtime.switchTab("pending"));
     runtime.confirmFilledBtn.addEventListener("click", runtime.confirmAllFilledCandidates);
+    runtime.ignoreAllBtn.addEventListener("click", runtime.ignoreAllPendingCandidates);
     runtime.pendingChapters.addEventListener("click", runtime.handlePendingCandidateClick);
     runtime.ignoredRows.addEventListener("click", runtime.handleIgnoredClick);
     chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -72,6 +73,8 @@ export function installGlossaryEditor(runtime) {
     runtime.pendingTabBtn.textContent = `待确认（${pendingCount}）`;
     runtime.pendingCountText.textContent = `最近 ${runtime.pendingStore.chapters.length} 话，共 ${pendingCount} 条待确认术语`;
     runtime.confirmFilledBtn.disabled = pendingCount === 0;
+    runtime.ignoreAllBtn.textContent = pendingCount ? `永久忽略全部（${pendingCount}）` : "永久忽略全部";
+    runtime.ignoreAllBtn.disabled = pendingCount === 0;
     runtime.pendingChapters.replaceChildren(...runtime.pendingStore.chapters.filter(chapter => chapter.candidates.length > 0).map(runtime.createPendingChapter));
     runtime.pendingEmptyState.classList.toggle("hidden", pendingCount !== 0);
     runtime.renderIgnoredTerms();
@@ -94,12 +97,16 @@ export function installGlossaryEditor(runtime) {
     section.dataset.chapterKey = chapter.key;
     const heading = document.createElement("div");
     heading.className = "chapter-heading";
+    const left = document.createElement("div");
+    left.className = "chapter-heading-left";
     const title = document.createElement("h2");
     title.textContent = `${chapter.title || "未命名章节"}（${chapter.candidates.length}）`;
     const url = document.createElement("div");
     url.className = "chapter-url";
     url.textContent = chapter.url;
-    heading.append(title, url);
+    left.append(title, url);
+    const chapterIgnore = runtime.createActionButton("忽略本话全部", "ignore-chapter-all", "danger");
+    heading.append(left, chapterIgnore);
     section.append(heading, ...chapter.candidates.map(candidate => runtime.createCandidateCard(chapter, candidate)));
     return section;
   }
@@ -246,6 +253,8 @@ export function installGlossaryEditor(runtime) {
   runtime.cancelBtn = cancelBtn;
   const confirmFilledBtn = document.getElementById("confirmFilledBtn");
   runtime.confirmFilledBtn = confirmFilledBtn;
+  const ignoreAllBtn = document.getElementById("ignoreAllBtn");
+  runtime.ignoreAllBtn = ignoreAllBtn;
   const extractorStatus = document.getElementById("extractorStatus");
   runtime.extractorStatus = extractorStatus;
   const pendingCountText = document.getElementById("pendingCountText");

@@ -26,6 +26,99 @@ export function installTermDiscovery(runtime) {
 
   // ── OCR Service (health check only) ─────────────────────────────
   runtime.handleRestoreIgnoredTerm = handleRestoreIgnoredTerm;
+  async function handleIgnoreTermCandidates(message) {
+    return runtime.enqueueTermDiscoveryMutation(async () => {
+      const entries = (Array.isArray(message.entries) ? message.entries : []).slice(0, 500).map(entry => ({
+        chapterKey: String(entry && entry.chapterKey || ""),
+        source: String(entry && entry.source || "").trim()
+      })).filter(entry => entry.source);
+      if (entries.length === 0) {
+        return {
+          ok: false,
+          error: "没有可忽略的候选术语"
+        };
+      }
+      const scope = message.scope === "global" ? "global" : "chapter";
+      const stored = await runtime.storageGet([runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored]);
+      const next = runtime.termDiscoveryCore.ignoreCandidates({
+        store: stored[runtime.STORAGE_KEYS.glossaryPending],
+        ignored: stored[runtime.STORAGE_KEYS.glossaryIgnored],
+        entries,
+        scope
+      });
+      await runtime.storageSet({
+        [runtime.STORAGE_KEYS.glossaryPending]: next.store,
+        [runtime.STORAGE_KEYS.glossaryIgnored]: next.ignored
+      });
+      // 服务端同步（global 时逐条）
+      try {
+        const serverUrl = await runtime.isGlossaryServerMode();
+        if (serverUrl && scope === "global") {
+          for (const entry of entries) {
+            await runtime.callGlossaryApi(serverUrl, "/glossary/pending/ignore", {
+              method: "POST",
+              body: JSON.stringify({
+                source: entry.source
+              })
+            }).catch(() => {});
+          }
+        }
+      } catch (_) {}
+      return {
+        ok: true,
+        removed: next.removed,
+        pendingCount: runtime.termDiscoveryCore.getPendingCount(next.store)
+      };
+    });
+  }
+  runtime.handleIgnoreTermCandidates = handleIgnoreTermCandidates;
+  async function applyAutoIgnoreSources(stored, autoIgnoreSourcesValue, chapterKey) {
+    let store = runtime.termDiscoveryCore.normalizePendingStore(stored[runtime.STORAGE_KEYS.glossaryPending]);
+    let ignored = runtime.termDiscoveryCore.normalizeIgnoredStore(stored[runtime.STORAGE_KEYS.glossaryIgnored]);
+    const sources = (Array.isArray(autoIgnoreSourcesValue) ? autoIgnoreSourcesValue : [])
+      .map(source => String(source || "").trim()).filter(Boolean).slice(0, 20);
+    const newlyIgnored = [];
+    for (const source of sources) {
+      const sourceKey = runtime.termDiscoveryCore.getSourceKey(source);
+      if (sourceKey && !ignored.sources.some(item => item.sourceKey === sourceKey)) {
+        newlyIgnored.push(source);
+      }
+      const next = runtime.termDiscoveryCore.ignoreCandidate({
+        store,
+        ignored,
+        chapterKey,
+        source,
+        scope: "global"
+      });
+      store = next.store;
+      ignored = next.ignored;
+    }
+    if (newlyIgnored.length) {
+      await runtime.storageSet({
+        [runtime.STORAGE_KEYS.glossaryPending]: store,
+        [runtime.STORAGE_KEYS.glossaryIgnored]: ignored
+      });
+      // 服务端同步（全局忽略）
+      try {
+        const serverUrl = await runtime.isGlossaryServerMode();
+        if (serverUrl) {
+          for (const source of newlyIgnored) {
+            await runtime.callGlossaryApi(serverUrl, "/glossary/pending/ignore", {
+              method: "POST",
+              body: JSON.stringify({
+                source
+              })
+            }).catch(() => {});
+          }
+        }
+      } catch (_) {}
+    }
+    return {
+      store,
+      ignored
+    };
+  }
+  runtime.applyAutoIgnoreSources = applyAutoIgnoreSources;
   async function handleStartLocalOcr() {
     try {
       const configuration = await runtime.loadConfiguration();

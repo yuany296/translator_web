@@ -299,16 +299,29 @@
         margin-bottom: 12px;
       }
 
-      .chapter-heading h2 {
-        margin-bottom: 0;
-        font-size: 18px;
+      .chapter-heading-left {
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        min-width: 0;
       }
 
-      .chapter-url {
+      .chapter-heading-left h2 {
+        margin-bottom: 0;
+        font-size: 18px;
+        flex: 0 0 auto;
+      }
+
+      .chapter-heading-left .chapter-url {
         max-width: 64%;
         color: #64748b;
         font-size: 12px;
         overflow-wrap: anywhere;
+      }
+
+      .chapter-heading > button {
+        flex: 0 0 auto;
+        margin-left: auto;
       }
 
       .candidate-card {
@@ -403,9 +416,17 @@
           display: block;
         }
 
-        .chapter-url {
+        .chapter-heading-left {
+          display: block;
+        }
+
+        .chapter-heading-left .chapter-url {
           max-width: none;
           margin-top: 5px;
+        }
+
+        .chapter-heading > button {
+          margin-top: 8px;
         }
       }
 
@@ -486,6 +507,7 @@
       <section id="pendingPanel" class="panel hidden">
         <div class="toolbar">
           <button id="confirmFilledBtn" class="primary" type="button">加入所有已填写</button>
+          <button id="ignoreAllBtn" class="danger" type="button">永久忽略全部</button>
           <span id="extractorStatus" class="subtitle">Kiwi 状态：读取中...</span>
         </div>
         <div class="summary">

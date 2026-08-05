@@ -39,7 +39,7 @@ export function installNovelWorkflow(runtime) {
     runtime.clearNovelImagePanel?.(true);
     state.textStatus = "idle";
     state.imageStatus = "idle";
-    state.showTranslation = true;
+    state.showTranslation = false;
     Object.assign(state.progress, {
       textDone: 0,
       textTotal: 0,
@@ -319,6 +319,10 @@ export function installNovelWorkflow(runtime) {
     }
     try {
       const result = await translateNovelText(chapter, { force: options.force === true });
+      if (result && result.translated > 0) {
+        // 异步旁路：翻译完成后采样已译段落做术语发现，不阻塞译文渲染。
+        void runtime.scheduleNovelTermDiscovery?.(chapter);
+      }
       if (state.serviceOnline && state.imageStatus === "idle") {
         void runtime.translateNovelImages(chapter).catch(error => {
           state.imageStatus = "partial";

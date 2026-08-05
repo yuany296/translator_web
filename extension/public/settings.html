@@ -109,6 +109,7 @@
       <div class="diagnostic-grid">
         <article class="setting-card"><div class="card-title"><div><h2>本地服务</h2><p>检查 OCR 与 SQLite 译文库的连接。</p></div></div><div class="diagnostic-actions"><button id="probeOcrBtn" type="button">检查 OCR</button><button id="probeTranslationStoreBtn" type="button">检查译文库</button></div><span id="maintenanceServiceStatus" class="inline-status"></span></article>
         <article class="setting-card"><div class="card-title"><div><h2>临时缓存</h2><p id="cacheSummary">正在读取缓存统计…</p></div></div><div class="danger-zone"><div><b>清除临时缓存</b><small>不会删除 SQLite 正式译文库或术语库。</small></div><button id="clearCacheBtn" class="danger" type="button">清除缓存</button></div><span id="cacheStatus" class="inline-status"></span></article>
+        <article class="setting-card"><div class="card-title"><div><h2>重复译文</h2><p>合并同一原文+译文的重复缓存记录，每组保留最新一条。</p></div></div><div class="danger-zone"><div><b>清理重复译文</b><small>清理旧版缓存键产生的重复记录；SQLite 正式译文库不受影响。</small></div><button id="dedupeBtn" class="danger" type="button">清理重复</button></div><span id="dedupeStatus" class="inline-status"></span></article>
       </div>
     </section>
   </main>

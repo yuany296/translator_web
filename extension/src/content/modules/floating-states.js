@@ -104,7 +104,10 @@ function buildWebpageState(ctx = {}) {
     availability: "enabled",
     availabilityReason: "",
     phase,
-    displayMode: continuous && ctx.visibility === "translated" ? "translated" : "original",
+    // 显示"已翻译/中文"必须以实际存在译文为前提：持久化的 controller
+    // mode/visibility 不再单独触发，未翻译的页面显示为原文状态
+    displayMode: continuous && ctx.visibility === "translated"
+      && (ctx.viewportDone > 0 || ctx.backgroundDone > 0) ? "translated" : "original",
     cacheCoverage: coverage,
     continuous,
     viewportReady,
@@ -113,6 +116,7 @@ function buildWebpageState(ctx = {}) {
     backgroundTotal: ctx.backgroundTotal,
     backgroundDone: ctx.backgroundDone,
     pendingSave: ctx.pendingSave,
+    realFailed: ctx.realFailed || 0,
     hasTranslation: ctx.viewportDone > 0 || ctx.backgroundDone > 0,
     errorMessage: String(ctx.errorMessage || (ctx.pageFault && ctx.pageFault.error) || "")
   };
@@ -268,7 +272,8 @@ function buildWebpageMenuItems(state = {}) {
     { id: "translate-page", label: continuous ? "重新显示译文" : "开启持续翻译并显示", disabled: loading || translated || (continuous && state.hasTranslation && translated), disabledReason: translated ? "当前已显示译文" : "" },
     { id: "restore-page", label: "显示原文", disabled: loading || !translated, disabledReason: translated ? "" : "当前已显示原文" },
     { id: "stop-continuous", label: "停止持续翻译", disabled: !continuous || loading, disabledReason: continuous ? "" : "当前未开启持续翻译" },
-    { id: "force-update", label: "强制更新网页翻译", disabled: loading }
+    { id: "retry-failed", label: "重试失败段落", disabled: loading || !state.realFailed, disabledReason: state.realFailed ? "" : "当前没有失败的段落" },
+    { id: "retranslate-all", label: "全部重新翻译（绕过缓存）", disabled: loading }
   ];
   list.push({
     id: "translate-selection",

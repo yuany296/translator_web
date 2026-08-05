@@ -127,6 +127,14 @@ def translations_export():
 runtime.translations_export = translations_export
 
 
+def translations_dedupe():
+    from translation_store.dedupe import dedupe_translation_records
+    return {"ok": True, **dedupe_translation_records(get_translation_store())}
+
+
+runtime.translations_dedupe = translations_dedupe
+
+
 def translations_import(payload: runtime.TranslationImportPayload):
     if payload.confirmation != "IMPORT_TRANSLATIONS":
         raise runtime.HTTPException(status_code=400, detail="explicit import confirmation is required")

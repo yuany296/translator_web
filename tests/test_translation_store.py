@@ -12,6 +12,7 @@ sys.path.insert(0, str(SERVICE_ROOT))
 from translation_store import (  # noqa: E402
     TranslationConflict, TranslationStore, has_saved_pairing,
 )
+from translation_store.dedupe import dedupe_translation_records  # noqa: E402
 
 
 def record_payload(text: str = "译文") -> dict:
@@ -147,6 +148,28 @@ def test_operation_is_idempotent_and_revisions_are_server_owned(tmp_path):
     assert edited["record"]["activeVersion"]["source"] == "manual"
 
 
+def test_dedupe_soft_deletes_duplicate_records_keeping_one(tmp_path):
+    store = TranslationStore(str(tmp_path / "translations.db"))
+    first = store.apply_operation(operation("op-1", recordKey="record-key-1"))["record"]
+    # 同原文同译文、不同页面 scope（旧缓存键在不同页面产生的重复）
+    second = store.apply_operation(operation(
+        "op-2", recordKey="record-key-2",
+        payload={**record_payload(), "scopeKey": "kakao:book-2"},
+    ))["record"]
+    assert second["recordId"] != first["recordId"]
+    result = dedupe_translation_records(store)
+    assert result["removed"] == 1
+    assert result["total"] == 2
+    alive = store.query(["record-key-1", "record-key-2"])["records"]
+    assert len(alive) == 1
+    # 不同译文的记录不合并
+    store.apply_operation(operation(
+        "op-3", recordKey="record-key-3",
+        payload={**record_payload("不同译文"), "scopeKey": "kakao:book-3", "normalizedSourceHash": "other-hash"},
+    ))
+    assert dedupe_translation_records(store)["removed"] == 0
+
+
 def test_select_pin_and_soft_delete_require_current_revision(tmp_path):
     store = TranslationStore(str(tmp_path / "translations.db"))
     first = store.apply_operation(operation("op-1"))["record"]
@@ -213,6 +236,37 @@ def test_batch_is_transactional(tmp_path):
     with pytest.raises(ValueError):
         store.apply_operations([operation("op-1"), invalid])
     assert store.query(["record-key-1", "record-key-2"])["records"] == []
+
+
+def test_same_segment_with_different_record_key_reuses_existing_record(tmp_path):
+    store = TranslationStore(str(tmp_path / "translations.db"))
+    first = store.apply_operation(operation("op-1"))
+    # 前端重复翻译同一段落时会生成新的 recordKey；唯一约束以
+    # mode+scope+segment+语言 为准，不允许 INSERT 撞唯一索引。
+    second = store.apply_operation(operation(
+        "op-2", recordKey="record-key-2",
+        payload={**record_payload(), "translatedText": "第二次译文"},
+    ))
+    assert second["record"]["recordId"] == first["record"]["recordId"]
+    assert second["record"]["recordKey"] == "record-key-1"
+    assert second["record"]["recordRevision"] == 2
+    assert len(store.versions(first["record"]["recordId"])["versions"]) == 2
+
+
+def test_rewriting_a_soft_deleted_segment_restores_the_record(tmp_path):
+    store = TranslationStore(str(tmp_path / "translations.db"))
+    first = store.apply_operation(operation("op-1"))
+    store.apply_operation(operation(
+        "op-2", "delete", recordId=first["record"]["recordId"],
+        expectedRecordRevision=1, recordKey="record-key-1",
+    ))
+    restored = store.apply_operation(operation(
+        "op-3", recordKey="record-key-3",
+        payload={**record_payload(), "translatedText": "恢复后的译文"},
+    ))
+    assert restored["record"]["recordId"] == first["record"]["recordId"]
+    assert restored["record"]["deletedAt"] is None
+    assert restored["record"]["recordRevision"] >= 2
 
 
 def test_rest_api_requires_pairing_token_and_exact_extension_origin(tmp_path):

@@ -68,18 +68,13 @@ export async function completePartialWebpageBatch(keys, initial, worker) {
   };
 }
 
-/** 目标文字仍原样保留源语言脚本时，不把它当成成功译文或有效缓存。 */
-export function isUsableWebpageTranslation(source, translated, targetLanguage = "zh-CN") {
-  const original = String(source || "").replace(/\s+/gu, " ").trim();
-  const result = String(translated || "").replace(/\s+/gu, " ").trim();
-  if (!result) return false;
-  if (result !== original) return true;
-  const target = String(targetLanguage || "").toLowerCase();
-  if (target.startsWith("zh")) return !/[가-힯぀-ヿ]/u.test(original);
-  if (target.startsWith("ja")) return !/[가-힯]/u.test(original);
-  if (target.startsWith("ko")) return !/[぀-ヿ]/u.test(original);
-  if (target.startsWith("en")) return !/[가-힯぀-ヿ一-鿿]/u.test(original);
-  return true;
+/**
+ * 网页翻译只做协议级校验：模型为对应 ID 返回合法非空字符串即接受。
+ * 不判断内容质量——保留源语言文字、专有名词、部分翻译、与原文相同
+ * 都不视为失败；失败仅限缺 ID、译文非字符串、trim 后为空。
+ */
+export function isUsableWebpageTranslation(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 export const WEBPAGE_BATCH_LIMITS = Object.freeze({

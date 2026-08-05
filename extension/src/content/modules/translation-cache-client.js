@@ -165,12 +165,12 @@ export function installTranslationCacheClient(runtime) {
         // 缓存回退失败不阻塞实时翻译
       }
       for (const entry of stillMissing) {
-        // 同页同原文哈希：旧记录双读
-        const samePage = (fallback.bySourceHash?.[entry.sourceHash] || []).filter(record =>
-          record.pageKey === entry.pageKey
-          && (record.sourceText === entry.text || record.normalizedSourceText === entry.normalized));
-        if (samePage.length) {
-          byId.set(entry, samePage[0]);
+        // 同原文哈希：同页优先，跨页同文本兜底（短词/专名避免重复翻译重复存储）
+        const bySource = (fallback.bySourceHash?.[entry.sourceHash] || []).filter(record =>
+          record.sourceText === entry.text || record.normalizedSourceText === entry.normalized);
+        if (bySource.length) {
+          const samePage = bySource.find(record => record.pageKey === entry.pageKey);
+          byId.set(entry, samePage || bySource[0]);
           continue;
         }
         // translationKey 跨页面复用回退（短文本上下文指纹降低误复用）
@@ -236,7 +236,14 @@ export function installTranslationCacheClient(runtime) {
   runtime.syncTranslationService = syncTranslationService;
 
   async function ensureTranslationServiceOnline(recordKeys = []) {
-    const result = await syncTranslationService(recordKeys);
+    // 消息可能永久无响应（background 繁忙或消息丢失）：限时返回，避免
+    // startup 卡在服务检查、working 标志永不重置
+    const result = await Promise.race([
+      syncTranslationService(recordKeys),
+      new Promise(resolve => setTimeout(
+        () => resolve({ ok: false, status: "offline", error: "本地服务检查超时" }), 10_000
+      ))
+    ]);
     return result?.ok === true && result?.status === "online" ? result : {
       ...result, ok: false, status: "offline",
       error: result?.error || "本地服务未启动，当前仅显示已缓存译文"

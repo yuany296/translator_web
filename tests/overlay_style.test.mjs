@@ -114,28 +114,46 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   assert.match(css, /\.mt-bubble\.mt-text-layer::before\s*\{[\s\S]*?content:\s*none\s*!important/);
 });
 
-test("overlay bubbles keep source alignment and restore measured font fitting", () => {
+test("overlay bubbles always anchor at the source text block center and center their text", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
   const bubbleRule = css.match(/\.mt-bubble\s*\{([^}]+)\}/)?.[1] ?? "";
-  const leftRule = css.match(/\.mt-bubble\.mt-align-left\s*\{([^}]+)\}/)?.[1] ?? "";
-  const rightRule = css.match(/\.mt-bubble\.mt-align-right\s*\{([^}]+)\}/)?.[1] ?? "";
+  const contentRule = css.match(/\.mt-bubble-content\s*\{([^}]+)\}/)?.[1] ?? "";
+  const verticalRule = css.match(/\.mt-bubble\.mt-jp-vertical\s+\.mt-bubble-content\s*\{([^}]+)\}/)?.[1] ?? "";
 
   assert.match(bubbleRule, /overflow:\s*visible/);
   assert.match(bubbleRule, /max-height:\s*none/);
   assert.match(bubbleRule, /font-weight:\s*var\(--mt-font-weight,\s*600\)/);
   assert.match(bubbleRule, /flex-direction:\s*column/);
-  assert.match(leftRule, /text-align:\s*left/);
-  assert.match(leftRule, /align-items:\s*flex-start/);
-  assert.match(rightRule, /text-align:\s*right/);
+  assert.match(bubbleRule, /display:\s*flex/);
+  assert.match(bubbleRule, /align-items:\s*center/);
+  assert.match(bubbleRule, /justify-content:\s*center/);
+  // 文字排版属性（text-align/white-space/line-height）只存在于内层文字节点。
+  assert.doesNotMatch(bubbleRule, /text-align|white-space/);
+  assert.match(contentRule, /display:\s*block/);
+  assert.match(contentRule, /width:\s*100%/);
+  assert.match(contentRule, /text-align:\s*center/);
+  assert.match(contentRule, /white-space:\s*pre-line/);
+  assert.match(contentRule, /line-height:\s*1\.18/);
+  assert.match(verticalRule, /white-space:\s*normal/);
+  assert.match(verticalRule, /line-height:\s*1\.34/);
+  // 原文 left/right 对齐不再改变译文锚点与内部排版，只保留类名做调试信息。
+  assert.doesNotMatch(css, /\.mt-bubble\.mt-align-(left|right)\s*\{/);
   assert.match(css, /\.mt-measure-probe\s*\{[\s\S]*?justify-content:\s*flex-start\s*!important/);
   assert.ok(readContentModules(/function applyBubbleAnchorStyle\(/), "applyBubbleAnchorStyle not found in content modules");
-  assert.ok(readContentModules(/shouldUseCenterRotationAnchor/), "shouldUseCenterRotationAnchor not found in content modules");
   assert.ok(readContentModules(/translate\(-50%, -50%\) rotate/), "translate(-50%, -50%) rotate not found in content modules");
   assert.ok(readContentModules(/--mt-font-weight/), "--mt-font-weight not found in content modules");
   assert.ok(readContentModules(/rotate\(\$\{angle\.toFixed\(2\)\}deg\)/), "rotate template not found in content modules");
   assert.ok(readContentModules(/function fitBubbleFontSize\(/), "measured font fitting must exist");
   assert.ok(readContentModules(/function expandBubbleForTextOverflow\(/), "overflow recovery must exist");
   assert.ok(readContentModules(/BUBBLE_FONT_ORIGINAL_SCALE/), "source font-height cap must exist");
+  // 气泡专用文字排版兜底：内层节点创建时强制覆盖宽度/居中/换行，且文字只写在内层。
+  const lifecycle = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "lifecycle-bubble.js"), "utf8");
+  assert.match(lifecycle, /className = "mt-bubble-content"/);
+  assert.match(lifecycle, /contentNode\.style\.width = "100%"/);
+  assert.match(lifecycle, /contentNode\.style\.textAlign = "center"/);
+  assert.match(lifecycle, /contentNode\.style\.whiteSpace = "pre-line"/);
+  assert.match(lifecycle, /contentNode\.textContent = runtime\.formatTranslationForOriginalLines/);
+  assert.match(lifecycle, /node\.appendChild\(contentNode\)/);
   const domRenderer = readFileSync(path.resolve(projectRoot, "extension", "src", "rendering", "dom-renderer.js"), "utf8");
   assert.match(domRenderer, /overflow:\s*"hidden"/);
   const sceneBuilder = readFileSync(path.resolve(projectRoot, "extension", "src", "rendering", "scene-builder.js"), "utf8");

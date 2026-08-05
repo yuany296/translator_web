@@ -161,7 +161,8 @@ test("webpage: viewport ready with background still working shows background pro
 
 test("webpage: real failures after translation show partial badge", () => {
   const partialFail = states.buildWebpageState({
-    enabled: true, mode: "continuous", visibility: "translated", realFailed: 2
+    enabled: true, mode: "continuous", visibility: "translated", realFailed: 2,
+    viewportTotal: 5, viewportDone: 5
   });
   assert.equal(partialFail.phase, "error");
   assert.equal(partialFail.displayMode, "translated");
@@ -171,7 +172,10 @@ test("webpage: real failures after translation show partial badge", () => {
 });
 
 test("webpage: service offline is a page-level fault, not per-item failure", () => {
-  const offline = states.buildWebpageState({ enabled: true, mode: "continuous", visibility: "translated", pageFault: { error: "本地服务未启动" } });
+  const offline = states.buildWebpageState({
+    enabled: true, mode: "continuous", visibility: "translated", pageFault: { error: "本地服务未启动" },
+    viewportTotal: 5, viewportDone: 5
+  });
   assert.equal(offline.phase, "error");
   assert.equal(offline.displayMode, "translated");
   const present = states.deriveFloatingActionPresentation("webpage", offline);
@@ -268,13 +272,15 @@ test("comic menu separates stop, hide overlay and clear overlay", () => {
 test("webpage menu keeps selection translation as a reserved entry", () => {
   const items = states.buildWebpageMenuItems(states.buildWebpageState({ enabled: true, mode: "off" }));
   assert.deepEqual(items.map(item => item.id), [
-    "translate-page", "restore-page", "stop-continuous", "force-update", "translate-selection"
+    "translate-page", "restore-page", "stop-continuous", "retry-failed", "retranslate-all", "translate-selection"
   ]);
+  assert.equal(items.find(item => item.id === "retry-failed").disabled, true, "无失败段时重试失败不可用");
   const selection = items.find(item => item.id === "translate-selection");
   assert.equal(selection.disabled, true);
   assert.match(selection.disabledReason, /后续版本/u);
   const shown = states.buildWebpageMenuItems(states.buildWebpageState({
-    enabled: true, mode: "continuous", visibility: "translated", hasTranslation: true
+    enabled: true, mode: "continuous", visibility: "translated",
+    viewportTotal: 5, viewportDone: 5
   }));
   assert.equal(shown.find(item => item.id === "restore-page").disabled, false);
   assert.equal(shown.find(item => item.id === "translate-page").disabled, true);
@@ -392,7 +398,8 @@ test("webpage: check badge never appears when displayMode is original", () => {
 test("webpage: displayMode=translated with phase=error shows partial badge", () => {
   // 翻译完成但有部分失败：显示译文 + partial 角标
   const state = states.buildWebpageState({
-    enabled: true, mode: "continuous", visibility: "translated", realFailed: 1
+    enabled: true, mode: "continuous", visibility: "translated", realFailed: 1,
+    viewportTotal: 5, viewportDone: 5
   });
   assert.equal(state.displayMode, "translated");
   assert.equal(state.phase, "error");

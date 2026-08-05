@@ -218,6 +218,32 @@ async function clearCache() {
   await loadCacheStats();
 }
 
+async function dedupeTranslations() {
+  if (!confirm("按同一原文+译文合并重复记录：扩展缓存与 SQLite 正式译文库都会清理，每组保留最新一条。")) return;
+  const response = await send({ type: "CLEAR_DUPLICATE_TRANSLATIONS" });
+  let sqlite = { removed: 0, total: 0 };
+  try {
+    const stored = await chrome.storage.local.get("mt_local_service_auth_v1");
+    const auth = stored.mt_local_service_auth_v1 || {};
+    const baseUrl = configuration?.ocr?.localPaddle?.baseUrl || "http://127.0.0.1:8765";
+    const resp = await fetch(`${baseUrl}/translations/dedupe`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${String(auth.token || "")}`,
+        ...(String(auth.origin || "") ? { "X-Manga-Translator-Origin": String(auth.origin) } : {})
+      },
+      body: "{}"
+    });
+    sqlite = resp.ok ? await resp.json() : { removed: 0, total: 0, error: `HTTP ${resp.status}` };
+  } catch (error) {
+    sqlite = { removed: 0, total: 0, error: error.message };
+  }
+  const suffix = sqlite.error ? `（SQLite 失败：${sqlite.error}）` : "";
+  setStatus("dedupeStatus", `扩展缓存合并 ${response.removed || 0} 条；SQLite 清理 ${sqlite.removed || 0}/${sqlite.total || 0} 条${suffix}`);
+  await loadCacheStats();
+}
+
 function activateRoute(route) {
   const active = ROUTES[route] ? route : "general";
   document.querySelectorAll("[data-route]").forEach(node => node.classList.toggle("active", node.dataset.route === active));
@@ -253,6 +279,7 @@ byId("probeOcrBtn").addEventListener("click", () => void run(
 ));
 byId("probeTranslationStoreBtn").addEventListener("click", () => void run(() => checkService("maintenanceServiceStatus"), "maintenanceServiceStatus"));
 byId("clearCacheBtn").addEventListener("click", () => void run(clearCache, "cacheStatus"));
+byId("dedupeBtn").addEventListener("click", () => void run(dedupeTranslations, "dedupeStatus"));
 
 async function load() {
   const response = await send({ type: "GET_CONFIGURATION" });

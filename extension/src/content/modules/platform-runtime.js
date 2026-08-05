@@ -165,6 +165,7 @@ export function installPlatformRuntime(runtime) {
     runtime.restoreAllNovelText();
     runtime.disconnectNovelReader();
     runtime.uninstallWebpageRouteObserver?.();
+    runtime.clearAllWebpageNodeLoading?.();
     runtime.cancelFloatingLongPress?.();
     try {
       runtime.onWebpageRouteChange?.();
@@ -202,7 +203,7 @@ export function installPlatformRuntime(runtime) {
     root.setAttribute(runtime.RUNTIME_OWNER_ATTRIBUTE, runtime.state.runtimeOwnerToken);
     root.setAttribute(runtime.RUNTIME_FEATURE_ATTRIBUTE, runtime.RUNTIME_FEATURE_VERSION);
     document.querySelectorAll(
-      ".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe, .mt-novel-image-panel, .mt-floating-menu"
+      ".mt-overlay-layer, .mt-floating-ball-wrap, .mt-measure-probe, .mt-novel-image-panel, .mt-floating-menu, .mt-webpage-node-loading"
     ).forEach(node => node.remove());
     if (previousOwner && previousOwner !== runtime.state.runtimeOwnerToken || staleUiExists) {
       document.querySelectorAll(runtime.TARGET_SELECTOR).forEach(target => {

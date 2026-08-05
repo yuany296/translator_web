@@ -229,6 +229,14 @@ def extract_korean_candidates(text: str, tokens: list[dict[str, Any]]) -> list[d
         if is_person:
             candidates.append({"source": surface, "kind": "person", "score": 0.94})
             continue
+        # NNP + NNG 混合组中 NNP 部分是人名结构（如"정다준 성인"的"정다준"）时，
+        # 组合通常是"人名 + 普通名词"的粘连而非固定术语，直接排除；
+        # "샤이닝 스타"这类专名+通用词的作品名 NNP 部分不是人名，仍保留。
+        if "NNP" in tags and "NNG" in tags:
+            nnp_group = [token for token in group if token["tag"] == "NNP"]
+            nnp_surface = "".join(token["surface"] for token in nnp_group)
+            if is_korean_person_name(nnp_surface, nnp_group):
+                continue
         if "NNP" in tags and len(compact) >= 2:
             kind = "title" if len(group) >= 2 and is_full_block else "proper_noun"
             candidates.append({"source": surface, "kind": kind, "score": 0.9 if kind == "proper_noun" else 0.86})

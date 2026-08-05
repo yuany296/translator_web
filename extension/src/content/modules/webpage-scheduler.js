@@ -1,38 +1,18 @@
 /**
  * Viewport-priority scheduler for continuous webpage translation.
- *
- * Startup flow:
- *   1. Quickly discover viewport + one screen above/below, query cache
- *      immediately; hits render right away, misses enter P0/P1.
- *   2. An async TreeWalker keeps scanning the rest of the document in chunks
- *      (≤8ms or 200 nodes); every discovered chunk is handed to the queue
- *      immediately, never waiting for the whole page scan.
- *   3. Two concurrent lanes drain the queue; at most one lane may work on
- *      P2/P3 so the other lane stays free for P0/P1.
- *
- * Priorities: P0 viewport, P1 the two adjacent screens, P2 other discovered
- * content, P3 far dynamically-added content. Scroll re-prioritizes segments
- * that have not been sent yet. Batch caps: P0 8 items / 600 chars, P1
- * 12 / 900, background 24 / 1600.
- *
- * Segment state lives on three independent axes (translation / rendering /
- * persistence) so a disconnected node or a failed save never counts as a
- * translation failure. A service outage is one page-level fault: segments
- * become "blocked" (not per-item failures) and are retried every 30s while
- * the page is visible, or immediately on user action / next route.
+ * Startup scans viewport + adjacent screens with immediate cache query, then
+ * TreeWalker chunks (≤8ms/200 nodes); two lanes drain, one works P2/P3.
+ * Scroll re-prioritizes unsent segments. Batch caps: P0 8/600, P1 12/900,
+ * background 24/1600. Segment state has three axes (translation/rendering/
+ * persistence); outage = one page-level fault, segments go "blocked".
  */
 import { createSegment } from "./webpage-session.js";
 import { isUsableWebpageTranslation } from "./webpage-batches.js";
 
-const LANES = 2;
-const NEAR_SCREENS = 2;
-const RETRY_BLOCKED_MS = 30_000;
-const SCROLL_REPRIORITIZE_DEBOUNCE_MS = 120;
+const LANES = 2, NEAR_SCREENS = 2, RETRY_BLOCKED_MS = 30_000, SCROLL_REPRIORITIZE_DEBOUNCE_MS = 120;
 const BATCH_LIMITS = Object.freeze({
-  0: { maxItems: 8, maxChars: 600 },
-  1: { maxItems: 12, maxChars: 900 },
-  2: { maxItems: 24, maxChars: 1600 },
-  3: { maxItems: 24, maxChars: 1600 }
+  0: { maxItems: 8, maxChars: 600 }, 1: { maxItems: 12, maxChars: 900 },
+  2: { maxItems: 24, maxChars: 1600 }, 3: { maxItems: 24, maxChars: 1600 }
 });
 
 const ZONE_PRIORITY = Object.freeze({ viewport: 0, near: 1, background: 2, dynamic: 3 });
@@ -100,7 +80,9 @@ export function installWebpageScheduler(runtime) {
 
   function isEntryBound(entry) {
     const webpage = runtime.getWebpageState();
-    return webpage.nodeStore.activeNodes.has(entry.node) || webpage.session?.segments.has(entry.id);
+    const segment = webpage.session?.segments.get(entry.id);
+    return webpage.nodeStore.activeNodes.has(entry.node)
+      || segment !== undefined && segment.node?.isConnected !== false && segment.status.translation !== "failed";
   }
 
   /**
@@ -125,9 +107,7 @@ export function installWebpageScheduler(runtime) {
         continue;
       }
       const record = recordMap.get(entry);
-      const usable = record && isUsableWebpageTranslation(
-        entry.text, record.translatedText, targetLanguage
-      );
+      const usable = record && isUsableWebpageTranslation(record.translatedText);
       const match = usable ? runtime.classifyTranslationCacheMatch(record, fingerprint) : "missing";
       const segment = createSegment({
         ...entry,
@@ -150,12 +130,11 @@ export function installWebpageScheduler(runtime) {
         }
         continue;
       }
-      // 所有未发送段进入队列（后台扫描的 P2 也立即交给调度器），
-      // composeBatch 按 tier 取批，P0/P1 始终优先
+      // 未发送段全部入队（含后台 P2），composeBatch 按 tier 取批，P0/P1 优先
       insertSorted(segment);
       results.enqueued += 1;
     }
-    if (results.enqueued) runtime.updateWebpageProgress?.(runtime, runtime.getWebpageState());
+    if (results.enqueued) runtime.refreshWebpageUi?.();
     tryStartBatches();
     return results;
   }
@@ -212,7 +191,6 @@ export function installWebpageScheduler(runtime) {
     while (state.activeBatches < LANES) {
       const batch = composeBatch();
       if (!batch) break;
-      // 最多允许一路执行 P2/P3，另一路为 P0/P1 保留
       if (batch.tier >= 2 && state.lowPriorityBatches >= 1) break;
       void runBatch(batch);
     }
@@ -238,7 +216,7 @@ export function installWebpageScheduler(runtime) {
         segment.errors = [failed];
         removeFromQueue(segment);
       }
-      runtime.updateWebpageProgress?.(runtime, runtime.getWebpageState());
+      runtime.refreshWebpageUi?.();
     } finally {
       state.activeBatches -= 1;
       if (batch.tier >= 2) state.lowPriorityBatches -= 1;
@@ -257,28 +235,20 @@ export function installWebpageScheduler(runtime) {
           node: segment.node, text: segment.sourceText, id: segment.segmentKey
         })), result.translations);
       await runtime.saveWebpageSegmentRecords(session, segments, result.translations, { force: false });
-      if (!stale) {
-        for (const segment of segments) {
-          const translated = result.translations.get(segment.sourceText);
-          segment.status.translation = translated ? "done" : "failed";
-          if (translated) segment.translatedText = String(translated);
-        }
-      }
-      // 部分响应：缺失项已由重试一次覆盖，仍缺失才计为真实翻译失败
       for (const segment of segments) {
-        if (!result.translations.has(segment.sourceText)) {
+        const translated = result.translations.get(segment.sourceText);
+        if (!translated) {
+          // 部分响应：缺失项已由重试一次覆盖，仍缺失才计为真实翻译失败
           segment.status.translation = "failed";
           segment.errors = result.errors || [{ error: "翻译失败" }];
+        } else if (!stale) {
+          segment.status.translation = "done";
+          segment.translatedText = String(translated);
         }
       }
     } else if (result?.cancelled) {
-      // 取消：回到 pending 等待新会话重新调度
       for (const segment of segments) {
-        if (segment.status.translation === "inflight") {
-          segment.status.translation = "pending";
-          removeFromQueue(segment);
-          insertSorted(segment);
-        }
+        if (segment.status.translation === "inflight") segment.status.translation = "pending";
       }
     } else {
       const failed = { error: String(result?.errors?.[0]?.error || result?.error || "翻译失败") };
@@ -289,7 +259,11 @@ export function installWebpageScheduler(runtime) {
     }
     // 已结算的段离开队列，避免 isWebpageQueueBusy 永远为真
     for (const segment of segments) removeFromQueue(segment);
-    runtime.updateWebpageProgress?.(runtime, webpage);
+    for (const segment of segments) {
+      if (session === webpage.session && segment.status.translation === "inflight") segment.status.translation = "pending";
+      if (session === webpage.session && segment.status.translation === "pending") insertSorted(segment);
+    }
+    runtime.refreshWebpageUi?.();
   }
 
   // ---------- offline / blocked ----------
@@ -305,9 +279,8 @@ export function installWebpageScheduler(runtime) {
         }
       }
     }
-    // 页面级故障：不逐项报失败；持续模式下页面可见时每 30 秒重试
     scheduleBlockedRetry();
-    runtime.updateWebpageProgress?.(runtime, webpage);
+    runtime.refreshWebpageUi?.();
     return webpage.pageFault;
   }
   runtime.markWebpageServiceOffline = markWebpageServiceOffline;
@@ -320,7 +293,6 @@ export function installWebpageScheduler(runtime) {
         scheduleBlockedRetry();
         return;
       }
-      // 重试前先确认服务恢复，仍离线则继续保持 blocked 并安排下一次重试
       void Promise.resolve(runtime.ensureTranslationServiceOnline?.())
         .then(service => {
           if (service?.ok === true) runtime.retryWebpageTranslation?.();
@@ -345,10 +317,36 @@ export function installWebpageScheduler(runtime) {
       }
     }
     if (retried) tryStartBatches();
-    runtime.updateWebpageProgress?.(runtime, webpage);
+    runtime.refreshWebpageUi?.();
     return retried;
   }
   runtime.retryWebpageTranslation = retryWebpageTranslation;
+
+  function requeueWebpageSegment(segmentKey) {
+    const segment = runtime.getWebpageState().session?.segments.get(segmentKey);
+    if (!segment || !["failed", "done"].includes(segment.status.translation)) return;
+    segment.status.translation = "pending";
+    segment.errors = [];
+    removeFromQueue(segment);
+    insertSorted(segment);
+    tryStartBatches();
+    runtime.refreshWebpageUi?.();
+  }
+  runtime.requeueWebpageSegment = requeueWebpageSegment;
+
+  function requeueWebpageSegments(statuses) {
+    const session = runtime.getWebpageState().session;
+    if (!session) return 0;
+    let requeued = 0;
+    for (const segment of session.segments.values()) {
+      if (statuses.includes(segment.status.translation)) {
+        requeueWebpageSegment(segment.segmentKey);
+        requeued += 1;
+      }
+    }
+    return requeued;
+  }
+  runtime.requeueWebpageSegments = requeueWebpageSegments;
 
   function stopWebpageScheduler() {
     state.stopped = true;

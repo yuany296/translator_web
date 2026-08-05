@@ -39,14 +39,44 @@ export function installNovelRevisionPanel(runtime) {
     header.append(title, close);
     const status = document.createElement("div");
     status.className = "mt-novel-revision-status";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "mt-novel-revision-search";
+    search.placeholder = "搜索原文或译文…";
+    search.addEventListener("input", () => filterRevisionCards());
     const body = document.createElement("div");
     body.className = "mt-novel-revision-body";
-    panel.append(header, status, body);
+    panel.append(header, status, search, body);
     document.documentElement.appendChild(panel);
     state.revisionPanel = panel;
     state.revisionPanelBody = body;
     state.revisionPanelStatus = status;
+    state.revisionPanelSearch = search;
     return panel;
+  }
+
+  function filterRevisionCards() {
+    const state = runtime.getNovelState();
+    const body = state.revisionPanelBody;
+    const query = (state.revisionPanelSearch?.value || "").trim().toLowerCase();
+    let total = 0;
+    let visible = 0;
+    for (const card of body.querySelectorAll(".mt-novel-revision-card")) {
+      total += 1;
+      const source = card.querySelector(".mt-novel-revision-source");
+      const editor = card.querySelector("textarea");
+      const haystack = `${source?.textContent || ""} ${editor?.value || ""}`.toLowerCase();
+      const match = !query || haystack.includes(query);
+      card.hidden = !match;
+      if (match) visible += 1;
+    }
+    body.querySelector(".mt-novel-revision-empty")?.remove();
+    if (query && total > 0 && visible === 0) {
+      const hint = document.createElement("div");
+      hint.className = "mt-novel-revision-empty";
+      hint.textContent = `没有匹配「${state.revisionPanelSearch.value.trim()}」的段落`;
+      body.appendChild(hint);
+    }
   }
 
   function versionStatus(state, snapshot, item, fingerprint) {
@@ -224,6 +254,15 @@ export function installNovelRevisionPanel(runtime) {
       actionButton("AI 修订", button => run(button, () => requestAiRevision(chapter, item, instruction.value))),
       actionButton("删除", button => run(button, () => deleteTranslation(chapter, item)))
     );
+    const term = createTermSection(item, source, editor);
+    const termBtn = actionButton("＋ 术语", () => {
+      term.section.hidden = !term.section.hidden;
+      if (!term.section.hidden) {
+        const selected = editor.value.slice(editor.selectionStart || 0, editor.selectionEnd || 0).trim();
+        if (selected) term.targetInput.value = selected;
+        term.status.textContent = selected ? "已填入译文框中选中的文字，可提取韩文原文或直接填写" : "可在下方译文框中选中文字，或直接填写固定译文";
+      }
+    });
     const versions = document.createElement("div");
     versions.className = "mt-novel-version-list";
     for (const version of snapshot?.recentVersions || []) {
@@ -235,8 +274,97 @@ export function installNovelRevisionPanel(runtime) {
         actionButton("固定", button => run(button, () => selectVersion(chapter, item, version.versionId, true))));
       versions.appendChild(row);
     }
-    card.append(badge, source, editor, instruction, actions, versions);
+    card.append(badge, source, editor, instruction, actions, termBtn, term.section, versions);
     return card;
+  }
+
+  function createTermSection(item, sourceEl, editor) {
+    const section = document.createElement("div");
+    section.className = "mt-novel-revision-term";
+    section.hidden = true;
+    const sourceInput = document.createElement("input");
+    sourceInput.className = "mt-term-source";
+    sourceInput.maxLength = 120;
+    sourceInput.placeholder = "韩文原文（AI 提取后自动填入，可修改）";
+    const targetInput = document.createElement("input");
+    targetInput.className = "mt-term-target";
+    targetInput.maxLength = 120;
+    targetInput.placeholder = "固定译文";
+    const noteInput = document.createElement("input");
+    noteInput.className = "mt-term-note";
+    noteInput.maxLength = 240;
+    noteInput.placeholder = "备注（可选）";
+    const status = document.createElement("div");
+    status.className = "mt-novel-revision-term-status";
+    const actions = document.createElement("div");
+    actions.className = "mt-novel-revision-term-actions";
+    const extractBtn = actionButton("提取韩文原文", () => void extractTerm());
+    const confirmBtn = actionButton("加入术语表", () => void confirmTerm());
+    confirmBtn.className = "mt-primary";
+    const cancelBtn = actionButton("取消", () => { section.hidden = true; });
+    actions.append(extractBtn, confirmBtn, cancelBtn);
+    section.append(sourceInput, targetInput, noteInput, status, actions);
+    function selectedText() {
+      const start = editor.selectionStart || 0;
+      const end = editor.selectionEnd || 0;
+      return start === end ? "" : editor.value.slice(start, end).trim();
+    }
+    async function extractTerm() {
+      const selected = targetInput.value.trim() || selectedText();
+      if (!selected) {
+        status.textContent = "请先填写固定译文，或在译文框中选中文字";
+        return;
+      }
+      targetInput.value = selected;
+      extractBtn.disabled = true;
+      status.textContent = "正在提取韩文原文…";
+      try {
+        const response = await runtime.sendRuntimeMessage({
+          type: "EXTRACT_TERM_FROM_CONTEXT",
+          sourceText: String(sourceEl.textContent || "").trim(),
+          translatedText: editor.value.trim(),
+          selectedText: selected,
+          targetLanguage: runtime.getTargetLanguage?.() || "zh-CN"
+        });
+        if (!response || !response.ok) throw new Error(response && response.error || "提取失败");
+        sourceInput.value = response.term;
+        status.textContent = response.foundInSource
+          ? "已提取韩文原文，请核对"
+          : "提取结果未能与原文完全匹配，请核对后修正";
+      } catch (error) {
+        status.textContent = `${runtime.getErrorMessage(error)}（可手动填写原文）`;
+      } finally {
+        extractBtn.disabled = false;
+      }
+    }
+    async function confirmTerm() {
+      const source = sourceInput.value.trim();
+      const target = targetInput.value.trim() || selectedText();
+      if (!source || !target) {
+        status.textContent = "原文术语和固定译文都不能为空";
+        return;
+      }
+      targetInput.value = target;
+      confirmBtn.disabled = true;
+      try {
+        const response = await runtime.sendRuntimeMessage({
+          type: "CONFIRM_TERM_CANDIDATES",
+          entries: [{
+            source,
+            target,
+            note: noteInput.value.trim()
+          }]
+        });
+        if (!response || !response.ok) throw new Error(response && response.error || "加入失败");
+        status.textContent = "已加入术语表";
+        window.setTimeout(() => { section.hidden = true; }, 1200);
+      } catch (error) {
+        status.textContent = `加入失败：${runtime.getErrorMessage(error)}`;
+      } finally {
+        confirmBtn.disabled = false;
+      }
+    }
+    return { section, targetInput, status };
   }
 
   async function renderRevisionPanel(chapter) {
@@ -255,6 +383,7 @@ export function installNovelRevisionPanel(runtime) {
     for (const item of chapter.paragraphs.filter(candidate => state.translations.has(candidate.id))) {
       body.appendChild(await renderCard(chapter, item, fingerprint));
     }
+    filterRevisionCards();
   }
 
   async function openNovelRevisionPanel() {

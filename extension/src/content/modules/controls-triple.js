@@ -359,11 +359,13 @@ export function installControlsTriple(runtime) {
         return void runtime.stopWebpageContinuousTranslation().then(() => {
           runtime.showFloatingBallFeedback("已停止网页持续翻译，已显示译文保留", "info");
         });
-      case "force-update":
-        return void runtime.translateWebpage({ force: true }).then(result => {
-          if (result?.ok === false && !result?.reused && result.error) {
-            runtime.showFloatingBallFeedback(result.error, "error");
-          }
+      case "retry-failed":
+        return void runtime.requeueWebpageSegments?.(["failed"]).then(requeued => {
+          runtime.showFloatingBallFeedback(`已重新翻译 ${requeued || 0} 个失败段落`, "info");
+        });
+      case "retranslate-all":
+        return void runtime.requeueWebpageSegments?.(["done", "failed"]).then(requeued => {
+          runtime.showFloatingBallFeedback(`已重新翻译 ${requeued || 0} 个段落（绕过缓存）`, "info");
         });
       default:
         return;

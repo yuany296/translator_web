@@ -24,6 +24,7 @@ import { installTranslationCoalesce } from "./translation-coalesce.js";
 import { installTranslationUtils } from "./translation-utils.js";
 import { installNovelMemory } from "./novel-memory.js";
 import { installNovelTranslation } from "./novel-translation.js";
+import { installTermContextExtract } from "./term-context-extract.js";
 import { installTranslationCacheStore } from "./translation-cache-store.js";
 import { installTranslationConfig } from "./translation-config.js";
 import { installTranslationTaskCancel } from "./translation-task-cancel.js";
@@ -64,6 +65,7 @@ export const backgroundInstallers = Object.freeze([
   installTranslationUtils,
   installNovelMemory,
   installNovelTranslation,
+  installTermContextExtract,
   installTranslationCacheStore,
   installTranslationService,
   installTranslationStream,
@@ -103,6 +105,7 @@ export const backgroundPhases = Object.freeze({
     installTranslationUtils,
     installNovelMemory,
     installNovelTranslation,
+    installTermContextExtract,
     installPlatformCache,
     installTranslationCacheStore,
     installTranslationService,

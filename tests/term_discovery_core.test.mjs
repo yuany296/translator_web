@@ -92,6 +92,67 @@ test("chapter and global ignore scopes remove candidates and global ignore can b
   assert.equal(core.restoreIgnoredSource(ignored.ignored, "the dawn").sources.length, 0);
 });
 
+test("ignoreCandidates chapter scope clears only the target chapter without writing ignored", () => {
+  const discovered = core.mergeDiscoveryResult({
+    pageUrl: "https://example.com/chapter/4",
+    blocks: [{ id: "a", originalText: "소설 제목", translatedText: "小说标题" }],
+    extractedCandidates: [{ source: "소설 제목", kind: "title", score: 0.9, evidenceIds: ["a"] }]
+  });
+  const otherChapter = core.mergeDiscoveryResult({
+    store: discovered,
+    pageUrl: "https://example.com/chapter/5",
+    blocks: [{ id: "b", originalText: "작가 이름", translatedText: "作者名" }],
+    extractedCandidates: [{ source: "작가 이름", kind: "person", score: 0.94, evidenceIds: ["b"] }]
+  });
+  const chapterKey = otherChapter.chapters.find(item => item.key === "https://example.com/chapter/4").key;
+  const otherKey = otherChapter.chapters.find(item => item.key === "https://example.com/chapter/5").key;
+  const result = core.ignoreCandidates({
+    store: otherChapter,
+    entries: [
+      { chapterKey, source: "소설 제목" },
+      { chapterKey: otherKey, source: "작가 이름" }
+    ],
+    scope: "chapter"
+  });
+
+  assert.equal(result.removed, 2);
+  assert.equal(core.getPendingCount(result.store), 0);
+  assert.equal(result.ignored.sources.length, 0);
+  const chapter = result.store.chapters.find(item => item.key === chapterKey);
+  const other = result.store.chapters.find(item => item.key === otherKey);
+  assert.deepEqual(chapter.ignoredSourceKeys, ["소설 제목"]);
+  assert.deepEqual(other.ignoredSourceKeys, ["작가 이름"]);
+});
+
+test("ignoreCandidates global scope clears every chapter and records ignored sources deduped", () => {
+  const discovered = core.mergeDiscoveryResult({
+    pageUrl: "https://example.com/chapter/6",
+    blocks: [{ id: "a", originalText: "BOOK TITLE", translatedText: "BOOK TITLE" }],
+    extractedCandidates: [{ source: "BOOK TITLE", kind: "latin_title", score: 0.9, evidenceIds: ["a"] }]
+  });
+  const withSecond = core.mergeDiscoveryResult({
+    store: discovered,
+    pageUrl: "https://example.com/chapter/7",
+    blocks: [{ id: "b", originalText: "AUTHOR NAME", translatedText: "AUTHOR NAME" }],
+    extractedCandidates: [{ source: "AUTHOR NAME", kind: "latin_name", score: 0.82, evidenceIds: ["b"] }]
+  });
+  const result = core.ignoreCandidates({
+    store: withSecond,
+    entries: [
+      { chapterKey: "", source: "BOOK TITLE" },
+      { chapterKey: "", source: "author name" },
+      { chapterKey: "", source: "BOOK TITLE" },
+      { chapterKey: "", source: "" }
+    ],
+    scope: "global"
+  });
+
+  assert.equal(result.removed, 2);
+  assert.equal(core.getPendingCount(result.store), 0);
+  // ignored 记录保留传入拼写，按 sourceKey 去重（大小写不敏感）
+  assert.deepEqual(Array.from(result.ignored.sources, item => item.sourceKey).sort(), ["author name", "book title"].sort());
+});
+
 test("pending storage keeps only the newest 20 chapters and 200 candidates per chapter", () => {
   const chapters = Array.from({ length: 25 }, (_, chapterIndex) => ({
     key: `https://example.com/chapter/${chapterIndex}`,

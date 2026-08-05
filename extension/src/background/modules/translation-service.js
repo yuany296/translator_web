@@ -300,6 +300,7 @@ export function installTranslationService(runtime) {
           await runtime.deletePendingTranslationOperations([operation.operationId]);
           continue;
         }
+        if (error.status === 400) { await runtime.deletePendingTranslationOperations([operation.operationId]); continue; }
         break;
       }
     }

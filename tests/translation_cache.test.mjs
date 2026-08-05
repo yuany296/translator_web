@@ -194,6 +194,24 @@ test("webpage fallback cache lookup uses one batched background message", async 
     message.type === "GET_TRANSLATION_CACHE_BY_TRANSLATION_KEY"), false);
 });
 
+test("webpage fallback reuses the same source text across pages (no duplicate storage)", async () => {
+  const runtime = makeClientRuntime();
+  const entry = {
+    id: "new-id", legacyId: "legacy-id", sourceHash: "hash-1", translationKey: "tk-different",
+    pageKey: "https://example.com/b", text: "나우원", normalized: "나우원"
+  };
+  runtime.setResponse("GET_TRANSLATION_CACHE_BATCH", { ok: true, records: {} });
+  runtime.setResponse("GET_WEBPAGE_TRANSLATION_CACHE_FALLBACKS", {
+    ok: true,
+    bySourceHash: {
+      "hash-1": [{ id: "old-a", pageKey: "https://example.com/a", sourceText: "나우원", normalizedSourceText: "나우원", translatedText: "罗宇元" }]
+    },
+    byTranslationKey: {}
+  });
+  const records = await runtime.getWebpageEntryRecords([entry]);
+  assert.equal(records.get(entry).translatedText, "罗宇元", "跨页同原文哈希复用，避免重复翻译重复存储");
+});
+
 test("config fingerprint: stable for identical configs, sensitive to model/prompt/glossary", () => {
   const base = { provider: "openai", model: "deepseek-chat", targetLanguage: "zh-CN", promptVersion: "webpage-zh-cn-v1", glossaryVersion: "g1" };
   const first = cacheCore.buildTranslationConfigFingerprint(base);

@@ -17,7 +17,7 @@ export function installNovelReader(runtime) {
         imagePanelOpen: false,
         textStatus: "idle",
         imageStatus: "idle",
-        showTranslation: true,
+        showTranslation: false,
         chapterKey: "",
         cacheStatus: "none",
         cacheCheckedKey: "",
@@ -242,7 +242,7 @@ export function installNovelReader(runtime) {
     runtime.clearNovelImagePanel?.(true);
     state.textStatus = "idle";
     state.imageStatus = "idle";
-    state.showTranslation = true;
+    state.showTranslation = false;
     state.progress = {
       textDone: 0,
       textTotal: 0,

@@ -144,11 +144,23 @@ export function installLifecycleBubble(runtime) {
       unit: "%",
       allowVerticalOverflow: bubble.stitch_overflow === true
     });
-    node.textContent = coverOnly ? "" : runtime.formatTranslationForOriginalLines(
-      displayText, Number(node.dataset.sourceLineCount)
-    );
-    node.title = coverOnly ? "" : originalText || translatedText;
-    if (!coverOnly) {
+    if (coverOnly) {
+      node.textContent = "";
+      node.title = "";
+    } else {
+      const contentNode = document.createElement("div");
+      contentNode.className = "mt-bubble-content";
+      contentNode.dataset.mangaTranslatorOverlay = "true";
+      contentNode.textContent = runtime.formatTranslationForOriginalLines(
+        displayText, Number(node.dataset.sourceLineCount)
+      );
+      // 气泡专用文字排版兜底：文字统一由内层节点居中显示并保留换行，
+      // 外层类名（如 OCR 推断的 mt-align-left）只作调试数据，不再影响排版。
+      contentNode.style.width = "100%";
+      contentNode.style.textAlign = "center";
+      contentNode.style.whiteSpace = "pre-line";
+      node.appendChild(contentNode);
+      node.title = originalText || translatedText;
       runtime.applyBubbleTextLayout(node, displayText);
     }
     node.addEventListener("click", event => {
@@ -194,7 +206,6 @@ export function installLifecycleBubble(runtime) {
   }
   runtime.createBubbleRenderNodes = createBubbleRenderNodes;
   function applyBubbleAnchorStyle(node, {
-    alignment = "center",
     x = 0,
     y = 0,
     w = 0,
@@ -205,43 +216,20 @@ export function installLifecycleBubble(runtime) {
     unit = "%",
     allowVerticalOverflow = false
   } = {}) {
-    const normalized = runtime.normalizeBubbleAlignment(alignment);
+    // 译文永远以原文字块的中心点为锚点定位，不继承原文字块的左上角坐标，
+    // 也不随 OCR 推断的对齐方式（left/right）偏移；多行文字内部统一由 CSS 居中。
+    // alignment 参数保留仅为调用方兼容，不再参与定位。
     const top = allowVerticalOverflow ? Number(y) || 0 : runtime.clamp(Number(y) || 0, 0, unit === "%" ? 100 : Number.MAX_SAFE_INTEGER);
     const left = Number(x) || 0;
     const width = Math.max(0, Number(w) || 0);
     const height = Math.max(0, Number(h) || 0);
     const angle = Number(rotation) || 0;
-    const shouldUseCenterRotationAnchor = Math.abs(angle) >= runtime.BUBBLE_ROTATION_NEAR_HORIZONTAL;
-    if (shouldUseCenterRotationAnchor) {
-      const explicitCenterX = centerX !== null && centerX !== undefined && Number.isFinite(Number(centerX)) ? Number(centerX) : left + width / 2;
-      const explicitCenterY = centerY !== null && centerY !== undefined && Number.isFinite(Number(centerY)) ? Number(centerY) : top + height / 2;
-      const anchorCenterX = unit === "%" ? runtime.clamp(explicitCenterX, 0, 100) : explicitCenterX;
-      const anchorCenterY = allowVerticalOverflow ? explicitCenterY : unit === "%" ? runtime.clamp(explicitCenterY, 0, 100) : explicitCenterY;
-      node.style.left = `${anchorCenterX}${unit}`;
-      node.style.top = `${anchorCenterY}${unit}`;
-      node.style.transformOrigin = "center center";
-      node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${angle.toFixed(2)}deg)`);
-      return;
-    }
-    if (normalized === "left") {
-      node.style.left = `${left}${unit}`;
-      node.style.top = `${top}${unit}`;
-      node.style.transformOrigin = "left top";
-      node.style.setProperty("--mt-base-transform", `rotate(${angle.toFixed(2)}deg)`);
-      return;
-    }
-    if (normalized === "right") {
-      const anchorX = unit === "%" ? runtime.clamp(left + width, 0, 100) : left + width;
-      node.style.left = `${anchorX}${unit}`;
-      node.style.top = `${top}${unit}`;
-      node.style.transformOrigin = "right top";
-      node.style.setProperty("--mt-base-transform", `translate(-100%, 0) rotate(${angle.toFixed(2)}deg)`);
-      return;
-    }
-    const fallbackCenterX = unit === "%" ? runtime.clamp(left + width / 2, 0, 100) : left + width / 2;
-    const fallbackCenterY = allowVerticalOverflow ? top + height / 2 : unit === "%" ? runtime.clamp(top + height / 2, 0, 100) : top + height / 2;
-    node.style.left = `${fallbackCenterX}${unit}`;
-    node.style.top = `${fallbackCenterY}${unit}`;
+    const explicitCenterX = centerX !== null && centerX !== undefined && Number.isFinite(Number(centerX)) ? Number(centerX) : left + width / 2;
+    const explicitCenterY = centerY !== null && centerY !== undefined && Number.isFinite(Number(centerY)) ? Number(centerY) : top + height / 2;
+    const anchorCenterX = unit === "%" ? runtime.clamp(explicitCenterX, 0, 100) : explicitCenterX;
+    const anchorCenterY = allowVerticalOverflow ? explicitCenterY : unit === "%" ? runtime.clamp(explicitCenterY, 0, 100) : explicitCenterY;
+    node.style.left = `${anchorCenterX}${unit}`;
+    node.style.top = `${anchorCenterY}${unit}`;
     node.style.transformOrigin = "center center";
     node.style.setProperty("--mt-base-transform", `translate(-50%, -50%) rotate(${angle.toFixed(2)}deg)`);
   }

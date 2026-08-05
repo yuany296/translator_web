@@ -170,6 +170,31 @@ export function installTranslationCacheStore(runtime) {
   }
   runtime.getAllTranslationCacheRecords = getAllRecords;
 
+  async function dedupeRecords() {
+    const records = await getAllRecords();
+    const kept = new Map();
+    const removed = [];
+    const score = record => (record.updatedAt || 0)
+      + (Array.isArray(record.versions) ? record.versions.length : 0) * 1000;
+    for (const record of records) {
+      const key = `${record.normalizedSourceHash || record.sourceHash || ""}|${record.translatedText || ""}`;
+      const existing = kept.get(key);
+      if (!existing) {
+        kept.set(key, record);
+        continue;
+      }
+      if (score(record) > score(existing)) {
+        kept.set(key, record);
+        removed.push(existing.id);
+      } else {
+        removed.push(record.id);
+      }
+    }
+    for (const id of removed) await deleteRecord(id);
+    return { ok: true, removed: removed.length, total: records.length };
+  }
+  runtime.dedupeTranslationCacheRecords = dedupeRecords;
+
   function readIndexValues(store, indexName, mode, values) {
     const unique = [...new Set((Array.isArray(values) ? values : []).map(String).filter(Boolean))];
     return Promise.all(unique.map(value => new Promise((resolve, reject) => {

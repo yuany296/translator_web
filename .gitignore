@@ -62,3 +62,7 @@ local-ocr-service/glossary.db
 
 # === Debug snapshots ===
 debug_before/
+
+# === Runtime logs / debug dumps ===
+service.log
+tmp-snapshot.txt

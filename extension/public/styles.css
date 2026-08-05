@@ -55,7 +55,7 @@
 }
 
 .mt-cross-page-overlay .mt-cross-page-text {
-  white-space: pre-wrap;
+  white-space: pre-line;
   overflow-wrap: anywhere;
   pointer-events: auto;
 }
@@ -195,10 +195,6 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  text-align: center;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.18;
   font-family: "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   font-weight: var(--mt-font-weight, 600);
   border-radius: 0.36em;
@@ -215,19 +211,21 @@
   transition: opacity 0.15s ease;
 }
 
-.mt-bubble.mt-align-left {
-  align-items: flex-start;
-  text-align: left;
-}
-
-.mt-bubble.mt-align-center {
-  align-items: center;
+/* 内层文字节点：负责文字换行、水平居中与行距。
+   译文始终以原文字块中心为锚点并整体居中排版；
+   OCR 推断的 left/right 对齐只保留在 mt-align-* 类名上做调试信息，不再改变布局。 */
+.mt-bubble-content {
+  display: block;
+  width: 100%;
   text-align: center;
+  white-space: pre-line;
+  line-height: 1.18;
+  word-break: break-word;
 }
 
-.mt-bubble.mt-align-right {
-  align-items: flex-end;
-  text-align: right;
+.mt-bubble.mt-jp-vertical .mt-bubble-content {
+  white-space: normal;
+  line-height: 1.34;
 }
 
 .mt-bubble.mt-stream-enter {
@@ -408,6 +406,9 @@
   box-shadow: 0 16px 42px rgba(15, 23, 42, 0.38);
   font: 500 13px/1.45 system-ui, sans-serif;
   pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0.15s ease 0.5s;
 }
 .mt-floating-ball-wrap[data-side="left"] .mt-novel-progress-panel {
   left: 44px;
@@ -418,6 +419,11 @@
   bottom: auto;
 }
 .mt-novel-progress-panel[hidden] { display: none; }
+.mt-floating-ball-wrap:hover .mt-novel-progress-panel:not([hidden]) {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.15s ease 0.02s, visibility 0.15s;
+}
 .mt-novel-progress-header {
   display: flex;
   align-items: center;
@@ -426,19 +432,26 @@
   font-size: 14px;
 }
 .mt-novel-progress-spinner {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
   box-sizing: border-box;
-  border: 2px solid rgba(147, 197, 253, 0.36);
-  border-top-color: #60a5fa;
+  border: 3px solid rgba(59, 130, 246, 0.3);
+  border-top-color: #7dd3fc;
   border-radius: 50%;
-  animation: mt-progress-spin 0.8s linear infinite;
+  animation: mt-progress-spin 0.6s linear infinite;
 }
 .mt-novel-progress-panel.mt-complete .mt-novel-progress-spinner,
 .mt-novel-progress-panel.mt-partial .mt-novel-progress-spinner {
   border: 0;
   animation: none;
+}
+.mt-novel-progress-panel.mt-complete .mt-novel-progress-spinner::before,
+.mt-novel-progress-panel.mt-partial .mt-novel-progress-spinner::before {
+  display: block;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
 }
 .mt-novel-progress-panel.mt-complete .mt-novel-progress-spinner::before { content: "✓"; color: #4ade80; }
 .mt-novel-progress-panel.mt-partial .mt-novel-progress-spinner::before { content: "!"; color: #fbbf24; }
@@ -500,6 +513,19 @@
   font: inherit;
   color: inherit;
 }
+/* 覆盖 Kakao 阅读器的 user-select: none（防复制），允许在正文中选中文字以添加术语 */
+[data-p-id],
+[data-p-id] .mt-novel-source,
+[data-p-id] .mt-novel-translation {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+[data-p-id]::selection,
+[data-p-id] .mt-novel-source::selection,
+[data-p-id] .mt-novel-translation::selection {
+  background: rgba(96, 165, 250, 0.4);
+  color: inherit;
+}
 .mt-webpage-progress-panel {
   position: absolute;
   right: 44px;
@@ -514,9 +540,17 @@
   box-shadow: 0 16px 42px rgba(15, 23, 42, 0.38);
   font: 500 13px/1.55 system-ui, sans-serif;
   pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0.15s ease 0.5s;
 }
 .mt-floating-ball-wrap[data-side="left"] .mt-webpage-progress-panel { left: 44px; right: auto; }
 .mt-webpage-progress-panel[hidden] { display: none; }
+.mt-floating-ball-wrap:hover .mt-webpage-progress-panel:not([hidden]) {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.15s ease 0.02s, visibility 0.15s;
+}
 .mt-webpage-progress-panel strong { display: block; margin-bottom: 4px; color: #f8fafc; }
 .mt-webpage-progress-panel.mt-partial { border-color: rgba(251, 191, 36, 0.55); }
 .mt-webpage-progress-panel.mt-complete { border-color: rgba(74, 222, 128, 0.52); }
@@ -544,6 +578,48 @@
   pointer-events: none;
 }
 .mt-webpage-translation-tooltip[hidden] { display: none; }
+/* ============ 逐节点 loading 图标（网页翻译） ============ */
+.mt-webpage-node-loading {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 3px;
+  box-sizing: border-box;
+  vertical-align: baseline;
+  z-index: 2147483001;
+  pointer-events: none;
+  user-select: none;
+}
+.mt-webpage-node-loading[hidden] { display: none; }
+.mt-webpage-node-loading-spinner {
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 2px solid rgba(96, 165, 250, 0.3);
+  border-top-color: #60a5fa;
+  border-radius: 50%;
+  animation: mt-ring-spin 0.9s linear infinite;
+}
+.mt-webpage-node-loading-error {
+  display: none;
+  width: 13px;
+  height: 13px;
+  color: #ef4444;
+  font: 700 14px/1 system-ui, "Microsoft YaHei", sans-serif;
+  text-align: center;
+}
+.mt-webpage-node-loading.mt-failed .mt-webpage-node-loading-spinner { display: none; }
+.mt-webpage-node-loading.mt-failed .mt-webpage-node-loading-error { display: block; }
+.mt-webpage-node-loading.mt-failed { pointer-events: auto; cursor: pointer; }
+.mt-webpage-node-loading.mt-failed::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+}
 .mt-novel-revision-panel {
   position: fixed;
   top: 0;
@@ -551,6 +627,8 @@
   z-index: 2147483644;
   width: min(440px, 92vw);
   height: 100vh;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   color: #e2e8f0;
   background: rgba(15, 23, 42, 0.985);
@@ -559,6 +637,7 @@
 }
 .mt-novel-revision-panel[hidden] { display: none; }
 .mt-novel-revision-panel > header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -575,8 +654,55 @@
   background: rgba(51, 65, 85, 0.88);
   cursor: pointer;
 }
-.mt-novel-revision-status { padding: 9px 16px; color: #93c5fd; }
-.mt-novel-revision-body { height: calc(100vh - 88px); overflow: auto; padding: 0 14px 20px; }
+.mt-novel-revision-status { flex: 0 0 auto; padding: 9px 16px; color: #93c5fd; }
+.mt-novel-revision-search {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: calc(100% - 32px);
+  margin: 0 16px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.72);
+  font: inherit;
+}
+.mt-novel-revision-search::placeholder { color: #64748b; }
+.mt-novel-revision-term {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px dashed rgba(96, 165, 250, 0.42);
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.5);
+}
+.mt-novel-revision-term[hidden] { display: none; }
+.mt-novel-revision-term-status {
+  color: #93c5fd;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mt-novel-revision-term-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.mt-novel-revision-term-actions button {
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 8px;
+  padding: 5px 8px;
+  color: #e2e8f0;
+  background: rgba(51, 65, 85, 0.88);
+  cursor: pointer;
+}
+.mt-novel-revision-term-actions button.mt-primary {
+  border-color: rgba(96, 165, 250, 0.55);
+  color: #fff;
+  background: #2563eb;
+}
+.mt-novel-revision-body { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 20px; }
 .mt-novel-revision-card {
   display: grid;
   gap: 8px;
@@ -586,6 +712,8 @@
   border-radius: 12px;
   background: rgba(30, 41, 59, 0.72);
 }
+.mt-novel-revision-card[hidden] { display: none; }
+.mt-novel-revision-empty { padding: 18px 8px; color: #94a3b8; text-align: center; }
 .mt-novel-revision-source { color: #94a3b8; white-space: pre-wrap; }
 .mt-novel-revision-card textarea { min-height: 82px; resize: vertical; }
 .mt-novel-revision-card textarea,

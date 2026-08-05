@@ -10,7 +10,7 @@ export function applyDomTextLayer(node, layer) {
     height: `${placement.writingMode === "vertical" ? placement.axisLength : placement.normalThickness}px`,
     fontSize: `${fontSize}px`,
     lineHeight: `${lineHeight}px`,
-    whiteSpace: "pre-wrap",
+    whiteSpace: "pre-line",
     transformOrigin: "center center",
     transform: `translate(-50%, -50%) rotate(${placement.rotationDeg}deg)`,
     writingMode: placement.writingMode === "vertical" ? "vertical-rl" : "horizontal-tb",

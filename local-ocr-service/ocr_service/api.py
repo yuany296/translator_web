@@ -69,6 +69,7 @@ routes = [
     ("/translations/batch-import", runtime.translations_batch_import, ["POST"]),
     ("/translations/{record_id}/versions", runtime.translations_versions, ["GET"]),
     ("/translations/export", runtime.translations_export, ["GET"]),
+    ("/translations/dedupe", runtime.translations_dedupe, ["POST"]),
     ("/translations/import", runtime.translations_import, ["POST"]),
 ]
 for route_path, endpoint, methods in routes:

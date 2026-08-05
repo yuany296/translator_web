@@ -139,13 +139,8 @@ class TranslationStore:
     def _record_by_identity(connection: sqlite3.Connection, operation: dict[str, Any]):
         record_id = _text(operation.get("recordId"), 80)
         record_key = _text(operation.get("recordKey"), 160)
-        if record_id:
-            return connection.execute(
-                "SELECT * FROM translation_records WHERE id=?", (record_id,)
-            ).fetchone()
-        return connection.execute(
-            "SELECT * FROM translation_records WHERE record_key=?", (record_key,)
-        ).fetchone()
+        clause, value = ("id=?", (record_id,)) if record_id else ("record_key=?", (record_key,))
+        return connection.execute(f"SELECT * FROM translation_records WHERE {clause}", value).fetchone()
 
     @staticmethod
     def _check_revision(row, operation: dict[str, Any], required: bool = False) -> None:
@@ -175,26 +170,41 @@ class TranslationStore:
         target = _text(payload.get("targetLanguage"), 24)
         if not source or not target or source == target:
             raise ValueError("resolved source and target languages must differ")
+        mode = _text(payload.get("mode"), 16)
+        identity_where = "mode=? AND scope_key=? AND segment_key=? AND resolved_source_language=? AND target_language=?"
+        identity_args = (mode, scope_key, segment_key, source, target)
+        existing = connection.execute(
+            f"SELECT * FROM translation_records WHERE {identity_where}", identity_args
+        ).fetchone()
+        if existing is not None:
+            return existing
         now = _now_ms()
         record_id = str(uuid.uuid4())
-        connection.execute(
-            "INSERT INTO translation_records(id,record_key,mode,scope_key,segment_key,work_id,"
-            "chapter_id,page_key,raw_source_text,normalized_source_text,raw_source_hash,"
-            "normalized_source_hash,configured_source_language,resolved_source_language,"
-            "target_language,binding_key,translation_key,recovery_json,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (record_id, record_key, _text(payload.get("mode"), 16), scope_key, segment_key,
-             _text(payload.get("workId"), 300), _text(payload.get("chapterId"), 300),
-             _text(payload.get("pageKey"), 2000), _text(payload.get("rawSourceText")),
-             _text(payload.get("normalizedSourceText")), _text(payload.get("rawSourceHash"), 160),
-             _text(payload.get("normalizedSourceHash"), 160),
-             _text(payload.get("configuredSourceLanguage") or source, 24), source, target,
-             _text(payload.get("bindingKey"), 160), _text(payload.get("translationKey"), 160),
-             json.dumps(payload.get("recovery") or {}, ensure_ascii=False)[:20_000], now, now),
-        )
-        return connection.execute(
-            "SELECT * FROM translation_records WHERE id=?", (record_id,)
-        ).fetchone()
+        try:
+            connection.execute(
+                "INSERT INTO translation_records(id,record_key,mode,scope_key,segment_key,work_id,"
+                "chapter_id,page_key,raw_source_text,normalized_source_text,raw_source_hash,"
+                "normalized_source_hash,configured_source_language,resolved_source_language,"
+                "target_language,binding_key,translation_key,recovery_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (record_id, record_key, mode, scope_key, segment_key,
+                 _text(payload.get("workId"), 300), _text(payload.get("chapterId"), 300),
+                 _text(payload.get("pageKey"), 2000), _text(payload.get("rawSourceText")),
+                 _text(payload.get("normalizedSourceText")), _text(payload.get("rawSourceHash"), 160),
+                 _text(payload.get("normalizedSourceHash"), 160),
+                 _text(payload.get("configuredSourceLanguage") or source, 24), source, target,
+                 _text(payload.get("bindingKey"), 160), _text(payload.get("translationKey"), 160),
+                 json.dumps(payload.get("recovery") or {}, ensure_ascii=False)[:20_000], now, now),
+            )
+        except sqlite3.IntegrityError:
+            # 多连接并发竞态：另一请求已插入同五元组，复用其记录。
+            concurrent = connection.execute(
+                f"SELECT * FROM translation_records WHERE {identity_where}", identity_args
+            ).fetchone()
+            if concurrent is None:
+                raise
+            return concurrent
+        return connection.execute("SELECT * FROM translation_records WHERE id=?", (record_id,)).fetchone()
 
     def _create_version(self, connection, row, operation: dict[str, Any], payload: dict[str, Any]):
         translated = _text(payload.get("translatedText"))
@@ -288,8 +298,7 @@ class TranslationStore:
             return json.loads(applied[0])
         row = self._apply_mutation(connection, operation)
         response = {"ok": True, "operationId": operation_id,
-                    "record": self._snapshot(connection, row),
-                    "changeSeq": self._global_change_seq(connection)}
+                    "record": self._snapshot(connection, row), "changeSeq": self._global_change_seq(connection)}
         connection.execute(
             "INSERT INTO applied_operations(operation_id,response_json,created_at) VALUES(?,?,?)",
             (operation_id, json.dumps(response, ensure_ascii=False), _now_ms()),
@@ -311,16 +320,12 @@ class TranslationStore:
 
     def resolve_snapshot(self, record_id: str = "", record_key: str = "") -> dict[str, Any] | None:
         with self.connect() as connection:
-            row = self._record_by_identity(connection, {
-                "recordId": record_id, "recordKey": record_key,
-            })
+            row = self._record_by_identity(connection, {"recordId": record_id, "recordKey": record_key})
             return self._snapshot(connection, row) if row is not None else None
 
     def versions(self, record_id: str) -> dict[str, Any]:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM translation_records WHERE id=?", (_text(record_id, 80),)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM translation_records WHERE id=?", (_text(record_id, 80),)).fetchone()
             if row is None:
                 raise TranslationNotFound("translation record not found")
             versions = connection.execute(
@@ -331,7 +336,7 @@ class TranslationStore:
 
     def export_data(self) -> dict[str, Any]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM translation_records").fetchall()
+            rows = connection.execute("SELECT * FROM translation_records WHERE deleted_at IS NULL").fetchall()
             return {"schemaVersion": SCHEMA_VERSION, "changeSeq": self._global_change_seq(connection),
                     "records": [self.versions(row["id"]) for row in rows]}
 

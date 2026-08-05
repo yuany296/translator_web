@@ -81,38 +81,35 @@ test("child frames never create a webpage tab controller", async () => {
   assert.equal(calls.translate, 0);
 });
 
-test("init with mode off reads the controller but does not translate", async () => {
+test("init reads the controller but never auto-translates", async () => {
   const { runtime, sent, calls, webpage } = installRuntime({ controller: { mode: "off", visibility: "source" } });
   const result = await runtime.initializeWebpageTabSession();
-  assert.deepEqual(result, { skipped: true, reason: "mode-off" });
+  assert.deepEqual(result, { skipped: true, reason: "no-auto-resume" });
   assert.equal(sent.some(message => message.type === "GET_WEBPAGE_TAB_STATE"), true);
   assert.equal(webpage.controller.mode, "off");
-  assert.equal(calls.translate, 0);
+  assert.equal(calls.translate, 0, "未点击翻译不进入翻译状态");
 });
 
-test("init with continuous mode resumes: session created, pageKey reported, viewport translated", async () => {
+test("init with continuous mode does not auto-resume translation", async () => {
   const { runtime, sent, calls, webpage } = installRuntime({
     controller: { mode: "continuous", visibility: "translated", currentPageKey: "https://example.com/old", navigationGeneration: 3 }
   });
   const result = await runtime.initializeWebpageTabSession();
-  assert.deepEqual(result, { resumed: true, mode: "continuous", visibility: "translated" });
-  assert.ok(webpage.session, "持续模式自动创建当前页面会话");
-  assert.equal(webpage.session.active, true);
-  assert.equal(webpage.session.generation, 3, "会话使用控制器的 navigationGeneration");
+  assert.deepEqual(result, { skipped: true, reason: "no-auto-resume" });
+  assert.equal(webpage.session, null, "不自动创建会话");
+  assert.equal(calls.translate, 0, "持久化的 continuous 不再触发自动翻译");
   await new Promise(resolve => setTimeout(resolve, 0));
   const report = sent.find(message => message.type === "SET_WEBPAGE_TAB_STATE" && message.pageKey);
-  assert.equal(report?.pageKey, "https://example.com/page", "向后台报告路由 pageKey");
-  assert.equal(calls.translate, 1, "自动翻译可视区");
+  assert.equal(report?.pageKey, "https://example.com/page", "仍向后台报告路由 pageKey");
 });
 
-test("init with continuous + source visibility resumes background translation without rendering", async () => {
+test("init with continuous + source visibility does not auto-translate either", async () => {
   const { runtime, calls, webpage } = installRuntime({
     controller: { mode: "continuous", visibility: "source", navigationGeneration: 1 }
   });
   const result = await runtime.initializeWebpageTabSession();
-  assert.equal(result.resumed, true);
-  assert.equal(result.visibility, "source");
-  assert.equal(calls.translate, 1, "显示原文期间后台仍翻译");
+  assert.deepEqual(result, { skipped: true, reason: "no-auto-resume" });
+  assert.equal(calls.translate, 0);
   assert.equal(webpage.showTranslation, false);
 });
 

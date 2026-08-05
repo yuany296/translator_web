@@ -80,9 +80,13 @@ export function installWebpageStartup(runtime) {
         if (webpage.nodeStore.activeNodes.has(entry.node)) continue;
         const existing = session.segments.get(entry.id);
         if (existing) {
-          // 同一 bindingKey 的既有段（SPA 重建节点或返回旧页面）：
-          // 重新挂到新节点，内存译文由下方内存命中阶段复用
-          if (!existing.node?.isConnected) existing.node = entry.node;
+          // failed 段或节点已断开的段重新入队（force-update 重试失败段）；
+          // 其余既有段重新挂新节点，内存译文由下方内存命中阶段复用
+          if (existing.status.translation === "failed" || !existing.node?.isConnected) {
+            viewportEntries.push(entry);
+          } else if (!existing.node?.isConnected) {
+            existing.node = entry.node;
+          }
           continue;
         }
         const zone = runtime.computeWebpageSegmentZone(entry.node);
@@ -95,7 +99,8 @@ export function installWebpageStartup(runtime) {
         if (segment.status.translation !== "done" || !segment.translatedText) continue;
         if (segment.status.rendering === "rendered") continue;
         const node = segment.node;
-        if (!node || !node.isConnected || node.nodeValue !== segment.sourceText) continue;
+        if (!node || !node.isConnected
+          || String(node.nodeValue || "").trim() !== String(segment.sourceText || "").trim()) continue;
         const applied = runtime.applyWebpageEntriesToSession(session, generation,
           [{ node, text: segment.sourceText, id: segment.segmentKey, sourceHash: segment.sourceHash, pageKey: session.pageKey }],
           new Map([[segment.sourceText, segment.translatedText]]));
@@ -153,7 +158,7 @@ export function installWebpageStartup(runtime) {
         webpage.cacheStatus = session.segments.size
           ? (progressState(session) ? "cached" : "partial") : "none";
       }
-      runtime.updateWebpageProgress?.(runtime, webpage);
+      runtime.refreshWebpageUi?.();
       runtime.updateFloatingBallState?.();
     }
   }

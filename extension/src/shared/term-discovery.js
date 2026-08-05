@@ -264,6 +264,44 @@ function restoreIgnoredSource(ignoredValue, source) {
   ignored.sources = ignored.sources.filter(item => item.sourceKey !== sourceKey);
   return ignored;
 }
+function ignoreCandidates({
+  store: storeValue,
+  ignored: ignoredValue,
+  entries,
+  scope,
+  now = Date.now()
+}) {
+  let store = normalizePendingStore(storeValue);
+  let ignored = normalizeIgnoredStore(ignoredValue);
+  let removed = 0;
+  const seen = new Set();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const source = normalizeSource(entry && entry.source);
+    const sourceKey = getSourceKey(source);
+    if (!sourceKey || seen.has(sourceKey)) {
+      continue;
+    }
+    seen.add(sourceKey);
+    const chapterKey = String(entry && entry.chapterKey || "");
+    const before = getPendingCount(store);
+    const next = ignoreCandidate({
+      store,
+      ignored,
+      chapterKey,
+      source,
+      scope,
+      now
+    });
+    store = next.store;
+    ignored = next.ignored;
+    removed += before - getPendingCount(store);
+  }
+  return {
+    store,
+    ignored,
+    removed
+  };
+}
 function getPendingCount(storeValue) {
   return normalizePendingStore(storeValue).chapters.reduce((total, chapter) => total + chapter.candidates.length, 0);
 }
@@ -318,6 +356,7 @@ export default Object.freeze({
   mergeDiscoveryResult,
   removeSourcesFromPending,
   ignoreCandidate,
+  ignoreCandidates,
   restoreIgnoredSource,
   getPendingCount,
   getSuggestedTargetForSource

@@ -109,8 +109,12 @@ test("management center exposes glossary and pending-term confirmation controls"
 
   assert.match(glossaryPage, /id="pendingTabBtn"/);
   assert.match(glossaryPage, /id="confirmFilledBtn"/);
+  assert.match(glossaryPage, /id="ignoreAllBtn"/);
   assert.match(glossaryScript, /CONFIRM_TERM_CANDIDATES/);
   assert.match(glossaryScript, /IGNORE_TERM_CANDIDATE/);
+  assert.match(glossaryScript, /IGNORE_TERM_CANDIDATES/);
+  assert.match(glossaryScript, /ignore-chapter-all/);
+  assert.match(glossaryScript, /ignoreAllPendingCandidates/);
   assert.match(glossaryScript, /RESTORE_IGNORED_TERM/);
   assert.match(glossaryScript, /candidate-source-input/);
   assert.match(glossaryScript, /candidateSource/);

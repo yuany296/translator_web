@@ -171,4 +171,6 @@ export function completeContentRuntime(runtime) {
   runtime.api.readerProfile = runtime.readerProfile;
   runtime.api.__test.shouldUseKakaoCanonicalPipeline = runtime.shouldUseKakaoCanonicalPipeline;
   runtime.api.__test.getRenderScenes = () => runtime.renderScenesByPage || new Map();
+  runtime.api.__test.createBubbleNode = runtime.createBubbleNode;
+  runtime.api.__test.prepareBubbleMeasureProbe = runtime.prepareBubbleMeasureProbe;
 }

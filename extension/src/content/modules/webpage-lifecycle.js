@@ -80,8 +80,9 @@ export function installWebpageLifecycle(runtime) {
    */
   async function onRouteChange(event = {}) {
     const state = runtime.getWebpageState();
-    const controller = state.controller || {};
-    const wasActive = state.active === true || controller.mode === "continuous";
+    // 仅当用户在当前会话点过翻译（active）时才在路由切换/bfcache 恢复后继续翻译，
+    // 持久化的 controller.mode 不再触发自动翻译
+    const wasActive = state.active === true;
     const previousUrl = String(event.previousUrl || state.pageKey || location.href);
     const nextUrl = String(event.nextUrl || location.href);
     const reason = String(event.reason || "fallback");
@@ -112,10 +113,11 @@ export function installWebpageLifecycle(runtime) {
     state.cacheStatus = "none";
     state.cacheBadgeUntil = 0;
 
-    // 4. 迁移仍连接的节点绑定
+    // 4. 迁移仍连接的节点绑定；旧会话残留的 pending 图标一并清除
     if (oldSession && oldSession !== session) {
       oldSession.active = false;
       runtime.adoptConnectedBindings(oldSession, session);
+      runtime.clearAllWebpageNodeLoading?.();
     }
 
     // 5. 向后台报告路由（currentPageKey / navigationGeneration）

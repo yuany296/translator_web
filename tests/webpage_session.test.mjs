@@ -149,9 +149,10 @@ test("getVisibleProgress reports viewport/background/persistence axes separately
   for (const segment of [v1, v2, b1, b2]) session.segments.set(segment.segmentKey, segment);
   assert.deepEqual(getVisibleProgress(session), {
     viewportTotal: 2, viewportDone: 2, backgroundTotal: 2, backgroundDone: 1,
-    pendingSave: 1, realFailed: 1
+    pendingSave: 1, realFailed: 1, unchangedCount: 0
   });
   assert.deepEqual(getVisibleProgress(null), {
-    viewportTotal: 0, viewportDone: 0, backgroundTotal: 0, backgroundDone: 0, pendingSave: 0, realFailed: 0
+    viewportTotal: 0, viewportDone: 0, backgroundTotal: 0, backgroundDone: 0,
+    pendingSave: 0, realFailed: 0, unchangedCount: 0
   });
 });

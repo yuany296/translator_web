@@ -111,7 +111,9 @@ export function updateWebpageProgress(runtime, state) {
   const busy = runtime.isWebpageQueueBusy?.() === true || state.working === true;
   const blocked = !!state.pageFault;
   const failed = (progress && progress.realFailed > 0) || state.partialFailure === true;
-  const active = busy || blocked || failed || state.showTranslation === true;
+  // 只在进行中 / 失败 / 离线时显示状态栏；翻译完成（含原文保留）即隐藏，
+  // 成功由图标旁的绿色勾勾表达，不再常驻“网页翻译完成”
+  const active = busy || blocked || failed;
   panel.hidden = !active;
   if (!active) return;
   panel.classList.toggle("mt-partial", failed || blocked);
@@ -127,12 +129,13 @@ export function updateWebpageProgress(runtime, state) {
     parts.push(`可视区 ${progress.viewportDone}/${progress.viewportTotal}`);
     parts.push(`页面后台 ${progress.backgroundDone}/${progress.backgroundTotal}`);
   }
+  if (progress && progress.unchangedCount > 0) parts.push(`原文保留 ${progress.unchangedCount}`);
   if (progress && progress.pendingSave > 0) parts.push(`待保存 ${progress.pendingSave}`);
   if (progress && progress.realFailed > 0) parts.push(`失败 ${progress.realFailed}`);
   if (blocked) parts.push("30 秒后自动重试");
   line.textContent = parts.length ? parts.join(" · ") : "正在扫描当前页面…";
   panel.append(header, line);
-  if (!busy && !blocked) {
+  if (!busy && !blocked && !failed) {
     clearTimeout(state.progressHideTimer);
     state.progressHideTimer = setTimeout(() => { panel.hidden = true; }, 4500);
   }

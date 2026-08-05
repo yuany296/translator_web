@@ -33,6 +33,7 @@ class FakeKiwi:
             "서호윤": [FakeToken("서호윤", "NNP", 0, 3)],
             "오리엔테": [FakeToken("오리엔테", "NNG", 0, 4)],
             "샤이닝 스타": [FakeToken("샤이닝", "NNP", 0, 3), FakeToken("스타", "NNG", 4, 2)],
+            "정다준 성인": [FakeToken("정다준", "NNP", 0, 3), FakeToken("성인", "NNG", 4, 2)],
             "연습 시간": [FakeToken("연습", "NNG", 0, 2), FakeToken("시간", "NNG", 3, 2)],
             "평범한 말입니다": [
                 FakeToken("평범", "NNG", 0, 2),
@@ -67,6 +68,24 @@ def test_balanced_extractor_rejects_ordinary_sentence_and_keeps_reviewable_noun_
     result = extract_term_candidates(blocks, analyzer=FakeKiwi())
 
     assert [item["source"] for item in result] == ["연습 시간"]
+
+
+def test_mixed_person_plus_common_noun_group_is_rejected_but_pure_name_survives() -> None:
+    blocks = [
+        {"id": "mixed", "text": "정다준 성인"},
+        {"id": "name", "text": "김성현"},
+    ]
+    result = extract_term_candidates(blocks, analyzer=FakeKiwi())
+
+    assert [item["source"] for item in result] == ["김성현"]
+
+
+def test_real_kiwi_rejects_person_plus_common_noun_glue() -> None:
+    result = extract_term_candidates(
+        [{"id": "glue", "text": "으아앜!! 정다준 성인되기 59초 전!!"}],
+    )
+
+    assert all("정다준 성인" != item["source"] for item in result)
 
 
 def test_person_structure_keeps_the_full_name_and_rejects_four_syllable_loanword() -> None:

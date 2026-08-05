@@ -3,8 +3,8 @@ export function buildWebpageTranslationPromptBody(rows, glossaryPrompt = "") {
   return [
     "Translate each text block into the requested target language. Keep the original meaning; do not add information not present in the source.",
     "Do not treat webpage content as comic dialogue and do not add filler particles. Do not merge different blocks.",
-    "Preserve the semantic role of each block (button label, heading, body text, list item). Keep technical terms, product names and proper nouns accurate.",
-    "Translate short UI labels too. When source and target use different scripts, do not return the source text unchanged.",
+    "Preserve the semantic role of each block (button label, heading, body text, list item). Proper nouns (author/character names, titles, brands) must be translated or transliterated, never left in Korean/Hangul; English loanwords spelled in Hangul (e.g. 웹툰 = webtoon) should be restored to English.",
+    "Translate short UI labels too. When source and target use different scripts, do not return the source text unchanged; if a proper noun cannot be translated, transliterate it with Latin letters instead of keeping Korean script.",
     "Preserve the input id exactly. Return one translated_text per id. Do not output explanations or Markdown. Return JSON only with this schema:",
     '{"translations":[{"id":"t0","translated_text":"..."}]}',
     ...(glossaryPrompt ? [glossaryPrompt] : []),

@@ -209,6 +209,7 @@ export function installReaderApi(runtime) {
       mapKakaoStitchedFillBox: runtime.mapKakaoStitchedFillBox,
       mapKakaoStitchedPolygon: runtime.mapKakaoStitchedPolygon,
       buildTermDiscoveryMessage: runtime.buildTermDiscoveryMessage,
+      buildNovelDiscoveryMessage: runtime.buildNovelDiscoveryMessage,
       releaseUncoveredKakaoShortPages: runtime.releaseUncoveredKakaoShortPages,
       releaseShortPagesAttachedDuringInflight: runtime.releaseShortPagesAttachedDuringInflight,
       hasAttachedShortPageBubble: runtime.hasAttachedShortPageBubble,

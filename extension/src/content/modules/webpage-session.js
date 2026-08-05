@@ -204,13 +204,14 @@ export function adoptConnectedBindings(previousSession, nextSession, options = {
  * separate axes so a pending save never looks like a translation failure.
  */
 export function getVisibleProgress(session) {
-  if (!session) return { viewportTotal: 0, viewportDone: 0, backgroundTotal: 0, backgroundDone: 0, pendingSave: 0, realFailed: 0 };
+  if (!session) return { viewportTotal: 0, viewportDone: 0, backgroundTotal: 0, backgroundDone: 0, pendingSave: 0, realFailed: 0, unchangedCount: 0 };
   let viewportTotal = 0;
   let viewportDone = 0;
   let backgroundTotal = 0;
   let backgroundDone = 0;
   let pendingSave = 0;
   let realFailed = 0;
+  let unchangedCount = 0;
   for (const segment of session.segments.values()) {
     const done = segment.status.translation === "done";
     const inViewport = segment.zone === "viewport";
@@ -221,12 +222,13 @@ export function getVisibleProgress(session) {
       backgroundTotal += 1;
       if (done) backgroundDone += 1;
     }
+    if (done && segment.unchanged === true) unchangedCount += 1;
     if (segment.status.persistence === "pending-save" || segment.status.persistence === "failed") {
       pendingSave += 1;
     }
     if (segment.status.translation === "failed") realFailed += 1;
   }
-  return { viewportTotal, viewportDone, backgroundTotal, backgroundDone, pendingSave, realFailed };
+  return { viewportTotal, viewportDone, backgroundTotal, backgroundDone, pendingSave, realFailed, unchangedCount };
 }
 
 export default Object.freeze({

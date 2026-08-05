@@ -16,6 +16,13 @@ export function installNovelRenderer(runtime) {
     translation = document.createElement("span");
     translation.className = "mt-novel-translation";
     translation.dataset.mangaTranslatorNovel = "translation";
+    // 页面（含 shadow DOM 内）常设 user-select: none 防复制；inline style 确保正文可选中以添加术语。
+    node.style.userSelect = "text";
+    node.style.webkitUserSelect = "text";
+    source.style.userSelect = "text";
+    source.style.webkitUserSelect = "text";
+    translation.style.userSelect = "text";
+    translation.style.webkitUserSelect = "text";
     node.appendChild(source);
     node.appendChild(translation);
     node.dataset.mtNovelTranslated = "true";

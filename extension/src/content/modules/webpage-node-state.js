@@ -75,7 +75,8 @@ export function isNodeModifiedByPage(entry, currentValue) {
  */
 export function shouldApplyTranslation(snapshot) {
   if (snapshot.isConnected !== true) return false;
-  if (snapshot.currentValue !== snapshot.sourceText) return false;
+  // 节点原文可能带首尾空白（"로그인 "），与 trim 后的 sourceText 比较前先归一化
+  if (String(snapshot.currentValue || "").trim() !== String(snapshot.sourceText || "").trim()) return false;
   if (snapshot.generation !== snapshot.currentGeneration) return false;
   if (snapshot.pageKey !== snapshot.currentPageKey) return false;
   if (snapshot.wantsTranslation !== true) return false;

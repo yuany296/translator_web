@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { installWebpageSession } from "../extension/src/content/modules/webpage-session.js";
+import { installWebpageSession, createPageSession, createSegment, getVisibleProgress } from "../extension/src/content/modules/webpage-session.js";
 import { installWebpageScheduler } from "../extension/src/content/modules/webpage-scheduler.js";
 import { installWebpageStartup } from "../extension/src/content/modules/webpage-startup.js";
 import { installWebpageTranslate } from "../extension/src/content/modules/webpage-translate.js";
@@ -41,7 +41,7 @@ function makeRuntime() {
   // 测试间共享 window 状态，每个运行时重置滚动位置，避免顺序依赖
   globalThis.window.scrollY = 0;
   globalThis.window.scrollX = 0;
-  const calls = { batches: [], applies: [], saves: [], offline: 0, retries: 0 };
+  const calls = { batches: [], applies: [], saves: [], offline: 0, retries: 0, refreshes: 0 };
   const webpage = {
     nodeStore: {
       activeNodes: new Set(), set() {}, get() {}, forEach() {}, prune() {},
@@ -64,6 +64,7 @@ function makeRuntime() {
     getWebpageEntryRecords: async entries => new Map(),
     migrateWebpageRecordToEntry: async () => null,
     updateWebpageProgress: () => {},
+    refreshWebpageUi: () => { calls.refreshes += 1; },
     updateFloatingBallState: () => {},
     ensureTranslationServiceOnline: async ids => ({ ok: true, records: [] }),
     applyWebpageEntriesToSession: (session, generation, entries, translations) => {
@@ -207,7 +208,7 @@ test("cache hits remain visible in PageSession progress", async () => {
   assert.equal(segment.status.persistence, "saved");
   assert.deepEqual(runtime.getVisibleWebpageProgress(session), {
     viewportTotal: 1, viewportDone: 1, backgroundTotal: 0,
-    backgroundDone: 0, pendingSave: 0, realFailed: 0
+    backgroundDone: 0, pendingSave: 0, realFailed: 0, unchangedCount: 0
   });
 });
 
@@ -392,3 +393,139 @@ function makeSegment(session, key) {
     translatedText: "", errors: [], createdAt: Date.now(), updatedAt: Date.now()
   };
 }
+
+test("cancelled batch requeues inflight segments for the current session", async () => {
+  const runtime = makeRuntime();
+  const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
+  runtime.getWebpageState().session = session;
+  runtime.collectWebpageTextNodes = () => [makeEntry(makeNode("v1", 100), "v1")];
+  let batchNo = 0;
+  runtime.translateWebpageBatchWithRetry = async (keys) => {
+    batchNo += 1;
+    if (batchNo === 1) return { ok: false, cancelled: true, translations: new Map(), errors: [] };
+    return { ok: true, partial: false, translations: new Map(keys.map(k => [k, "正式译文"])), errors: [] };
+  };
+  const run = runtime.startWebpageViewportTranslation({ session, generation: 1 });
+  await waitUntil(() => batchNo >= 2, 2000);
+  await run;
+  assert.equal(batchNo >= 2, true, "取消后段重新入队并再次翻译");
+  assert.equal(session.segments.get("v1").status.translation, "done");
+  assert.equal(runtime.calls.applies.length, 1, "第二次响应正常渲染");
+});
+
+test("stale response requeues inflight segments instead of leaving them stuck", async () => {
+  const runtime = makeRuntime();
+  const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
+  runtime.getWebpageState().session = session;
+  runtime.collectWebpageTextNodes = () => [makeEntry(makeNode("v1", 100), "v1")];
+  let batchNo = 0;
+  runtime.translateWebpageBatchWithRetry = async (keys) => {
+    batchNo += 1;
+    if (batchNo === 1) {
+      // 批次 1 在途时 taskUrl 过期（模拟 translateWebpage 失败被吞的遗留场景）
+      runtime.getWebpageState().taskUrl = "https://example.com/other";
+      return { ok: true, partial: false, translations: new Map(keys.map(k => [k, "过期译文"])), errors: [] };
+    }
+    runtime.getWebpageState().taskUrl = "https://example.com/page";
+    return { ok: true, partial: false, translations: new Map(keys.map(k => [k, "正式译文"])), errors: [] };
+  };
+  const run = runtime.startWebpageViewportTranslation({ session, generation: 1 });
+  await waitUntil(() => batchNo >= 2, 2000);
+  await run;
+  assert.equal(batchNo >= 2, true, "过期响应后段重新入队并再次翻译");
+  assert.equal(session.segments.get("v1").status.translation, "done");
+  assert.equal(runtime.calls.applies.length, 1, "恢复后的响应正常渲染");
+});
+
+test("requeueWebpageSegments resets failed and done segments for retranslation", async () => {
+  const runtime = makeRuntime();
+  const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
+  runtime.getWebpageState().session = session;
+  const failed = makeSegment(session, "f1");
+  failed.status.translation = "failed";
+  failed.errors = [{ error: "翻译失败" }];
+  session.segments.set("f1", failed);
+  const done = makeSegment(session, "d1");
+  done.status.translation = "done";
+  done.translatedText = "旧译文";
+  session.segments.set("d1", done);
+  // 只重试失败的
+  runtime.requeueWebpageSegments(["failed"]);
+  assert.equal(["pending", "inflight"].includes(failed.status.translation), true, "failed 段重新入队并开始翻译");
+  assert.equal(done.status.translation, "done", "done 段不受重试失败影响");
+  await waitUntil(() => runtime.calls.batches.flat().includes("原文"));
+  // 全部重新翻译：done 也回 pending 并重新请求
+  runtime.requeueWebpageSegments(["done", "failed"]);
+  assert.equal(done.status.translation, "pending");
+  await waitUntil(() => done.status.translation === "done" && done.translatedText !== "旧译文");
+});
+
+test("failed segments re-enqueue on rescan (force-update retries them)", async () => {
+  const runtime = makeRuntime();
+  const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
+  runtime.getWebpageState().session = session;
+  const node = makeNode("v1", 100);
+  const segment = makeSegment(session, "v1");
+  segment.node = node;
+  segment.status.translation = "failed";
+  segment.errors = [{ error: "翻译失败" }];
+  session.segments.set("v1", segment);
+  // force-update 重新扫描：failed 段应重新入队并翻译成功
+  runtime.collectWebpageTextNodes = () => [{ node, id: "v1", text: "原文-v1", index: 0 }];
+  runtime.getWebpageEntryRecords = async () => new Map();
+  const run = runtime.startWebpageViewportTranslation({ session, generation: 1 });
+  await waitUntil(() => session.segments.get("v1")?.status.translation === "done");
+  await run;
+  assert.equal(session.segments.get("v1").status.translation, "done", "failed 段重新入队并翻译成功");
+});
+
+test("状态迁移统一经 refreshWebpageUi 刷新（enqueue / settle / offline / retry）", async () => {
+  const runtime = makeRuntime();
+  const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
+  runtime.getWebpageState().session = session;
+  const entry = makeEntry(makeNode("v0", 100), "v0");
+  await runtime.enqueueWebpageSegments(session, [entry], "viewport", 1);
+  assert.equal(runtime.calls.refreshes >= 1, true, "enqueue 触发刷新");
+  await waitUntil(() => session.segments.get("v0")?.status.translation === "done");
+  assert.equal(runtime.calls.refreshes >= 2, true, "settle 触发刷新");
+  const afterSettle = runtime.calls.refreshes;
+  runtime.markWebpageServiceOffline(new Error("离线"));
+  assert.equal(runtime.calls.refreshes > afterSettle, true, "offline 触发刷新");
+  runtime.retryWebpageTranslation();
+  assert.equal(runtime.calls.refreshes > afterSettle, true, "retry 触发刷新");
+});
+
+test("unchanged: 译文与原文相同的段标记 unchanged，计入完成不计入失败", () => {
+  const webpage = {
+    session: null, showTranslation: true, generation: 1, pageKey: "p1",
+    nodeStore: { set() {}, get() {} }
+  };
+  const runtime = {
+    state: { webpage },
+    getWebpageState: () => webpage,
+    normalizeWebpageText: text => String(text || "").trim(),
+    updateFloatingBallState: () => {}
+  };
+  installWebpageTranslate(runtime);
+  const session = createPageSession("p1", 1);
+  webpage.session = session;
+  // 글개미 → 글개미（模型保留专名原文）→ unchanged
+  const node1 = { nodeValue: "글개미", isConnected: true, parentElement: {} };
+  const seg1 = createSegment({ segmentKey: "s1", bindingKey: "b1", translationKey: "t1", node: node1, text: "글개미", normalized: "글개미", sourceHash: "h1" });
+  session.segments.set("s1", seg1);
+  // 김성현 → 金圣显（正常翻译）→ translated
+  const node2 = { nodeValue: "김성현", isConnected: true, parentElement: {} };
+  const seg2 = createSegment({ segmentKey: "s2", bindingKey: "b2", translationKey: "t2", node: node2, text: "김성현", normalized: "김성현", sourceHash: "h2" });
+  session.segments.set("s2", seg2);
+  runtime.applyWebpageEntriesToSession(session, 1, [
+    { node: node1, text: "글개미", id: "s1", sourceHash: "h1", pageKey: "p1" },
+    { node: node2, text: "김성현", id: "s2", sourceHash: "h2", pageKey: "p1" }
+  ], new Map([["글개미", "글개미"], ["김성현", "金圣显"]]));
+  assert.equal(seg1.status.translation, "done", "原文保留视为完成");
+  assert.equal(seg1.unchanged, true);
+  assert.equal(seg2.status.translation, "done");
+  assert.equal(seg2.unchanged, false, "译文不同为 translated");
+  const progress = getVisibleProgress(session);
+  assert.equal(progress.unchangedCount, 1);
+  assert.equal(progress.realFailed, 0);
+});

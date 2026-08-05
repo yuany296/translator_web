@@ -15,8 +15,26 @@ export function installGlossaryPending(runtime) {
   runtime.renderIgnoredTerms = renderIgnoredTerms;
   async function handlePendingCandidateClick(event) {
     const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+    if (button.dataset.action === "ignore-chapter-all") {
+      const chapterEl = event.target.closest(".pending-chapter");
+      const chapterKey = chapterEl ? String(chapterEl.dataset.chapterKey || "") : "";
+      const chapter = runtime.pendingStore.chapters.find(item => item.key === chapterKey);
+      const sources = chapter ? chapter.candidates.map(candidate => candidate.source) : [];
+      if (sources.length === 0) {
+        return;
+      }
+      await runtime.runPendingAction({
+        type: "IGNORE_TERM_CANDIDATES",
+        entries: sources.map(source => ({ chapterKey, source })),
+        scope: "chapter"
+      }, `本话已忽略 ${sources.length} 条`);
+      return;
+    }
     const card = event.target.closest(".candidate-card");
-    if (!button || !card) {
+    if (!card) {
       return;
     }
     const candidateSource = card.dataset.source;
@@ -73,6 +91,26 @@ export function installGlossaryPending(runtime) {
     }, `已加入 ${entries.length} 条正式术语`);
   }
   runtime.confirmPendingEntries = confirmPendingEntries;
+  async function ignoreAllPendingCandidates() {
+    const chapters = runtime.pendingStore.chapters.filter(chapter => chapter.candidates.length > 0);
+    const entries = chapters.flatMap(chapter => chapter.candidates.map(candidate => ({
+      chapterKey: chapter.key,
+      source: candidate.source
+    })));
+    if (entries.length === 0) {
+      runtime.setPendingStatus("没有可忽略的候选术语", true);
+      return;
+    }
+    if (!window.confirm(`永久忽略全部 ${entries.length} 条候选？可在「永久忽略项」中恢复。`)) {
+      return;
+    }
+    await runtime.runPendingAction({
+      type: "IGNORE_TERM_CANDIDATES",
+      entries,
+      scope: "global"
+    }, `已永久忽略 ${entries.length} 条候选`);
+  }
+  runtime.ignoreAllPendingCandidates = ignoreAllPendingCandidates;
   async function handleIgnoredClick(event) {
     const button = event.target.closest("button[data-action='restore']");
     if (!button) {

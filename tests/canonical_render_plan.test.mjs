@@ -363,6 +363,107 @@ test("a seam surface absorbs strongly covered text fragments but keeps unrelated
   assert.ok(covered.every(item => item.overlap >= 0.72 && item.captureCoverage >= 0.72));
 });
 
+test("seam residuals absorb one-char contained fragments and same-bubble adjacent lines", () => {
+  const segments = [
+    {
+      pageId: "a", drawRect: { x: 0, y: 0, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 900, w: 1000, h: 100 }, naturalWidth: 1000, naturalHeight: 1000
+    },
+    {
+      pageId: "b", drawRect: { x: 0, y: 100, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 0, w: 1000, h: 100 }, naturalWidth: 1000, naturalHeight: 1000
+    }
+  ];
+  const pageObservation = (id, text, box, role = "") => [id, {
+    id, originalText: text, visual: { translationRole: role },
+    pageSpans: [{ pageId: "a", box }]
+  }];
+  const observations = new Map([
+    pageObservation("winner-a", "그명함!", { x: 45, y: 95, w: 35, h: 5 }),
+    pageObservation("char-frag", "그", { x: 46, y: 96, w: 6, h: 3 }),
+    pageObservation("line-above", "입사식때 받은", { x: 45, y: 88, w: 35, h: 5 }),
+    pageObservation("far-above", "멀리 떨어진 줄", { x: 45, y: 70, w: 35, h: 5 }),
+    pageObservation("role-mismatch", "다른 역할", { x: 45, y: 88, w: 35, h: 5 }, "effect_text"),
+    ["seam", { id: "seam", originalText: "그명함!", visual: { translationRole: "" }, pageSpans: [] }]
+  ]);
+  const winner = {
+    canonical: {
+      id: "whole", originalText: "그명함!", memberObservationIds: ["winner-a", "seam"]
+    },
+    bubble: {
+      page_text_boxes: [{ pageId: "a", x: 45, y: 95, w: 35, h: 5 }]
+    }
+  };
+  const residual = (id, memberId = id) => ({
+    id, originalText: observations.get(memberId).originalText, memberObservationIds: [memberId]
+  });
+  const canonicals = [
+    winner.canonical,
+    residual("canonical-char", "char-frag"),
+    residual("canonical-line", "line-above"),
+    residual("canonical-far", "far-above"),
+    residual("canonical-role", "role-mismatch")
+  ];
+  const covered = P.findSeamCoveredResidualCanonicals([winner], canonicals, observations, segments);
+  assert.deepEqual(covered.map(item => [item.canonical.id, item.kind]), [
+    ["canonical-char", "fragment"],
+    ["canonical-line", "adjacent_line"]
+  ]);
+});
+
+test("surface bubble merges absorbed adjacent-line translation and geometry", () => {
+  const segments = [
+    {
+      pageId: "a", drawRect: { x: 0, y: 0, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 900, w: 1000, h: 100 }, naturalWidth: 1000, naturalHeight: 1000
+    },
+    {
+      pageId: "b", drawRect: { x: 0, y: 100, w: 1000, h: 100 },
+      sourceCrop: { x: 0, y: 0, w: 1000, h: 100 }, naturalWidth: 1000, naturalHeight: 1000
+    }
+  ];
+  const observations = new Map([
+    ["line", { id: "line", sourceType: "page", originalText: "입사식때 받은",
+      pageSpans: [{ pageId: "a", box: { x: 45, y: 88, w: 35, h: 5 } }] }]
+  ]);
+  const winnerBubble = {
+    id: "whole:seam", canonical_id: "whole",
+    x: 45, y: 95, w: 35, h: 5,
+    translated_text: "那个名片!",
+    source_line_count: 1,
+    page_text_boxes: [{ pageId: "a", x: 45, y: 95, w: 35, h: 5 }],
+    page_cover_boxes: [{ pageId: "a", x: 45, y: 95, w: 35, h: 5 }],
+    visual: { fillBox: { x: 45, y: 95, w: 35, h: 5 }, sourceLineCount: 1 }
+  };
+  const covered = [{
+    canonical: { id: "canonical-line", revision: 1, memberObservationIds: ["line"] },
+    winnerCanonicalId: "whole",
+    pageId: "a",
+    kind: "adjacent_line",
+    overlap: 0,
+    captureCoverage: 0.6
+  }];
+  const store = {
+    getTranslation: () => ({ translated_text: "入职仪式时收到的" })
+  };
+  const selected = [{ canonical: { id: "whole" }, bubble: winnerBubble }];
+  const extended = P.buildSeamExtendedBubbles(
+    selected, covered, store, observations, segments, 1000, 200, ["a", "b"]
+  );
+  const bubble = extended.get("whole");
+  assert.ok(bubble, "adjacent line must be merged into the winner bubble");
+  assert.equal(bubble.translated_text, "入职仪式时收到的\n那个名片!");
+  assert.equal(bubble.source_line_count, 2);
+  assert.deepEqual(bubble.page_text_boxes.map(item => item.y), [95, 88]);
+  assert.deepEqual(bubble.page_cover_boxes.map(item => item.y), [95, 88]);
+  // 复合框扩展覆盖捕获带内的相邻行部分
+  assert.ok(bubble.y <= 88 && bubble.y + bubble.h >= 100);
+  // 无相邻行时不扩展
+  assert.equal(P.buildSeamExtendedBubbles(
+    selected, [], store, observations, segments, 1000, 200, ["a", "b"]
+  ).size, 0);
+});
+
 test("surface ownership publishes covered residual canonicals to projection suppression", () => {
   const pageIds = ["a", "b"];
   const revisions = { a: "rev-a", b: "rev-b" };

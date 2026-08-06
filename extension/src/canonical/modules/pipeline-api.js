@@ -56,6 +56,7 @@ export function installPipelineApi(runtime) {
     canonicalSeamPageBoxes: runtime.canonicalSeamPageBoxes,
     buildSeamSurfaceBubble: runtime.buildSeamSurfaceBubble,
     findSeamCoveredResidualCanonicals: runtime.findSeamCoveredResidualCanonicals,
+    buildSeamExtendedBubbles: runtime.buildSeamExtendedBubbles,
     buildSeamRenderSurfaceIndex: runtime.buildSeamRenderSurfaceIndex,
     resolveSeamSurfaceCandidates: runtime.resolveSeamSurfaceCandidates,
     buildSeamSurfaceDebug: runtime.buildSeamSurfaceDebug,

@@ -13,13 +13,14 @@ export function installLifecycleFontFit(runtime) {
     const originalH = Number(originalTextHeight) || 0;
     let startSize;
     if (originalH > 0) {
-      // Original text fit in this space — use its height as the preferred starting point
-      startSize = Math.min(originalH, runtime.BUBBLE_FONT_MAX);
+      // Original text fit in this space — use its height as the preferred starting point。
+      // 原文字高可信时不设 52px 硬顶,译文尽量与原文同字号。
+      startSize = Math.min(originalH, runtime.BUBBLE_FONT_ABSOLUTE_MAX);
     } else {
       startSize = Math.min(runtime.clamp(height * runtime.BUBBLE_FONT_BASE_RATIO, runtime.BUBBLE_FONT_MIN, runtime.BUBBLE_FONT_MAX), runtime.BUBBLE_FONT_MAX);
     }
     // Cap at the bubble's nominal height (don't exceed what the region can display)
-    let maxFont = Math.min(runtime.BUBBLE_FONT_MAX, height * 0.88);
+    let maxFont = Math.min(runtime.BUBBLE_FONT_ABSOLUTE_MAX, height * 0.88);
     if (originalH > 0) {
       startSize = Math.min(startSize, originalH * runtime.BUBBLE_FONT_ORIGINAL_SCALE);
       maxFont = Math.min(maxFont, originalH * runtime.BUBBLE_FONT_ORIGINAL_SCALE);

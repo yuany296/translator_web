@@ -122,6 +122,10 @@ export function installReaderState(runtime) {
   runtime.BUBBLE_FONT_MIN = BUBBLE_FONT_MIN;
   const BUBBLE_FONT_MAX = 52;
   runtime.BUBBLE_FONT_MAX = BUBBLE_FONT_MAX;
+  // OCR 原文字高可信时的绝对上限:不设 52px 硬顶,译文尽量与原文同字号;
+  // 仅保留 120px 上限防止异常 OCR 数据把字号推爆。
+  const BUBBLE_FONT_ABSOLUTE_MAX = 120;
+  runtime.BUBBLE_FONT_ABSOLUTE_MAX = BUBBLE_FONT_ABSOLUTE_MAX;
   // Single-line text: start search at 78% of bubble height (was 0.5 → 0.78)
   const BUBBLE_FONT_BASE_RATIO = 0.78;
   runtime.BUBBLE_FONT_BASE_RATIO = BUBBLE_FONT_BASE_RATIO;

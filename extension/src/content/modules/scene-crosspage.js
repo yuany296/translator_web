@@ -237,6 +237,15 @@ export function installSceneCrossPage(runtime) {
     const scaleValues = textSegments.map(segment => Number(segment.scaleY)).filter(value => value > 0)
       .sort((left, right) => left - right);
     const scaleY = scaleValues.length ? scaleValues[Math.floor(scaleValues.length / 2)] : 1;
+    // font_height_percent 的分母是"单条捕获带"的图片高(baidu-results 按页 OCR 输入图算),
+    // 原文字高必须用文本所在那条带的屏高(drawRect.h × scaleY)还原;
+    // 用 canvasHeight(上下两条带拼接)或 frame 并集高都会把原文字高放大近一倍。
+    const bandScreenHeight = Math.max(0, ...textSegments.map(segment => {
+      const surfaceSegment = (Array.isArray(surface && surface.segments) ? surface.segments : [])
+        .find(item => String(item && item.pageId || "") === segment.pageId);
+      const draw = runtime.normalizeSeamRect(surfaceSegment && surfaceSegment.drawRect);
+      return draw.h > 0 ? draw.h * Number(segment.scaleY || 0) : 0;
+    }));
     return {
       outer: {
         left: Math.max(0, outer.left),
@@ -249,7 +258,7 @@ export function installSceneCrossPage(runtime) {
         centerY: frame.centerY - outer.top,
         width: frame.width,
         height: frame.height,
-        sourceImageHeight: Math.max(frame.height, Number(surface.canvasHeight) * scaleY)
+        sourceImageHeight: bandScreenHeight > 0 ? bandScreenHeight : Number(surface.canvasHeight) * scaleY
       },
       coverSegments: coverSegments.map(segment => ({
         ...segment,

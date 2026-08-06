@@ -411,7 +411,9 @@ test("solid cross-page geometry bridges a small mask gap cut through a source li
   const bridge = geometry.coverSegments.find(segment => segment.mapping === "bridge");
   assert.ok(bridge);
   assert.equal(Math.round(bridge.height), 20);
-  assert.equal(Math.round(geometry.textFrame.sourceImageHeight), 192);
+  // font_height_percent 的分母是单条捕获带图片高:两条 96 的带拼成 192 的 canvas,
+  // sourceImageHeight 应还原为单条带的屏高 96,而非 canvas 全高 192。
+  assert.equal(Math.round(geometry.textFrame.sourceImageHeight), 96);
 });
 test("cross-page renderer has one layout call site and no legacy page-local seam windows", () => {
   const start = contentSource.indexOf("function applyCrossPageTextGeometry(");

@@ -39,7 +39,7 @@ export function installRendererEmbed(runtime) {
   function embeddedDisplayOptions(target) {
     const scale = getEmbeddedDisplayScale(target);
     return scale > 1
-      ? { textScale: scale, maxFont: Math.max(16, Math.round(52 * scale)), widthUsage: 0.82, heightUsage: 0.68 }
+      ? { textScale: scale, maxFont: Math.max(16, Math.round(120 * scale)), widthUsage: 0.82, heightUsage: 0.68 }
       : {};
   }
   runtime.embeddedDisplayOptions = embeddedDisplayOptions;

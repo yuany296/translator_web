@@ -22,7 +22,8 @@ export function installRendererCanvas(runtime) {
   function drawFittedText(ctx, text, box, bgType, options = {}) {
     const textScale = Number(options.textScale || 1);
     const minFont = Number(options.minFont || 8);
-    const maxFont = Number(options.maxFont || 52);
+    // 上限只作异常保护;preferredFont(原文字高)正常时才是真正的目标字号。
+    const maxFont = Number(options.maxFont || 120);
     const preferredFont = Number(options.preferredFont || 0);
     const maxWidth = Math.max(6, box.w * Number(options.widthUsage || 0.82));
     const maxHeight = Math.max(6, box.h * Number(options.heightUsage || 0.68));

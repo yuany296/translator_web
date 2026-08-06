@@ -156,7 +156,6 @@ export function installSceneIndexBuilder(runtime) {
         if (winnerCanonicalId) diagnostic.winnerCanonicalId = winnerCanonicalId;
       }
       if (!selected.length && !hasDebug) continue;
-      const bubbles = Object.freeze(selected.map(candidate => candidate.bubble));
       const handledCandidates = [...selected, ...candidatePlan.suppressed.map(item => item.candidate)].sort((left, right) => String(left.canonical.id).localeCompare(String(right.canonical.id)));
       const handledIds = Object.freeze(handledCandidates.map(candidate => String(candidate.canonical.id)));
       const ownership = runtime.collectSeamSurfaceOwnership(
@@ -164,6 +163,16 @@ export function installSceneIndexBuilder(runtime) {
       );
       const { coveredResiduals, absorbedIdSet } = ownership;
       candidateDiagnostics.push(...ownership.diagnostics);
+      // 同气泡相邻行被吸收后,把译文与几何并入 winner 气泡:
+      // 单页投影已被 absorbedIds 抑制,若不并入,跨页气泡会缺少相邻行文本,
+      // 原文也会因覆盖框不含相邻行而残留。
+      const extendedBubbleByCanonicalId = runtime.buildSeamExtendedBubbles(
+        selected, coveredResiduals, activeStore, observationsById, segments,
+        canvasWidth, canvasHeight, pageIds
+      );
+      const bubbleForCandidate = candidate =>
+        extendedBubbleByCanonicalId.get(String(candidate.canonical.id)) || candidate.bubble;
+      const bubbles = Object.freeze(selected.map(bubbleForCandidate));
       let lineageChanged = true;
       while (lineageChanged) {
         lineageChanged = false;
@@ -195,17 +204,20 @@ export function installSceneIndexBuilder(runtime) {
       const cleanedImageByPage = Object.fromEntries(currentRecords.map(record => [String(record.pageId),
         runtime.isDataUrlValue(record.cleanedImage) ? record.cleanedImage : ""]));
       const canonicalRevisionById = Object.fromEntries(handledCandidates.map(candidate => [String(candidate.canonical.id), Math.max(1, Number(candidate.canonical.revision) || 1)]));
-      const translationFingerprintByCanonicalId = Object.fromEntries(handledCandidates.map(candidate => [String(candidate.canonical.id), String(candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) || runtime.hashFnv1a(candidate.bubble.translated_text))]));
+      const translationFingerprintByCanonicalId = Object.fromEntries(handledCandidates.map(candidate => [String(candidate.canonical.id), String(candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) || runtime.hashFnv1a(bubbleForCandidate(candidate).translated_text))]));
       const layoutFingerprint = JSON.stringify({
         pairKey: state.pairKey,
         canvasWidth,
         canvasHeight,
-        bubbles: selected.map(candidate => ({
-          id: candidate.canonical.id,
-          revision: candidate.canonical.revision,
-          translationFingerprint: String(candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) || runtime.hashFnv1a(candidate.bubble.translated_text)),
-          box: [candidate.bubble.x, candidate.bubble.y, candidate.bubble.w, candidate.bubble.h]
-        }))
+        bubbles: selected.map(candidate => {
+          const bubble = bubbleForCandidate(candidate);
+          return {
+            id: candidate.canonical.id,
+            revision: candidate.canonical.revision,
+            translationFingerprint: String(candidate.translation && (candidate.translation.translationFingerprint || candidate.translation.translation_fingerprint) || runtime.hashFnv1a(bubble.translated_text)),
+            box: [bubble.x, bubble.y, bubble.w, bubble.h]
+          };
+        })
       });
       const layoutKey = `seam-layout-v1:${runtime.hashFnv1a(layoutFingerprint)}`;
       const renderKey = `seam-render-v1:${runtime.hashFnv1a(JSON.stringify({
@@ -396,4 +408,96 @@ export function installSceneIndexBuilder(runtime) {
     return [...sides].sort();
   }
   runtime.getObservationEdgeSides = getObservationEdgeSides;
+
+  // 同气泡相邻行(kind: "adjacent_line" 的 coveredResidual)被吸收进 surface 后,
+  // 其译文按页面顺序与纵向位置并入 winner 气泡文本,page_text/cover 框与
+  // 复合框一并扩展,保证跨页气泡完整覆盖原文且译文不缺行。
+  function buildSeamExtendedBubbles(selected, coveredResiduals, store,
+    observationsById, segments, canvasWidth, canvasHeight, pageIds) {
+    const extended = new Map();
+    const pageIndex = new Map((Array.isArray(pageIds) ? pageIds : [])
+      .map((pageId, index) => [String(pageId), index]));
+    const residualsByWinner = new Map();
+    for (const item of Array.isArray(coveredResiduals) ? coveredResiduals : []) {
+      if (item.kind !== "adjacent_line") continue;
+      const canonical = item.canonical;
+      const residualBox = runtime.canonicalSeamCaptureBox(canonical, observationsById,
+        segments, canvasWidth, canvasHeight);
+      const residualPageBoxes = runtime.canonicalSeamPageBoxes(canonical, observationsById,
+        segments);
+      const translation = store.getTranslation(String(canonical.id || ""),
+        Math.max(1, Number(canonical.revision) || 1));
+      const residualText = String(translation &&
+        (translation.translated_text || translation.translatedText) || "").trim();
+      if (!residualBox || !residualText ||
+          !Array.isArray(residualPageBoxes.text) || !residualPageBoxes.text.length) continue;
+      const list = residualsByWinner.get(String(item.winnerCanonicalId)) || [];
+      list.push({
+        pageId: String(item.pageId || ""),
+        box: residualBox,
+        pageText: residualPageBoxes.text,
+        pageCover: residualPageBoxes.cover || [],
+        text: residualText
+      });
+      residualsByWinner.set(String(item.winnerCanonicalId), list);
+    }
+    if (!residualsByWinner.size) return extended;
+    for (const candidate of Array.isArray(selected) ? selected : []) {
+      const canonicalId = String(candidate.canonical && candidate.canonical.id || "");
+      const residuals = residualsByWinner.get(canonicalId);
+      if (!residuals || !residuals.length) continue;
+      const bubble = candidate.bubble;
+      const winnerBoxByPage = new Map((Array.isArray(bubble.page_text_boxes) ?
+        bubble.page_text_boxes : []).map(box => [String(box.pageId || ""), box]));
+      const lines = [{
+        pageIndex: pageIndex.get(residuals[0].pageId) ?? 0,
+        y: Number((winnerBoxByPage.get(residuals[0].pageId) || {}).y) || 0,
+        text: String(bubble.translated_text || bubble.translatedText || "")
+      }];
+      for (const residual of residuals) {
+        const pageBox = residual.pageText[0] || {};
+        lines.push({
+          pageIndex: pageIndex.get(residual.pageId) ?? 0,
+          y: Number(pageBox.y) || 0,
+          text: residual.text
+        });
+      }
+      lines.sort((left, right) => left.pageIndex - right.pageIndex ||
+        left.y - right.y || left.text.localeCompare(right.text));
+      const text = lines.map(line => line.text).filter(Boolean).join("\n");
+      const unionBox = runtime.unionSeamPercentBoxes([
+        { x: Number(bubble.x), y: Number(bubble.y), w: Number(bubble.w), h: Number(bubble.h) },
+        ...residuals.map(item => item.box)
+      ]);
+      if (!unionBox) continue;
+      const sourceLineCount = Math.max(1,
+        Number(bubble.source_line_count ||
+          (bubble.visual && bubble.visual.sourceLineCount) || 1),
+        text.split("\n").length);
+      extended.set(canonicalId, runtime.freezeCanonicalValue({
+        ...bubble,
+        x: unionBox.x,
+        y: unionBox.y,
+        w: unionBox.w,
+        h: unionBox.h,
+        translatedText: text,
+        translated_text: text,
+        source_line_count: sourceLineCount,
+        page_text_boxes: [...(bubble.page_text_boxes || []),
+          ...residuals.flatMap(item => item.pageText)],
+        page_cover_boxes: [...(bubble.page_cover_boxes || []),
+          ...residuals.flatMap(item => item.pageCover)],
+        visual: {
+          ...(bubble.visual || {}),
+          fillBox: unionBox,
+          fill_box: unionBox,
+          sourceLineCount,
+          source_line_count: sourceLineCount
+        },
+        fill_box: unionBox
+      }));
+    }
+    return extended;
+  }
+  runtime.buildSeamExtendedBubbles = buildSeamExtendedBubbles;
 }

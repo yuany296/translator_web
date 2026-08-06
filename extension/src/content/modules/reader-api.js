@@ -153,6 +153,7 @@ export function installReaderApi(runtime) {
       shouldKeepLoadingOverlayAfterTimeout: runtime.shouldKeepLoadingOverlayAfterTimeout,
       getLoadingOverlayRecoveryDiagnostic: runtime.getLoadingOverlayRecoveryDiagnostic,
       getLoadingOverlayCardPosition: runtime.getLoadingOverlayCardPosition,
+      syncLoadingOverlayCardPosition: runtime.syncLoadingOverlayCardPosition,
       isReusableKakaoReadyPageBinding: runtime.isReusableKakaoReadyPageBinding,
       isCurrentKakaoPageBinding: runtime.isCurrentKakaoPageBinding,
       buildOverlayRenderSignature: runtime.buildOverlayRenderSignature,

@@ -559,3 +559,55 @@ test("normalizeKakaoStitchSegments falls back to derived segments when none prov
   assert.ok(Array.isArray(segments), "Should return an array");
   assert.ok(segments.length >= 2, "Should have at least owner and one neighbor");
 });
+test("loading card anchors once and stops following on later syncs", () => {
+  const originalInnerWidth = window.innerWidth;
+  const originalInnerHeight = window.innerHeight;
+  const card = {
+    dataset: {},
+    style: {}
+  };
+  const overlay = {
+    root: {
+      loadingCard: card,
+      querySelector() {
+        return this.loadingCard;
+      }
+    }
+  };
+  window.innerWidth = 2124;
+  window.innerHeight = 1112;
+  try {
+    runtime.__test.syncLoadingOverlayCardPosition(overlay, {
+      left: 693,
+      right: 1413,
+      top: -828,
+      bottom: 214
+    }, {
+      left: 693,
+      right: 1413,
+      top: 0,
+      bottom: 214
+    });
+    assert.equal(card.style.left, "360px");
+    assert.equal(card.style.top, "935px");
+    assert.equal(card.style.transform, "translate(-50%, -50%)");
+    assert.equal(card.dataset.mtLoadingPositioned, "1");
+    // 后续 sync(rect 已滚动)不再重新定位,卡片保持首次锚点。
+    runtime.__test.syncLoadingOverlayCardPosition(overlay, {
+      left: 693,
+      right: 1413,
+      top: -2000,
+      bottom: 4000
+    }, {
+      left: 693,
+      right: 1413,
+      top: 0,
+      bottom: 1112
+    });
+    assert.equal(card.style.left, "360px");
+    assert.equal(card.style.top, "935px");
+  } finally {
+    window.innerWidth = originalInnerWidth;
+    window.innerHeight = originalInnerHeight;
+  }
+});

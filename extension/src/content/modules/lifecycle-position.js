@@ -205,9 +205,11 @@ export function installLifecyclePosition(runtime) {
   function syncLoadingOverlayCardPosition(overlayState, rect, visibleRect) {
     const card = overlayState && (overlayState.loadingCard || overlayState.root.querySelector(".mt-loading-card"));
     if (!card) return;
+    // 取消自动跟随：卡片只在首次可见时锚定到图片可见部分的中心，之后不再随滚动/平移重新定位。
+    if (card.dataset.mtLoadingPositioned === "1") return;
     const position = runtime.getLoadingOverlayCardPosition(rect, visibleRect, window.innerWidth, window.innerHeight);
     if (!position) return;
-    // 卡片锚定在图片当前可见部分的中心，而不是整张长图的固定中心。
+    card.dataset.mtLoadingPositioned = "1";
     card.style.position = "absolute";
     card.style.left = `${position.left}px`;
     card.style.top = `${position.top}px`;

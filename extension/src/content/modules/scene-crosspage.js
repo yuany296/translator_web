@@ -258,6 +258,7 @@ export function installSceneCrossPage(runtime) {
         centerY: frame.centerY - outer.top,
         width: frame.width,
         height: frame.height,
+        scaleY,
         sourceImageHeight: bandScreenHeight > 0 ? bandScreenHeight : Number(surface.canvasHeight) * scaleY
       },
       coverSegments: coverSegments.map(segment => ({
@@ -268,4 +269,15 @@ export function installSceneCrossPage(runtime) {
     };
   }
   runtime.buildCrossPageBubbleGeometry = buildCrossPageBubbleGeometry;
+  function resolveCrossPageOriginalTextHeight(bubble, frame) {
+    // font_height 是 OCR 输入图上的行高(px):seam 候选以拼接图为输入、
+    // 页/配对候选以单页捕获图为输入,scaleY 把两者统一映射到屏幕像素。
+    const fontHeightPx = Number(bubble && (bubble.font_height || bubble.fontHeight
+      || bubble.visual && (bubble.visual.font_height || bubble.visual.fontHeight))) || 0;
+    if (fontHeightPx > 0 && frame && Number(frame.scaleY) > 0) {
+      return fontHeightPx * Number(frame.scaleY);
+    }
+    return 0;
+  }
+  runtime.resolveCrossPageOriginalTextHeight = resolveCrossPageOriginalTextHeight;
 }

@@ -414,6 +414,18 @@ test("solid cross-page geometry bridges a small mask gap cut through a source li
   // font_height_percent 的分母是单条捕获带图片高:两条 96 的带拼成 192 的 canvas,
   // sourceImageHeight 应还原为单条带的屏高 96,而非 canvas 全高 192。
   assert.equal(Math.round(geometry.textFrame.sourceImageHeight), 96);
+  // scaleY 是 OCR 输入图→屏幕比例,供绝对行高 font_height 换算原文字高。
+  assert.equal(geometry.textFrame.scaleY, 1);
+});
+test("cross-page original text height prefers absolute font height over percent fallback", () => {
+  const resolve = runtime.__test.resolveCrossPageOriginalTextHeight;
+  assert.equal(resolve({ font_height: 12 }, { scaleY: 1 }), 12);
+  assert.equal(resolve({ font_height: 12 }, { scaleY: 1.5 }), 18);
+  assert.equal(resolve({ visual: { fontHeight: 12 } }, { scaleY: 1 }), 12);
+  assert.equal(resolve({ fontHeight: 12 }, { scaleY: 1 }), 12);
+  assert.equal(resolve({ font_height: 0 }, { scaleY: 1 }), 0);
+  assert.equal(resolve({ font_height: 12 }, { scaleY: 0 }), 0);
+  assert.equal(resolve({ font_height: 12 }, {}), 0);
 });
 test("cross-page renderer has one layout call site and no legacy page-local seam windows", () => {
   const start = contentSource.indexOf("function applyCrossPageTextGeometry(");

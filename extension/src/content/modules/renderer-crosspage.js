@@ -261,9 +261,13 @@ export function installRendererCrossPage(runtime) {
     const cacheKey = `cross-page:${entry.surface.layoutKey}:${item.canonicalId}`;
     let layout = item.layout || runtime.state.seamLayoutCache.get(cacheKey);
     if (!layout || layout.kind !== "cross-page") {
-      const fontSize = runtime.fitBubbleFontSize(node, frame.width, frame.height, {},
-        runtime.getBubbleOriginalTextHeight(node, frame.height,
-          Number(frame.sourceImageHeight) || frame.height));
+      // 优先用 OCR 的绝对行高(font_height × 输入图→屏幕比例)还原原文字高:
+      // font_height_percent 的分母是 seam 拼接图全高或单页捕获图高,按来源不同
+      // 需要不同的还原分母;绝对行高直接换算可避免来源判断,对两种来源都精确。
+      const originalTextHeight = runtime.resolveCrossPageOriginalTextHeight(item.bubble, frame)
+        || runtime.getBubbleOriginalTextHeight(node, frame.height,
+          Number(frame.sourceImageHeight) || frame.height);
+      const fontSize = runtime.fitBubbleFontSize(node, frame.width, frame.height, {}, originalTextHeight);
       layout = {
         kind: "cross-page",
         fontRatio: fontSize / Math.max(1, frame.width),

@@ -177,6 +177,7 @@ export function installOcrItemFilter(runtime) {
       fallbackReason: String(value.fallbackReason || ""),
       stitchAdmission: String(value.stitchAdmission || ""),
       stitchRejectionReason: String(value.stitchRejectionReason || ""),
+      novelImage: value.novelImage === true,
       stitch: runtime.normalizeStitchMeta(value.stitch)
     };
     return meta.width > 0 || meta.height > 0 || meta.cropCssWidth > 0 ? meta : null;
@@ -229,6 +230,7 @@ export function installOcrItemFilter(runtime) {
       minBoxHeight: runtime.DEFAULT_SETTINGS.ocrMinBoxHeight,
       maxAspectRatio: runtime.DEFAULT_SETTINGS.ocrMaxAspectRatio,
       mergeLineGap: runtime.DEFAULT_SETTINGS.ocrMergeLineGap,
+      novelImageMergeLines: runtime.DEFAULT_SETTINGS.ocrNovelImageMergeLines === true,
       fontScale: runtime.DEFAULT_SETTINGS.overwriteFontScale,
       coverPadding: runtime.DEFAULT_SETTINGS.overwriteCoverPadding,
       debugOverlayMode: runtime.DEFAULT_SETTINGS.debugOverlayMode,

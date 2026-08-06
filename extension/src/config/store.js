@@ -79,6 +79,7 @@ export function toLegacySettings(config) {
     ocrMaxBoxArea: tuning.maxBoxArea, ocrMinBoxWidth: tuning.minBoxWidth,
     ocrMinBoxHeight: tuning.minBoxHeight, ocrMaxAspectRatio: tuning.maxAspectRatio,
     ocrMergeLineGap: tuning.mergeLineGap,
+    ocrNovelImageMergeLines: tuning.novelImageMergeLines === true,
     visionOcrEnabled: vision.enabled, visionOcrApiKey: vision.apiKey,
     visionOcrBaseUrl: vision.baseUrl, visionOcrModel: vision.model,
     ...runtime, glossary, glossaryEntries: glossary.entries, glossaryFingerprint,

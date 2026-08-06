@@ -158,7 +158,7 @@ export function installOcrProvider(runtime) {
     }
   }
   runtime.requestLocalPaddleOcr = requestLocalPaddleOcr;
-  async function buildLocalPaddleBubbleItems(payload, imageSize, dataUrl, debug, visionOcrOptions = null, ocrTuning = runtime.getDefaultOcrTuning(), ocrDebug = null, imageMeta = null) {
+  async function buildLocalPaddleBubbleItems(payload, imageSize, dataUrl, debug, visionOcrOptions = null, ocrTuning = runtime.getDefaultOcrTuning(), ocrDebug = null, imageMeta = null, options = {}) {
     const ocrImageSize = {
       width: Number(payload && payload.imageWidth) || Number(imageSize && imageSize.width) || 1,
       height: Number(payload && payload.imageHeight) || Number(imageSize && imageSize.height) || 1
@@ -178,7 +178,8 @@ export function installOcrProvider(runtime) {
     // 跨图窗口聚类全部 OCR 行；归属判断统一由 content.js 在 mapKakaoStitchedResult() 中处理。
     // 不在此处用 isOcrItemOwnedByStitch 过滤，避免按单行中心误拆跨页框。
     const clustered = runtime.clusterLocalPaddleWords(words, ocrImageSize, imageAnalysis, debug, ocrDebug, {
-      preserveLineGroups: Array.isArray(imageMeta && imageMeta.pageSpans) && imageMeta.pageSpans.length === 2
+      preserveLineGroups: options?.preserveLineGroups === true ||
+        (Array.isArray(imageMeta && imageMeta.pageSpans) && imageMeta.pageSpans.length === 2)
     });
     // Stitch ownership filtering is now handled exclusively by content.js mapKakaoStitchedResult()
     if (imageMeta && imageMeta.stitch) {

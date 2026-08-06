@@ -75,6 +75,53 @@ test("seam rendering accepts an edge fragment that extends beyond the capture ba
   assert.equal(bubble.page_cover_boxes.length, 2);
 });
 
+test("one seam sentence keeps tight text and cover boxes on both page slices", () => {
+  const segments = [
+    { pageId: "a", sourceCrop: { x: 0, y: 904, w: 760, h: 96 }, naturalWidth: 760, naturalHeight: 1000 },
+    { pageId: "b", sourceCrop: { x: 0, y: 0, w: 760, h: 96 }, naturalWidth: 760, naturalHeight: 1000 }
+  ];
+  const span = (pageId, y, h) => ({
+    pageId,
+    box: { x: 41.41, y, w: 17.32, h },
+    visual: {
+      textBox: { x: 41.41, y, w: 17.32, h },
+      fillBox: { x: 41.41, y, w: 17.32, h }
+    }
+  });
+  const observations = new Map([
+    ["seam", {
+      id: "seam", sourceType: "seam", originalText: "진짜로!",
+      visual: { box: { x: 41.41, y: 4.63, w: 17.32, h: 40.74 }, fillBox: { x: 41.41, y: 4.63, w: 17.32, h: 40.74 }, bgType: "solid" },
+      pageSpans: [span("a", 90.9, 4.4), span("b", 0, 3.7)]
+    }],
+    ["page", {
+      id: "page", sourceType: "page", originalText: "진짜로!",
+      pageSpans: [{
+        pageId: "b", box: { x: 41.26, y: 0, w: 17.74, h: 4.0 },
+        visual: { textBox: { x: 41.26, y: 0, w: 17.74, h: 4.0 }, fillBox: { x: 41.26, y: 0, w: 17.74, h: 4.0 } }
+      }]
+    }]
+  ]);
+  const canonical = { id: "whole", revision: 1, originalText: "진짜로!", memberObservationIds: ["page", "seam"] };
+  const pageBoxes = P.canonicalSeamPageBoxes(canonical, observations, segments);
+  assert.deepEqual(pageBoxes.text.map(item => item.pageId), ["a", "b"]);
+  assert.deepEqual(pageBoxes.cover.map(item => item.pageId), ["a", "b"]);
+  assert.equal(Math.round(pageBoxes.text[0].h * 100) / 100, 4.4);
+  assert.equal(Math.round(pageBoxes.text[1].h * 100) / 100, 4);
+  const bubble = P.buildSeamSurfaceBubble(
+    canonical,
+    { translated_text: "真的" },
+    [observations.get("seam")],
+    760,
+    108,
+    observations,
+    segments
+  );
+  assert.equal(bubble.page_text_boxes.length, 2);
+  assert.equal(bubble.page_cover_boxes.length, 2);
+  assert.equal(bubble.translated_text, "真的");
+});
+
 test("a filtered seam witness rebuilds the surface box from trusted page rows", () => {
   const segments = [
     {

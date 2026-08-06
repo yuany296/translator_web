@@ -33,6 +33,7 @@ export function installBackgroundState(runtime) {
     ocrMinBoxHeight: 6,
     ocrMaxAspectRatio: 18,
     ocrMergeLineGap: 1.65,
+    ocrNovelImageMergeLines: false,
     overwriteFontScale: 1,
     overwriteCoverPadding: 1.2,
     debugOverlayMode: "final",

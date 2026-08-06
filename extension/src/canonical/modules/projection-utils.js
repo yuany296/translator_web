@@ -14,8 +14,11 @@ export function installProjectionUtils(runtime) {
     const pageOrder = new Map([...segmentByPage.keys()].map((pageId, index) => [pageId, index]));
     const textByPage = new Map();
     const coverByPage = new Map();
+    // One canonical sentence may occupy both seam slices; the cross-page renderer
+    // turns these tight page-local boxes into one text frame and one cover surface.
     for (const observationId of Array.isArray(canonical?.memberObservationIds) ? canonical.memberObservationIds : []) {
       const observation = observationsById instanceof Map ? observationsById.get(String(observationId)) : null;
+      if (!observation) continue;
       for (const span of Array.isArray(observation?.pageSpans) ? observation.pageSpans : []) {
         const pageId = String(span?.pageId || "");
         const segment = segmentByPage.get(pageId);

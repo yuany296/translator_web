@@ -41,6 +41,29 @@ export function installCapturePayload(runtime) {
           maxOriginalBytes: runtime.EMBEDDED_MAX_ORIGINAL_BYTES
         });
         if (fetched && fetched.ok && runtime.isDataUrl(fetched.dataUrl)) {
+          // 源图被 CSS 放大(如小说插图 308→504)时,按浏览器渲染尺寸放大后再
+          // 送 OCR:输入分辨率与页面观感一致,小字识别率更高;数据来自已抓取
+          // 的字节,不受跨域 canvas 污染限制。
+          const rendered = runtime.getRenderedImageSize(img);
+          if (rendered) {
+            try {
+              const renderedDataUrl = await runtime.upscaleDataUrlToSize(
+                fetched.dataUrl, rendered.width, rendered.height
+              );
+              return {
+                dataUrl: renderedDataUrl,
+                imageUrl,
+                width: rendered.width,
+                height: rendered.height,
+                cssWidth: img.getBoundingClientRect().width,
+                cssHeight: img.getBoundingClientRect().height,
+                renderScale: rendered.scale,
+                source: "img-rendered"
+              };
+            } catch (error) {
+              console.debug("[MangaTranslator] rendered-image-upscale failed", runtime.getErrorMessage ? runtime.getErrorMessage(error) : String(error));
+            }
+          }
           return {
             dataUrl: fetched.dataUrl,
             imageUrl,
@@ -356,6 +379,42 @@ export function installCapturePayload(runtime) {
     }
   }
   runtime.imageElementToDataUrl = imageElementToDataUrl;
+  function getRenderedImageSize(img) {
+    if (!(img instanceof HTMLImageElement)) return null;
+    const rect = img.getBoundingClientRect();
+    const displayWidth = Number(rect && rect.width || 0);
+    const displayHeight = Number(rect && rect.height || 0);
+    const naturalWidth = Number(img.naturalWidth || img.width || 0);
+    const naturalHeight = Number(img.naturalHeight || img.height || 0);
+    if (!(displayWidth > 0 && displayHeight > 0 && naturalWidth > 0 && naturalHeight > 0)) return null;
+    if (displayWidth <= naturalWidth) return null;
+    const dpr = Math.max(1, Math.min(Number(window.devicePixelRatio || 1), 4));
+    const maxSide = Math.max(1, Number(runtime.IMAGE_MAX_SIDE) || 1536);
+    const width = Math.min(maxSide, Math.round(displayWidth * dpr));
+    const height = Math.round(width * displayHeight / displayWidth);
+    if (width <= naturalWidth) return null;
+    return {
+      width,
+      height,
+      scale: width / naturalWidth
+    };
+  }
+  runtime.getRenderedImageSize = getRenderedImageSize;
+  async function upscaleDataUrlToSize(dataUrl, width, height) {
+    const image = await runtime.loadImageFromDataUrl(dataUrl);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Canvas context is unavailable");
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(image, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", runtime.IMAGE_JPEG_QUALITY);
+  }
+  runtime.upscaleDataUrlToSize = upscaleDataUrlToSize;
   async function renderCachedKakaoPipelineResult({
     target,
     targetKey,

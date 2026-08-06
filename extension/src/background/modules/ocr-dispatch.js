@@ -101,6 +101,7 @@ export function installOcrDispatch(runtime) {
       imageMeta: {
         width: Number(request && request.imageMeta && request.imageMeta.width) || 0,
         height: Number(request && request.imageMeta && request.imageMeta.height) || 0,
+        novelImage: request && request.imageMeta && request.imageMeta.novelImage === true,
         pageSpans: request && request.imageMeta && request.imageMeta.pageSpans || []
       },
       ocr: {
@@ -118,7 +119,8 @@ export function installOcrDispatch(runtime) {
           minBoxWidth: settings.ocrMinBoxWidth,
           minBoxHeight: settings.ocrMinBoxHeight,
           maxAspectRatio: settings.ocrMaxAspectRatio,
-          mergeLineGap: settings.ocrMergeLineGap
+          mergeLineGap: settings.ocrMergeLineGap,
+          novelImageMergeLines: settings.ocrNovelImageMergeLines === true
         } : {},
         visionOcrEnabled: settings && settings.visionOcrEnabled === true,
         visionOcrBaseUrl: settings && settings.visionOcrBaseUrl || "",
@@ -240,7 +242,9 @@ export function installOcrDispatch(runtime) {
       apiKey: settings.visionOcrEnabled ? settings.visionOcrApiKey : "",
       baseUrl: settings.visionOcrEnabled ? settings.visionOcrBaseUrl || runtime.DEFAULT_QWEN_BASE_URL : "",
       model: settings.visionOcrEnabled ? settings.visionOcrModel || runtime.DEFAULT_VISION_OCR_MODEL : ""
-    }, ocrTuning, ocrDebug, request.imageMeta);
+    }, ocrTuning, ocrDebug, request.imageMeta, {
+      preserveLineGroups: runtime.shouldPreserveLineGroups(request, ocrTuning)
+    });
     const normalized = items.map((item, index) => runtime.normalizeBaiduOcrItem(item, index, coordinateImageSize)).filter(Boolean);
     return runtime.buildProviderNeutralObservationResult({
       provider: "local_paddle",
@@ -258,6 +262,14 @@ export function installOcrDispatch(runtime) {
     });
   }
   runtime.requestLocalPaddleOcrObservations = requestLocalPaddleOcrObservations;
+  function shouldPreserveLineGroups(request, ocrTuning = runtime.getDefaultOcrTuning()) {
+    // 小说插图多行通常是独立文案(告示/标牌),逐行翻译;漫画气泡的多行仍需合并。
+    if (request && request.imageMeta && request.imageMeta.novelImage === true) {
+      return ocrTuning.novelImageMergeLines !== true;
+    }
+    return false;
+  }
+  runtime.shouldPreserveLineGroups = shouldPreserveLineGroups;
   async function decodeObservationImageSize(dataUrl, imageMeta) {
     if (runtime.backgroundTestHooks && typeof runtime.backgroundTestHooks.decodeImageSize === "function") {
       return runtime.backgroundTestHooks.decodeImageSize(dataUrl, imageMeta);

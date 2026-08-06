@@ -38,6 +38,17 @@ export function installRendererEmbed(runtime) {
   runtime.getEmbeddedDisplayScale = getEmbeddedDisplayScale;
   function embeddedDisplayOptions(target) {
     const scale = getEmbeddedDisplayScale(target);
+    const displayWidth = Number(target && target.clientWidth || 0);
+    const naturalWidth = Number(target && (target.naturalWidth || target.width) || 0);
+    if (displayWidth > naturalWidth && naturalWidth > 0) {
+      // 显示尺寸大于源图:在显示分辨率上渲染,译文文字不再随浏览器放大而变糊。
+      return {
+        renderScale: Math.min(runtime.EMBEDDED_MAX_RENDER_SCALE, displayWidth / naturalWidth),
+        maxFont: 120,
+        widthUsage: 0.82,
+        heightUsage: 0.68
+      };
+    }
     return scale > 1
       ? { textScale: scale, maxFont: Math.max(16, Math.round(120 * scale)), widthUsage: 0.82, heightUsage: 0.68 }
       : {};
@@ -335,11 +346,17 @@ export function installRendererEmbed(runtime) {
 
   async function composeEmbeddedImageDataUrl(baseDataUrl, bubbles, options = {}) {
     const image = await runtime.loadImageFromDataUrl(baseDataUrl);
-    const width = image.naturalWidth || image.width;
-    const height = image.naturalHeight || image.height;
-    if (!width || !height) {
+    const naturalWidth = image.naturalWidth || image.width;
+    const naturalHeight = image.naturalHeight || image.height;
+    if (!naturalWidth || !naturalHeight) {
       throw new Error("Embedded base image size is unavailable");
     }
+    const renderScale = Math.max(1, Math.min(
+      runtime.EMBEDDED_MAX_RENDER_SCALE,
+      Number(options.renderScale || 1) || 1
+    ));
+    const width = Math.round(naturalWidth * renderScale);
+    const height = Math.round(naturalHeight * renderScale);
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
@@ -350,7 +367,10 @@ export function installRendererEmbed(runtime) {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(image, 0, 0, width, height);
-    runtime.drawEmbeddedBubbles(ctx, width, height, bubbles, options);
+    runtime.drawEmbeddedBubbles(ctx, width, height, bubbles, {
+      ...options,
+      ...(renderScale > 1 ? { textScale: 1 } : {})
+    });
     return canvas.toDataURL("image/jpeg", runtime.EMBEDDED_JPEG_QUALITY);
   }
   runtime.composeEmbeddedImageDataUrl = composeEmbeddedImageDataUrl;

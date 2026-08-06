@@ -18,7 +18,8 @@ export const DEFAULT_OCR_CONFIG = Object.freeze({
   },
   tuning: {
     confidenceThreshold: 0.72, minBoxArea: 36, maxBoxArea: 0.35,
-    minBoxWidth: 6, minBoxHeight: 6, maxAspectRatio: 18, mergeLineGap: 1.65
+    minBoxWidth: 6, minBoxHeight: 6, maxAspectRatio: 18, mergeLineGap: 1.65,
+    novelImageMergeLines: false
   },
   visionRepair: {
     enabled: false, apiKey: "", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -79,7 +80,8 @@ export function normalizeOcrConfig(value = {}) {
       minBoxWidth: numberIn(tuning.minBoxWidth, 0, 10_000, 6),
       minBoxHeight: numberIn(tuning.minBoxHeight, 0, 10_000, 6),
       maxAspectRatio: numberIn(tuning.maxAspectRatio, 1, 100, 18),
-      mergeLineGap: numberIn(tuning.mergeLineGap, 0.2, 8, 1.65)
+      mergeLineGap: numberIn(tuning.mergeLineGap, 0.2, 8, 1.65),
+      novelImageMergeLines: tuning.novelImageMergeLines === true
     },
     visionRepair: {
       enabled: vision.enabled === true,

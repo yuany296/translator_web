@@ -67,6 +67,7 @@ function buildNovelState(ctx = {}) {
     displayMode: ctx.showTranslation ? "translated" : "original",
     cacheCoverage: ctx.textStatus === "complete" ? "full" : ctx.textStatus === "partial" ? "partial" : coverage,
     hasTranslation: ctx.translatedCount > 0 || ctx.textStatus === "complete",
+    imageStatus: String(ctx.imageStatus || "idle"),
     errorMessage: String(ctx.errorMessage || "")
   };
 }
@@ -239,7 +240,9 @@ function buildNovelMenuItems(state = {}) {
     { id: "translate-missing", label: "只翻译缺失段落", disabled: loading || (translated && !error) },
     { id: "show-translation", label: "显示译文", disabled: !(state.hasTranslation === true && !translated), disabledReason: state.hasTranslation ? "" : "当前没有已翻译的段落" },
     { id: "restore-original", label: "恢复原文", disabled: !translated, disabledReason: translated ? "" : "当前已显示原文" },
-    { id: "force-retranslate", label: "强制重新翻译当前章节", disabled: loading }
+    { id: "force-retranslate", label: "强制重新翻译当前章节", disabled: loading },
+    { id: "retranslate-text", label: "强制重新翻译正文", disabled: loading },
+    { id: "retranslate-images", label: "强制重新处理图片", disabled: loading || state.imageStatus === "working", disabledReason: state.imageStatus === "working" ? "图片正在处理中" : "" }
   ];
   list.push({
     id: "manage-chapter",

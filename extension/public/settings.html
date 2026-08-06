@@ -64,6 +64,7 @@
       <article class="setting-card">
         <div class="card-title"><div><h2>结果筛选</h2><p>用于过滤低质量或异常尺寸的识别框。</p></div></div>
         <div class="form-grid four"><label>置信度<input id="confidenceThreshold" type="number" min="0" max="1" step="0.01" /></label><label>最小面积<input id="minBoxArea" type="number" min="0" step="1" /></label><label>最大面积比<input id="maxBoxArea" type="number" min="0.001" max="1" step="0.01" /></label><label>合并行距<input id="mergeLineGap" type="number" min="0.2" max="8" step="0.05" /></label><label>最小宽度<input id="minBoxWidth" type="number" min="0" step="1" /></label><label>最小高度<input id="minBoxHeight" type="number" min="0" step="1" /></label><label>最大宽高比<input id="maxAspectRatio" type="number" min="1" max="100" step="1" /></label></div>
+        <label class="check-row"><input id="novelImageMergeLines" type="checkbox" /><span>小说图片多行合并为一句（默认关闭，插图逐行翻译）</span></label>
       </article>
       <article class="setting-card">
         <div class="card-title"><div><h2>Vision 弱结果修复</h2><p>仅修复低置信度文字，不改变 OCR 几何。</p></div><label class="switch-row"><input id="visionEnabled" type="checkbox" /><span></span><b>启用</b></label></div>

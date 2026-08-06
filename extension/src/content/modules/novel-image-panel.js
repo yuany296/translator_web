@@ -158,6 +158,8 @@ export function installNovelImagePanel(runtime) {
 
   function reapplyNovelEmbeddedImages(surface) {
     const state = runtime.getNovelState();
+    // 显示原文时不重新嵌入,避免滚动/虚拟列表重建节点把译文图片又贴回去。
+    if (state.showTranslation !== true) return 0;
     const content = surface?.content || surface?.root;
     if (!content?.querySelectorAll || state.imageResults.size === 0) return 0;
     let restored = 0;
@@ -180,6 +182,23 @@ export function installNovelImagePanel(runtime) {
     return restored;
   }
   runtime.reapplyNovelEmbeddedImages = reapplyNovelEmbeddedImages;
+
+  function syncNovelImageVisibility(showTranslation, surface) {
+    if (!surface) return;
+    if (showTranslation) {
+      runtime.reapplyNovelEmbeddedImages?.(surface);
+      return;
+    }
+    // 恢复原文:把所有已嵌入的正文图片还原为原图。
+    const content = surface.content || surface.root;
+    if (!content?.querySelectorAll) return;
+    [...content.querySelectorAll("img")].forEach(img => {
+      if (img.dataset?.mtEmbeddedActive === "true" && runtime.isNovelContentImage?.(img)) {
+        runtime.restoreEmbeddedForTarget(img);
+      }
+    });
+  }
+  runtime.syncNovelImageVisibility = syncNovelImageVisibility;
 
   function clearNovelImagePanel(remove = false) {
     const state = runtime.getNovelState();

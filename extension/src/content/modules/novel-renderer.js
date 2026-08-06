@@ -56,6 +56,8 @@ export function installNovelRenderer(runtime) {
       applyVisibility(source, translation, showTranslation);
     });
     runtime.getNovelState().showTranslation = showTranslation;
+    // 译文/原文切换时图片一起切换:显示译文则重新嵌入,恢复原文则还原原图。
+    runtime.syncNovelImageVisibility?.(showTranslation, surface);
   }
   runtime.setNovelTranslationVisibility = setNovelTranslationVisibility;
 

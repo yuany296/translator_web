@@ -244,15 +244,20 @@ test("novel menu exposes chapter actions and marks future features as disabled",
   const idle = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true }));
   assert.deepEqual(idle.map(item => item.id), [
     "translate-chapter", "translate-missing", "show-translation",
-    "restore-original", "force-retranslate", "manage-chapter"
+    "restore-original", "force-retranslate", "retranslate-text", "retranslate-images", "manage-chapter"
   ]);
   const manage = idle.find(item => item.id === "manage-chapter");
   assert.equal(manage.disabled, true);
   assert.match(manage.disabledReason, /没有可管理的译文/u);
   assert.equal(idle.find(item => item.id === "force-retranslate").disabled, false);
+  assert.equal(idle.find(item => item.id === "retranslate-text").disabled, false);
+  assert.equal(idle.find(item => item.id === "retranslate-images").disabled, false);
   const shown = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "complete", showTranslation: true }));
   assert.equal(shown.find(item => item.id === "restore-original").disabled, false);
   assert.equal(shown.find(item => item.id === "translate-chapter").disabled, true);
+  const busy = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, imageStatus: "working" }));
+  assert.equal(busy.find(item => item.id === "retranslate-images").disabled, true);
+  assert.match(busy.find(item => item.id === "retranslate-images").disabledReason, /图片正在处理中/u);
 });
 
 test("comic menu separates stop, hide overlay and clear overlay", () => {

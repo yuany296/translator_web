@@ -78,6 +78,7 @@ function fill(configuration) {
   byId("minBoxHeight").value = ocr.tuning.minBoxHeight;
   byId("maxAspectRatio").value = ocr.tuning.maxAspectRatio;
   byId("mergeLineGap").value = ocr.tuning.mergeLineGap;
+  byId("novelImageMergeLines").checked = ocr.tuning.novelImageMergeLines === true;
   byId("visionEnabled").checked = ocr.visionRepair.enabled;
   byId("visionKey").value = ocr.visionRepair.apiKey;
   byId("visionUrl").value = ocr.visionRepair.baseUrl;
@@ -136,7 +137,7 @@ function collectOcr() {
       confidenceThreshold: numberValue("confidenceThreshold"), minBoxArea: numberValue("minBoxArea"),
       maxBoxArea: numberValue("maxBoxArea"), minBoxWidth: numberValue("minBoxWidth"),
       minBoxHeight: numberValue("minBoxHeight"), maxAspectRatio: numberValue("maxAspectRatio"),
-      mergeLineGap: numberValue("mergeLineGap")
+      mergeLineGap: numberValue("mergeLineGap"), novelImageMergeLines: checked("novelImageMergeLines")
     },
     visionRepair: {
       enabled: checked("visionEnabled"), apiKey: value("visionKey"),

@@ -323,7 +323,8 @@ export function installNovelWorkflow(runtime) {
         // 异步旁路：翻译完成后采样已译段落做术语发现，不阻塞译文渲染。
         void runtime.scheduleNovelTermDiscovery?.(chapter);
       }
-      if (state.serviceOnline && state.imageStatus === "idle") {
+      // 仅重译正文时不动图片(图片强制重处理是独立入口)。
+      if (options.textOnly !== true && state.serviceOnline && state.imageStatus === "idle") {
         void runtime.translateNovelImages(chapter).catch(error => {
           state.imageStatus = "partial";
           runtime.setNovelImageStatus?.("partial", state.progress, runtime.getErrorMessage(error));
@@ -342,6 +343,7 @@ export function installNovelWorkflow(runtime) {
     if (!surface) return;
     runtime.reapplyNovelTranslations(surface);
     runtime.reapplyNovelEmbeddedImages?.(surface);
+    runtime.resumeNovelImagesIfIdle?.();
   }
   runtime.onNovelSurfaceChanged = onNovelSurfaceChanged;
 }

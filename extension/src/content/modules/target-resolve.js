@@ -108,6 +108,7 @@ export function installTargetResolve(runtime) {
       fallbackReason: String(payload.fallbackReason || ""),
       stitchAdmission: String(payload.stitchAdmission || ""),
       stitchRejectionReason: String(payload.stitchRejectionReason || ""),
+      novelImage: payload.novelImage === true,
       stitch: payload.stitch || null
     };
   }

@@ -76,6 +76,7 @@ export function installRecognitionPayload(runtime) {
       sourceHeight,
       targetCssWidth: Number(rect.width || 0),
       targetCssHeight: Number(rect.height || 0),
+      ...(runtime.isNovelImageTarget?.(target) === true ? { novelImage: true } : {}),
       coordinateSpace: payload.source === "visible-tab-crop" ? "source-image-v1" : String(payload.coordinateSpace || "ocr-image-v1")
     };
   }

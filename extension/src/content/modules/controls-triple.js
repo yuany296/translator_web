@@ -25,6 +25,7 @@ export function installControlsTriple(runtime) {
       surfaceFound: !!surface,
       surfaceSettled: runtime.state.novelSurfaceSettled !== false,
       textStatus: novel.textStatus,
+      imageStatus: novel.imageStatus,
       showTranslation: novel.showTranslation,
       cacheStatus: Date.now() < Number(novel.cacheBadgeUntil || 0) ? "none" : (novel.cacheStatus || "none"),
       translatedCount: novel.translations.size,
@@ -299,6 +300,20 @@ export function installControlsTriple(runtime) {
         return void runtime.translateNovelChapter({ force: true }).then(result => {
           runtime.updateNovelProgressPanel?.();
           if (result?.ok === false && result.error) runtime.showFloatingBallFeedback(result.error, "error");
+        });
+      case "retranslate-text":
+        // 只强制重译正文,不动已处理的图片。
+        return void runtime.translateNovelChapter({ force: true, textOnly: true }).then(result => {
+          runtime.updateNovelProgressPanel?.();
+          if (result?.ok === false && result.error) runtime.showFloatingBallFeedback(result.error, "error");
+          else runtime.showFloatingBallFeedback("正在强制重新翻译正文", "info");
+        });
+      case "retranslate-images":
+        // 只强制重新处理全部图片,不动正文译文。
+        return void runtime.retryNovelImages(true).then(result => {
+          runtime.renderNovelImagePanel?.();
+          if (result?.ok === false && result.error) runtime.showFloatingBallFeedback(result.error, "error");
+          else if (result?.ok !== false) runtime.showFloatingBallFeedback("正在强制重新处理图片", "info");
         });
       case "manage-chapter":
         return void runtime.openNovelRevisionPanel().catch(error =>

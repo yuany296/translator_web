@@ -56,23 +56,37 @@ test("stream request batches items beyond the server 200-item limit", async () =
   const result = await harness.runtime.attemptNovelTranslationStream(
     harness.chapter, harness.state, makeItems(350), "fp", {}
   );
-  assert.deepEqual(harness.batchSizes, [150, 150, 50]);
+  assert.deepEqual(harness.batchSizes, [50, 50, 50, 50, 50, 50, 50]);
   assert.equal(result.supported, true);
-  assert.equal(result.completed, 450);
+  assert.equal(result.completed, 1050);
   assert.equal(result.failed, 0);
   assert.equal(result.result.total, 350);
   assert.equal(harness.state.streamState, "completed");
 });
 
-test("a chapter under the limit still uses a single stream request", async () => {
+test("a chapter under the batch limit still uses a single stream request", async () => {
   const harness = createWorkflowHarness({
-    nextResult: { completed: 80, failed: 0, protocolErrors: 0 }
+    nextResult: { completed: 20, failed: 0, protocolErrors: 0 }
   });
   const result = await harness.runtime.attemptNovelTranslationStream(
-    harness.chapter, harness.state, makeItems(80), "fp", {}
+    harness.chapter, harness.state, makeItems(20), "fp", {}
   );
-  assert.deepEqual(harness.batchSizes, [80]);
-  assert.equal(result.completed, 80);
+  assert.deepEqual(harness.batchSizes, [20]);
+  assert.equal(result.completed, 20);
+  assert.equal(harness.state.streamState, "completed");
+});
+
+test("runtime.state.novelStreamBatchSize overrides the default batch limit", async () => {
+  const harness = createWorkflowHarness({
+    nextResult: { completed: 150, failed: 0, protocolErrors: 0 }
+  });
+  harness.runtime.state = { novelStreamBatchSize: 100 };
+  const result = await harness.runtime.attemptNovelTranslationStream(
+    harness.chapter, harness.state, makeItems(350), "fp", {}
+  );
+  assert.deepEqual(harness.batchSizes, [100, 100, 100, 50]);
+  assert.equal(result.completed, 600);
+  assert.equal(result.result.total, 350);
   assert.equal(harness.state.streamState, "completed");
 });
 
@@ -116,8 +130,8 @@ test("aggregated per-batch failures drive paragraph recovery", async () => {
   const result = await harness.runtime.attemptNovelTranslationStream(
     harness.chapter, harness.state, makeItems(300), "fp", {}
   );
-  assert.equal(result.completed, 240);
-  assert.equal(result.failed, 60);
-  assert.equal(result.protocolErrors, 2);
+  assert.equal(result.completed, 720);
+  assert.equal(result.failed, 180);
+  assert.equal(result.protocolErrors, 6);
   assert.equal(harness.state.streamState, "paragraph-recovery");
 });

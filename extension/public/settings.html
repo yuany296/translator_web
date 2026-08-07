@@ -95,6 +95,7 @@
         <div class="card-title"><div><h2>阅读辅助</h2><p>管理悬浮入口、术语发现和文本处理。</p></div></div>
         <div class="toggle-list"><label><span><b>显示悬浮按钮</b><small>在页面右侧显示漫画、小说和网页操作入口</small></span><input id="showBall" type="checkbox" /></label><label><span><b>自动发现候选术语</b><small>翻译后将可能的人名与专有词加入待确认列表</small></span><input id="termDiscoveryEnabled" type="checkbox" /></label><label><span><b>忽略简体中文内容</b><small>扫描网页时跳过确认是简体中文的文本</small></span><input id="ignoreSimplifiedChinese" type="checkbox" /></label></div>
         <div class="form-grid three"><label>悬浮侧边<select id="floatingSide"><option value="right">右侧</option><option value="left">左侧</option></select></label><label>译文缩放<input id="overwriteFontScale" type="number" min="0.5" max="2.5" step="0.05" /></label><label>覆盖范围<input id="overwriteCoverPadding" type="number" min="0" max="1.2" step="0.05" /></label></div>
+        <div class="form-grid three"><label>小说流式分段<input id="novelStreamBatchSize" type="number" min="5" max="150" step="5" /><small>每个流式请求翻译的段落数，越小结果分批到达越频繁</small></label></div>
       </article>
       <article class="setting-card">
         <div class="card-title"><div><h2>调试显示</h2><p>普通使用建议保持默认。</p></div></div>

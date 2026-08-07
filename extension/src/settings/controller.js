@@ -95,6 +95,7 @@ function fill(configuration) {
   byId("floatingSide").value = runtime.floatingSide;
   byId("overwriteFontScale").value = runtime.overwriteFontScale;
   byId("overwriteCoverPadding").value = runtime.overwriteCoverPadding;
+  byId("novelStreamBatchSize").value = runtime.novelStreamBatchSize;
   byId("debugOverlayMode").value = runtime.debugOverlayMode;
   byId("overwritePreviewMode").value = runtime.overwritePreviewMode;
   showOcrProvider();
@@ -171,6 +172,7 @@ async function saveReading() {
     ignoreSimplifiedChinese: checked("ignoreSimplifiedChinese"), floatingSide: value("floatingSide"),
     overwriteFontScale: numberValue("overwriteFontScale"),
     overwriteCoverPadding: numberValue("overwriteCoverPadding"),
+    novelStreamBatchSize: numberValue("novelStreamBatchSize"),
     debugOverlayMode: value("debugOverlayMode"), overwritePreviewMode: value("overwritePreviewMode")
   });
   setStatus("readingStatus", "已保存");

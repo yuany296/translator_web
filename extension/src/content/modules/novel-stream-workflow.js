@@ -14,8 +14,16 @@ export function installNovelStreamWorkflow(runtime) {
   }
 
   // 服务端 /translations/stream 单次请求有 200 段上限(超出返回 422 too_long);
-  // 章节超过上限时按批发送,复用同一 taskId 保证提交幂等。
+  // 默认按 50 段分批发送(设置项 novelStreamBatchSize 可调),每个请求结果一到就
+  // 逐段替换,避免整章打包成一次请求导致结果集中到达、整章一次替换。
+  const DEFAULT_STREAM_ITEMS_PER_REQUEST = 50;
   const MAX_STREAM_ITEMS_PER_REQUEST = 150;
+
+  function resolveStreamBatchLimit(runtime) {
+    const configured = Number(runtime.state?.novelStreamBatchSize);
+    if (!Number.isFinite(configured)) return DEFAULT_STREAM_ITEMS_PER_REQUEST;
+    return Math.min(MAX_STREAM_ITEMS_PER_REQUEST, Math.max(5, Math.floor(configured)));
+  }
 
   async function attemptNovelTranslationStream(chapter, state, items, fingerprint, context = {}) {
     if (!items.length || !runtime.runNovelTranslationStream) return { supported: false, completed: 0 };
@@ -35,12 +43,13 @@ export function installNovelStreamWorkflow(runtime) {
       }
     };
     const total = items.length;
+    const batchLimit = resolveStreamBatchLimit(runtime);
     let completed = 0;
     let failed = 0;
     let protocolErrors = 0;
     let lastError = "";
-    for (let offset = 0; offset < total; offset += MAX_STREAM_ITEMS_PER_REQUEST) {
-      const batch = items.slice(offset, offset + MAX_STREAM_ITEMS_PER_REQUEST);
+    for (let offset = 0; offset < total; offset += batchLimit) {
+      const batch = items.slice(offset, offset + batchLimit);
       state.progress.textPhase = `流式翻译第 ${offset + 1}–${Math.min(total, offset + batch.length)} 段…`;
       runtime.setNovelTextStatus?.("working", state.progress);
       const request = {

@@ -42,7 +42,8 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   overwriteFontScale: 1, overwriteCoverPadding: 1.2,
   debugOverlayMode: "final", overwritePreviewMode: "full", termDiscoveryEnabled: true,
   floatingSide: "right", floatingYRatio: 0.72,
-  displayMode: "translated", webpageDisplayMode: "translated", novelDisplayMode: "translated"
+  displayMode: "translated", webpageDisplayMode: "translated", novelDisplayMode: "translated",
+  novelStreamBatchSize: 50
 });
 
 const numberIn = (value, min, max, fallback) => {
@@ -123,6 +124,8 @@ export function normalizeRuntimeConfig(value = {}) {
     termDiscoveryEnabled: value.termDiscoveryEnabled !== false,
     floatingSide: value.floatingSide === "left" ? "left" : "right",
     floatingYRatio: numberIn(value.floatingYRatio, 0, 1, DEFAULT_RUNTIME_CONFIG.floatingYRatio),
+    // 流式请求每批段落数:整章拆成多个请求,每个请求结果一到就逐段替换,避免整章一次替换。
+    novelStreamBatchSize: numberIn(value.novelStreamBatchSize, 5, 150, DEFAULT_RUNTIME_CONFIG.novelStreamBatchSize),
     displayMode,
     // 旧字段继续镜像统一值，保证升级期间的旧内容脚本不会读到冲突配置。
     webpageDisplayMode: displayMode,

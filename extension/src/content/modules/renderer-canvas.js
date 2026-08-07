@@ -25,26 +25,30 @@ export function installRendererCanvas(runtime) {
     // 上限只作异常保护;preferredFont(原文字高)正常时才是真正的目标字号。
     const maxFont = Number(options.maxFont || 120);
     const preferredFont = Number(options.preferredFont || 0);
+    // 以 OCR 测得的原文字高为目标字号:单行文本尽量按原尺寸绘制,
+    // 而不是被行距/高度余量压缩到原字号的六成。
+    const matchOriginal = preferredFont > 0 && (options.textScale === undefined || Number(options.textScale) === 1);
     const maxWidth = Math.max(6, box.w * Number(options.widthUsage || 0.82));
-    const maxHeight = Math.max(6, box.h * Number(options.heightUsage || 0.68));
+    const maxHeight = Math.max(6, box.h * (matchOriginal ? 1 : Number(options.heightUsage || 0.68)));
+    const lineHeightFactor = matchOriginal ? 1.08 : 1.22;
     const family = '"Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", sans-serif';
     let best = { size: minFont, lines: [text] };
     let low = minFont;
     let high = Math.max(minFont + 1, Math.min(
       maxFont,
-      box.h * 0.68 * textScale,
+      matchOriginal ? box.h : box.h * 0.68 * textScale,
       box.w * 0.38 * textScale
     ));
     if (preferredFont > 0) {
       // 以 OCR 测得的原文字高为目标字号（canvas 像素，无需 textScale），
       // 译文装不下时才向下缩小，与 DOM 覆盖层的 fitBubbleFontSize 行为一致。
-      high = Math.min(high, preferredFont * 1.08);
+      high = Math.min(high, preferredFont * (matchOriginal ? 1.05 : 1.08));
     }
     for (let index = 0; index < 9; index += 1) {
       const size = (low + high) / 2;
       ctx.font = `600 ${size}px ${family}`;
       const lines = runtime.wrapCanvasText(ctx, text, maxWidth);
-      const lineHeight = size * 1.22;
+      const lineHeight = size * lineHeightFactor;
       const widest = lines.reduce((max, line) => Math.max(max, ctx.measureText(line).width), 0);
       if (lines.length * lineHeight <= maxHeight && widest <= maxWidth) {
         best = { size, lines };

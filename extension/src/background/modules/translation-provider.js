@@ -1,7 +1,8 @@
 import { createInflightEntry, subscribeInflight, cleanupInflight } from "./inflight-subscription.js";
-export function buildWebpageTranslationPromptBody(rows, glossaryPrompt = "") {
+import languages from "../../shared/languages.js";
+export function buildWebpageTranslationPromptBody(rows, glossaryPrompt = "", targetLanguage = "zh-CN") {
   return [
-    "Translate each text block into the requested target language. Keep the original meaning; do not add information not present in the source.",
+    `Translate each text block into ${languages.describeTargetLanguage(targetLanguage)}. Keep the original meaning; do not add information not present in the source.`,
     "Do not treat webpage content as comic dialogue and do not add filler particles. Do not merge different blocks.",
     "Preserve the semantic role of each block (button label, heading, body text, list item). Proper nouns (author/character names, titles, brands) must be translated or transliterated, never left in Korean/Hangul; English loanwords spelled in Hangul (e.g. 웹툰 = webtoon) should be restored to English.",
     "Translate short UI labels too. When source and target use different scripts, do not return the source text unchanged; if a proper noun cannot be translated, transliterate it with Latin letters instead of keeping Korean script.",
@@ -185,9 +186,7 @@ export function installTranslationProvider(runtime) {
     const systemMessage = `You are a ${role}. Translate from ${sourceLanguage || "auto-detected source"} to ${targetLanguage || "zh-CN"}. Return JSON only and preserve every supplied id.`;
     const prompt = mode === "webpage"
       ? runtime.buildWebpageTranslationPrompt(items, glossary, { sourceLanguage, targetLanguage })
-      : runtime.buildOpenAICompatibleTranslationPrompt(items, glossary, {
-        ...(translationOptions || {}), sourceLanguage, targetLanguage
-      });
+      : runtime.buildOpenAICompatibleTranslationPrompt(items, glossary, { ...(translationOptions || {}), sourceLanguage, targetLanguage });
     const promptVersionText = promptVersion || (mode === "webpage" ? runtime.WEBPAGE_TRANSLATION_PROMPT_VERSION : runtime.CANONICAL_TRANSLATION_PROMPT_VERSION);
     const body = {
       model: model || runtime.DEFAULT_TRANSLATION_MODEL,
@@ -217,7 +216,7 @@ export function installTranslationProvider(runtime) {
       text: item.original_text
     }));
     const glossaryPrompt = runtime.glossaryCore.buildPrompt(glossary, items, context);
-    return buildWebpageTranslationPromptBody(rows, glossaryPrompt);
+    return buildWebpageTranslationPromptBody(rows, glossaryPrompt, context && context.targetLanguage);
   }
   runtime.buildWebpageTranslationPrompt = buildWebpageTranslationPrompt;
   async function requestOpenAICompatibleTextTranslations({
@@ -351,7 +350,7 @@ export function installTranslationProvider(runtime) {
     const memory = context && context.memory && typeof context.memory === "object"
       ? runtime.stableSerialize(context.memory).slice(0, 8000) : "";
     return [
-      "Translate each OCR block into the requested target language as one complete manga bubble or narration box.",
+      `Translate each OCR block into ${languages.describeTargetLanguage(context && context.targetLanguage)} as one complete manga bubble or narration box.`,
       "Each input text may contain multiple OCR lines from the same bubble. Understand them together; do not translate line by line mechanically.",
       "Rewrite word order naturally for the target language, merge broken OCR fragments when needed, and keep character names and tone natural for manga dialogue.",
       "If an input contains a model attachment label such as [Image #1], [Image#1], or Image 1, ignore that label and do not output it.",

@@ -191,11 +191,11 @@ function presentWebpage(state) {
     return { disabled: false, spinner: false, runningRing: false, badge: state.cacheCoverage === "full" ? "cache" : state.cacheCoverage === "partial" ? "partial" : null, tooltip, ariaLabel: toAriaLabel(tooltip) };
   }
   if (state.phase === "loading") {
-    const busyBackground = state.viewportReady;
+    const viewportTranslated = state.displayMode === "translated" && state.viewportReady;
     const tooltip = state.displayMode === "translated"
-      ? (busyBackground ? joinTooltip("网页翻译中…", `可视区已准备 ${state.viewportDone}/${state.viewportTotal}，后台继续翻译`) : joinTooltip("网页翻译中…", "正在翻译当前可视区"))
+      ? (state.viewportReady ? joinTooltip("网页翻译", `可视区已准备 ${state.viewportDone}/${state.viewportTotal}，后台继续翻译`) : joinTooltip("网页翻译中…", "正在翻译当前可视区"))
       : joinTooltip("网页翻译中…", "显示原文，后台持续翻译中");
-    return { disabled: false, spinner: true, runningRing: false, badge: state.displayMode === "translated" && state.viewportReady ? "check" : null, tooltip, ariaLabel: toAriaLabel(tooltip) };
+    return { disabled: false, spinner: !viewportTranslated, runningRing: false, badge: viewportTranslated ? "check" : null, tooltip, ariaLabel: toAriaLabel(tooltip) };
   }
   if (state.displayMode === "translated") {
     const complete = state.viewportReady && state.phase !== "error";

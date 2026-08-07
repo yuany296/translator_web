@@ -147,14 +147,14 @@ test("webpage: continuous + translated keeps both axes while new content transla
   assert.match(present.tooltip, /正在翻译当前可视区/u);
 });
 
-test("webpage: viewport ready with background still working shows background progress", () => {
+test("webpage: viewport ready with background working keeps checkmark without spinner", () => {
   const state = states.buildWebpageState({
     enabled: true, mode: "continuous", visibility: "translated", working: true,
     viewportTotal: 5, viewportDone: 5, backgroundTotal: 20, backgroundDone: 9
   });
   assert.equal(state.phase, "loading");
   const present = states.deriveFloatingActionPresentation("webpage", state);
-  assert.equal(present.spinner, true);
+  assert.equal(present.spinner, false);
   assert.equal(present.badge, "check");
   assert.match(present.tooltip, /可视区已准备 5\/5，后台继续翻译/u);
 });

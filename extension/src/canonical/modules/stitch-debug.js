@@ -184,6 +184,14 @@ export function installStitchDebug(runtime) {
     return runtime.areOcrTextsDuplicateOrContained(candidate.text, entry.text) || runtime.hasSubstantialOcrTokenOverlap(candidate.text, entry.text);
   }
   runtime.isKakaoBoundaryOwnDuplicateCandidate = isKakaoBoundaryOwnDuplicateCandidate;
+  const MIN_TRANSLATED_TEXT_DEDUP_LENGTH = 6;
+  function areTranslatedTextsDuplicateOrContained(first, second) {
+    if (!first || !second) return false;
+    const shorter = first.length <= second.length ? first : second;
+    if (shorter.length < MIN_TRANSLATED_TEXT_DEDUP_LENGTH) return false;
+    return runtime.areOcrTextsDuplicateOrContained(first, second);
+  }
+  runtime.areTranslatedTextsDuplicateOrContained = areTranslatedTextsDuplicateOrContained;
   function selectKakaoVisualDuplicateLoser(left, right) {
     const leftKey = String(left && left.scopeKey || "");
     const rightKey = String(right && right.scopeKey || "");
@@ -257,7 +265,7 @@ export function installStitchDebug(runtime) {
       return runtime.isKakaoBoundaryOwnDuplicateCandidate(candidate, entry);
     }
     const sourceRelated = runtime.areOcrTextsDuplicateOrContained(candidate.text, entry.text);
-    const translationRelated = runtime.areOcrTextsDuplicateOrContained(candidate.translatedText, entry.translatedText);
+    const translationRelated = runtime.areTranslatedTextsDuplicateOrContained(candidate.translatedText, entry.translatedText);
     return sourceRelated || translationRelated;
   }
 

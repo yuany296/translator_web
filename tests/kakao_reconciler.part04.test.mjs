@@ -501,3 +501,27 @@ test("an unrelated seam cannot merge three aligned edge blocks without a duplica
   assert.equal(new Set(observations.map(item => result.ledger[item.id].canonicalId)).size, 3);
   assert.equal(result.ledger[unrelated.id].resolution, "standalone");
 });
+
+test("seam continuation tolerates a one-character OCR difference on the shared boundary line", () => {
+  const upper = page("ocr-variant-upper", 0);
+  const lower = page("ocr-variant-lower", 1);
+  const upperLine = pageObservation(upper, "벌써", { x: 62, y: 90.5, w: 10, h: 4 }, "", "effect_text");
+  const lowerSentence = pageObservation(lower, "5,000p다 벌었다고!", { x: 55, y: 0, w: 20, h: 12 }, "", "effect_text");
+  const seam = seamObservation(upper, lower, "벌써 5,000p나",
+    { x: 55, y: 90, w: 20, h: 10 }, { x: 55, y: 0, w: 20, h: 4 }, "", "effect_text");
+  const result = R.reconcile({
+    pages: [upper, lower],
+    observations: [upperLine, lowerSentence, seam],
+    adjacentPagePairs: [[upper.pageId, lower.pageId]]
+  });
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText, "벌써 5,000p나 벌었다고!");
+  assert.deepEqual(result.canonicals[0].memberObservationIds,
+    [upperLine.id, lowerSentence.id, seam.id].sort());
+  assert.ok(Object.values(result.ledger).every(entry => entry.resolution === "consumed"));
+  const runtime = createReconcilerRuntime();
+  assert.equal(runtime.joinContinuationText("벌써 5,000p나", "5,000p다 벌었다고!"), "벌써 5,000p나 벌었다고!");
+  assert.equal(runtime.joinContinuationText("앞 <황혼 등급>", "황혼등급> 뒤"), "앞 <황혼 등급> 뒤");
+  assert.equal(runtime.fuzzySuffixPrefixOverlap("벌써 5,000p나", "5,000p다 벌었다고!").length, 7);
+  assert.equal(runtime.fuzzySuffixPrefixOverlap("완전히", "다른말"), null);
+});

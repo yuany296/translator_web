@@ -35,6 +35,19 @@ function languageName(value) {
   return LANGUAGE_NAMES[value] || String(value || "auto");
 }
 
+const TARGET_LANGUAGE_LABELS = Object.freeze({
+  "zh-CN": "Simplified Chinese (简体中文)",
+  "zh-TW": "Traditional Chinese (繁體中文)",
+  en: "English (英语)",
+  ja: "Japanese (日本語)",
+  ko: "Korean (한국어)"
+});
+
+function describeTargetLanguage(value) {
+  const key = normalizeTargetLanguage(value);
+  return TARGET_LANGUAGE_LABELS[key] || key;
+}
+
 function isSameLanguagePair(sourceLanguage, targetLanguage) {
   const source = normalizeSourceLanguage(sourceLanguage);
   const target = normalizeTargetLanguage(targetLanguage);
@@ -91,6 +104,7 @@ export default Object.freeze({
   normalizeSourceLanguage,
   normalizeTargetLanguage,
   languageName,
+  describeTargetLanguage,
   isSameLanguagePair,
   ocrLanguageToTranslationLanguage,
   translationLanguageToOcrLanguage,

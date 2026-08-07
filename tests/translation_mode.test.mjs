@@ -18,8 +18,8 @@ test("webpage prompt is webpage-flavored and preserves the stable id protocol", 
     { id: "t1", text: "Terms of service" }
   ];
   const prompt = buildWebpageTranslationPromptBody(rows, "");
-  assert.match(prompt, /requested target language/u);
-  assert.doesNotMatch(prompt, /Simplified Chinese/u);
+  assert.match(prompt, /Translate each text block into Simplified Chinese \(简体中文\)/u);
+  assert.doesNotMatch(prompt, /requested target language/u);
   assert.match(prompt, /do not add information not present in the source/u);
   assert.match(prompt, /Do not treat webpage content as comic dialogue/u);
   assert.match(prompt, /do not add filler particles/u);
@@ -32,6 +32,8 @@ test("webpage prompt is webpage-flavored and preserves the stable id protocol", 
   assert.ok(prompt.includes("Sign in"));
   const withGlossary = buildWebpageTranslationPromptBody(rows, "glossary-line");
   assert.ok(withGlossary.includes("glossary-line"));
+  const english = buildWebpageTranslationPromptBody(rows, "", "en");
+  assert.match(english, /Translate each text block into English \(英语\)/u);
 });
 
 test("comic requests carry mode comic by default; webpage requests carry mode webpage", () => {

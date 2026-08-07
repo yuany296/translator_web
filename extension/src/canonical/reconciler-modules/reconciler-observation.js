@@ -41,10 +41,26 @@ export function installReconcilerObservation(runtime) {
     const comparableRight = runtime.normalizeComparableText(right);
     if (comparableLeft.includes(comparableRight)) return left;
     if (comparableRight.includes(comparableLeft)) return right;
-    const overlap = runtime.suffixPrefixOverlap(comparableLeft, comparableRight);
-    return `${left}${runtime.sliceComparablePrefix(right, overlap)}`;
+    const strictOverlap = runtime.suffixPrefixOverlap(comparableLeft, comparableRight);
+    const fuzzyOverlap = strictOverlap > 0 ? 0 : (runtime.fuzzySuffixPrefixOverlap(comparableLeft, comparableRight) || {}).length || 0;
+    return `${left}${runtime.sliceComparablePrefix(right, strictOverlap || fuzzyOverlap)}`;
   }
   runtime.joinContinuationText = joinContinuationText;
+  function fuzzySuffixPrefixOverlap(leftText, rightText, maxMismatch = 1, minimumLength = 4) {
+    const left = Array.from(runtime.normalizeComparableText(leftText));
+    const right = Array.from(runtime.normalizeComparableText(rightText));
+    for (let length = Math.min(left.length, right.length); length >= minimumLength; length -= 1) {
+      const suffix = left.slice(left.length - length);
+      const prefix = right.slice(0, length);
+      let mismatches = 0;
+      for (let index = 0; index < length; index += 1) {
+        if (suffix[index] !== prefix[index] && ++mismatches > maxMismatch) break;
+      }
+      if (mismatches <= maxMismatch) return { length, mismatches };
+    }
+    return null;
+  }
+  runtime.fuzzySuffixPrefixOverlap = fuzzySuffixPrefixOverlap;
   function stableSerialize(value) {
     if (value === null || typeof value !== "object") {
       return JSON.stringify(value);

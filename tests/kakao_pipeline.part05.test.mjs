@@ -596,6 +596,50 @@ test("isKakaoGlobalDuplicateCandidate detects duplicate from overlapping box + s
   // Boxes overlap, texts identical
   assert.equal(P.isKakaoGlobalDuplicateCandidate(candidate, entry), true);
 });
+test("short identical translations are not deduplicated, long ones are", () => {
+  const box = {
+    left: 0,
+    top: 0,
+    width: 100,
+    height: 100
+  };
+  const candidate = {
+    box,
+    text: "벌써",
+    translatedText: "已经",
+    bubble: {}
+  };
+  const entry = {
+    box: {
+      left: 10,
+      top: 10,
+      width: 80,
+      height: 80
+    },
+    text: "벌었다고!",
+    translatedText: "已经",
+    completeness: 4
+  };
+  assert.equal(P.isKakaoGlobalDuplicateCandidate(candidate, entry), false, "2 字相同译文不应按译文去重");
+  const longCandidate = {
+    box,
+    text: "완전히 다른 문장",
+    translatedText: "已经赚了五千点了",
+    bubble: {}
+  };
+  const longEntry = {
+    box: {
+      left: 10,
+      top: 10,
+      width: 80,
+      height: 80
+    },
+    text: "또 다른 문장",
+    translatedText: "已经赚了五千点了",
+    completeness: 10
+  };
+  assert.equal(P.isKakaoGlobalDuplicateCandidate(longCandidate, longEntry), true, "长相同译文仍应按译文去重");
+});
 test("cross-page overflow dedupe uses strong geometry when OCR texts disagree", () => {
   const ownerEntry = {
     box: {

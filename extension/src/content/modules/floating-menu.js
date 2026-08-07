@@ -135,11 +135,22 @@ export function installFloatingMenu(runtime) {
       }, LONG_PRESS_MS);
     });
     const cancel = event => {
+      if (event && event.type === "pointercancel") {
+        cancelBallLongPress();
+        startPosition = null;
+        return;
+      }
+      if (event && event.type === "pointerup") {
+        if (longPressFired) {
+          runtime.state.suppressFloatingClickUntil = Date.now() + 450;
+        } else {
+          cancelBallLongPress();
+        }
+        startPosition = null;
+        return;
+      }
       if (event && startPosition && Math.hypot(event.clientX - startPosition.x, event.clientY - startPosition.y) > 7) {
         cancelBallLongPress();
-      }
-      if (event && event.type === "pointerup" && longPressFired) {
-        runtime.state.suppressFloatingClickUntil = Date.now() + 450;
       }
     };
     ball.addEventListener("pointermove", cancel, true);

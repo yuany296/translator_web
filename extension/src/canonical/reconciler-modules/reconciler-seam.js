@@ -289,7 +289,11 @@ export function installReconcilerSeam(runtime) {
       const bandHeight = runtime.calculateSeamBandHeight(page.width, page.width);
       if (!runtime.observationTouchesEdge(pageObservation, page, edge, bandHeight)) continue;
       const direction = isLowerEdge ? "seam_then_page" : "page_then_seam";
-      const textOverlap = direction === "seam_then_page" ? runtime.suffixPrefixOverlap(seamText, pageText) : runtime.suffixPrefixOverlap(pageText, seamText);
+      const overlapLeft = direction === "seam_then_page" ? seamText : pageText;
+      const overlapRight = direction === "seam_then_page" ? pageText : seamText;
+      const strictOverlap = runtime.suffixPrefixOverlap(overlapLeft, overlapRight);
+      const fuzzyOverlap = runtime.fuzzySuffixPrefixOverlap(overlapLeft, overlapRight);
+      const textOverlap = Math.max(strictOverlap, fuzzyOverlap ? fuzzyOverlap.length : 0);
       if (textOverlap < minimumOverlap) continue;
       const seamBox = runtime.boxInNormalizedPage(seamSpan, page);
       const pageBox = runtime.boxInNormalizedPage(pageSpan, page);
@@ -321,7 +325,9 @@ export function installReconcilerSeam(runtime) {
     const shorter = left.length <= right.length ? left : right;
     const longer = left.length > right.length ? left : right;
     if (shorter.length >= 2 && longer.includes(shorter)) return true;
-    const overlap = Math.max(runtime.suffixPrefixOverlap(left, right), runtime.suffixPrefixOverlap(right, left));
+    const strictOverlap = Math.max(runtime.suffixPrefixOverlap(left, right), runtime.suffixPrefixOverlap(right, left));
+    const fuzzyOverlap = Math.max(runtime.fuzzySuffixPrefixOverlap(left, right)?.length || 0, runtime.fuzzySuffixPrefixOverlap(right, left)?.length || 0);
+    const overlap = Math.max(strictOverlap, fuzzyOverlap);
     if (overlap >= Math.max(2, Math.ceil(Math.min(left.length, right.length) * 0.45))) return true;
     // OCR 在跨页边缘容易把一个韩文字形识错，或多带一个引号。只对足够长的
     // seam 片段做近似子串比较；保留数学、货币等语义符号，避免误合并。

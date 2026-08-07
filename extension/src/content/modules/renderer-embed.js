@@ -41,9 +41,10 @@ export function installRendererEmbed(runtime) {
     const displayWidth = Number(target && target.clientWidth || 0);
     const naturalWidth = Number(target && (target.naturalWidth || target.width) || 0);
     if (displayWidth > naturalWidth && naturalWidth > 0) {
-      // 显示尺寸大于源图:在显示分辨率上渲染,译文文字不再随浏览器放大而变糊。
+      // 显示尺寸大于源图:按显示宽度渲染;compose 会对比底图尺寸决定是否放大,
+      // 底图已是渲染尺寸(小说插图)时不再二次放大。
       return {
-        renderScale: Math.min(runtime.EMBEDDED_MAX_RENDER_SCALE, displayWidth / naturalWidth),
+        renderWidth: displayWidth,
         maxFont: 120,
         widthUsage: 0.82,
         heightUsage: 0.68
@@ -176,6 +177,10 @@ export function installRendererEmbed(runtime) {
   }
   runtime.renderEmbeddedBackgroundTarget = renderEmbeddedBackgroundTarget;
   async function getEmbeddedBaseDataUrl(img, payload) {
+    // 底图优先使用按渲染尺寸捕获的 payload,保证文字比例与 OCR 输入一致。
+    if (payload && payload.source === "img-rendered" && runtime.isDataUrl(payload.dataUrl)) {
+      return payload.dataUrl;
+    }
     try {
       return runtime.imageElementToEmbeddedDataUrl(img);
     } catch {
@@ -351,12 +356,14 @@ export function installRendererEmbed(runtime) {
     if (!naturalWidth || !naturalHeight) {
       throw new Error("Embedded base image size is unavailable");
     }
-    const renderScale = Math.max(1, Math.min(
-      runtime.EMBEDDED_MAX_RENDER_SCALE,
-      Number(options.renderScale || 1) || 1
-    ));
-    const width = Math.round(naturalWidth * renderScale);
-    const height = Math.round(naturalHeight * renderScale);
+    // 仅当显示宽度大于底图时才放大(小说插图底图已按渲染尺寸捕获则保持原样),
+    // 避免把渲染图再放大一次导致画布超大且文字比例失真。
+    const displayWidth = Math.max(0, Number(options.renderWidth || 0));
+    const scale = displayWidth > naturalWidth
+      ? Math.min(runtime.EMBEDDED_MAX_RENDER_SCALE, displayWidth / naturalWidth)
+      : 1;
+    const width = Math.round(naturalWidth * scale);
+    const height = Math.round(naturalHeight * scale);
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
@@ -369,7 +376,7 @@ export function installRendererEmbed(runtime) {
     ctx.drawImage(image, 0, 0, width, height);
     runtime.drawEmbeddedBubbles(ctx, width, height, bubbles, {
       ...options,
-      ...(renderScale > 1 ? { textScale: 1 } : {})
+      ...(scale > 1 ? { textScale: 1 } : {})
     });
     return canvas.toDataURL("image/jpeg", runtime.EMBEDDED_JPEG_QUALITY);
   }

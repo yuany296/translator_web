@@ -137,10 +137,7 @@ export function installControlsTriple(runtime) {
     // 模式关闭 → 开启持续翻译并显示译文
     runtime.clearFloatingBallFeedback();
     const result = await runtime.translateWebpage();
-    if (result?.ok || result?.reused) {
-      runtime.showFloatingBallFeedback(result?.partial || result?.realFailed
-        ? "网页翻译部分完成" : "已显示中文译文", result?.partial || result?.realFailed ? "info" : "success");
-    } else {
+    if (!(result?.ok || result?.reused)) {
       runtime.showFloatingBallFeedback(result?.cancelled ? "" : (result?.offline ? "本地服务未启动，已缓存内容仍显示" : (result?.error || "网页翻译失败")), "error");
     }
   }

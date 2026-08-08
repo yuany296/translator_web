@@ -125,21 +125,24 @@ export function installRendererOverlay(runtime) {
   }
   runtime.renderOverlay = renderOverlay;
   function createBubbleCoverClipNode(bubble, coverNode) {
-    const box = runtime.resolveBubbleCoverBox(bubble);
+    const box = runtime.normalizeFillBox(bubble, bubble?.stitch_overflow === true) || runtime.resolveBubbleCoverBox(bubble);
     if (!coverNode || !box) return coverNode;
+    const rotation = runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
     const clipNode = document.createElement("div");
     clipNode.className = "mt-cover-clip";
-    clipNode.dataset.mangaTranslatorOverlay = "true";
-    clipNode.dataset.canonicalId = String(bubble.canonical_id || "");
-    clipNode.style.left = `${box.x}%`;
-    clipNode.style.top = `${box.y}%`;
+    Object.assign(clipNode.dataset, { mangaTranslatorOverlay: "true", canonicalId: String(bubble.canonical_id || ""), rotationDeg: String(rotation) });
+    clipNode.style.left = `${box.x + box.w / 2}%`;
+    clipNode.style.top = `${box.y + box.h / 2}%`;
     clipNode.style.width = `${box.w}%`;
     clipNode.style.height = `${box.h}%`;
+    clipNode.style.transform = `translate(-50%, -50%) rotate(${rotation.toFixed(2)}deg)`;
+    clipNode.style.transformOrigin = "center center";
     const x = Number(coverNode.dataset.xPercent), y = Number(coverNode.dataset.yPercent), w = Number(coverNode.dataset.wPercent), h = Number(coverNode.dataset.hPercent);
     Object.assign(coverNode.style, {
       left: `${(x + w / 2 - box.x) / box.w * 100}%`, top: `${(y + h / 2 - box.y) / box.h * 100}%`,
       width: `${w / box.w * 100}%`, height: `${h / box.h * 100}%`
     });
+    coverNode.style.setProperty("--mt-base-transform", "translate(-50%, -50%)");
     clipNode.appendChild(coverNode);
     return clipNode;
   }

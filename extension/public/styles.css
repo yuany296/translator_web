@@ -263,6 +263,14 @@
   content: none !important;
 }
 
+.mt-bubble.mt-text-layer > .mt-fill-tilted {
+  display: none !important;
+}
+
+.mt-bubble.mt-cover-only > .mt-fill-tilted {
+  display: none !important;
+}
+
 .mt-measure-probe {
   position: fixed !important;
   left: -200vw !important;

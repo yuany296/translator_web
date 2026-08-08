@@ -112,7 +112,7 @@ export function installLifecycleBubble(runtime) {
     }
     // Tilted text: use counter-rotated fill div so the polygon clip-path is in world space
     const absAngle = Math.abs(runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type));
-    if (bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle > 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
+    if (!coverOnly && !options.textOnly && bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle > 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
       const fillDiv = document.createElement("div");
       fillDiv.className = "mt-fill-tilted";
       fillDiv.dataset.mangaTranslatorOverlay = "true";
@@ -126,7 +126,7 @@ export function installLifecycleBubble(runtime) {
       node.appendChild(fillDiv);
     }
     // Horizontal text: use ::before with polygon clip-path fallback (element is not rotated)
-    if (bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle <= 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
+    if (!coverOnly && !options.textOnly && bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle <= 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
       const clipTarget = fillBox || { x, y, w, h };
       const clip = runtime.buildRegionClipPath(bubble.polygon, clipTarget.x, clipTarget.y, clipTarget.w, clipTarget.h);
       if (clip) node.style.setProperty("--mt-region-clip", clip);

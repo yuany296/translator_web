@@ -111,13 +111,16 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   const coverProjection = lifecycle.match(/function buildBubbleCoverProjection\([\s\S]*?\n\s*runtime\.buildBubbleCoverProjection/)?.[0] ?? "";
   assert.match(coverProjection, /\.\.\.bubble[\s\S]*?projection_role:\s*"cover_only"/);
   assert.doesNotMatch(coverProjection, /rotation_deg:|\n\s+polygon:\s*null/);
-  assert.match(overlay, /function createBubbleCoverClipNode\([\s\S]*?className\s*=\s*"mt-cover-clip"[\s\S]*?appendChild\(coverNode\)/);
+  assert.match(overlay, /function createBubbleCoverClipNode\([\s\S]*?normalizeFillBox\(bubble,[\s\S]*?normalizeBubbleRotation\(bubble\.rotation_deg,\s*bubble\.region_type\)[\s\S]*?clipNode\.style\.transform\s*=\s*`translate\(-50%, -50%\) rotate\([\s\S]*?--mt-base-transform",\s*"translate\(-50%, -50%\)"[\s\S]*?appendChild\(coverNode\)/);
   assert.match(css, /\.mt-cover-clip\s*\{[\s\S]*?overflow:\s*hidden[\s\S]*?clip-path:\s*inset\(0\)/);
   assert.match(overlay, /appendBubbleRenderLayers\(root,\s*coverNodes,\s*bubbleNodes\)/);
   assert.match(overlay, /function appendBubbleRenderLayers\([\s\S]*?coverNodes[\s\S]*?root\.appendChild\(node\)[\s\S]*?textNodes[\s\S]*?root\.appendChild\(node\)/);
   assert.match(crossPage, /overlay\.appendChild\(coverLayer\)[\s\S]*?overlay\.appendChild\(textNode\)/);
   assert.match(css, /\.mt-bubble\.mt-text-layer\s*\{[\s\S]*?background-image:\s*none\s*!important/);
   assert.match(css, /\.mt-bubble\.mt-text-layer::before\s*\{[\s\S]*?content:\s*none\s*!important/);
+  assert.match(css, /\.mt-bubble\.mt-text-layer\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
+  assert.match(css, /\.mt-bubble\.mt-cover-only\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
+  assert.match(lifecycle, /if\s*\(!coverOnly\s*&&\s*!options\.textOnly\s*&&\s*bgType\s*===\s*"solid"[\s\S]*?fillDiv\.className\s*=\s*"mt-fill-tilted"/);
 });
 
 test("overlay bubbles always anchor at the source text block center and center their text", () => {

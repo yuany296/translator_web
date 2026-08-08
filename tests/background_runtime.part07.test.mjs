@@ -641,3 +641,12 @@ test("reliable solid speech regions keep cleanup on the final blue text box", as
     y: 70.8
   }]);
 });
+test("a single tilted OCR candidate keeps its exact blue polygon during final coalescing", () => {
+  const polygon = [{ x: 20.219, y: 12.416 }, { x: 78.553, y: 7.2 }, { x: 79.531, y: 13.518 }, { x: 21.197, y: 18.734 }];
+  const merged = context.__backgroundTest.mergeOcrCandidateGroup([{
+    x: 19.2, y: 9.5, w: 61.35, h: 6.94, polygon,
+    rotation_deg: -6.7, bg_type: "none", original_text: "[김솔음한테만 보임]", confidence: 0.999
+  }], 0);
+  assert.equal(JSON.stringify(merged.polygon), JSON.stringify(polygon));
+  assert.notEqual(merged.polygon, polygon);
+});

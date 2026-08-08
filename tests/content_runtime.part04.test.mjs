@@ -699,6 +699,15 @@ test("cleanup cover is clipped to the final blue box", () => {
     h: 20
   });
 });
+test("cleanup cover uses the exact blue polygon bounds instead of the translated text rectangle", () => {
+  const cover = runtime.__test.resolveBubbleCoverBox({
+    x: 19.2, y: 9.5, w: 61.35, h: 6.94,
+    polygon: [{ x: 20.219, y: 12.416 }, { x: 78.553, y: 7.2 }, { x: 79.531, y: 13.518 }, { x: 21.197, y: 18.734 }]
+  });
+  assert.deepEqual({ x: cover.x, y: cover.y }, { x: 20.219, y: 7.2 });
+  assert.ok(Math.abs(cover.w - 59.312) < 1e-9);
+  assert.ok(Math.abs(cover.h - 11.534) < 1e-9);
+});
 test("cleanup cover keeps the OCR rotation inside its final blue-box clip", () => {
   const bubble = {
     x: 3.4,

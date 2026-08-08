@@ -170,6 +170,7 @@ export function installReaderApi(runtime) {
       textSimilarity: runtime.textSimilarity,
       formatTranslationForOriginalLines: runtime.formatTranslationForOriginalLines,
       normalizeBubbleRotation: runtime.normalizeBubbleRotation,
+      resolveBubblePolygonRotation: runtime.resolveBubblePolygonRotation,
       normalizeBubbleAlignment: runtime.normalizeBubbleAlignment,
       shouldUseVerticalJapaneseLayout: runtime.shouldUseVerticalJapaneseLayout,
       applyBubbleAnchorStyle: runtime.applyBubbleAnchorStyle,

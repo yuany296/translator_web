@@ -50,8 +50,10 @@ test("OCR 调试框不会参与页面命中测试", () => {
 
 test("OCR 原始框与合并框的标签使用独立垂直轨道", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
+  const overlay = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "renderer-overlay.js"), "utf8");
   assert.match(css, /bottom:\s*calc\(100% \+ var\(--mt-debug-label-lane,\s*0px\)\)/);
   assert.match(css, /\.mt-debug-stage-block,[\s\S]*?--mt-debug-label-lane:\s*14px/);
+  assert.match(overlay, /labelDiv\.style\.left = `\$\{item\.polygon\[0\]\.x\}%`[\s\S]*?resolveBubblePolygonRotation\(item\.polygon,[\s\S]*?transformOrigin = "left bottom"/);
 });
 
 test("悬浮球直接显示翻译成功和失败反馈", () => {
@@ -111,7 +113,7 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   const coverProjection = lifecycle.match(/function buildBubbleCoverProjection\([\s\S]*?\n\s*runtime\.buildBubbleCoverProjection/)?.[0] ?? "";
   assert.match(coverProjection, /\.\.\.bubble[\s\S]*?projection_role:\s*"cover_only"/);
   assert.doesNotMatch(coverProjection, /rotation_deg:|\n\s+polygon:\s*null/);
-  assert.match(overlay, /function createBubbleCoverClipNode\([\s\S]*?normalizeFillBox\(bubble,[\s\S]*?normalizeBubbleRotation\(bubble\.rotation_deg,\s*bubble\.region_type\)[\s\S]*?clipNode\.style\.transform\s*=\s*`translate\(-50%, -50%\) rotate\([\s\S]*?--mt-base-transform",\s*"translate\(-50%, -50%\)"[\s\S]*?appendChild\(coverNode\)/);
+  assert.match(overlay, /function createBubbleCoverClipNode\([\s\S]*?resolveBubbleCoverBox\(bubble\)[\s\S]*?normalizeBubblePolygon\(bubble\.polygon,[\s\S]*?buildRegionClipPath\(polygon, box\.x, box\.y, box\.w, box\.h\)[\s\S]*?coverNode\.style\.setProperty\("--mt-base-transform",\s*"translate\(-50%, -50%\)"\)[\s\S]*?appendChild\(coverNode\)/);
   assert.match(css, /\.mt-cover-clip\s*\{[\s\S]*?overflow:\s*hidden[\s\S]*?clip-path:\s*inset\(0\)/);
   assert.match(overlay, /appendBubbleRenderLayers\(root,\s*coverNodes,\s*bubbleNodes\)/);
   assert.match(overlay, /function appendBubbleRenderLayers\([\s\S]*?coverNodes[\s\S]*?root\.appendChild\(node\)[\s\S]*?textNodes[\s\S]*?root\.appendChild\(node\)/);

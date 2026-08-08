@@ -217,6 +217,12 @@ export function installTranslationCoalesce(runtime) {
   }
   runtime.medianRotation = medianRotation;
   function mergePercentPolygons(items) {
+    const singlePolygon = items.length === 1 && Array.isArray(items[0]?.polygon) ? items[0].polygon : null;
+    // 单个 OCR 蓝框已经是最终的有向矩形；再次按百分比坐标拟合会忽略图片宽高比，
+    // 让倾斜框沿法线方向膨胀。只有确实合并多个框时才重新计算包围多边形。
+    if (singlePolygon && singlePolygon.length >= 4) {
+      return singlePolygon.slice(0, 4).map(point => ({ ...point }));
+    }
     const points = items.flatMap(item => Array.isArray(item && item.polygon) ? item.polygon : []);
     if (points.length < 4) {
       return items[0] && items[0].polygon ? items[0].polygon : null;

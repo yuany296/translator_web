@@ -275,6 +275,18 @@ export function installTargetResolve(runtime) {
     return points.every(Boolean) ? points : null;
   }
   runtime.normalizeBubblePolygon = normalizeBubblePolygon;
+  function resolveBubblePolygonBox(value, allowOverflow = false) {
+    const polygon = normalizeBubblePolygon(value, allowOverflow);
+    if (!polygon) return null;
+    const left = Math.min(...polygon.map(point => point.x));
+    const top = Math.min(...polygon.map(point => point.y));
+    const right = Math.max(...polygon.map(point => point.x));
+    const bottom = Math.max(...polygon.map(point => point.y));
+    return right > left && bottom > top ? {
+      x: left, y: top, w: right - left, h: bottom - top
+    } : null;
+  }
+  runtime.resolveBubblePolygonBox = resolveBubblePolygonBox;
   function normalizeRegionPolygon(value, allowOverflow) {
     if (!Array.isArray(value) || value.length < 3) {
       return null;
@@ -308,13 +320,19 @@ export function installTargetResolve(runtime) {
     while (angle >= 90) angle -= 180;
     while (angle < -90) angle += 180;
 
-    // Near-horizontal text: ignore tiny rotation noise
-    if (Math.abs(angle) < runtime.BUBBLE_ROTATION_NEAR_HORIZONTAL) return 0;
-
     // 保留归一化到 -90°～90° 的完整倾角，垂直排版由 writing-mode 单独处理。
     return runtime.clamp(angle, -runtime.BUBBLE_ROTATION_MAX, runtime.BUBBLE_ROTATION_MAX);
   }
   runtime.normalizeBubbleRotation = normalizeBubbleRotation;
+  function resolveBubblePolygonRotation(value, fallback = 0, imageWidth = 1, imageHeight = 1) {
+    const explicit = normalizeBubbleRotation(fallback);
+    if (Math.abs(explicit) > Number.EPSILON) return explicit;
+    const polygon = normalizeBubblePolygon(value, true);
+    if (!polygon) return explicit;
+    const first = polygon[0], second = polygon[1];
+    return normalizeBubbleRotation(Math.atan2((second.y - first.y) * imageHeight, (second.x - first.x) * imageWidth) * 180 / Math.PI);
+  }
+  runtime.resolveBubblePolygonRotation = resolveBubblePolygonRotation;
   function normalizeBubbleAlignment(value) {
     const text = String(value || "").trim().toLowerCase();
     return text === "left" || text === "right" || text === "center" ? text : "center";

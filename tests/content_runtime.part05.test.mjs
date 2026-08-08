@@ -191,6 +191,8 @@ test("translation line balancing avoids isolated CJK characters", () => {
 });
 test("OCR tilt keeps the complete normalized -90 to 90 degree range", () => {
   assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(8) - 8) < 0.01);
+  assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(0.4046) - 0.4046) < 0.0001);
+  assert.ok(Math.abs(runtime.__test.resolveBubblePolygonRotation([{ x: 0, y: 10 }, { x: 50, y: 5 }, { x: 50, y: 20 }, { x: 0, y: 25 }], 0, 1000, 500) - Math.atan2(-2500, 50000) * 180 / Math.PI) < 0.0001);
   assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(-13, "chat") + 13) < 0.01);
   assert.ok(Math.abs(runtime.__test.normalizeBubbleRotation(-13, "ui") + 13) < 0.01);
   assert.equal(runtime.__test.normalizeBubbleRotation(32), 32);

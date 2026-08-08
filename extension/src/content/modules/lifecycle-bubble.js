@@ -33,6 +33,7 @@ export function installLifecycleBubble(runtime) {
     }
     const projectionRole = String(bubble.projection_role || "text_primary");
     const coverOnly = projectionRole === "cover_only";
+    const rotation = runtime.resolveBubblePolygonRotation(bubble.polygon, bubble.rotation_deg);
     const originalText = runtime.cleanRenderableText(bubble.original_text || "");
     const translatedText = coverOnly ? "" : runtime.cleanRenderableText(bubble.translated_text || "") || originalText;
     const displayText = runtime.state.displayMode === "bilingual" && originalText
@@ -60,7 +61,7 @@ export function installLifecycleBubble(runtime) {
     node.dataset.alignment = alignment;
     node.dataset.fontWeight = String(fontWeight);
     node.dataset.translationRole = String(bubble.translation_role || bubble.translationRole || "");
-    node.dataset.rotationDeg = String(runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type));
+    node.dataset.rotationDeg = String(rotation);
     if (Array.isArray(bubble.polygon)) {
       node.dataset.polygon = JSON.stringify(bubble.polygon);
     }
@@ -111,12 +112,12 @@ export function installLifecycleBubble(runtime) {
       if (clip) node.style.setProperty("--mt-region-clip", clip);
     }
     // Tilted text: use counter-rotated fill div so the polygon clip-path is in world space
-    const absAngle = Math.abs(runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type));
+    const absAngle = Math.abs(rotation);
     if (!coverOnly && !options.textOnly && bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle > 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
       const fillDiv = document.createElement("div");
       fillDiv.className = "mt-fill-tilted";
       fillDiv.dataset.mangaTranslatorOverlay = "true";
-      const invAngle = -runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
+      const invAngle = -rotation;
       fillDiv.style.transform = `rotate(${invAngle}deg)`;
       fillDiv.style.transformOrigin = "center center";
       fillDiv.style.background = String(bubble.bg_color || "rgba(255,255,255,0.96)");
@@ -133,7 +134,6 @@ export function installLifecycleBubble(runtime) {
     }
     node.style.width = `${w}%`;
     node.style.height = `${h}%`;
-    const rotation = runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
     runtime.applyBubbleAnchorStyle(node, {
       alignment,
       x,
@@ -179,9 +179,11 @@ export function installLifecycleBubble(runtime) {
   runtime.createBubbleNode = createBubbleNode;
   function resolveBubbleCoverBox(bubble) {
     const allowVerticalOverflow = bubble && bubble.stitch_overflow === true;
-    const blueBox = runtime.normalizeFillBox(bubble, allowVerticalOverflow);
+    const polygonBox = runtime.resolveBubblePolygonBox(bubble && bubble.polygon, allowVerticalOverflow);
+    const blueBox = polygonBox || runtime.normalizeFillBox(bubble, allowVerticalOverflow);
     const fillBox = runtime.normalizeFillBox(bubble && bubble.fill_box, allowVerticalOverflow);
     if (!blueBox) return fillBox;
+    if (polygonBox) return polygonBox;
     if (!fillBox) return blueBox;
     // 蓝框是最终渲染几何。OCR 的背景估计可以比它更大，但覆盖层不能因此
     // 侵入相邻文字框；只保留 fill_box 与最终蓝框的交集。

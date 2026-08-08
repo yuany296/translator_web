@@ -2,7 +2,6 @@ export function installRendererOverlay(runtime) {
   function renderOverlay(target, targetKey, result, options = {}) {
     const bubbles = Array.isArray(result.bubbles) ? result.bubbles : [];
     const stream = options.stream === true;
-
     if (bubbles.length === 0 && !runtime.hasRenderableOcrDebug(result)) {
       runtime.removeOverlayForTarget(target);
       return;
@@ -125,9 +124,10 @@ export function installRendererOverlay(runtime) {
   }
   runtime.renderOverlay = renderOverlay;
   function createBubbleCoverClipNode(bubble, coverNode) {
-    const box = runtime.normalizeFillBox(bubble, bubble?.stitch_overflow === true) || runtime.resolveBubbleCoverBox(bubble);
+    const box = runtime.resolveBubbleCoverBox(bubble) || runtime.normalizeFillBox(bubble, bubble?.stitch_overflow === true);
     if (!coverNode || !box) return coverNode;
-    const rotation = runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
+    const rotation = Number(coverNode.dataset.rotationDeg) || 0;
+    const polygon = runtime.normalizeBubblePolygon(bubble.polygon, bubble?.stitch_overflow === true);
     const clipNode = document.createElement("div");
     clipNode.className = "mt-cover-clip";
     Object.assign(clipNode.dataset, { mangaTranslatorOverlay: "true", canonicalId: String(bubble.canonical_id || ""), rotationDeg: String(rotation) });
@@ -135,8 +135,9 @@ export function installRendererOverlay(runtime) {
     clipNode.style.top = `${box.y + box.h / 2}%`;
     clipNode.style.width = `${box.w}%`;
     clipNode.style.height = `${box.h}%`;
-    clipNode.style.transform = `translate(-50%, -50%) rotate(${rotation.toFixed(2)}deg)`;
+    clipNode.style.transform = `translate(-50%, -50%)${polygon ? "" : ` rotate(${rotation.toFixed(2)}deg)`}`;
     clipNode.style.transformOrigin = "center center";
+    if (polygon) clipNode.style.clipPath = runtime.buildRegionClipPath(polygon, box.x, box.y, box.w, box.h);
     const x = Number(coverNode.dataset.xPercent), y = Number(coverNode.dataset.yPercent), w = Number(coverNode.dataset.wPercent), h = Number(coverNode.dataset.hPercent);
     Object.assign(coverNode.style, {
       left: `${(x + w / 2 - box.x) / box.w * 100}%`, top: `${(y + h / 2 - box.y) / box.h * 100}%`,
@@ -216,7 +217,6 @@ export function installRendererOverlay(runtime) {
       return;
     }
     runtime.state.lastKakaoVisualDedupeAt = now;
-
     // 每次按当前视口重新计算。之前隐藏的 overflow 在 owner 离开视口后必须恢复，
     // 否则滚动时会把唯一仍可见的译文永久留在隐藏状态。
     runtime.state.overlaysById.forEach(overlayState => {
@@ -328,7 +328,6 @@ export function installRendererOverlay(runtime) {
         const duplicate = item.isDuplicate ? " duplicate" : "";
         const confidence = runtime.formatOcrDebugConfidence(item);
         const label = `${blockId}${duplicate}${confidence ? ` [${confidence}]` : ""}${original ? ` | ${original}` : ""}${translated ? ` → ${translated}` : ""}`;
-
         if (Array.isArray(item.polygon) && item.polygon.length >= 4) {
           // Oriented polygon — render as SVG <polygon>
           if (!svg) {
@@ -347,18 +346,14 @@ export function installRendererOverlay(runtime) {
           title.textContent = label;
           poly.appendChild(title);
           svg.appendChild(poly);
-
           // Label div at polygon's local top-left corner (minU, minV)
           const labelDiv = document.createElement("div");
           labelDiv.className = `mt-debug-label ${stage.className} mt-debug-stage-${stage.name}`;
           labelDiv.dataset.label = label;
           labelDiv.dataset.mangaTranslatorOverlay = "true";
-          // Use AABB percent x/y as approximate anchor for the horizontal label
-          const percent = runtime.getDebugItemPercent(item, debug);
-          if (percent) {
-            labelDiv.style.left = `${percent.x}%`;
-            labelDiv.style.top = `${percent.y}%`;
-          }
+          labelDiv.style.left = `${item.polygon[0].x}%`; labelDiv.style.top = `${item.polygon[0].y}%`;
+          labelDiv.style.transform = `rotate(${runtime.resolveBubblePolygonRotation(item.polygon, item.rotation_deg ?? item.rotationDeg, debug.imageWidth, debug.imageHeight)}deg)`;
+          labelDiv.style.transformOrigin = "left bottom";
           root.appendChild(labelDiv);
         } else {
           // No polygon — fall back to axis-aligned debug box

@@ -106,7 +106,9 @@ export function installOcrStyles(runtime) {
       return null;
     }
     const regionType = String(candidate && candidate.region_type || "").trim().toLowerCase();
-    if (regionType !== "speech_bubble" && regionType !== "caption_panel") {
+    // caption_panel 常会沿着同色页面背景扩到接缝另一侧；这只能证明面板连续，
+    // 不能证明完全位于单页内的文字也是跨页文字。只有气泡边界可补充文字框证据。
+    if (regionType !== "speech_bubble") {
       return null;
     }
     const imageWidth = Math.max(1, Number(imageSize && imageSize.width) || 1);

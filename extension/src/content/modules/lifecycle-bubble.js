@@ -179,13 +179,27 @@ export function installLifecycleBubble(runtime) {
   runtime.createBubbleNode = createBubbleNode;
   function resolveBubbleCoverBox(bubble) {
     const allowVerticalOverflow = bubble && bubble.stitch_overflow === true;
-    return runtime.normalizeFillBox(bubble && bubble.fill_box, allowVerticalOverflow) || runtime.normalizeFillBox(bubble, allowVerticalOverflow);
+    const blueBox = runtime.normalizeFillBox(bubble, allowVerticalOverflow);
+    const fillBox = runtime.normalizeFillBox(bubble && bubble.fill_box, allowVerticalOverflow);
+    if (!blueBox) return fillBox;
+    if (!fillBox) return blueBox;
+    // 蓝框是最终渲染几何。OCR 的背景估计可以比它更大，但覆盖层不能因此
+    // 侵入相邻文字框；只保留 fill_box 与最终蓝框的交集。
+    const left = Math.max(blueBox.x, fillBox.x);
+    const top = Math.max(blueBox.y, fillBox.y);
+    const right = Math.min(blueBox.x + blueBox.w, fillBox.x + fillBox.w);
+    const bottom = Math.min(blueBox.y + blueBox.h, fillBox.y + fillBox.h);
+    return right > left && bottom > top ? {
+      x: left,
+      y: top,
+      w: right - left,
+      h: bottom - top
+    } : blueBox;
   }
   runtime.resolveBubbleCoverBox = resolveBubbleCoverBox;
-  function createBubbleRenderNodes(bubble, index, options = {}) {
-    const role = String(bubble && bubble.projection_role || "text_primary");
+  function buildBubbleCoverProjection(bubble) {
     const coverBox = resolveBubbleCoverBox(bubble) || {};
-    const coverBubble = {
+    return {
       ...bubble,
       x: coverBox.x != null ? coverBox.x : bubble.x,
       y: coverBox.y != null ? coverBox.y : bubble.y,
@@ -197,6 +211,11 @@ export function installLifecycleBubble(runtime) {
       fill_box: null,
       region_polygon: null
     };
+  }
+  runtime.buildBubbleCoverProjection = buildBubbleCoverProjection;
+  function createBubbleRenderNodes(bubble, index, options = {}) {
+    const role = String(bubble && bubble.projection_role || "text_primary");
+    const coverBubble = buildBubbleCoverProjection(bubble);
     const coverNode = createBubbleNode(coverBubble, index, options);
     const textNode = role === "cover_only" ? null : createBubbleNode(bubble, index, {
       ...options,

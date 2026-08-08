@@ -46,8 +46,7 @@ export function installRendererOverlay(runtime) {
       if (!coverNode && !textNode) return;
       logicalBubbleCount += 1;
       if (coverNode) {
-        coverNodes.push(coverNode);
-        root.appendChild(coverNode);
+        coverNodes.push(runtime.createBubbleCoverClipNode(bubble, coverNode));
       }
       if (textNode && stream) {
         const delayMs = Math.min(index * 34, 320);
@@ -56,12 +55,12 @@ export function installRendererOverlay(runtime) {
       }
       if (textNode) {
         bubbleNodes.push(textNode);
-        root.appendChild(textNode);
       }
     });
     if (logicalBubbleCount === 0 && debugNodeCount === 0) {
       return;
     }
+    runtime.appendBubbleRenderLayers(root, coverNodes, bubbleNodes);
     const overlayState = {
       target,
       targetId,
@@ -125,6 +124,33 @@ export function installRendererOverlay(runtime) {
     });
   }
   runtime.renderOverlay = renderOverlay;
+  function createBubbleCoverClipNode(bubble, coverNode) {
+    const box = runtime.resolveBubbleCoverBox(bubble);
+    if (!coverNode || !box) return coverNode;
+    const clipNode = document.createElement("div");
+    clipNode.className = "mt-cover-clip";
+    clipNode.dataset.mangaTranslatorOverlay = "true";
+    clipNode.dataset.canonicalId = String(bubble.canonical_id || "");
+    clipNode.style.left = `${box.x}%`;
+    clipNode.style.top = `${box.y}%`;
+    clipNode.style.width = `${box.w}%`;
+    clipNode.style.height = `${box.h}%`;
+    const x = Number(coverNode.dataset.xPercent), y = Number(coverNode.dataset.yPercent), w = Number(coverNode.dataset.wPercent), h = Number(coverNode.dataset.hPercent);
+    Object.assign(coverNode.style, {
+      left: `${(x + w / 2 - box.x) / box.w * 100}%`, top: `${(y + h / 2 - box.y) / box.h * 100}%`,
+      width: `${w / box.w * 100}%`, height: `${h / box.h * 100}%`
+    });
+    clipNode.appendChild(coverNode);
+    return clipNode;
+  }
+  runtime.createBubbleCoverClipNode = createBubbleCoverClipNode;
+  function appendBubbleRenderLayers(root, coverNodes, textNodes) {
+    // 所有背景先绘制、所有译文后绘制。即使相邻蓝框非常接近，任何背景
+    // 节点也不能凭 DOM 顺序盖住另一个文字节点。
+    (Array.isArray(coverNodes) ? coverNodes : []).forEach(node => root.appendChild(node));
+    (Array.isArray(textNodes) ? textNodes : []).forEach(node => root.appendChild(node));
+  }
+  runtime.appendBubbleRenderLayers = appendBubbleRenderLayers;
   function scheduleTermDiscovery(target, targetKey, result, payload) {
     if (runtime.state.invalidated) {
       return;

@@ -91,7 +91,11 @@ def test_local_ocr_request_defaults_to_fast_mode() -> None:
     import server
 
     assert server.OcrRequest(image="placeholder").mode == "fast"
-    assert server.OCR_GEOMETRY_CONTRACT_VERSION == "detect-crop-recognize-appearance-layout-v4"
+    assert server.OCR_GEOMETRY_CONTRACT_VERSION == "detect-crop-recognize-appearance-layout-v5"
+    extension_versions = (
+        Path(__file__).resolve().parents[1] / "extension" / "src" / "config" / "versions.js"
+    ).read_text(encoding="utf-8")
+    assert f'"{server.OCR_GEOMETRY_CONTRACT_VERSION}"' in extension_versions
 
 def test_seam_recovery_removes_separator_and_reconnects_vertical_stroke() -> None:
     import server

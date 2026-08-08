@@ -180,6 +180,8 @@ export function installReaderApi(runtime) {
       normalizeFillBox: runtime.normalizeFillBox,
       buildSolidBackgroundBox: runtime.buildSolidBackgroundBox,
       resolveBubbleCoverBox: runtime.resolveBubbleCoverBox,
+      buildBubbleCoverProjection: runtime.buildBubbleCoverProjection,
+      appendBubbleRenderLayers: runtime.appendBubbleRenderLayers,
       buildAheadTranslationOptions: runtime.buildAheadTranslationOptions,
       compareOverlayViewportRects: runtime.compareOverlayViewportRects,
       getOverlayPositionRect: runtime.getOverlayPositionRect,

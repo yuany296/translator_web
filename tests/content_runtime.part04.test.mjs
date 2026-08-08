@@ -672,12 +672,69 @@ test("canonical final blue box controls the cleanup cover instead of the observa
     w: 36.8,
     h: 18.4
   });
+  const cover = runtime.__test.resolveBubbleCoverBox(bubble);
+  assert.equal(cover.x, 31.5);
+  assert.equal(cover.y, 2.1);
+  assert.equal(cover.w, 36.8);
+  assert.ok(Math.abs(cover.h - 17.94) < 1e-9);
+  assert.ok(cover.y + cover.h <= bubble.y + bubble.h);
+});
+test("cleanup cover is clipped to the final blue box", () => {
+  const bubble = {
+    x: 20,
+    y: 30,
+    w: 40,
+    h: 20,
+    fill_box: {
+      x: 10,
+      y: 24,
+      w: 70,
+      h: 34
+    }
+  };
   assert.deepEqual(runtime.__test.resolveBubbleCoverBox(bubble), {
-    x: 31.5,
-    y: 2.1,
-    w: 36.8,
-    h: 18.4
+    x: 20,
+    y: 30,
+    w: 40,
+    h: 20
   });
+});
+test("cleanup cover keeps the OCR rotation inside its final blue-box clip", () => {
+  const bubble = {
+    x: 3.4,
+    y: 25.4,
+    w: 93.3,
+    h: 27.6,
+    fill_box: {
+      x: 3.4,
+      y: 25.4,
+      w: 93.3,
+      h: 27.6
+    },
+    rotation_deg: 0.4046,
+    polygon: [{ x: 3.4, y: 25.4 }, { x: 96.7, y: 25.4 }, { x: 96.7, y: 53 }, { x: 3.4, y: 53 }],
+    original_text: "title",
+    translated_text: "大标题"
+  };
+  const cover = runtime.__test.buildBubbleCoverProjection(bubble);
+  assert.equal(cover.rotation_deg, 0.4046);
+  assert.equal(bubble.rotation_deg, 0.4046);
+  assert.deepEqual(cover.polygon, bubble.polygon);
+  assert.deepEqual({ x: cover.x, y: cover.y, w: cover.w, h: cover.h }, {
+    x: 3.4,
+    y: 25.4,
+    w: 93.3,
+    h: 27.6
+  });
+});
+test("all cleanup covers are appended below every translated text node", () => {
+  const appended = [];
+  runtime.__test.appendBubbleRenderLayers({
+    appendChild(node) {
+      appended.push(node.id);
+    }
+  }, [{ id: "cover-title" }, { id: "cover-author" }], [{ id: "text-title" }, { id: "text-author" }]);
+  assert.deepEqual(appended, ["cover-title", "cover-author", "text-title", "text-author"]);
 });
 test("stitched solid background can extend upward into the previous page", () => {
   assert.deepEqual({

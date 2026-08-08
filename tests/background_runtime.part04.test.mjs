@@ -168,6 +168,46 @@ test("translated substring in a separate region is not collapsed", () => {
   }]);
   assert.equal(result.length, 2);
 });
+test("separate repeated labels keep independent translations", () => {
+  const collapse = context.__backgroundTest.collapseDuplicateLocalPaddleTranslations;
+  const result = collapse([{
+    x: 20,
+    y: 10,
+    w: 55,
+    h: 40,
+    member_region_ids: ["upper-detection"],
+    original_text: "-불면증 사유 추가 +1",
+    translated_text: "-失眠原因追加+1"
+  }, {
+    x: 35,
+    y: 62,
+    w: 45,
+    h: 20,
+    member_region_ids: ["lower-detection"],
+    original_text: "-불면증 사유 추가+1",
+    translated_text: "-失眠原因追加+1"
+  }]);
+  assert.equal(result.length, 2);
+});
+test("overlapping reads of the same label are still collapsed", () => {
+  const collapse = context.__backgroundTest.collapseDuplicateLocalPaddleTranslations;
+  const result = collapse([{
+    x: 20,
+    y: 10,
+    w: 55,
+    h: 20,
+    original_text: "같은 표지",
+    translated_text: "相同的标注文字"
+  }, {
+    x: 22,
+    y: 11,
+    w: 52,
+    h: 19,
+    original_text: "같은 표지",
+    translated_text: "相同的标注文字"
+  }]);
+  assert.equal(result.length, 1);
+});
 test("v28 OCR cache invalidates old observation semantics and excludes translation and render settings", () => {
   const build = context.__backgroundTest.buildOcrCacheKey;
   const request = {

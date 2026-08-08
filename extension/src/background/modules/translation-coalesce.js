@@ -294,16 +294,52 @@ export function installTranslationCoalesce(runtime) {
     const centerDistance = Math.abs(groupBox.centerX - nextBox.centerX);
     const unionWidth = Math.max(groupBox.right, nextBox.right) - Math.min(groupBox.left, nextBox.left);
     const avgHeight = Math.max(1, (groupBox.height + nextBox.height) / 2);
-    if (containedDuplicate && !exactDuplicate) {
-      const groupRegionId = String(group[0] && group[0].region_id || "");
-      const nextRegionId = String(bubble && bubble.region_id || "");
-      const sameRegion = Boolean(groupRegionId && groupRegionId === nextRegionId);
-      const closeOverlap = verticalGap <= avgHeight * 0.35 && (overlapRatio >= 0.35 || centerDistance <= Math.max(groupBox.width, nextBox.width) * 0.35);
-      return unionWidth <= 86 && (sameRegion || closeOverlap);
+    // 完整重复译文可能对应页面上真实重复出现的标注。只有 OCR 检测身份相同，
+    // 或二维文字框确实重叠时，才能把它们视为同一次检测的重复读数。
+    if (exactDuplicate) {
+      return group.some(item => runtime.hasExactDuplicateOcrEvidence(item, bubble));
     }
-    return verticalGap <= avgHeight * 2.4 && unionWidth <= 86 && (overlapRatio >= 0.12 || centerDistance <= 26);
+    const groupRegionId = String(group[0] && group[0].region_id || "");
+    const nextRegionId = String(bubble && bubble.region_id || "");
+    const sameRegion = Boolean(groupRegionId && groupRegionId === nextRegionId);
+    const closeOverlap = verticalGap <= avgHeight * 0.35 && (overlapRatio >= 0.35 || centerDistance <= Math.max(groupBox.width, nextBox.width) * 0.35);
+    return unionWidth <= 86 && (sameRegion || closeOverlap);
   }
   runtime.shouldCollapseDuplicateTranslationGroup = shouldCollapseDuplicateTranslationGroup;
+  function hasExactDuplicateOcrEvidence(left, right) {
+    const leftBox = runtime.getPercentBubbleBox(left);
+    const rightBox = runtime.getPercentBubbleBox(right);
+    if (!leftBox || !rightBox || !runtime.areDuplicateSourceTextsRelated(left, right)) {
+      return false;
+    }
+    const leftIds = runtime.getOcrDetectionIdentitySet(left);
+    const rightIds = runtime.getOcrDetectionIdentitySet(right);
+    if ([...leftIds].some(id => rightIds.has(id))) {
+      return true;
+    }
+    const overlapWidth = Math.max(0, Math.min(leftBox.right, rightBox.right) - Math.max(leftBox.left, rightBox.left));
+    const overlapHeight = Math.max(0, Math.min(leftBox.bottom, rightBox.bottom) - Math.max(leftBox.top, rightBox.top));
+    const smallerArea = Math.min(leftBox.width * leftBox.height, rightBox.width * rightBox.height);
+    return overlapWidth * overlapHeight / Math.max(0.01, smallerArea) >= 0.08;
+  }
+  runtime.hasExactDuplicateOcrEvidence = hasExactDuplicateOcrEvidence;
+  function areDuplicateSourceTextsRelated(left, right) {
+    const first = runtime.normalizeDuplicateTranslationText(left && left.original_text);
+    const second = runtime.normalizeDuplicateTranslationText(right && right.original_text);
+    if (!first || !second) return true;
+    if (first === second) return true;
+    const shorter = first.length <= second.length ? first : second;
+    const longer = first.length > second.length ? first : second;
+    return shorter.length >= 3 && longer.includes(shorter);
+  }
+  runtime.areDuplicateSourceTextsRelated = areDuplicateSourceTextsRelated;
+  function getOcrDetectionIdentitySet(bubble) {
+    const memberIds = Array.isArray(bubble && bubble.member_region_ids) ? bubble.member_region_ids : [];
+    const detectedIds = (Array.isArray(bubble && bubble.detected_regions) ? bubble.detected_regions : [])
+      .map(region => region && (region.regionId || region.region_id));
+    return new Set([...memberIds, ...detectedIds].map(String).filter(Boolean));
+  }
+  runtime.getOcrDetectionIdentitySet = getOcrDetectionIdentitySet;
   function mergeDuplicateTranslationBubbles(group) {
     const box = runtime.getPercentBubbleGroupBox(group);
     const preferred = [...group].sort((left, right) => {

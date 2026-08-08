@@ -447,7 +447,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
     restoreAuth();
   }
   assert.equal(requestBodies.length, 4);
-  assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-appearance-layout-v4");
+  assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-appearance-layout-v5");
   assert.equal(requestBodies[0].return_cleaned_image, false);
   assert.equal(requestBodies[0].cleaned_mask_token, "");
   assert.equal(requestBodies[1].return_cleaned_image, true);
@@ -719,4 +719,43 @@ test("seam OCR keeps an anonymous multi-line body atomic across page slices", ()
     Array.from(result.rejected, item => item.candidate.original_text).sort(),
     ["11:03", "테스타 박문대"].sort()
   );
+});
+test("a caption panel crossing the seam cannot turn lower-page text into cross-page text", () => {
+  const background = context.__backgroundTest;
+  const imageSize = { width: 760, height: 192 };
+  const request = {
+    sourceType: "seam",
+    imageMeta: {
+      pageSpans: [{
+        pageId: "upper",
+        canvasBox: { x: 0, y: 0, w: 760, h: 96 },
+        pageBox: { x: 0, y: 904, w: 760, h: 96 },
+        pageWidth: 760,
+        pageHeight: 1000
+      }, {
+        pageId: "lower",
+        canvasBox: { x: 0, y: 96, w: 760, h: 96 },
+        pageBox: { x: 0, y: 0, w: 760, h: 96 },
+        pageWidth: 760,
+        pageHeight: 1000
+      }]
+    }
+  };
+  const rawBox = { left: 341, top: 116, width: 329, height: 43 };
+  const result = background.filterSeamOcrCandidates([{
+    original_text: "-반복 안내 문구 +1",
+    x: rawBox.left / imageSize.width * 100,
+    y: rawBox.top / imageSize.height * 100,
+    w: rawBox.width / imageSize.width * 100,
+    h: rawBox.height / imageSize.height * 100,
+    rawBox,
+    region_polygon: [[32.63, 38.02], [100, 38.02], [100, 100], [32.63, 100]],
+    fill_box: { x: 32.63, y: 38.02, w: 67.37, h: 61.98 },
+    confidence: 0.94,
+    bg_type: "solid",
+    bg_confidence: 0.91,
+    region_type: "caption_panel"
+  }], request, imageSize);
+  assert.equal(result.retained.length, 0);
+  assert.equal(result.rejected[0].reason, "seam_not_cross_boundary");
 });

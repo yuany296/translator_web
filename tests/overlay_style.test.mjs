@@ -107,8 +107,14 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   assert.match(lifecycle, /const coverBox = resolveBubbleCoverBox\(bubble\)/);
   assert.match(lifecycle, /x:\s*coverBox\.x[\s\S]*?y:\s*coverBox\.y[\s\S]*?w:\s*coverBox\.w[\s\S]*?h:\s*coverBox\.h/);
   assert.match(lifecycle, /projection_role:\s*"cover_only"[\s\S]*?fill_box:\s*null[\s\S]*?region_polygon:\s*null/);
-  // polygon and rotation_deg are preserved from the original bubble for oriented fill (tilted text)
-  assert.match(overlay, /createBubbleRenderNodes\([\s\S]*?appendChild\(coverNode\)[\s\S]*?appendChild\(textNode\)/);
+  // 旋转与 polygon 完全沿用原气泡，只增加不旋转的最终蓝框裁剪层。
+  const coverProjection = lifecycle.match(/function buildBubbleCoverProjection\([\s\S]*?\n\s*runtime\.buildBubbleCoverProjection/)?.[0] ?? "";
+  assert.match(coverProjection, /\.\.\.bubble[\s\S]*?projection_role:\s*"cover_only"/);
+  assert.doesNotMatch(coverProjection, /rotation_deg:|\n\s+polygon:\s*null/);
+  assert.match(overlay, /function createBubbleCoverClipNode\([\s\S]*?className\s*=\s*"mt-cover-clip"[\s\S]*?appendChild\(coverNode\)/);
+  assert.match(css, /\.mt-cover-clip\s*\{[\s\S]*?overflow:\s*hidden[\s\S]*?clip-path:\s*inset\(0\)/);
+  assert.match(overlay, /appendBubbleRenderLayers\(root,\s*coverNodes,\s*bubbleNodes\)/);
+  assert.match(overlay, /function appendBubbleRenderLayers\([\s\S]*?coverNodes[\s\S]*?root\.appendChild\(node\)[\s\S]*?textNodes[\s\S]*?root\.appendChild\(node\)/);
   assert.match(crossPage, /overlay\.appendChild\(coverLayer\)[\s\S]*?overlay\.appendChild\(textNode\)/);
   assert.match(css, /\.mt-bubble\.mt-text-layer\s*\{[\s\S]*?background-image:\s*none\s*!important/);
   assert.match(css, /\.mt-bubble\.mt-text-layer::before\s*\{[\s\S]*?content:\s*none\s*!important/);

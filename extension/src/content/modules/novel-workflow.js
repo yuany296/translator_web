@@ -134,12 +134,20 @@ export function installNovelWorkflow(runtime) {
     state.progress.textDone = allItems.length - pending.length;
     if (!pending.length) {
       state.textStatus = "complete";
+      // 全部命中缓存译文:单次点击直接显示已有译文,避免首次点击无变化、再次点击才出现。
+      state.showTranslation = true;
+      runtime.setNovelTranslationVisibility(true);
       runtime.setNovelTextStatus?.("complete", state.progress);
       return { ok: true, completed: true, translated: allItems.length };
     }
     if (!service.ok) {
       state.textStatus = "partial";
       state.progress.textPhase = service.error || "本地服务未启动，当前仅显示已缓存译文";
+      // 服务离线但已有缓存译文时同样直接显示,与提示文案一致。
+      if (state.translations.size > 0) {
+        state.showTranslation = true;
+        runtime.setNovelTranslationVisibility(true);
+      }
       runtime.setNovelTextStatus?.("partial", state.progress);
       return { ok: false, offline: true, translated: state.translations.size, error: state.progress.textPhase };
     }
@@ -313,9 +321,12 @@ export function installNovelWorkflow(runtime) {
       return { ok: true, completed: true, reused: true };
     }
     if (state.textStatus === "complete" && !options.force) {
-      state.showTranslation = !state.showTranslation;
-      runtime.setNovelTranslationVisibility(state.showTranslation);
-      return { ok: true, toggled: true, showTranslation: state.showTranslation };
+      // 已有完整译文:单次点击直接显示译文(读取译文),不再做显隐切换;
+      // 需要查看原文时请使用右键菜单的"显示原文"。
+      state.showTranslation = true;
+      runtime.reapplyNovelTranslations?.(surface);
+      runtime.setNovelTranslationVisibility(true);
+      return { ok: true, reused: true, showTranslation: true };
     }
     try {
       const result = await translateNovelText(chapter, { force: options.force === true });

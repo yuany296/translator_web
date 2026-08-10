@@ -190,16 +190,6 @@ async function testConnection(section, statusOverride = "") {
   setStatus(statusId, response.ok ? "连接正常" : response.error || "连接失败", !response.ok);
 }
 
-async function pairService() {
-  setStatus("serviceStatus", "正在确认 Chrome 本机访问权限…");
-  await probeLocalServiceDocumentAccess(configuration.ocr.localPaddle.baseUrl);
-  setStatus("serviceStatus", "正在配对…");
-  const response = await send({ type: "PAIR_LOCAL_SERVICE", pairingCode: value("pairingCode") });
-  if (response.verified !== true) throw new Error("配对完成，但本地服务认证状态未确认");
-  byId("pairingCode").value = "";
-  setStatus("serviceStatus", "本地正式译文库已配对 · 认证正常");
-}
-
 async function checkService(statusId = "serviceStatus") {
   setStatus(statusId, "正在确认 Chrome 本机访问权限…");
   await probeLocalServiceDocumentAccess(configuration.ocr.localPaddle.baseUrl);
@@ -226,16 +216,10 @@ async function dedupeTranslations() {
   const response = await send({ type: "CLEAR_DUPLICATE_TRANSLATIONS" });
   let sqlite = { removed: 0, total: 0 };
   try {
-    const stored = await chrome.storage.local.get("mt_local_service_auth_v1");
-    const auth = stored.mt_local_service_auth_v1 || {};
     const baseUrl = configuration?.ocr?.localPaddle?.baseUrl || "http://127.0.0.1:8765";
     const resp = await fetch(`${baseUrl}/translations/dedupe`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${String(auth.token || "")}`,
-        ...(String(auth.origin || "") ? { "X-Manga-Translator-Origin": String(auth.origin) } : {})
-      },
+      headers: { "Content-Type": "application/json" },
       body: "{}"
     });
     sqlite = resp.ok ? await resp.json() : { removed: 0, total: 0, error: `HTTP ${resp.status}` };
@@ -275,7 +259,6 @@ byId("testOcrBtn").addEventListener("click", () => void run(() => testConnection
 byId("saveTranslationBtn").addEventListener("click", () => void run(saveTranslation, "translationStatus"));
 byId("testTranslationBtn").addEventListener("click", () => void run(() => testConnection("translation"), "translationStatus"));
 byId("saveReadingBtn").addEventListener("click", () => void run(saveReading, "readingStatus"));
-byId("pairServiceBtn").addEventListener("click", () => void run(pairService, "serviceStatus"));
 byId("checkServiceBtn").addEventListener("click", () => void run(() => checkService(), "serviceStatus"));
 byId("probeOcrBtn").addEventListener("click", () => void run(
   () => testConnection("ocr", "maintenanceServiceStatus"), "maintenanceServiceStatus"

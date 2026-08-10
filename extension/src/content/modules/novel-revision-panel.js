@@ -224,6 +224,7 @@ export function installNovelRevisionPanel(runtime) {
     const snapshot = state.translationSnapshots.get(key);
     const card = document.createElement("section");
     card.className = "mt-novel-revision-card";
+    card.dataset.itemId = item.id;
     const badge = document.createElement("span");
     badge.className = "mt-novel-version-status";
     badge.dataset.status = versionStatus(state, snapshot, item, fingerprint);
@@ -237,11 +238,11 @@ export function installNovelRevisionPanel(runtime) {
     instruction.placeholder = "给 AI 的单轮修订指令（可选）";
     const actions = document.createElement("div");
     actions.className = "mt-novel-revision-actions";
-    const run = async (button, task) => {
+    const run = async (button, task, anchorId = "") => {
       button.disabled = true;
       try {
         await task();
-        await renderRevisionPanel(chapter);
+        await renderRevisionPanel(chapter, anchorId);
       } catch (error) {
         state.revisionPanelStatus.textContent = runtime.getErrorMessage(error);
       } finally {
@@ -249,10 +250,10 @@ export function installNovelRevisionPanel(runtime) {
       }
     };
     actions.append(
-      actionButton("保存修改", button => run(button, () => submitEdit(chapter, item, editor.value))),
-      actionButton("重新翻译", button => run(button, () => requestAiRevision(chapter, item))),
-      actionButton("AI 修订", button => run(button, () => requestAiRevision(chapter, item, instruction.value))),
-      actionButton("删除", button => run(button, () => deleteTranslation(chapter, item)))
+      actionButton("保存修改", button => run(button, () => submitEdit(chapter, item, editor.value), item.id)),
+      actionButton("重新翻译", button => run(button, () => requestAiRevision(chapter, item), item.id)),
+      actionButton("AI 修订", button => run(button, () => requestAiRevision(chapter, item, instruction.value), item.id)),
+      actionButton("删除", button => run(button, () => deleteTranslation(chapter, item), item.id))
     );
     const term = createTermSection(item, source, editor);
     const termBtn = actionButton("＋ 术语", () => {
@@ -270,8 +271,8 @@ export function installNovelRevisionPanel(runtime) {
       const label = document.createElement("span");
       label.textContent = `${version.source}${version.pinned ? " · pinned" : ""} · ${new Date(version.createdAt).toLocaleString()}`;
       row.append(label,
-        actionButton("选择", button => run(button, () => selectVersion(chapter, item, version.versionId))),
-        actionButton("固定", button => run(button, () => selectVersion(chapter, item, version.versionId, true))));
+        actionButton("选择", button => run(button, () => selectVersion(chapter, item, version.versionId), item.id)),
+        actionButton("固定", button => run(button, () => selectVersion(chapter, item, version.versionId, true), item.id)));
       versions.appendChild(row);
     }
     card.append(badge, source, editor, instruction, actions, termBtn, term.section, versions);
@@ -367,9 +368,38 @@ export function installNovelRevisionPanel(runtime) {
     return { section, targetInput, status };
   }
 
-  async function renderRevisionPanel(chapter) {
+  function revisionCardContentTop(card, body) {
+    return card.getBoundingClientRect().top - body.getBoundingClientRect().top + (body.scrollTop || 0);
+  }
+
+  function visibleRevisionAnchor(body) {
+    const scrollTop = body.scrollTop || 0;
+    for (const card of body.querySelectorAll(".mt-novel-revision-card")) {
+      if (card.hidden) continue;
+      if (revisionCardContentTop(card, body) + card.offsetHeight > scrollTop) {
+        return card.dataset.itemId || "";
+      }
+    }
+    return "";
+  }
+
+  function restoreRevisionAnchor(body, anchor) {
+    if (!anchor) return;
+    let target = null;
+    for (const card of body.querySelectorAll(".mt-novel-revision-card")) {
+      if (card.dataset.itemId === anchor) {
+        target = card;
+        break;
+      }
+    }
+    if (!target || target.hidden) return;
+    body.scrollTop = Math.max(0, revisionCardContentTop(target, body) - 8);
+  }
+
+  async function renderRevisionPanel(chapter, anchorId = "") {
     const state = runtime.getNovelState();
     const body = state.revisionPanelBody;
+    const anchor = anchorId || visibleRevisionAnchor(body);
     body.replaceChildren();
     const keys = chapter.paragraphs.map(item => recordKey(chapter, item));
     const service = await runtime.syncTranslationService(keys);
@@ -384,6 +414,7 @@ export function installNovelRevisionPanel(runtime) {
       body.appendChild(await renderCard(chapter, item, fingerprint));
     }
     filterRevisionCards();
+    restoreRevisionAnchor(body, anchor);
   }
 
   async function openNovelRevisionPanel() {

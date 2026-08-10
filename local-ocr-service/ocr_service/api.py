@@ -19,7 +19,7 @@ runtime.app = app
 
 
 @app.middleware("http")
-async def require_local_service_auth(request, call_next):
+async def limit_translation_import_size(request, call_next):
     path = request.url.path
     try:
         content_length = int(request.headers.get("content-length") or 0)
@@ -28,15 +28,6 @@ async def require_local_service_auth(request, call_next):
     if path == "/translations/import" and content_length > 10 * 1024 * 1024:
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=413, content={"detail": "translation import exceeds 10 MiB"})
-    if request.method == "OPTIONS" or path in {"/health", "/translations/pair"}:
-        return await call_next(request)
-    authorization = str(request.headers.get("authorization") or "")
-    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    origin = str(request.headers.get("origin") or
-                 request.headers.get("x-manga-translator-origin") or "")
-    if not token or not runtime.get_translation_store().verify_access(token, origin):
-        from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=401, content={"detail": "local service authentication required"})
     return await call_next(request)
 
 routes = [
@@ -61,7 +52,6 @@ routes = [
     ("/glossary/pending/count", runtime.glossary_pending_count, ["GET"]),
     ("/ocr", runtime.ocr, ["POST"]),
     ("/debug-background", runtime.debug_background, ["POST"]),
-    ("/translations/pair", runtime.translations_pair, ["POST"]),
     ("/translations/health", runtime.translations_health, ["GET"]),
     ("/translations/query", runtime.translations_query, ["POST"]),
     ("/translations/operations", runtime.translations_operations, ["POST"]),

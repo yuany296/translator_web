@@ -22,12 +22,11 @@ export function installTranslationStream(runtime) {
         model: configuration.translation.model
       }
     };
-    const options = await runtime.withLocalServiceAuth({
+    const response = await fetch(`${baseUrl}/translations/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
       body: JSON.stringify(body), signal
     });
-    const response = await fetch(`${baseUrl}/translations/stream`, options);
     if (!response.ok || !response.body) {
       const payload = await response.json().catch(() => null);
       throw new Error(String(payload?.detail || `流式接口 HTTP ${response.status}`));

@@ -10,7 +10,7 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1] / "local-ocr-service"
 sys.path.insert(0, str(SERVICE_ROOT))
 
 from translation_store import (  # noqa: E402
-    TranslationConflict, TranslationStore, has_saved_pairing,
+    TranslationConflict, TranslationStore,
 )
 from translation_store.dedupe import dedupe_translation_records  # noqa: E402
 
@@ -48,9 +48,7 @@ def operation(operation_id: str, kind: str = "commit_translation", **extra) -> d
 
 def test_schema_uses_wal_foreign_keys_and_unique_identity(tmp_path):
     database_path = tmp_path / "translations.db"
-    assert has_saved_pairing(str(database_path)) is False
     store = TranslationStore(str(database_path))
-    assert has_saved_pairing(str(database_path)) is False
     with store.connect() as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(translation_records)")}
@@ -113,19 +111,7 @@ def test_schema_migrates_v2_database_before_creating_v3_index(tmp_path):
         ).fetchone()[0]
     assert {"binding_key", "translation_key"}.issubset(columns)
     assert "idx_translation_key" in indexes
-    assert schema_version == "3"
-
-
-def test_saved_pairing_survives_store_reopen(tmp_path):
-    database_path = tmp_path / "translations.db"
-    store = TranslationStore(str(database_path))
-    store.pair("persistent-token", "chrome-extension://hihgkmkbdndlnbpleclokbijancgmiil")
-
-    assert has_saved_pairing(str(database_path)) is True
-    reopened = TranslationStore(str(database_path))
-    assert reopened.verify_access(
-        "persistent-token", "chrome-extension://hihgkmkbdndlnbpleclokbijancgmiil"
-    ) is True
+    assert schema_version == "5"
 
 
 def test_operation_is_idempotent_and_revisions_are_server_owned(tmp_path):
@@ -269,49 +255,42 @@ def test_rewriting_a_soft_deleted_segment_restores_the_record(tmp_path):
     assert restored["record"]["recordRevision"] >= 2
 
 
-def test_rest_api_requires_pairing_token_and_exact_extension_origin(tmp_path):
+def test_rest_api_works_without_pairing_and_drops_legacy_pairing_table(tmp_path):
+    database_path = tmp_path / "translations.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript("""
+            CREATE TABLE translation_meta (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            CREATE TABLE paired_extensions (
+              extension_origin TEXT PRIMARY KEY,
+              access_token_hash TEXT NOT NULL,
+              paired_at INTEGER NOT NULL
+            );
+            INSERT INTO translation_meta(key,value) VALUES('schema_version','4');
+        """)
+    store = TranslationStore(str(database_path))
+    with store.connect() as connection:
+        tables = {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master")
+        }
+    assert "paired_extensions" not in tables
+
     from fastapi.testclient import TestClient
     import server
 
     server.runtime._translation_store = TranslationStore(str(tmp_path / "api.db"))
-    server.runtime.TRANSLATION_PAIRING_CODE = "pair-code-123"
-    server.runtime._translation_pairing_used = False
     client = TestClient(server.app)
-    origin = "chrome-extension://hihgkmkbdndlnbpleclokbijancgmiil"
-    token = "t" * 64
 
-    assert client.get("/translations/health", headers={"Origin": origin}).status_code == 401
-    rejected = client.post("/translations/pair", headers={"Origin": origin}, json={
-        "pairingCode": "wrong-code", "token": token,
-    })
-    assert rejected.status_code == 403
-    website = client.post("/translations/pair", headers={"Origin": "https://example.test"}, json={
-        "pairingCode": "pair-code-123", "token": token,
-    })
-    assert website.status_code == 403
-    paired = client.post("/translations/pair", headers={"Origin": origin}, json={
-        "pairingCode": "pair-code-123", "token": token,
-    })
-    assert paired.status_code == 200
-    assert paired.json()["verified"] is True
-    assert paired.headers["access-control-allow-origin"] == origin
-    reused = client.post("/translations/pair", headers={"Origin": origin}, json={
-        "pairingCode": "pair-code-123", "token": "u" * 64,
-    })
-    assert reused.status_code == 403
-    headers = {"Origin": origin, "Authorization": f"Bearer {token}"}
-    assert client.get("/translations/health", headers=headers).json()["ok"] is True
-    explicit_origin_headers = {
-        "Authorization": f"Bearer {token}",
-        "X-Manga-Translator-Origin": origin,
-    }
-    assert client.get(
-        "/translations/health", headers=explicit_origin_headers
-    ).json()["ok"] is True
-    committed = client.post("/translations/operations", headers=headers, json={
+    assert client.post("/translations/pair", json={
+        "pairingCode": "000000", "token": "t" * 64,
+    }).status_code == 404
+    assert client.get("/translations/health").json()["ok"] is True
+    committed = client.post("/translations/operations", json={
         "operations": [operation("rest-op-1")],
     }).json()["results"][0]["record"]
-    conflict = client.post("/translations/operations", headers=headers, json={
+    conflict = client.post("/translations/operations", json={
         "operations": [operation(
             "rest-select-stale", "select_version", recordId=committed["recordId"],
             payload={"versionId": committed["activeVersionId"]},
@@ -319,10 +298,3 @@ def test_rest_api_requires_pairing_token_and_exact_extension_origin(tmp_path):
     })
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["currentRecord"]["recordRevision"] == 1
-    wrong_origin = {**headers, "Origin": "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-    assert client.get("/translations/health", headers=wrong_origin).status_code == 401
-    wrong_explicit_origin = {
-        **explicit_origin_headers,
-        "X-Manga-Translator-Origin": "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    }
-    assert client.get("/translations/health", headers=wrong_explicit_origin).status_code == 401

@@ -1,133 +1,19 @@
 import cacheCore from "../../shared/translation-cache.js";
 import { createTranslationMaintenanceScheduler } from "./translation-maintenance.js";
-export const LOCAL_SERVICE_AUTH_KEY = "mt_local_service_auth_v1";
-export const LOCAL_SERVICE_ORIGIN_HEADER = "X-Manga-Translator-Origin";
 const LOCAL_SERVICE_HEALTH_TIMEOUT_MS = 5000;
 const LOCAL_SERVICE_UNREACHABLE = "无法访问本地服务；请确认服务已启动，并在扩展设置中允许 Chrome 访问本机设备";
-function randomToken() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes); return [...bytes].map(value => value.toString(16).padStart(2, "0")).join("");
-}
 export function installTranslationService(runtime) {
   let writeQueue = Promise.resolve();
-  let verifiedToken = "";
-  let registrationPromise = null;
   async function serviceConfiguration() {
     const configuration = await runtime.loadConfiguration();
     return { baseUrl: runtime.sanitizeLocalOcrBaseUrl(configuration.ocr.localPaddle.baseUrl) };
   }
 
-  async function readStoredCredentials() {
-    const stored = await runtime.storageGet([LOCAL_SERVICE_AUTH_KEY]);
-    const credentials = stored[LOCAL_SERVICE_AUTH_KEY] || {};
-    return { token: String(credentials.token || ""), origin: String(credentials.origin || "") };
-  }
-
-  async function readStoredToken() { return (await readStoredCredentials()).token; }
-
-  async function authenticatedHeaders(token) {
-    const credentials = await readStoredCredentials();
-    const origin = credentials.token === token ? credentials.origin : "";
-    return { Authorization: `Bearer ${token}`, ...(origin ? { [LOCAL_SERVICE_ORIGIN_HEADER]: origin } : {}) };
-  }
-
-  async function clearStoredToken(expectedToken = "") {
-    const currentToken = await readStoredToken();
-    if (expectedToken && currentToken !== expectedToken) return false;
-    if (!expectedToken || verifiedToken === expectedToken) verifiedToken = "";
-    await runtime.storageRemove([LOCAL_SERVICE_AUTH_KEY]);
-    return true;
-  }
-
-  async function registerLocalService(pairingCode) {
-    if (registrationPromise) return registrationPromise;
-    registrationPromise = (async () => {
-      const { baseUrl } = await serviceConfiguration();
-      const token = randomToken();
-      const response = await fetch(`${baseUrl}/translations/pair`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pairingCode: String(pairingCode || "").trim(), token })
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok || payload?.ok !== true || payload?.verified !== true) {
-        throw new Error(String(payload?.detail || payload?.error || `HTTP ${response.status}`));
-      }
-      await runtime.storageSet({
-        [LOCAL_SERVICE_AUTH_KEY]: {
-          token, pairedAt: Date.now(), serviceBaseUrl: baseUrl,
-          origin: String(payload.origin || "")
-        }
-      });
-      verifiedToken = token;
-      return token;
-    })();
-    try {
-      return await registrationPromise;
-    } finally {
-      registrationPromise = null;
-    }
-  }
-  runtime.registerLocalService = registerLocalService;
-  runtime.pairLocalService = pairingCode => {
-    const normalized = String(pairingCode || "").trim();
-    if (!normalized) throw new Error("请输入本地服务终端显示的配对码");
-    return registerLocalService(normalized).then(() => ({ ok: true, verified: true }));
-  };
-
-  async function validateStoredToken(token) {
-    if (!token) return "missing";
-    const { baseUrl } = await serviceConfiguration();
-    try {
-      const response = await fetch(`${baseUrl}/translations/health`, {
-        method: "GET", headers: await authenticatedHeaders(token)
-      });
-      return response.ok ? "valid" : response.status === 401 ? "invalid" : "offline";
-    } catch { return "offline"; }
-  }
-
-  async function ensureLocalServiceToken() {
-    const token = await readStoredToken();
-    if (token && token === verifiedToken) return token;
-    const validation = await validateStoredToken(token);
-    if (validation === "valid") {
-      verifiedToken = token;
-      return token;
-    }
-    if (validation === "invalid") {
-      await clearStoredToken(token);
-      throw new Error("本地译文库认证已失效，请使用本次启动的备用配对码重新配对");
-    }
-    if (token) throw new Error(LOCAL_SERVICE_UNREACHABLE);
-    throw new Error("本地译文库尚未配对，请在扩展设置中输入本地服务配对码");
-  }
-  runtime.ensureLocalServiceToken = ensureLocalServiceToken;
-
-  async function withAuth(options = {}) {
-    const token = await ensureLocalServiceToken();
-    return {
-      ...options,
-      headers: { ...options.headers, ...await authenticatedHeaders(token) }
-    };
-  }
-  runtime.withLocalServiceAuth = withAuth;
-
   async function localServiceFetch(url, options = {}, timeoutMs = 10_000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const requestToken = await ensureLocalServiceToken();
-      const response = await fetch(url, {
-        ...options,
-        headers: { ...options.headers, ...await authenticatedHeaders(requestToken) },
-        signal: controller.signal
-      });
-      if (response.status === 401) {
-        await clearStoredToken(requestToken);
-        const error = new Error("本地译文库认证已失效，请使用本次启动的备用配对码重新配对");
-        error.status = 401;
-        throw error;
-      }
+      const response = await fetch(url, { ...options, signal: controller.signal });
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
         const detail = payload?.detail;

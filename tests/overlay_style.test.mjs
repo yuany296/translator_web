@@ -62,9 +62,13 @@ test("悬浮球直接显示翻译成功和失败反馈", () => {
   assert.match(css, /\.mt-floating-feedback\.mt-error\s*\{/);
   assert.match(css, /\.mt-floating-feedback\.mt-success\s*\{/);
   assert.match(css, /\.mt-floating-feedback\[hidden\]\s*\{\s*display:\s*none/);
-  assert.match(css, /\.mt-novel-progress-panel\s*\{[\s\S]*?pointer-events:\s*none/);
+  assert.match(css, /\.mt-novel-progress-panel\s*\{[\s\S]*?pointer-events:\s*auto/);
   assert.match(css, /\.mt-novel-progress-spinner\s*\{[\s\S]*?animation:\s*mt-progress-spin/);
   assert.match(css, /\.mt-novel-progress-fill\s*\{[\s\S]*?transition:\s*width/);
+  // 悬停只显示对应球的进度栏：小说球只出小说面板，网页球只出网页面板。
+  assert.match(css, /\.mt-floating-ball-wrap\.mt-floating-ball-group:has\(\.mt-floating-novel:hover/);
+  assert.match(css, /\.mt-floating-ball-wrap\.mt-floating-ball-group:has\(\.mt-floating-webpage:hover/);
+  assert.doesNotMatch(css, /\.mt-floating-ball-wrap:hover \.mt-(novel|webpage)-progress-panel/);
 });
 
 test("Kakao 覆盖层使用页面坐标系跟随原图滚动", () => {

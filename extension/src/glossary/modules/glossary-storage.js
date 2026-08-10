@@ -1,13 +1,6 @@
 export function installGlossaryStorage(runtime) {
-  async function getServiceHeaders(json = false) {
-    const stored = await runtime.storageGet(["mt_local_service_auth_v1"]);
-    const token = String(stored.mt_local_service_auth_v1?.token || "");
-    const origin = String(stored.mt_local_service_auth_v1?.origin || "");
-    return {
-      ...(json ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(origin ? { "X-Manga-Translator-Origin": origin } : {})
-    };
+  function getServiceHeaders(json = false) {
+    return { ...(json ? { "Content-Type": "application/json" } : {}) };
   }
   function parseCsvGlossary(text) {
     const rows = runtime.parseCsvRows(String(text || "").replace(/^\uFEFF/, ""));

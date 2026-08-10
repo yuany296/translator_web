@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
-import hmac
 import sqlite3
 import time
 import uuid
@@ -39,31 +37,6 @@ class TranslationStore:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         return connection
-
-    def pair(self, token: str, origin: str) -> None:
-        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        with self.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                "INSERT INTO translation_meta(key,value) VALUES('access_token_hash',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (token_hash,)
-            )
-            connection.execute(
-                "INSERT INTO translation_meta(key,value) VALUES('extension_origin',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (origin,)
-            )
-            connection.commit()
-
-    def verify_access(self, token: str, origin: str) -> bool:
-        with self.connect() as connection:
-            values = dict(connection.execute(
-                "SELECT key,value FROM translation_meta WHERE key IN ('access_token_hash','extension_origin')"
-            ).fetchall())
-        expected_hash = values.get("access_token_hash", "")
-        expected_origin = values.get("extension_origin", "")
-        supplied_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return bool(expected_hash and expected_origin and origin == expected_origin
-                    and hmac.compare_digest(expected_hash, supplied_hash))
 
     @staticmethod
     def _next_change_seq(connection: sqlite3.Connection) -> int:

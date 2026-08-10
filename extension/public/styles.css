@@ -421,7 +421,7 @@
   background: rgba(15, 23, 42, 0.97);
   box-shadow: 0 16px 42px rgba(15, 23, 42, 0.38);
   font: 500 13px/1.45 system-ui, sans-serif;
-  pointer-events: none;
+  pointer-events: auto;
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.15s ease, visibility 0.15s ease 0.5s;
@@ -435,7 +435,7 @@
   bottom: auto;
 }
 .mt-novel-progress-panel[hidden] { display: none; }
-.mt-floating-ball-wrap:hover .mt-novel-progress-panel:not([hidden]) {
+.mt-floating-ball-wrap.mt-floating-ball-group:has(.mt-floating-novel:hover, .mt-novel-progress-panel:hover) .mt-novel-progress-panel:not([hidden]) {
   opacity: 1;
   visibility: visible;
   transition: opacity 0.15s ease 0.02s, visibility 0.15s;
@@ -555,14 +555,14 @@
   background: rgba(15, 23, 42, 0.97);
   box-shadow: 0 16px 42px rgba(15, 23, 42, 0.38);
   font: 500 13px/1.55 system-ui, sans-serif;
-  pointer-events: none;
+  pointer-events: auto;
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.15s ease, visibility 0.15s ease 0.5s;
 }
 .mt-floating-ball-wrap[data-side="left"] .mt-webpage-progress-panel { left: 44px; right: auto; }
 .mt-webpage-progress-panel[hidden] { display: none; }
-.mt-floating-ball-wrap:hover .mt-webpage-progress-panel:not([hidden]) {
+.mt-floating-ball-wrap.mt-floating-ball-group:has(.mt-floating-webpage:hover, .mt-webpage-progress-panel:hover) .mt-webpage-progress-panel:not([hidden]) {
   opacity: 1;
   visibility: visible;
   transition: opacity 0.15s ease 0.02s, visibility 0.15s;

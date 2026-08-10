@@ -217,6 +217,7 @@ export function installNovelReader(runtime) {
       resetNovelNavigationState(state);
     }
     state.surface = surface;
+    runtime.injectNovelStyles?.(surface.root);
     if (!state.rootObserver || rootChanged) {
       state.rootObserver?.disconnect();
       state.rootObserver = new MutationObserver(() => scheduleNovelReconcile("shadow-mutation"));

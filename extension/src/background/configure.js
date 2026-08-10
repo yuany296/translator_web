@@ -58,13 +58,6 @@ export function configureBackgroundRuntime(runtime) {
       const config = await store.load();
       return translationProviders.get(config.translation.provider).checkHealth(config.translation);
     }
-    if (message.type === "PAIR_LOCAL_SERVICE") {
-      try {
-        return await runtime.pairLocalService(message.pairingCode);
-      } catch (error) {
-        return { ok: false, error: runtime.getErrorMessage(error) };
-      }
-    }
     if (message.type === "GET_TRANSLATION_SERVICE_STATUS") return runtime.getTranslationServiceStatus();
     if (message.type === "QUERY_TRANSLATION_SERVICE") {
       return runtime.queryTranslationService(message.recordKeys || []);

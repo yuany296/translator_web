@@ -91,6 +91,8 @@ export function installControlsTriple(runtime) {
     }
     if (result?.toggled) {
       runtime.showFloatingBallFeedback(result.showTranslation ? "已显示中文译文" : "已显示韩文原文", "info");
+    } else if (result?.showTranslation) {
+      runtime.showFloatingBallFeedback("已显示中文译文", "info");
     } else {
       runtime.clearFloatingBallFeedback?.();
       runtime.updateNovelProgressPanel?.();

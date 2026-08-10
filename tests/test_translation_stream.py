@@ -53,15 +53,7 @@ def test_stream_commits_before_emitting_and_handles_fragments_duplicates_and_fin
 
     server.runtime._translation_store = TranslationStore(str(tmp_path / "stream.db"))
     server.runtime._translation_stream_provider = provider
-    server.runtime.TRANSLATION_PAIRING_CODE = "stream-pair"
-    server.runtime._translation_pairing_used = False
     client = TestClient(server.app)
-    origin = "chrome-extension://hihgkmkbdndlnbpleclokbijancgmiil"
-    token = "s" * 64
-    assert client.post("/translations/pair", headers={"Origin": origin}, json={
-        "pairingCode": "stream-pair", "token": token,
-    }).status_code == 200
-    headers = {"Origin": origin, "Authorization": f"Bearer {token}"}
     payload = {
         "taskId": "task-1", "upstream": {"apiKey": "unused", "baseUrl": "https://example.test"},
         "sourceLanguage": "auto", "targetLanguage": "zh-CN", "configFingerprint": "fp-stream",
@@ -72,7 +64,7 @@ def test_stream_commits_before_emitting_and_handles_fragments_duplicates_and_fin
              "recordPayload": _record_payload("p2", "둘째")},
         ],
     }
-    with client.stream("POST", "/translations/stream", headers=headers, json=payload) as response:
+    with client.stream("POST", "/translations/stream", json=payload) as response:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/x-ndjson")
         events = [json.loads(line) for line in response.iter_lines() if line]
@@ -88,7 +80,7 @@ def test_stream_commits_before_emitting_and_handles_fragments_duplicates_and_fin
     assert server.runtime._translation_store.query(["r1", "r2"])["records"]
 
     # 同一 taskId 重试由 operationId 幂等保护，不生成重复版本。
-    with client.stream("POST", "/translations/stream", headers=headers, json=payload) as response:
+    with client.stream("POST", "/translations/stream", json=payload) as response:
         list(response.iter_lines())
     record = server.runtime._translation_store.query(["r1"])["records"][0]
     versions = server.runtime._translation_store.versions(record["recordId"])["versions"]

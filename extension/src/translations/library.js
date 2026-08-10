@@ -84,11 +84,44 @@ export function installTranslationLibrary() {
     await refresh();
   }
 
+  function tableWrap() {
+    return document.querySelector(".table-wrap");
+  }
+
+  function currentRowAnchor() {
+    const wrap = tableWrap();
+    if (!wrap) return "";
+    const scrollTop = wrap.scrollTop || 0;
+    for (const tr of rows.querySelectorAll("tr")) {
+      const top = tr.getBoundingClientRect().top - wrap.getBoundingClientRect().top + scrollTop;
+      if (top + tr.offsetHeight > scrollTop) return tr.dataset.recordKey || "";
+    }
+    return "";
+  }
+
+  function restoreRowAnchor(recordKey) {
+    if (!recordKey) return;
+    const wrap = tableWrap();
+    if (!wrap) return;
+    let target = null;
+    for (const tr of rows.querySelectorAll("tr")) {
+      if (tr.dataset.recordKey === recordKey) {
+        target = tr;
+        break;
+      }
+    }
+    if (!target) return;
+    const top = target.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop;
+    wrap.scrollTop = Math.max(0, top - 8);
+  }
+
   function render() {
+    const anchor = currentRowAnchor();
     rows.replaceChildren();
     for (const entry of filteredRecords()) {
       const record = entry.record;
       const tr = document.createElement("tr");
+      tr.dataset.recordKey = record.recordKey;
       const mode = cell(record.mode);
       const tag = document.createElement("span");
       tag.className = "tag";
@@ -108,6 +141,7 @@ export function installTranslationLibrary() {
         cell(`${record.recordRevision} / seq ${record.changeSeq}`), actions);
       rows.appendChild(tr);
     }
+    restoreRowAnchor(anchor);
   }
 
   async function refresh() {

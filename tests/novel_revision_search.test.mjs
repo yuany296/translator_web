@@ -29,3 +29,13 @@ test("修订面板搜索框与隐藏卡片有对应样式", () => {
   assert.match(css, /\.mt-novel-revision-empty\s*\{[\s\S]*?text-align:\s*center/);
   assert.match(css, /\.mt-novel-revision-body\s*\{[\s\S]*?flex:\s*1/);
 });
+
+test("修订面板保存后不跳回开头：重绘按当前卡片恢复滚动位置", () => {
+  assert.match(contentSource, /card\.dataset\.itemId = item\.id/);
+  assert.match(contentSource, /function visibleRevisionAnchor\(/);
+  assert.match(contentSource, /function restoreRevisionAnchor\(/);
+  assert.match(contentSource, /renderRevisionPanel\(chapter, anchorId = ""\)/);
+  assert.match(contentSource, /const anchor = anchorId \|\| visibleRevisionAnchor\(body\)/);
+  assert.match(contentSource, /restoreRevisionAnchor\(body, anchor\)/);
+  assert.match(contentSource, /submitEdit\(chapter, item, editor\.value\), item\.id\)/);
+});

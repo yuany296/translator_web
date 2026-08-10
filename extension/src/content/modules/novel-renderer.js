@@ -1,4 +1,31 @@
+const NOVEL_SHADOW_STYLES = [
+  "[data-p-id] .mt-novel-source[hidden],",
+  "[data-p-id] .mt-novel-translation[hidden] { display: none !important; }",
+  "[data-p-id] .mt-novel-source { display: contents; }",
+  "[data-p-id] .mt-novel-translation { white-space: pre-wrap; font: inherit; color: inherit; }",
+  "[data-p-id] .mt-novel-source-bilingual { display: block; margin-bottom: 0.42em; }",
+  "[data-p-id]::selection,",
+  "[data-p-id] .mt-novel-source::selection,",
+  "[data-p-id] .mt-novel-translation::selection { background: rgba(96, 165, 250, 0.4); color: inherit; }"
+].join("\n");
+
 export function installNovelRenderer(runtime) {
+  function injectNovelStyles(root) {
+    // 小说正文在 shadow root 内,content script 的 styles.css 无法穿透,
+    // 需要把等价规则注入到每个 shadow root(幂等)。
+    if (!root || root === document || root.nodeType !== 11 || root.__mtNovelStylesInjected) return;
+    root.__mtNovelStylesInjected = true;
+    try {
+      const style = document.createElement("style");
+      style.className = "mt-novel-styles";
+      style.textContent = NOVEL_SHADOW_STYLES;
+      root.appendChild(style);
+    } catch {
+      root.__mtNovelStylesInjected = false;
+    }
+  }
+  runtime.injectNovelStyles = injectNovelStyles;
+
   function findParagraphNode(surface, id) {
     const escaped = globalThis.CSS?.escape ? CSS.escape(id) : String(id).replace(/["\\]/gu, "\\$&");
     const matches = surface?.root?.querySelectorAll?.(`[data-p-id="${escaped}"]`) || [];
@@ -6,6 +33,7 @@ export function installNovelRenderer(runtime) {
   }
 
   function ensureNovelWrappers(node) {
+    injectNovelStyles(node.getRootNode());
     let source = node.querySelector?.(":scope > .mt-novel-source");
     let translation = node.querySelector?.(":scope > .mt-novel-translation");
     if (source && translation) return { source, translation };

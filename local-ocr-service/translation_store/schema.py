@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS translation_meta (
@@ -70,6 +70,8 @@ def configure_connection(connection) -> None:
 def initialize_schema(connection) -> None:
     configure_connection(connection)
     connection.executescript(SCHEMA_SQL)
+    # v4 引入的扩展配对表已随鉴权移除而废弃，旧库升级时直接清除。
+    connection.execute("DROP TABLE IF EXISTS paired_extensions")
     columns = {row[1] for row in connection.execute("PRAGMA table_info(translation_records)")}
     if "recovery_json" not in columns:
         connection.execute(

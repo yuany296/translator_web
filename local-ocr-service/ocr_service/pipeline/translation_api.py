@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hmac
-import re
 from typing import Any
 
 from ..dependencies import runtime
@@ -15,28 +13,6 @@ def get_translation_store():
 
 
 runtime.get_translation_store = get_translation_store
-
-
-def translations_pair(payload: runtime.TranslationPairPayload, request: runtime.Request):
-    origin = str(request.headers.get("origin") or "")
-    if not re.fullmatch(runtime.EXTENSION_ORIGIN_PATTERN, origin):
-        raise runtime.HTTPException(status_code=403, detail="Chrome extension Origin is required")
-    if runtime._translation_pairing_used or not hmac.compare_digest(
-            payload.pairingCode, runtime.TRANSLATION_PAIRING_CODE):
-        raise runtime.HTTPException(status_code=403, detail="invalid or expired pairing code")
-    store = get_translation_store()
-    store.pair(payload.token, origin)
-    if not store.verify_access(payload.token, origin):
-        raise runtime.HTTPException(status_code=500, detail="paired token verification failed")
-    runtime._translation_pairing_used = True
-    snapshot = store.query([])
-    return {
-        "ok": True, "verified": True, "origin": origin,
-        "changeSeq": snapshot["changeSeq"],
-    }
-
-
-runtime.translations_pair = translations_pair
 
 
 def translations_health() -> dict[str, Any]:

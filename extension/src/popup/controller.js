@@ -133,15 +133,6 @@ document.addEventListener("click", async (event) => {
     if (event.target.id === "translationLibraryBtn") {
       void chrome.tabs.create({ url: chrome.runtime.getURL("translations.html") });
     }
-    if (event.target.id === "pairLocalServiceBtn") {
-      setStatus("localService", "正在配对…");
-      const response = await send({
-        type: "PAIR_LOCAL_SERVICE", pairingCode: value("localServicePairingCode")
-      });
-      if (!response.ok) throw new Error(response.error || "本地服务配对失败");
-      byId("localServicePairingCode").value = "";
-      setStatus("localService", "本地译文库已配对");
-    }
     if (event.target.id === "checkLocalServiceBtn") {
       const response = await send({ type: "GET_TRANSLATION_SERVICE_STATUS" });
       setStatus("localService", response.ok

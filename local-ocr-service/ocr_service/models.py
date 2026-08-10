@@ -82,11 +82,6 @@ class GlossaryImportPayload(BaseModel):
     entries: list = Field(default_factory=list, max_length=1000)
 
 
-class TranslationPairPayload(BaseModel):
-    pairingCode: str = Field(min_length=6, max_length=128)
-    token: str = Field(min_length=32, max_length=512)
-
-
 class TranslationQueryPayload(BaseModel):
     recordKeys: list[str] = Field(default_factory=list, max_length=500)
     includeDeleted: bool = False

@@ -17,12 +17,14 @@ test("settings center owns advanced configuration and data management", () => {
   assert.match(html, /translations\.html\?embedded=1/);
   assert.match(source, /TEST_OCR_CONFIGURATION/);
   assert.match(source, /TEST_TRANSLATION_CONFIGURATION/);
-  assert.match(source, /PAIR_LOCAL_SERVICE/);
-  assert.match(source, /response\.verified !== true/);
-  assert.match(source, /认证正常/);
+  assert.match(source, /GET_TRANSLATION_SERVICE_STATUS/);
+  assert.match(source, /probeLocalServiceDocumentAccess/);
+  assert.doesNotMatch(source, /PAIR_LOCAL_SERVICE/);
+  assert.doesNotMatch(source, /配对码|pairingCode|pairServiceBtn/);
   assert.match(source, /GET_CACHE_STATS/);
   assert.match(source, /CLEAR_CACHE/);
   assert.doesNotMatch(html, /id="ocrLang"/);
+  assert.match(html, /id="checkServiceBtn"/);
 });
 
 test("legacy data pages route into their management-center sections", () => {

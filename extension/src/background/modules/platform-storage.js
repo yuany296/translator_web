@@ -95,8 +95,7 @@ export function installPlatformStorage(runtime) {
       }, timeoutMs);
     });
     const request = (async () => {
-      const requestInit = runtime.isLocalServiceEndpoint?.(endpoint)
-        ? await runtime.withLocalServiceAuth(init || {}) : (init || {});
+      const requestInit = (init || {});
       const response = await fetch(endpoint, {
         ...requestInit,
         signal: controller.signal

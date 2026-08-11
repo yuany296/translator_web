@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>章节译文管理 · Manga Translator</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; flex-direction: column;
+      background: #0f172a;
+      color: #e2e8f0;
+      font: 500 13px/1.5 system-ui, sans-serif;
+      overflow: hidden;
+    }
+    header {
+      flex: 0 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+    }
+    header strong { font-size: 14px; }
+    header button {
+      border: 1px solid rgba(148, 163, 184, 0.34);
+      border-radius: 8px; padding: 4px 10px;
+      color: #e2e8f0; background: rgba(51, 65, 85, 0.88);
+      cursor: pointer;
+    }
+    .status { flex: 0 0 auto; padding: 9px 16px; color: #93c5fd; }
+    .toolbar { flex: 0 0 auto; padding: 0 16px 8px; }
+    .toolbar input[type="search"] {
+      box-sizing: border-box; width: 100%;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 8px; padding: 8px 10px;
+      color: #f8fafc; background: rgba(15, 23, 42, 0.72);
+      font: inherit;
+    }
+    .toolbar input[type="search"]::placeholder { color: #64748b; }
+    .toolbar .actions {
+      display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+    }
+    .toolbar .actions button {
+      border: 1px solid rgba(148, 163, 184, 0.34);
+      border-radius: 8px; padding: 6px 10px;
+      color: #e2e8f0; background: rgba(51, 65, 85, 0.88);
+      cursor: pointer;
+    }
+    .scroll-body {
+      flex: 1 1 auto; overflow: auto; padding: 8px 16px 28px;
+    }
+    .card {
+      margin: 10px 0;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(30, 41, 59, 0.62);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+    .card[hidden] { display: none; }
+    .badge {
+      display: inline-block;
+      padding: 1px 6px; margin-bottom: 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: rgba(148, 163, 184, 0.18);
+      color: #cbd5e1;
+    }
+    .badge[data-status="pending"] { background: rgba(245, 158, 11, 0.22); color: #fbbf24; }
+    .badge[data-status="manual"]  { background: rgba(96, 165, 250, 0.22); color: #93c5fd; }
+    .badge[data-status="pinned"]  { background: rgba(167, 139, 250, 0.22); color: #c4b5fd; }
+    .badge[data-status="current"] { background: rgba(34, 197, 94, 0.22); color: #86efac; }
+    .badge[data-status="stale"]   { background: rgba(148, 163, 184, 0.26); color: #cbd5e1; }
+    .source {
+      padding: 6px 8px; margin-bottom: 6px;
+      border-left: 3px solid rgba(148, 163, 184, 0.4);
+      white-space: pre-wrap; color: #cbd5e1;
+    }
+    textarea {
+      box-sizing: border-box; width: 100%;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 8px; padding: 8px 10px;
+      background: rgba(15, 23, 42, 0.7);
+      color: #f8fafc; font: inherit; min-height: 60px;
+      resize: vertical;
+    }
+    .meta-input {
+      box-sizing: border-box; width: 100%;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 8px; padding: 6px 10px; margin-top: 6px;
+      background: rgba(15, 23, 42, 0.7);
+      color: #f8fafc; font: inherit;
+    }
+    .actions {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+    }
+    .actions button {
+      border: 1px solid rgba(148, 163, 184, 0.34);
+      border-radius: 8px; padding: 5px 10px;
+      color: #e2e8f0; background: rgba(51, 65, 85, 0.88);
+      cursor: pointer;
+    }
+    .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .actions button.danger { color: #fca5a5; border-color: rgba(248, 113, 113, 0.42); }
+    .actions button.primary { color: #93c5fd; border-color: rgba(96, 165, 250, 0.55); }
+    .versions {
+      margin-top: 8px; padding-top: 6px;
+      border-top: 1px solid rgba(148, 163, 184, 0.16);
+    }
+    .version-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 0; flex-wrap: wrap;
+      color: #94a3b8; font-size: 11px;
+    }
+    .version-row button {
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 6px; padding: 3px 8px;
+      color: #cbd5e1; background: rgba(51, 65, 85, 0.62);
+      cursor: pointer;
+    }
+    .term-section {
+      margin-top: 8px; padding: 10px;
+      border: 1px dashed rgba(96, 165, 250, 0.42);
+      border-radius: 10px; background: rgba(30, 41, 59, 0.5);
+      display: grid; gap: 8px;
+    }
+    .term-section[hidden] { display: none; }
+    .term-section input {
+      box-sizing: border-box;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 6px; padding: 5px 9px;
+      background: rgba(15, 23, 42, 0.7);
+      color: #f8fafc; font: inherit;
+    }
+    .term-status { color: #93c5fd; font-size: 12px; }
+    .term-actions {
+      display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end;
+    }
+    .term-actions button {
+      border: 1px solid rgba(148, 163, 184, 0.34);
+      border-radius: 6px; padding: 4px 8px;
+      color: #e2e8f0; background: rgba(51, 65, 85, 0.88);
+      cursor: pointer;
+    }
+    .term-actions button.primary { color: #93c5fd; border-color: rgba(96, 165, 250, 0.55); }
+    .empty {
+      text-align: center; padding: 32px 16px; color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>管理当前章节译文</strong>
+    <button id="refreshBtn" type="button">刷新</button>
+  </header>
+  <div id="status" class="status">正在连接活动标签页…</div>
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="搜索原文或译文…" />
+    <div class="actions">
+      <button id="collapseBtn" type="button">仅显示有译文</button>
+    </div>
+  </div>
+  <div id="body" class="scroll-body"></div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

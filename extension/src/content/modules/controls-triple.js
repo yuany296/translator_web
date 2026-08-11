@@ -311,8 +311,17 @@ export function installControlsTriple(runtime) {
           else if (result?.ok !== false) runtime.showFloatingBallFeedback("正在强制重新处理图片", "info");
         });
       case "manage-chapter":
-        return void runtime.openNovelRevisionPanel().catch(error =>
-          runtime.showFloatingBallFeedback(runtime.getErrorMessage(error), "error"));
+        return void (async () => {
+          const fallback = "无法直接打开侧栏，请点扩展图标 → 「管理当前章节译文」";
+          try {
+            const r = await runtime.sendRuntimeMessage({ type: "OPEN_NOVEL_SIDEPANEL" });
+            runtime.showFloatingBallFeedback(
+              r?.ok ? "已打开侧栏，可在右侧编辑译文" : (r?.error || fallback),
+              r?.ok ? "info" : "error");
+          } catch (error) {
+            runtime.showFloatingBallFeedback(fallback, "info");
+          }
+        })();
       default:
         return;
     }

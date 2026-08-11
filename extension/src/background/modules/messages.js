@@ -1,8 +1,9 @@
 export function installMessages(runtime) {
   async function handleMessage(message, sender) {
     switch (message.type) {
-      case "FETCH_IMAGE_DATA_URL":
-        return runtime.handleFetchImageDataUrl(message);
+      case "OPEN_NOVEL_SIDEPANEL": return chrome.sidePanel?.open?.({ windowId: sender.tab?.windowId }).then(() => ({ ok: true }))  // Chrome 116+: open side panel in sender's window
+          .catch(error => ({ ok: false, error: error?.message || String(error) })) || { ok: false, error: "Chrome 不支持 sidePanel API" };
+      case "FETCH_IMAGE_DATA_URL": return runtime.handleFetchImageDataUrl(message);
       case "CAPTURE_VISIBLE_TARGET_DATA_URL":
         return runtime.handleCaptureVisibleTargetDataUrl(message, sender);
       case "OCR_DATA_URL":
@@ -394,8 +395,5 @@ export function installMessages(runtime) {
     });
   }
   runtime.handleIgnoreTermCandidate = handleIgnoreTermCandidate;
-
-  // Glossary REST API helpers (for server-side storage via SQLite)
-  const GLOSSARY_API_TIMEOUT_MS = 10000;
-  runtime.GLOSSARY_API_TIMEOUT_MS = GLOSSARY_API_TIMEOUT_MS;
+  runtime.GLOSSARY_API_TIMEOUT_MS = 10000; // Glossary REST API helpers (server-side SQLite storage)
 }

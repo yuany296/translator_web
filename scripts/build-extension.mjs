@@ -20,7 +20,7 @@ const shared = { bundle: true, target: "chrome114", sourcemap: false, logLevel: 
 const configs = [
   { ...shared, entryPoints: [path.join(source, "background", "index.js")], outfile: path.join(outdir, "background.js"), format: "esm" },
   { ...shared, entryPoints: [path.join(source, "background", "index.js")], outfile: path.join(testOutdir, "background.iife.js"), format: "iife", globalName: "MtBackgroundModule" },
-  ...["content", "popup", "quick-popup", "settings", "glossary", "translations"].map((name) => ({
+  ...["content", "popup", "quick-popup", "settings", "glossary", "translations", "sidepanel"].map((name) => ({
     ...shared, entryPoints: [path.join(source, name, "index.js")], outfile: path.join(outdir, `${name}.js`), format: "iife"
   }))
 ];

@@ -1,5 +1,10 @@
 export function installBootstrap(runtime) {
   chrome.runtime.onConnect?.addListener(port => runtime.handleTranslationStreamPort?.(port));
+  try {
+    chrome.sidePanel?.setOptions?.({ enabled: true, path: "sidepanel.html" });
+  } catch (error) {
+    console.warn("[MangaTranslator] sidePanel.setOptions failed:", error);
+  }
   chrome.runtime.onInstalled.addListener(async details => {
     try {
       await runtime.ensureDefaultSettings();

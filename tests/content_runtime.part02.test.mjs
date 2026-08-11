@@ -729,10 +729,11 @@ test("novel chapter translation schedules a sampled term-discovery message with 
   assert.equal(message.blocks[0].id, "hash-p0");
   assert.equal(message.blocks[0].originalText, "원문 0");
 });
-test("novel revision panel wires the add-term flow with AI extraction", () => {
-  assert.match(contentSource, /EXTRACT_TERM_FROM_CONTEXT/);
-  assert.match(contentSource, /CONFIRM_TERM_CANDIDATES/);
-  assert.match(contentSource, /mt-novel-revision-term/);
-  assert.match(contentSource, /提取韩文原文/);
-  assert.match(contentSource, /selectionStart/);
+test("novel revision term flow wires AI extraction via side panel page", () => {
+  const sidepanelSource = fs.readFileSync(path.join(import.meta.dirname, "..", "extension", "src", "sidepanel", "modules", "revision-ui.js"), "utf8");
+  assert.match(sidepanelSource, /EXTRACT_TERM_FROM_CONTEXT/);
+  assert.match(sidepanelSource, /CONFIRM_TERM_CANDIDATES/);
+  assert.match(sidepanelSource, /renderTermSection/);
+  assert.match(sidepanelSource, /提取韩文原文/);
+  assert.match(sidepanelSource, /selectionStart/);
 });

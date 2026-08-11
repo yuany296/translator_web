@@ -122,6 +122,26 @@ byId("targetLanguage").addEventListener("change", () => void saveLanguages());
 document.querySelectorAll("input[name='displayMode']").forEach(node => {
   node.addEventListener("change", () => void saveRuntime());
 });
+byId("manageChapterBtn").addEventListener("click", () => void (async () => {
+  const btn = byId("manageChapterBtn");
+  btn.disabled = true;
+  try {
+    const tab = await activeTab();
+    const probe = await chrome.tabs.sendMessage(tab.id, { type: "PING_CONTENT_SCRIPT" }).catch(() => null);
+    if (!probe?.ok) throw new Error("当前标签页不可用，无法判断是否为可管理章节");
+    const snapshot = await chrome.tabs.sendMessage(tab.id, { type: "GET_NOVEL_CHAPTER_SNAPSHOT" });
+    if (!snapshot?.ok) throw new Error(snapshot?.error || "当前页面不是可管理的小说章节");
+    await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.sidePanel.open({ windowId: tab.windowId }).catch((error) => {
+      throw new Error(`侧栏无法打开：${error?.message || error}`);
+    });
+    setStatus(`已打开侧栏：${snapshot.chapter.chapterTitle || ""}`);
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+})());
 byId("translateBtn").addEventListener("click", () => void translateVisible().catch(error => setStatus(error.message, true)));
 byId("settingsBtn").addEventListener("click", () => chrome.runtime.openOptionsPage());
 void load().catch(error => setStatus(error.message, true));

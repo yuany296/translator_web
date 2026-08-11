@@ -127,6 +127,28 @@ export function installReaderInit(runtime) {
         });
         return false;
       }
+      if (message.type === "GET_NOVEL_CHAPTER_SNAPSHOT") {
+        if (!runtime.getNovelRevisionSnapshot) {
+          sendResponse({ ok: false, error: "revision 模块未安装" });
+          return false;
+        }
+        runtime.getNovelRevisionSnapshot().then(result => sendResponse(result)).catch(error => {
+          sendResponse({ ok: false, error: runtime.getErrorMessage(error) });
+        });
+        return true;
+      }
+      if (message.type === "NOVEL_REVISION_ACTION") {
+        if (!runtime.performNovelRevisionAction) {
+          sendResponse({ ok: false, error: "revision 模块未安装" });
+          return false;
+        }
+        runtime.performNovelRevisionAction(message.action, message.payload || {}).then(result => {
+          sendResponse({ ok: true, result });
+        }).catch(error => {
+          sendResponse({ ok: false, error: runtime.getErrorMessage(error) });
+        });
+        return true;
+      }
       return false;
     });
   }

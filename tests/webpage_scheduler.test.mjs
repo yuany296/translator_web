@@ -223,13 +223,13 @@ test("scroll promotes an unsent P2 segment to P0 before it is sent", async () =>
     await new Promise(resolve => blockers.push(resolve));
     return { ok: true, partial: false, translations: new Map(), errors: [] };
   };
-  // 9 个视口段占满两路（P0 批次上限 8）+ 一个远处段（P2）
+  // 17 个视口段占满三路（8+8+1）+ 一个远处段（P2）留在队列
   const viewportEntries = [];
-  for (let i = 0; i < 9; i += 1) viewportEntries.push(makeEntry(makeNode(`v${i}`, 100 + i * 40), `v${i}`));
+  for (let i = 0; i < 17; i += 1) viewportEntries.push(makeEntry(makeNode(`v${i}`, 100 + i * 40), `v${i}`));
   await runtime.enqueueWebpageSegments(session, viewportEntries, "viewport", 1);
   await runtime.enqueueWebpageSegments(session, [makeEntry(makeNode("far", 5000), "far")], "background", 1);
   try {
-    await waitUntil(() => runtime.calls.batches.length >= 2);
+    await waitUntil(() => runtime.calls.batches.length >= 3);
     assert.equal(runtime.calls.batches.flat().includes("原文-far"), false, "far 未发送");
     const far = session.segments.get("far");
     assert.equal(far.priority, 2);
@@ -246,7 +246,7 @@ test("scroll promotes an unsent P2 segment to P0 before it is sent", async () =>
   await waitUntil(() => runtime.calls.batches.flat().includes("原文-far"));
 });
 
-test("at most one lane works on P2/P3; the other lane stays free for P0/P1", async () => {
+test("at most one lane works on P2/P3; the other lanes stay free for P0/P1", async () => {
   const runtime = makeRuntime();
   const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
   runtime.getWebpageState().session = session;
@@ -275,6 +275,47 @@ test("at most one lane works on P2/P3; the other lane stays free for P0/P1", asy
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(maxInflight <= 2, true, `最多两路并发，实际 ${maxInflight}`);
     assert.equal(maxLowPriority <= 1, true, `最多一路执行 P2/P3，实际 ${maxLowPriority}`);
+  } finally {
+    // 批次会在释放后继续启动下一批，循环释放直到队列清空
+    while (releaseAll.length) {
+      releaseAll.splice(0).forEach(resolve => resolve());
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+  // 全部段最终处理完成
+  await waitUntil(() => session.segments.size > 0
+    && [...session.segments.values()].every(segment => segment.status.translation === "done"));
+});
+
+test("pure-background queue uses all lanes for P2/P3 batches", async () => {
+  const runtime = makeRuntime();
+  const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
+  runtime.getWebpageState().session = session;
+  // 挂起所有批次，检查纯后台队列的并发上限（必须在入队前替换 stub）
+  const releaseAll = [];
+  let inflight = 0;
+  let maxInflight = 0;
+  let maxLowPriority = 0;
+  let lowInflight = 0;
+  runtime.translateWebpageBatchWithRetry = async (keys) => {
+    inflight += 1;
+    const snapshot = runtime.getWebpageSchedulerSnapshot();
+    lowInflight += snapshot.lowPriorityBatches;
+    maxInflight = Math.max(maxInflight, inflight);
+    maxLowPriority = Math.max(maxLowPriority, lowInflight);
+    await new Promise(resolve => releaseAll.push(resolve));
+    inflight -= 1;
+    return { ok: true, partial: false, translations: new Map(keys.map(k => [k, "译"])), errors: [] };
+  };
+  // 72 个后台段 = 32 + 32 + 8，占满三路
+  const entries = [];
+  for (let i = 0; i < 72; i += 1) entries.push(makeEntry(makeNode(`bg-${i}`, 5000 + i * 40), `bg-${i}`));
+  await runtime.enqueueWebpageSegments(session, entries, "background", 1);
+  try {
+    await waitUntil(() => releaseAll.length >= 3);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(maxInflight >= 3 && maxInflight <= 3, true, `纯后台三路并发，实际 ${maxInflight}`);
+    assert.equal(maxLowPriority >= 2, true, `后台批次多路执行，实际 ${maxLowPriority}`);
   } finally {
     // 批次会在释放后继续启动下一批，循环释放直到队列清空
     while (releaseAll.length) {
@@ -456,7 +497,7 @@ test("requeueWebpageSegments resets failed and done segments for retranslation",
   await waitUntil(() => runtime.calls.batches.flat().includes("原文"));
   // 全部重新翻译：done 也回 pending 并重新请求
   runtime.requeueWebpageSegments(["done", "failed"]);
-  assert.equal(done.status.translation, "pending");
+  assert.equal(["pending", "inflight"].includes(done.status.translation), true, "done 段回到待翻译状态");
   await waitUntil(() => done.status.translation === "done" && done.translatedText !== "旧译文");
 });
 

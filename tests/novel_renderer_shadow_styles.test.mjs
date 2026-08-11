@@ -87,3 +87,32 @@ test("renderNovelTranslation injects styles into the paragraph's root node", () 
       "wrapping a paragraph must inject styles into its shadow root");
   });
 });
+
+test("findParagraphNode resolves pid#ordinal ids against duplicated data-p-id nodes", () => {
+  withFakeDocument(() => {
+    const runtime = {};
+    installNovelRenderer(runtime);
+    const nodes = [
+      { tagName: "P", dataset: { pId: "52" }, getAttribute: () => "52" },
+      { tagName: "P", dataset: { pId: "52" }, getAttribute: () => "52" },
+      { tagName: "I", dataset: { pId: "52" }, getAttribute: () => "52" },
+      { tagName: "DIV", dataset: { pId: "52" }, getAttribute: () => "52" }
+    ];
+    const surface = {
+      root: {
+        querySelectorAll: selector => {
+          assert.equal(selector, "[data-p-id=\"52\"]");
+          return nodes;
+        }
+      }
+    };
+    assert.equal(runtime.findNovelParagraphNode(surface, "52"), nodes[0],
+      "plain id resolves to the first paragraph node");
+    assert.equal(runtime.findNovelParagraphNode(surface, "52#1"), nodes[1],
+      "ordinal id resolves to the matching paragraph node");
+    assert.equal(runtime.findNovelParagraphNode(surface, "52#2"), nodes[3],
+      "non-paragraph tags are skipped when counting ordinals");
+    assert.equal(runtime.findNovelParagraphNode(surface, "52#9"), null,
+      "out-of-range ordinal resolves to null");
+  });
+});

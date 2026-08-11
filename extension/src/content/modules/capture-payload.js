@@ -2,7 +2,27 @@ export function installCapturePayload(runtime) {
   function hasUsableKakaoStripCaptureRect(captureRect) {
     return runtime.KP.hasUsableKakaoStripCaptureRect(captureRect);
   }
-  runtime.hasUsableKakaoStripCaptureRect = hasUsableKakaoStripCaptureRect;
+  runtime.hasUsableKakaoStripCaptureRect = hasUsableKakaoStripCaptureRect;  function imagePayload(dataUrl, imageUrl, img, extra = {}) {
+    return {
+      dataUrl,
+      imageUrl,
+      width: img.naturalWidth || img.width || 0,
+      height: img.naturalHeight || img.height || 0,
+      cssWidth: img.getBoundingClientRect().width,
+      cssHeight: img.getBoundingClientRect().height,
+      ...extra
+    };
+  }
+  function canvasPayload(canvas, dataUrl) {
+    return {
+      dataUrl,
+      imageUrl: "",
+      width: canvas.width, height: canvas.height,
+      cssWidth: canvas.getBoundingClientRect().width,
+      cssHeight: canvas.getBoundingClientRect().height,
+      source: "canvas"
+    };
+  }
   async function extractImagePayload(img) {
     if (!img.complete) {
       throw new Error("Image is not loaded yet");
@@ -18,15 +38,7 @@ export function installCapturePayload(runtime) {
       throw new Error(`Image failed to load: ${imageUrl.slice(0, 80)}`);
     }
     if (runtime.isDataUrl(imageUrl)) {
-      return {
-        dataUrl: imageUrl,
-        imageUrl: imageUrl.slice(0, 120),
-        width: img.naturalWidth || img.width || 0,
-        height: img.naturalHeight || img.height || 0,
-        cssWidth: img.getBoundingClientRect().width,
-        cssHeight: img.getBoundingClientRect().height,
-        source: "img-data-url"
-      };
+      return imagePayload(imageUrl, imageUrl.slice(0, 120), img, { source: "img-data-url" });
     }
     let imageFetchError = null;
     if (runtime.isHttpUrl(imageUrl)) {
@@ -50,29 +62,15 @@ export function installCapturePayload(runtime) {
               const renderedDataUrl = await runtime.upscaleDataUrlToSize(
                 fetched.dataUrl, rendered.width, rendered.height
               );
-              return {
-                dataUrl: renderedDataUrl,
-                imageUrl,
-                width: rendered.width,
-                height: rendered.height,
-                cssWidth: img.getBoundingClientRect().width,
-                cssHeight: img.getBoundingClientRect().height,
-                renderScale: rendered.scale,
-                source: "img-rendered"
-              };
+              return imagePayload(renderedDataUrl, imageUrl, img, {
+                width: rendered.width, height: rendered.height,
+                renderScale: rendered.scale, source: "img-rendered"
+              });
             } catch (error) {
               console.debug("[MangaTranslator] rendered-image-upscale failed", runtime.getErrorMessage ? runtime.getErrorMessage(error) : String(error));
             }
           }
-          return {
-            dataUrl: fetched.dataUrl,
-            imageUrl,
-            width: img.naturalWidth || img.width || 0,
-            height: img.naturalHeight || img.height || 0,
-            cssWidth: img.getBoundingClientRect().width,
-            cssHeight: img.getBoundingClientRect().height,
-            source: "img-fetch"
-          };
+          return imagePayload(fetched.dataUrl, imageUrl, img, { source: "img-fetch" });
         }
         imageFetchError = new Error(fetched && fetched.error || "image fetch failed");
       } catch (error) {
@@ -80,16 +78,7 @@ export function installCapturePayload(runtime) {
       }
     }
     try {
-      const fallbackDataUrl = runtime.imageElementToDataUrl(img);
-      return {
-        dataUrl: fallbackDataUrl,
-        imageUrl,
-        width: img.naturalWidth || img.width || 0,
-        height: img.naturalHeight || img.height || 0,
-        cssWidth: img.getBoundingClientRect().width,
-        cssHeight: img.getBoundingClientRect().height,
-        source: "img-canvas"
-      };
+      return imagePayload(runtime.imageElementToDataUrl(img), imageUrl, img, { source: "img-canvas" });
     } catch (error) {
       // Canvas 被跨域污染（SecurityError）→ 尝试截图回退。
       // 不 scrollIntoView（多图并行会导致页面跳动），改为抛出 SCREENSHOT_TARGET_NOT_VISIBLE
@@ -109,34 +98,14 @@ export function installCapturePayload(runtime) {
     let firstError = null;
     try {
       const jpeg = canvas.toDataURL("image/jpeg", runtime.IMAGE_JPEG_QUALITY);
-      if (runtime.isDataUrl(jpeg)) {
-        return {
-          dataUrl: jpeg,
-          imageUrl: "",
-          width: canvas.width,
-          height: canvas.height,
-          cssWidth: canvas.getBoundingClientRect().width,
-          cssHeight: canvas.getBoundingClientRect().height,
-          source: "canvas"
-        };
-      }
+      if (runtime.isDataUrl(jpeg)) return canvasPayload(canvas, jpeg);
     } catch (error) {
       firstError = error;
       // Ignore and fallback to png.
     }
     try {
       const png = canvas.toDataURL("image/png");
-      if (runtime.isDataUrl(png)) {
-        return {
-          dataUrl: png,
-          imageUrl: "",
-          width: canvas.width,
-          height: canvas.height,
-          cssWidth: canvas.getBoundingClientRect().width,
-          cssHeight: canvas.getBoundingClientRect().height,
-          source: "canvas"
-        };
-      }
+      if (runtime.isDataUrl(png)) return canvasPayload(canvas, png);
     } catch (error) {
       firstError = firstError || error;
       return runtime.captureVisibleTargetPayload(canvas, firstError, "visible-tab-canvas-crop");
@@ -176,24 +145,18 @@ export function installCapturePayload(runtime) {
     return {
       dataUrl: payload.dataUrl,
       imageUrl: String(imageUrl || "visible-tab-target-crop"),
-      width: Number(payload.width || 0),
-      height: Number(payload.height || 0),
-      bitmapWidth: Number(payload.bitmapWidth || 0),
-      bitmapHeight: Number(payload.bitmapHeight || 0),
-      cropX: Number(payload.cropX || 0),
-      cropY: Number(payload.cropY || 0),
+      width: Number(payload.width || 0), height: Number(payload.height || 0),
+      bitmapWidth: Number(payload.bitmapWidth || 0), bitmapHeight: Number(payload.bitmapHeight || 0),
+      cropX: Number(payload.cropX || 0), cropY: Number(payload.cropY || 0),
       devicePixelRatio: window.devicePixelRatio || 1,
-      cssWidth: captureRect.width,
-      cssHeight: captureRect.height,
+      cssWidth: captureRect.width, cssHeight: captureRect.height,
       source: "visible-tab-crop",
       displayRect: {
         offsetX: captureRect.left - targetRect.left,
         offsetY: captureRect.top - targetRect.top,
-        width: captureRect.width,
-        height: captureRect.height
+        width: captureRect.width, height: captureRect.height
       }
-    };
-  }
+    };  }
   runtime.captureVisibleTargetPayload = captureVisibleTargetPayload;
   function getVisibleViewportRect(target) {
     const rect = target.getBoundingClientRect();
@@ -233,9 +196,7 @@ export function installCapturePayload(runtime) {
     }
     const width = right - left;
     const height = bottom - top;
-    if (!(width >= 2 && height >= 2)) {
-      return null;
-    }
+    if (!(width >= 2 && height >= 2)) return null;
     return {
       left,
       top,

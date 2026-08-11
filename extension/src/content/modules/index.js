@@ -14,6 +14,7 @@ import { installSceneCanonical } from "./scene-canonical.js";
 import { installSceneDispatch } from "./scene-dispatch.js";
 import { installRendererOverlay } from "./renderer-overlay.js";
 import { installRendererCrossPage } from "./renderer-crosspage.js";
+import { installCrossPageLifecycle } from "./crosspage-lifecycle.js";
 import { installRendererEmbed } from "./renderer-embed.js";
 import { installRendererCanvas } from "./renderer-canvas.js";
 import { installLifecycleBubble } from "./lifecycle-bubble.js";
@@ -25,6 +26,7 @@ import { installNovelReader } from "./novel-reader.js";
 import { installNovelRenderer } from "./novel-renderer.js";
 import { installNovelImagePanel } from "./novel-image-panel.js";
 import { installNovelWorkflow } from "./novel-workflow.js";
+import { installNovelProgressiveWorkflow } from "./novel-progressive-workflow.js";
 import { installNovelTermDiscovery } from "./novel-term-discovery.js";
 import { installNovelStreamClient } from "./novel-stream-client.js";
 import { installNovelStreamWorkflow } from "./novel-stream-workflow.js";
@@ -74,6 +76,7 @@ export const contentInstallers = Object.freeze([
   installSceneDispatch,
   installRendererOverlay,
   installRendererCrossPage,
+  installCrossPageLifecycle,
   installRendererEmbed,
   installRendererCanvas,
   installLifecycleBubble,
@@ -84,8 +87,9 @@ export const contentInstallers = Object.freeze([
   installNovelReader,
   installNovelRenderer,
   installNovelImagePanel,
-  installNovelWorkflow,
-  installNovelTermDiscovery,
+    installNovelWorkflow,
+    installNovelProgressiveWorkflow,
+    installNovelTermDiscovery,
   installNovelStreamClient,
   installNovelStreamWorkflow,
   installNovelImageWorkflow,
@@ -136,6 +140,7 @@ export const contentPhases = Object.freeze({
     installSceneDispatch,
     installRendererOverlay,
     installRendererCrossPage,
+    installCrossPageLifecycle,
     installRendererEmbed,
     installRendererCanvas,
     installLifecycleBubble,
@@ -146,7 +151,8 @@ export const contentPhases = Object.freeze({
     installNovelReader,
     installNovelRenderer,
     installNovelImagePanel,
-    installNovelWorkflow,
+  installNovelWorkflow,
+  installNovelProgressiveWorkflow,
     installNovelTermDiscovery,
     installNovelStreamClient,
     installNovelStreamWorkflow,

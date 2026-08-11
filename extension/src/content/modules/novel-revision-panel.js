@@ -1,11 +1,9 @@
 export function installNovelRevisionPanel(runtime) {
   function recordKey(chapter, item) {
     const normalized = runtime.normalizeTranslationCacheText(item.original_text);
-    return runtime.buildNovelCacheRecordId(
-      chapter.seriesId, chapter.chapterId,
+    return runtime.buildNovelCacheRecordId(chapter.seriesId, chapter.chapterId,
       runtime.computeTranslationCacheHash(normalized), item.paragraphKey,
-      runtime.resolveSourceLanguage?.(item.original_text) || "auto"
-    );
+      runtime.resolveSourceLanguage?.(item.original_text) || "auto");
   }
 
   function recordPayload(chapter, item, translatedText, source, options = {}) {
@@ -22,7 +20,6 @@ export function installNovelRevisionPanel(runtime) {
       revisionInstruction: options.instruction || "", pinned: options.pinned === true
     };
   }
-
   function ensurePanel() {
     const state = runtime.getNovelState();
     if (state.revisionPanel?.isConnected) return state.revisionPanel;
@@ -33,15 +30,13 @@ export function installNovelRevisionPanel(runtime) {
     const title = document.createElement("strong");
     title.textContent = "管理当前章节译文";
     const close = document.createElement("button");
-    close.type = "button";
-    close.textContent = "×";
+    close.type = "button"; close.textContent = "×";
     close.addEventListener("click", () => { panel.hidden = true; });
     header.append(title, close);
     const status = document.createElement("div");
     status.className = "mt-novel-revision-status";
     const search = document.createElement("input");
-    search.type = "search";
-    search.className = "mt-novel-revision-search";
+    search.type = "search"; search.className = "mt-novel-revision-search";
     search.placeholder = "搜索原文或译文…";
     search.addEventListener("input", () => filterRevisionCards());
     const body = document.createElement("div");
@@ -68,7 +63,7 @@ export function installNovelRevisionPanel(runtime) {
       const haystack = `${source?.textContent || ""} ${editor?.value || ""}`.toLowerCase();
       const match = !query || haystack.includes(query);
       card.hidden = !match;
-      if (match) visible += 1;
+      visible += match ? 1 : 0;
     }
     body.querySelector(".mt-novel-revision-empty")?.remove();
     if (query && total > 0 && visible === 0) {
@@ -118,7 +113,6 @@ export function installNovelRevisionPanel(runtime) {
     }
     return result;
   }
-
   async function requestAiRevision(chapter, item, instruction = "") {
     const status = await runtime.ensureTranslationServiceOnline([recordKey(chapter, item)]);
     if (!status.ok) throw new Error(status.error || "本地服务未启动");
@@ -131,12 +125,9 @@ export function installNovelRevisionPanel(runtime) {
       chapterOrder: chapter.chapterOrder,
       sourceLanguage: runtime.getConfiguredSourceLanguage?.() || "auto",
       targetLanguage: runtime.getTargetLanguage?.() || "zh-CN",
-      previousTranslation: chapter.paragraphs.slice(Math.max(0, index - 3), index)
-        .map(candidate => state.translations.get(candidate.id) || "").filter(Boolean).join("\n"),
-      beforeText: chapter.paragraphs.slice(Math.max(0, index - 3), index)
-        .map(candidate => candidate.original_text).join("\n"),
-      afterText: chapter.paragraphs.slice(index + 1, index + 4)
-        .map(candidate => candidate.original_text).join("\n"),
+      previousTranslation: chapter.paragraphs.slice(Math.max(0, index - 3), index).map(candidate => state.translations.get(candidate.id) || "").filter(Boolean).join("\n"),
+      beforeText: chapter.paragraphs.slice(Math.max(0, index - 3), index).map(candidate => candidate.original_text).join("\n"),
+      afterText: chapter.paragraphs.slice(index + 1, index + 4).map(candidate => candidate.original_text).join("\n"),
       revisionInstruction: instruction,
       force: true,
       items: [{ id: item.id, index: item.index, kind: item.kind, original_text: item.original_text }]
@@ -169,10 +160,7 @@ export function installNovelRevisionPanel(runtime) {
     if (result.record) {
       state.translationSnapshots.set(key, result.record);
       const translated = String(result.record.activeVersion?.translatedText || "");
-      if (translated) {
-        state.translations.set(item.id, translated);
-        runtime.renderNovelTranslation(item.node, translated, true);
-      }
+      if (translated) { state.translations.set(item.id, translated); runtime.renderNovelTranslation(item.node, translated, true); }
     } else if (result.pending) {
       const preview = snapshot?.recentVersions?.find(version => version.versionId === versionId);
       if (preview?.translatedText) {
@@ -203,10 +191,7 @@ export function installNovelRevisionPanel(runtime) {
     state.translations.delete(item.id);
     const source = item.node.querySelector?.(":scope > .mt-novel-source");
     const translation = item.node.querySelector?.(":scope > .mt-novel-translation");
-    if (source && translation) {
-      source.hidden = false;
-      translation.hidden = true;
-    }
+    if (source && translation) { source.hidden = false; translation.hidden = true; }
     return result;
   }
 
@@ -231,8 +216,7 @@ export function installNovelRevisionPanel(runtime) {
     badge.textContent = badge.dataset.status;
     const source = document.createElement("div");
     source.className = "mt-novel-revision-source";
-    source.textContent = item.original_text;
-    const editor = document.createElement("textarea");
+    source.textContent = item.original_text;    const editor = document.createElement("textarea");
     editor.value = state.translations.get(item.id) || snapshot?.activeVersion?.translatedText || "";
     const instruction = document.createElement("input");
     instruction.placeholder = "给 AI 的单轮修订指令（可选）";
@@ -270,8 +254,7 @@ export function installNovelRevisionPanel(runtime) {
       const row = document.createElement("div");
       const label = document.createElement("span");
       label.textContent = `${version.source}${version.pinned ? " · pinned" : ""} · ${new Date(version.createdAt).toLocaleString()}`;
-      row.append(label,
-        actionButton("选择", button => run(button, () => selectVersion(chapter, item, version.versionId), item.id)),
+      row.append(label, actionButton("选择", button => run(button, () => selectVersion(chapter, item, version.versionId), item.id)),
         actionButton("固定", button => run(button, () => selectVersion(chapter, item, version.versionId, true), item.id)));
       versions.appendChild(row);
     }
@@ -285,16 +268,13 @@ export function installNovelRevisionPanel(runtime) {
     section.hidden = true;
     const sourceInput = document.createElement("input");
     sourceInput.className = "mt-term-source";
-    sourceInput.maxLength = 120;
-    sourceInput.placeholder = "韩文原文（AI 提取后自动填入，可修改）";
+    sourceInput.maxLength = 120; sourceInput.placeholder = "韩文原文（AI 提取后自动填入，可修改）";
     const targetInput = document.createElement("input");
     targetInput.className = "mt-term-target";
-    targetInput.maxLength = 120;
-    targetInput.placeholder = "固定译文";
+    targetInput.maxLength = 120; targetInput.placeholder = "固定译文";
     const noteInput = document.createElement("input");
     noteInput.className = "mt-term-note";
-    noteInput.maxLength = 240;
-    noteInput.placeholder = "备注（可选）";
+    noteInput.maxLength = 240; noteInput.placeholder = "备注（可选）";
     const status = document.createElement("div");
     status.className = "mt-novel-revision-term-status";
     const actions = document.createElement("div");
@@ -312,10 +292,7 @@ export function installNovelRevisionPanel(runtime) {
     }
     async function extractTerm() {
       const selected = targetInput.value.trim() || selectedText();
-      if (!selected) {
-        status.textContent = "请先填写固定译文，或在译文框中选中文字";
-        return;
-      }
+      if (!selected) { status.textContent = "请先填写固定译文，或在译文框中选中文字"; return; }
       targetInput.value = selected;
       extractBtn.disabled = true;
       status.textContent = "正在提取韩文原文…";
@@ -350,14 +327,12 @@ export function installNovelRevisionPanel(runtime) {
       try {
         const response = await runtime.sendRuntimeMessage({
           type: "CONFIRM_TERM_CANDIDATES",
-          entries: [{
-            source,
-            target,
-            note: noteInput.value.trim()
-          }]
+          entries: [{ source, target, note: noteInput.value.trim() }]
         });
         if (!response || !response.ok) throw new Error(response && response.error || "加入失败");
-        status.textContent = "已加入术语表";
+        status.textContent = response.serverSynced === false
+          ? `已加入本地术语表，但未能同步到服务（${response.serverError || "本地服务不可用"}）`
+          : "已加入术语表（已同步服务端）";
         window.setTimeout(() => { section.hidden = true; }, 1200);
       } catch (error) {
         status.textContent = `加入失败：${runtime.getErrorMessage(error)}`;
@@ -375,8 +350,7 @@ export function installNovelRevisionPanel(runtime) {
   function visibleRevisionAnchor(body) {
     const scrollTop = body.scrollTop || 0;
     for (const card of body.querySelectorAll(".mt-novel-revision-card")) {
-      if (card.hidden) continue;
-      if (revisionCardContentTop(card, body) + card.offsetHeight > scrollTop) {
+      if (!card.hidden && revisionCardContentTop(card, body) + card.offsetHeight > scrollTop) {
         return card.dataset.itemId || "";
       }
     }
@@ -387,10 +361,7 @@ export function installNovelRevisionPanel(runtime) {
     if (!anchor) return;
     let target = null;
     for (const card of body.querySelectorAll(".mt-novel-revision-card")) {
-      if (card.dataset.itemId === anchor) {
-        target = card;
-        break;
-      }
+      if (card.dataset.itemId === anchor) { target = card; break; }
     }
     if (!target || target.hidden) return;
     body.scrollTop = Math.max(0, revisionCardContentTop(target, body) - 8);

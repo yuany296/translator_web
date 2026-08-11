@@ -12,6 +12,7 @@ import { installSeamSurfaceWitness } from "./seam-surface-witness.js";
 import { installProjectionUtils } from "./projection-utils.js";
 import { installSeamResiduals } from "./seam-residuals.js";
 import { installSceneIndexBuilder } from "./scene-index-builder.js";
+import { installSeamSurfaceUtils } from "./seam-surface-utils.js";
 import { installSceneIndexResolve } from "./scene-index-resolve.js";
 import { installSceneIndexUtils } from "./scene-index-utils.js";
 import { installCleanedArtifactPlan } from "./cleaned-artifact-plan.js";
@@ -34,6 +35,7 @@ export const pipelineInstallers = Object.freeze([
   installProjectionUtils,
   installSeamResiduals,
   installSceneIndexBuilder,
+  installSeamSurfaceUtils,
   installSceneIndexResolve,
   installSceneIndexUtils,
   installCleanedArtifactPlan,
@@ -58,6 +60,7 @@ export const pipelinePhases = Object.freeze({
     installProjectionUtils,
     installSeamResiduals,
     installSceneIndexBuilder,
+    installSeamSurfaceUtils,
     installSceneIndexResolve,
     installSceneIndexUtils,
     installCleanedArtifactPlan,

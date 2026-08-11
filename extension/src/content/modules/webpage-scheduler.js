@@ -1,18 +1,20 @@
 /**
  * Viewport-priority scheduler for continuous webpage translation.
  * Startup scans viewport + adjacent screens with immediate cache query, then
- * TreeWalker chunks (≤8ms/200 nodes); two lanes drain, one works P2/P3.
- * Scroll re-prioritizes unsent segments. Batch caps: P0 8/600, P1 12/900,
- * background 24/1600. Segment state has three axes (translation/rendering/
- * persistence); outage = one page-level fault, segments go "blocked".
+ * TreeWalker chunks (≤8ms/200 nodes); three lanes drain, one works P2/P3
+ * while viewport work remains, all lanes fall to P2/P3 on pure-background
+ * long pages. Scroll re-prioritizes unsent segments. Batch caps: P0 8/600,
+ * P1 16/1200, background 32/2400. Segment state has three axes
+ * (translation/rendering/persistence); outage = one page-level fault,
+ * segments go "blocked".
  */
 import { createSegment } from "./webpage-session.js";
 import { isUsableWebpageTranslation } from "./webpage-batches.js";
 
-const LANES = 2, NEAR_SCREENS = 2, RETRY_BLOCKED_MS = 30_000, SCROLL_REPRIORITIZE_DEBOUNCE_MS = 120;
+const LANES = 3, NEAR_SCREENS = 2, RETRY_BLOCKED_MS = 30_000, SCROLL_REPRIORITIZE_DEBOUNCE_MS = 120;
 const BATCH_LIMITS = Object.freeze({
-  0: { maxItems: 8, maxChars: 600 }, 1: { maxItems: 12, maxChars: 900 },
-  2: { maxItems: 24, maxChars: 1600 }, 3: { maxItems: 24, maxChars: 1600 }
+  0: { maxItems: 8, maxChars: 600 }, 1: { maxItems: 16, maxChars: 1200 },
+  2: { maxItems: 32, maxChars: 2400 }, 3: { maxItems: 32, maxChars: 2400 }
 });
 
 const ZONE_PRIORITY = Object.freeze({ viewport: 0, near: 1, background: 2, dynamic: 3 });
@@ -188,10 +190,14 @@ export function installWebpageScheduler(runtime) {
 
   function tryStartBatches() {
     if (state.stopped || state.paused) return;
+    // 队列中仍有视口/近屏段（含 in-flight）时后台只占一路，保持视口优先；
+    // 纯后台长页允许后台占满所有 lane。
+    const hasViewportWork = state.queue.some(segment => segment.priority <= 1);
+    const lowPriorityLimit = hasViewportWork ? 1 : LANES;
     while (state.activeBatches < LANES) {
       const batch = composeBatch();
       if (!batch) break;
-      if (batch.tier >= 2 && state.lowPriorityBatches >= 1) break;
+      if (batch.tier >= 2 && state.lowPriorityBatches >= lowPriorityLimit) break;
       void runBatch(batch);
     }
   }

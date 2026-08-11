@@ -1,6 +1,6 @@
 import glossaryCore from "./glossary.js";
 
-const CHUNK_TARGET_CHARS = 700;
+const CHUNK_TARGET_CHARS = 1400;
 const MAX_PARAGRAPH_CHARS = 12000;
 
 function parseKakaoNovelLocation(url, title = "") {

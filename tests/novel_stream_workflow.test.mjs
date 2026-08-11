@@ -116,10 +116,10 @@ test("a later batch failure keeps earlier progress and enters paragraph recovery
   const result = await harness.runtime.attemptNovelTranslationStream(
     harness.chapter, harness.state, makeItems(200), "fp", {}
   );
-  assert.equal(harness.batchSizes.length, 2);
+  assert.equal(harness.batchSizes.length, 3, "three lanes launch before the mid-run failure");
   assert.equal(result.supported, true);
   assert.equal(result.completed, 150);
-  assert.equal(result.failed, 50);
+  assert.equal(result.failed, 100);
   assert.equal(harness.state.streamState, "paragraph-recovery");
 });
 
@@ -133,5 +133,52 @@ test("aggregated per-batch failures drive paragraph recovery", async () => {
   assert.equal(result.completed, 720);
   assert.equal(result.failed, 180);
   assert.equal(result.protocolErrors, 6);
+  assert.equal(harness.state.streamState, "paragraph-recovery");
+});
+
+test("independent batches run concurrently up to the lane cap", async () => {
+  const harness = createWorkflowHarness();
+  let inFlight = 0;
+  let maxInFlight = 0;
+  harness.runtime.runNovelTranslationStream = async request => {
+    harness.batchSizes.push(request.items.length);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    inFlight -= 1;
+    return { completed: request.items.length, failed: 0, protocolErrors: 0 };
+  };
+  const result = await harness.runtime.attemptNovelTranslationStream(
+    harness.chapter, harness.state, makeItems(150), "fp", {}
+  );
+  assert.equal(maxInFlight, 3, "three stream lanes overlap while batches are in flight");
+  assert.equal(harness.batchSizes.length, 3);
+  assert.equal(result.completed, 150);
+  assert.equal(harness.state.streamState, "completed");
+});
+
+test("a failed batch stops launching further concurrent batches", async () => {
+  const harness = createWorkflowHarness();
+  let calls = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  harness.runtime.runNovelTranslationStream = async request => {
+    calls += 1;
+    const thisCall = calls;
+    harness.batchSizes.push(request.items.length);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    // 失败批次先返回,腾出车道前 stop 已置位,不再补发新批次。
+    await new Promise(resolve => setTimeout(resolve, thisCall === 1 ? 20 : 5));
+    inFlight -= 1;
+    if (thisCall === 1) return { completed: request.items.length, failed: 0, protocolErrors: 0 };
+    throw new Error("network dropped");
+  };
+  const result = await harness.runtime.attemptNovelTranslationStream(
+    harness.chapter, harness.state, makeItems(200), "fp", {}
+  );
+  assert.equal(harness.batchSizes.length, 3, "three lanes launch before the mid-run failure");
+  assert.equal(result.completed, 50);
+  assert.equal(result.failed, 100);
   assert.equal(harness.state.streamState, "paragraph-recovery");
 });

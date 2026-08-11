@@ -149,6 +149,9 @@ export function installReaderInit(runtime) {
     window.addEventListener("resize", () => {
       scheduleSync();
       runtime.scheduleCrossPageGeometryRefresh();
+      // 浏览器缩放会触发 resize 且阅读器可能在同一宿主上重建 Shadow DOM;
+      // 主动 reconcile 一次,让译文在观察器覆盖不到的重建场景下尽快恢复。
+      runtime.scheduleNovelReconcile?.("window-resize");
     }, {
       passive: true,
       capture: true
@@ -156,6 +159,7 @@ export function installReaderInit(runtime) {
     if (!runtime.state.syncInterval) {
       runtime.state.syncInterval = window.setInterval(() => {
         runtime.ensureExtensionUiMounted();
+        runtime.reconcileKakaoNovelIfStale?.();
         runtime.syncAllOverlays();
       }, 1200);
     }

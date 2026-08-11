@@ -2,23 +2,28 @@ const STREAM_PORT = "mt-translation-stream-v1";
 const INACTIVITY_TIMEOUT_MS = 45_000;
 
 export function installNovelStreamClient(runtime) {
-  let active = null;
+  const activePorts = new Set();
 
   function cancelNovelTranslationStream(taskId = "") {
-    if (!active || (taskId && active.taskId !== taskId)) return false;
-    active.port.postMessage({ type: "cancel", taskId: active.taskId });
-    active.port.disconnect();
-    active = null;
-    return true;
+    let cancelled = false;
+    for (const entry of [...activePorts]) {
+      if (entry.taskId === taskId || !taskId) {
+        entry.port.postMessage({ type: "cancel", taskId: entry.taskId });
+        try { entry.port.disconnect(); } catch { /* Port 已关闭 */ }
+        activePorts.delete(entry);
+        cancelled = true;
+      }
+    }
+    return cancelled;
   }
   runtime.cancelNovelTranslationStream = cancelNovelTranslationStream;
 
   function runNovelTranslationStream(request, onEvent) {
     if (!chrome.runtime?.connect) return Promise.reject(new Error("当前浏览器不支持扩展 Port"));
-    cancelNovelTranslationStream();
     const taskId = String(request.taskId || "");
     const port = chrome.runtime.connect({ name: STREAM_PORT });
-    active = { taskId, port };
+    const entry = { taskId, port };
+    activePorts.add(entry);
     return new Promise((resolve, reject) => {
       let finished = false;
       let timer = 0;
@@ -32,7 +37,7 @@ export function installNovelStreamClient(runtime) {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        if (active?.port === port) active = null;
+        activePorts.delete(entry);
         try { port.disconnect(); } catch { /* Port 已关闭 */ }
         if (error) reject(error);
         else eventQueue.then(() => resolve({ ...result, protocolErrors }), reject);

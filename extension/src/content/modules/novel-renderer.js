@@ -27,10 +27,14 @@ export function installNovelRenderer(runtime) {
   runtime.injectNovelStyles = injectNovelStyles;
 
   function findParagraphNode(surface, id) {
-    const escaped = globalThis.CSS?.escape ? CSS.escape(id) : String(id).replace(/["\\]/gu, "\\$&");
+    // 唯一 id 形如 "52#3":取原始 data-p-id 和同 id 节点中的序号。
+    const [pid, ordinalText] = String(id || "").split("#");
+    const ordinal = Number(ordinalText) || 0;
+    const escaped = globalThis.CSS?.escape ? CSS.escape(pid) : String(pid).replace(/["\\]/gu, "\\$&");
     const matches = surface?.root?.querySelectorAll?.(`[data-p-id="${escaped}"]`) || [];
-    return [...matches].find(node => /^(?:H[1-6]|P|DIV)$/u.test(String(node.tagName || ""))) || null;
+    return [...matches].filter(node => /^(?:H[1-6]|P|DIV)$/u.test(String(node.tagName || "")))[ordinal] || null;
   }
+  runtime.findNovelParagraphNode = findParagraphNode;
 
   function ensureNovelWrappers(node) {
     injectNovelStyles(node.getRootNode());

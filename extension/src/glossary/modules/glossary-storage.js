@@ -40,17 +40,11 @@ export function installGlossaryStorage(runtime) {
     for (let index = 0; index < text.length; index += 1) {
       const char = text[index];
       if (quoted) {
-        if (char === '"' && text[index + 1] === '"') {
-          cell += '"';
-          index += 1;
-        } else if (char === '"') {
-          quoted = false;
-        } else {
-          cell += char;
-        }
-      } else if (char === '"') {
-        quoted = true;
-      } else if (char === ",") {
+        if (char === '"' && text[index + 1] === '"') { cell += '"'; index += 1; }
+        else if (char === '"') { quoted = false; }
+        else { cell += char; }
+      } else if (char === '"') { quoted = true; }
+      else if (char === ",") {
         row.push(cell);
         cell = "";
       } else if (char === "\n") {
@@ -91,7 +85,8 @@ export function installGlossaryStorage(runtime) {
     if (!confirm(`确定清空全部 ${runtime.glossary.entries.length} 条术语吗？此操作同时清空服务端数据库。`)) return;
     runtime.clearBtn.disabled = true;
     try {
-      const resp = await fetch(`${runtime.getServerBaseUrl()}/glossary/clear`, {
+      serverBaseUrl = await resolveServerBaseUrl();
+      const resp = await fetch(`${serverBaseUrl}/glossary/clear`, {
         method: "POST", headers: await getServiceHeaders()
       });
       if (!resp.ok) throw new Error(`服务器错误 ${resp.status}`);
@@ -111,22 +106,66 @@ export function installGlossaryStorage(runtime) {
   runtime.clearGlossary = clearGlossary;
   // ── server-backed glossary sync ──
   let serverBaseUrl = localStorage.getItem("mt_glossary_server_url") || "http://127.0.0.1:8765";
+  async function resolveServerBaseUrl() {
+    // 与背景层 handleConfirmTermCandidates 同源（配置的 OCR baseUrl），避免面板同步到服务 A、页面读取服务 B。
+    try {
+      const stored = await runtime.storageGet(["mt_ocr_config_v1"]);
+      const configured = String(stored.mt_ocr_config_v1?.localPaddle?.baseUrl || "").trim();
+      if (configured) return configured.replace(/\/+$/, "");
+    } catch (_) {}
+    return String(serverBaseUrl || "http://127.0.0.1:8765").replace(/\/+$/, "");
+  }
   runtime.getServerBaseUrl = () => serverBaseUrl;
-  runtime.setServerBaseUrl = (url) => { serverBaseUrl = String(url || "http://127.0.0.1:8765").replace(/\/+$/, ""); try { localStorage.setItem("mt_glossary_server_url", serverBaseUrl); } catch (_) {} };
-  runtime.getSyncRevision = () => {
-    try { return Number(localStorage.getItem("mt_glossary_sync_revision")) || 0; } catch (_) { return 0; }
+  runtime.setServerBaseUrl = (url) => {
+    serverBaseUrl = String(url || "http://127.0.0.1:8765").replace(/\/+$/, "");
+    try { localStorage.setItem("mt_glossary_server_url", serverBaseUrl); } catch (_) {}
   };
-  runtime.setSyncRevision = (rev) => {
-    try { localStorage.setItem("mt_glossary_sync_revision", String(Number(rev) || 0)); } catch (_) {}
-  };
+  runtime.getSyncRevision = () => { try { return Number(localStorage.getItem("mt_glossary_sync_revision")) || 0; } catch (_) { return 0; } };
+  runtime.setSyncRevision = (rev) => { try { localStorage.setItem("mt_glossary_sync_revision", String(Number(rev) || 0)); } catch (_) {} };
   async function loadGlossaryFromServer() {
     try {
-      const resp = await fetch(`${serverBaseUrl}/glossary?limit=2000`, {
-        headers: await getServiceHeaders()
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      if (!data.ok || !Array.isArray(data.entries)) throw new Error("Invalid server response");
+      serverBaseUrl = await resolveServerBaseUrl();
+      const fetchData = async () => {
+        const resp = await fetch(`${serverBaseUrl}/glossary?limit=2000`, {
+          headers: await getServiceHeaders()
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const payload = await resp.json();
+        if (!payload.ok || !Array.isArray(payload.entries)) throw new Error("Invalid server response");
+        return payload;
+      };
+      let data = await fetchData();
+      const entryKey = entry => [entry.sourceLanguage, entry.targetLanguage, entry.scope, entry.scopeKey, entry.source].join("\u0000");
+      const toEntry = e => ({ source: String(e.source || ""), sourceLanguage: e.sourceLanguage || e.src_lng || "ko", targetLanguage: e.targetLanguage || e.tgtLng || e.tgt_lng || "zh-CN", scope: e.scope || e.scope_type || "global", scopeKey: e.scopeKey || e.scope_key || "" });
+      // 迁移历史数据：修订面板确认的术语此前只写本地 chrome.storage，服务在线时补传服务端缺失条目。
+      let pushed = 0;
+      let missing = [];
+      try {
+        const stored = await runtime.storageGet([runtime.glossaryCore.STORAGE_KEY, runtime.glossaryCore.LEGACY_STORAGE_KEY]);
+        const localEntries = runtime.glossaryCore.normalizeGlossary(stored[runtime.glossaryCore.STORAGE_KEY] ?? stored[runtime.glossaryCore.LEGACY_STORAGE_KEY]).entries;
+        if (localEntries.length) {
+          const serverKeys = new Set(data.entries.map(entry => entryKey(toEntry(entry))));
+          missing = localEntries.filter(entry => !serverKeys.has(entryKey(entry)));
+          if (missing.length) {
+            const batchResp = await fetch(`${serverBaseUrl}/glossary/batch`, {
+              method: "POST",
+              headers: await getServiceHeaders(true),
+              body: JSON.stringify({
+                entries: missing.map(entry => ({ source: entry.source, target: entry.target, note: entry.note || "", enabled: entry.enabled !== false, src_lng: entry.sourceLanguage, tgt_lng: entry.targetLanguage, scope_type: entry.scope, scope_key: entry.scopeKey, scope_label: entry.scopeLabel })),
+                tgt_lng: "zh-CN"
+              })
+            });
+            const batchData = await batchResp.json().catch(() => null);
+            if (batchResp.ok && (batchData.ok || batchData.added > 0 || batchData.updated > 0)) pushed = missing.length;
+          }
+        }
+      } catch (_) { /* 迁移失败不阻断加载，本地条目保留为离线兜底 */ }
+      if (pushed > 0) {
+        data = await fetchData();
+      } else if (missing.length) {
+        // 迁移推送失败：合并本地独有条目，不因服务端旧数据覆盖而丢失。
+        data = { ...data, entries: [...data.entries, ...missing] };
+      }
       runtime.glossary = runtime.glossaryCore.normalizeGlossary({
         version: runtime.glossaryCore.SCHEMA_VERSION,
         revision: Math.max(1, Math.round((data.revision || data.last_updated || 0) * 1000)),
@@ -144,7 +183,8 @@ export function installGlossaryStorage(runtime) {
       });
       if (data.revision) runtime.setSyncRevision(Number(data.revision));
       runtime.renderGlossary();
-      runtime.setStatus(`已从服务加载 ${data.total || runtime.glossary.entries.length} 条术语 (修订 ${runtime.getSyncRevision().toFixed(1)})`, false);
+      const migratedNote = pushed > 0 ? `，并补齐本地旧术语 ${pushed} 条` : missing.length ? `，本地旧术语 ${missing.length} 条未同步（已保留）` : "";
+      runtime.setStatus(`已从服务加载 ${data.total || runtime.glossary.entries.length} 条术语${migratedNote} (修订 ${runtime.getSyncRevision().toFixed(1)})`, false);
       return { ok: true, entries: runtime.glossary.entries };
     } catch (error) {
       runtime.setStatus(`加载失败：${runtime.getErrorMessage(error)}`, true);
@@ -154,6 +194,7 @@ export function installGlossaryStorage(runtime) {
   runtime.loadGlossaryFromServer = loadGlossaryFromServer;
   async function saveEntryToServer(source, target, tgtLng, note, enabled, entryId, scope = {}) {
     try {
+      serverBaseUrl = await resolveServerBaseUrl();
       const body = { source: source.trim(), target: target.trim(), tgt_lng: tgtLng || "zh-CN" };
       const stored = await runtime.storageGet(["mt_translation_config_v1"]);
       body.src_lng = stored.mt_translation_config_v1?.sourceLanguage === "auto"
@@ -202,6 +243,7 @@ export function installGlossaryStorage(runtime) {
   runtime.deleteEntryFromServer = deleteEntryFromServer;
   async function importDbFileToServer(file) {
     try {
+      serverBaseUrl = await resolveServerBaseUrl();
       const form = new FormData();
       form.append("file", file);
       const resp = await fetch(`${serverBaseUrl}/glossary/import-db`, {
@@ -237,6 +279,7 @@ export function installGlossaryStorage(runtime) {
   }
   runtime.importGlossaryDbFile = importGlossaryDbFile;
   // ── end server sync ──
+  // ── end server sync ──
   async function persistEntries(entries, message) {
     const next = runtime.glossaryCore.normalizeGlossary({
       version: runtime.glossaryCore.SCHEMA_VERSION,
@@ -257,12 +300,13 @@ export function installGlossaryStorage(runtime) {
       runtime.setStatus(message, false);
       // Sync to server in background
       try {
+        serverBaseUrl = await resolveServerBaseUrl();
         const batchEntries = next.entries.map(e => ({
           source: e.source, target: e.target, note: e.note || "", enabled: e.enabled !== false,
           src_lng: e.sourceLanguage, tgt_lng: e.targetLanguage,
           scope_type: e.scope, scope_key: e.scopeKey, scope_label: e.scopeLabel
         }));
-        const resp = await fetch(`${runtime.getServerBaseUrl()}/glossary/batch`, {
+        const resp = await fetch(`${serverBaseUrl}/glossary/batch`, {
           method: "POST",
           headers: await getServiceHeaders(true),
           body: JSON.stringify({ entries: batchEntries, tgt_lng: "zh-CN" })
@@ -325,11 +369,8 @@ export function installGlossaryStorage(runtime) {
   function storageGet(keys) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.get(keys, result => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        resolve(result || {});
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(result || {});
       });
     });
   }
@@ -337,11 +378,8 @@ export function installGlossaryStorage(runtime) {
   function storageSet(value) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.set(value, () => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        resolve();
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
       });
     });
   }
@@ -349,11 +387,8 @@ export function installGlossaryStorage(runtime) {
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, response => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        resolve(response || null);
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(response || null);
       });
     });
   }

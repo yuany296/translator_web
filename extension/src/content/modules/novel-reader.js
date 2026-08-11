@@ -113,6 +113,7 @@ export function installNovelReader(runtime) {
     const locationInfo = runtime.novelCore.parseKakaoNovelLocation(location.href, document.title);
     if (!locationInfo) return null;
     const occurrences = new Map();
+    const pidOrdinals = new Map();
     const paragraphs = orderParagraphs(
       [...surface.root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphNode)
     ).map(({ node, id, index }) => {
@@ -121,11 +122,19 @@ export function installNovelReader(runtime) {
       const normalizedSourceHash = runtime.computeTranslationCacheHash(normalized);
       const occurrenceIndex = occurrences.get(normalizedSourceHash) || 0;
       occurrences.set(normalizedSourceHash, occurrenceIndex + 1);
+      // KakaoPage 的 data-p-id 不是唯一标识:对话块内嵌套节点共享同一个
+      // data-p-id。给同 id 的节点追加序号生成唯一 id,避免翻译结果互相
+      // 覆盖、进度计数把嵌套副本重复计入;domAnchor 保留原始 id 供恢复。
+      const pidOrdinal = pidOrdinals.get(id) || 0;
+      pidOrdinals.set(id, pidOrdinal + 1);
+      const paragraphId = pidOrdinal > 0 ? `${id}#${pidOrdinal}` : id;
       const paragraphKey = runtime.computeTranslationCacheHash(
         `${locationInfo.chapterId}\u0000${normalizedSourceHash}\u0000${occurrenceIndex}`
       );
       return {
-        id,
+        id: paragraphId,
+        pid: id,
+        pidOrdinal,
         paragraphKey,
         domAnchor: id,
         occurrenceIndex,
@@ -265,6 +274,24 @@ export function installNovelReader(runtime) {
     }, 80);
   }
   runtime.scheduleNovelReconcile = scheduleNovelReconcile;
+
+  // 浏览器缩放等操作会让阅读器在同一宿主上重建 Shadow DOM:旧 root 的
+  // MutationObserver 静默失效,文档级观察器又看不到 shadow root 内部变化,
+  // 没有任何事件触发 reconcile,译文会一直停留在内存里而不回到页面。
+  // 定时自愈扫描只处理观察器覆盖不到的情况,正常页面下是廉价空检查。
+  function reconcileKakaoNovelIfStale() {
+    if (runtime.state.invalidated || !runtime.IS_KAKAOPAGE_READER) return;
+    const state = getNovelState();
+    const surface = state.surface;
+    if (surface && surface.root && surface.root.isConnected === false) {
+      runtime.reconcileKakaoNovelReader();
+      return;
+    }
+    if (!surface && state.chapterKey) {
+      runtime.reconcileKakaoNovelReader();
+    }
+  }
+  runtime.reconcileKakaoNovelIfStale = reconcileKakaoNovelIfStale;
 
   function disconnectNovelReader() {
     const state = getNovelState();

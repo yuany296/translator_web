@@ -16,8 +16,11 @@ export function installNovelStreamWorkflow(runtime) {
   // 服务端 /translations/stream 单次请求有 200 段上限(超出返回 422 too_long);
   // 默认按 50 段分批发送(设置项 novelStreamBatchSize 可调),每个请求结果一到就
   // 逐段替换,避免整章打包成一次请求导致结果集中到达、整章一次替换。
+  // 各批次共享同一份前文记忆与 previousTranslation,相互独立,因此同时并发
+  // 3 条流式请求,把整章串行等待模型生成的时间压到接近三分之一。
   const DEFAULT_STREAM_ITEMS_PER_REQUEST = 50;
   const MAX_STREAM_ITEMS_PER_REQUEST = 150;
+  const STREAM_BATCH_CONCURRENCY = 3;
 
   function resolveStreamBatchLimit(runtime) {
     const configured = Number(runtime.state?.novelStreamBatchSize);
@@ -48,9 +51,18 @@ export function installNovelStreamWorkflow(runtime) {
     let failed = 0;
     let protocolErrors = 0;
     let lastError = "";
-    for (let offset = 0; offset < total; offset += batchLimit) {
-      const batch = items.slice(offset, offset + batchLimit);
-      state.progress.textPhase = `流式翻译第 ${offset + 1}–${Math.min(total, offset + batch.length)} 段…`;
+    let cancelled = false;
+    let firstFailed = false;
+    let stop = false;
+    // 并发两批同时进行，不能用"批次起点 + 本批完成数"推算展示（会双算/误导）；
+    // 一律用真实已渲染译文数，避免看到某段范围就误以为前面的段落已经翻完。
+    const streamProgressText = () =>
+      `流式翻译中，已翻译 ${Number(state.progress.textDone) || 0}/${Number(state.progress.textTotal) || total} 段…`;
+    const offsets = [];
+    for (let offset = 0; offset < total; offset += batchLimit) offsets.push(offset);
+    const runBatch = async start => {
+      const batch = items.slice(start, start + batchLimit);
+      state.progress.textPhase = streamProgressText();
       runtime.setNovelTextStatus?.("working", state.progress);
       const request = {
         ...requestBase,
@@ -64,7 +76,9 @@ export function installNovelStreamWorkflow(runtime) {
         const result = await runtime.runNovelTranslationStream(request, event => {
           if (state.taskId !== taskId || state.chapterKey !== chapterKey) return;
           if (event.type === "progress") {
-            state.progress.textPhase = `流式翻译已完成 ${completed + event.completed}/${total} 段…`;
+            // 各批次完成数从 0 重新累计，不能按"批次起点 + 完成数"展示；
+            // 统一用真实渲染数，避免并发时显示 55/150 这类虚高数字。
+            state.progress.textPhase = streamProgressText();
             runtime.setNovelTextStatus?.("working", state.progress);
             return;
           }
@@ -76,26 +90,52 @@ export function installNovelStreamWorkflow(runtime) {
           runtime.renderNovelTranslation(item.node, translated, true);
           item.node.dataset.mtNovelStatus = "current";
           state.pendingParagraphs.delete(item.id);
-          state.progress.textDone = chapter.paragraphs.filter(row => state.translations.has(row.id)).length;
+          state.progress.textDone = chapter.paragraphs.filter(row => String(row.original_text || "").trim() && state.translations.has(row.id)).length;
           runtime.setNovelTextStatus?.("working", state.progress);
         });
         completed += Number(result.completed) || 0;
         failed += Number(result.failed) || 0;
         protocolErrors += Number(result.protocolErrors) || 0;
       } catch (error) {
-        if (state.taskId !== taskId) return { supported: true, cancelled: true, completed };
+        if (state.taskId !== taskId || state.chapterKey !== chapterKey) {
+          cancelled = true;
+          return;
+        }
         lastError = runtime.getErrorMessage(error);
-        // 首批失败说明流式不可用,切换渐进小批;后续批次失败则进入逐段补齐。
-        if (offset === 0) {
-          state.streamState = "unsupported";
-          state.progress.textPhase = "流式不可用，正在切换渐进小批翻译…";
-          runtime.setNovelTextStatus?.("working", state.progress);
-          return { supported: false, completed, error: lastError };
+        // 首批失败说明流式不可用,切换渐进小批;后续批次失败则进入逐段补齐,
+        // 且不再启动新的批次(与既有一旦失败即停的语义一致)。
+        if (start === 0) {
+          firstFailed = true;
+          stop = true;
+          return;
         }
         failed += batch.length;
-        break;
+        stop = true;
       }
-      if (state.taskId !== taskId) return { supported: true, cancelled: true, completed };
+    };
+    await new Promise(resolve => {
+      let inFlight = 0;
+      let nextIndex = 0;
+      const pump = () => {
+        while (inFlight < STREAM_BATCH_CONCURRENCY && nextIndex < offsets.length && !stop) {
+          const start = offsets[nextIndex];
+          nextIndex += 1;
+          inFlight += 1;
+          void runBatch(start).finally(() => {
+            inFlight -= 1;
+            pump();
+          });
+        }
+        if (inFlight === 0) resolve();
+      };
+      pump();
+    });
+    if (cancelled) return { supported: true, cancelled: true, completed };
+    if (firstFailed) {
+      state.streamState = "unsupported";
+      state.progress.textPhase = "流式不可用，正在切换渐进小批翻译…";
+      runtime.setNovelTextStatus?.("working", state.progress);
+      return { supported: false, completed, error: lastError };
     }
     state.streamState = failed > 0 ? "paragraph-recovery" : "completed";
     return {

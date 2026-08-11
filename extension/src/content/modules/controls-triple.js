@@ -52,7 +52,9 @@ export function installControlsTriple(runtime) {
       enabled: runtime.state.enabled,
       invalidated: runtime.state.invalidated,
       mode: controller.mode || "off",
-      visibility: controller.visibility || "source",
+      // 显示意图以本地 state.showTranslation 为准(restore/show 同步翻转),
+      // 后台 controller 的异步确认只用于持久化,避免悬浮球状态滞后一次点击。
+      visibility: state.showTranslation === true ? "translated" : "source",
       working: state.working === true,
       queueBusy: runtime.isWebpageQueueBusy?.() === true,
       pageFault: state.pageFault || null,
@@ -83,20 +85,14 @@ export function installControlsTriple(runtime) {
       runtime.updateNovelProgressPanel?.();
       return;
     }
-    let result;
     try {
-      result = await runtime.translateNovelChapter();
-    } catch (error) {
-      result = { ok: false, error: runtime.getErrorMessage(error) };
+      await runtime.translateNovelChapter();
+    } catch {
+      // 异常不弹状态框，完成与否以悬浮球右上角对勾为准。
     }
-    if (result?.toggled) {
-      runtime.showFloatingBallFeedback(result.showTranslation ? "已显示中文译文" : "已显示韩文原文", "info");
-    } else if (result?.showTranslation) {
-      runtime.showFloatingBallFeedback("已显示中文译文", "info");
-    } else {
-      runtime.clearFloatingBallFeedback?.();
-      runtime.updateNovelProgressPanel?.();
-    }
+    // 译文/原文切换与首次翻译完成都不弹状态框：翻译是否完成以悬浮球右上角对勾为准。
+    runtime.clearFloatingBallFeedback?.();
+    runtime.updateNovelProgressPanel?.();
   }
 
   async function onComicClick(event) {
@@ -117,17 +113,17 @@ export function installControlsTriple(runtime) {
     const state = runtime.getWebpageState();
     const controller = state.controller || {};
     if (controller.mode === "continuous") {
-      if (controller.visibility === "translated") {
-        // 持续模式且显示译文 → 显示原文（后台继续翻译）
+      // 切换判定以当前实际显示为准(showTranslation 同步翻转),不依赖
+      // 后台 controller 的异步返回,连续点击也不会落入错误分支。
+      if (state.showTranslation === true) {
+        // 持续模式且显示译文 → 显示原文（后台继续翻译），切换不弹状态框
         const result = runtime.restoreWebpageTranslation();
-        runtime.showFloatingBallFeedback(result.ok ? "已显示网页原文，后台继续翻译" : "恢复网页原文失败", result.ok ? "info" : "error");
+        if (!result.ok) runtime.showFloatingBallFeedback("恢复网页原文失败", "error");
         return;
       }
-      // 持续模式且显示原文 → 重新显示译文
+      // 持续模式且显示原文 → 重新显示译文，切换不弹状态框
       const result = runtime.showWebpageTranslations();
-      if (result.shown > 0) {
-        runtime.showFloatingBallFeedback("已重新显示中文译文", "info");
-      } else {
+      if (result.shown === 0) {
         runtime.clearFloatingBallFeedback();
         const rerun = await runtime.translateWebpage();
         if (!rerun?.ok && !rerun?.reused) {
@@ -367,7 +363,6 @@ export function installControlsTriple(runtime) {
         });
       case "restore-page":
         runtime.restoreWebpageTranslation();
-        runtime.showFloatingBallFeedback("已显示网页原文，后台继续翻译", "info");
         return;
       case "stop-continuous":
         return void runtime.stopWebpageContinuousTranslation().then(() => {

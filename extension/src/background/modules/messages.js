@@ -321,38 +321,41 @@ export function installMessages(runtime) {
         [runtime.STORAGE_KEYS.glossary]: nextGlossary,
         [runtime.STORAGE_KEYS.glossaryPending]: nextPending
       });
-      // 服务端模式同步
-      try {
-        const serverUrl = await runtime.isGlossaryServerMode();
-        if (serverUrl) {
-          for (const entry of requestedEntries) {
-            const resolvedSource = runtime.languages.resolveSourceLanguage(
-              configuration.translation.sourceLanguage, entry.source
-            );
+      // 同步到本地服务：术语库页面优先展示服务端数据，不同步则面板加入的
+      // 术语在术语库搜不到。本地写入始终保留（服务离线时页面回退本地存储）。
+      let serverSynced = true;
+      let serverError = "";
+      const serverUrl = String(configuration.ocr.localPaddle.baseUrl || "").trim();
+      if (serverUrl) {
+        for (const entry of requestedEntries) {
+          const resolvedSource = runtime.languages.resolveSourceLanguage(configuration.translation.sourceLanguage, entry.source);
+          try {
             await runtime.callGlossaryApi(serverUrl, "/glossary", {
               method: "PUT",
               body: JSON.stringify({
-                source: entry.source,
-                target: entry.target,
-                note: entry.note,
-                src_lng: resolvedSource === "auto" ? "ko" : resolvedSource,
-                tgt_lng: targetLanguage
+                source: entry.source, target: entry.target, note: entry.note,
+                src_lng: resolvedSource === "auto" ? "ko" : resolvedSource, tgt_lng: targetLanguage
               })
-            }).catch(() => {});
+            });
+          } catch (error) {
+            serverSynced = false;
+            serverError = runtime.getErrorMessage(error);
+            break;
           }
+        }
+        if (serverSynced) {
           for (const src of pendingSourcesToRemove) {
             await runtime.callGlossaryApi(serverUrl, "/glossary/pending/ignore", {
-              method: "POST",
-              body: JSON.stringify({
-                source: src
-              })
+              method: "POST", body: JSON.stringify({ source: src })
             }).catch(() => {});
           }
         }
-      } catch (_) {/* 服务端同步失败不影响本地 */}
+      }
       return {
         ok: true,
         added: confirmedSources.length,
+        serverSynced,
+        serverError,
         pendingCount: runtime.termDiscoveryCore.getPendingCount(nextPending)
       };
     });

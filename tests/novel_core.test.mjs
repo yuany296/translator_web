@@ -142,10 +142,13 @@ test("novel UI contracts expose three icon-only grouped controls and independent
   const workflow = fs.readFileSync(
     path.join(root, "extension", "src", "content", "modules", "novel-workflow.js"), "utf8"
   );
+  const progressiveWorkflow = fs.readFileSync(
+    path.join(root, "extension", "src", "content", "modules", "novel-progressive-workflow.js"), "utf8"
+  );
   const imageWorkflow = fs.readFileSync(
     path.join(root, "extension", "src", "content", "modules", "novel-image-workflow.js"), "utf8"
   );
-  const workflowSources = `${workflow}\n${imageWorkflow}`;
+  const workflowSources = `${workflow}\n${progressiveWorkflow}\n${imageWorkflow}`;
   const panel = fs.readFileSync(
     path.join(root, "extension", "src", "content", "modules", "novel-image-panel.js"), "utf8"
   );
@@ -170,8 +173,8 @@ test("novel UI contracts expose three icon-only grouped controls and independent
   assert.match(workflowSources, /retryNovelImages/u);
   assert.match(workflow, /SAVE_NOVEL_MEMORY/u);
   assert.match(workflow, /memoryRevision/u);
-  assert.match(workflow, /novelMemoryCore\.mergeMemory/u);
-  assert.match(workflow, /正在逐段补齐/u);
+  assert.match(progressiveWorkflow, /novelMemoryCore\.mergeMemory/u);
+  assert.match(progressiveWorkflow, /正在逐段补齐/u);
   assert.match(panel, /getRenderedNovelImageLines/u);
   assert.match(panel, /reapplyNovelEmbeddedImages/u);
   assert.match(panel, /applyEmbeddedImageDataUrl/u);

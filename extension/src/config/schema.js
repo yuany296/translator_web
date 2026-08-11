@@ -43,7 +43,8 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   debugOverlayMode: "final", overwritePreviewMode: "full", termDiscoveryEnabled: true,
   floatingSide: "right", floatingYRatio: 0.72,
   displayMode: "translated", webpageDisplayMode: "translated", novelDisplayMode: "translated",
-  novelStreamBatchSize: 50
+  novelStreamBatchSize: 50,
+  webpageBatchItems: 32, webpageBatchChars: 3200, webpageConcurrency: 5
 });
 
 const numberIn = (value, min, max, fallback) => {
@@ -126,6 +127,10 @@ export function normalizeRuntimeConfig(value = {}) {
     floatingYRatio: numberIn(value.floatingYRatio, 0, 1, DEFAULT_RUNTIME_CONFIG.floatingYRatio),
     // 流式请求每批段落数:整章拆成多个请求,每个请求结果一到就逐段替换,避免整章一次替换。
     novelStreamBatchSize: numberIn(value.novelStreamBatchSize, 5, 150, DEFAULT_RUNTIME_CONFIG.novelStreamBatchSize),
+    // 网页翻译批次与并发:数值越大请求越少,但单请求等待时间可能变长。
+    webpageBatchItems: numberIn(value.webpageBatchItems, 4, 96, DEFAULT_RUNTIME_CONFIG.webpageBatchItems),
+    webpageBatchChars: numberIn(value.webpageBatchChars, 400, 8000, DEFAULT_RUNTIME_CONFIG.webpageBatchChars),
+    webpageConcurrency: numberIn(value.webpageConcurrency, 1, 8, DEFAULT_RUNTIME_CONFIG.webpageConcurrency),
     displayMode,
     // 旧字段继续镜像统一值，保证升级期间的旧内容脚本不会读到冲突配置。
     webpageDisplayMode: displayMode,

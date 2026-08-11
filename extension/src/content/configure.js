@@ -82,6 +82,9 @@ export function prepareContentRuntime(runtime) {
     runtime.state.floatingSide = config.floatingSide;
     runtime.state.floatingYRatio = config.floatingYRatio;
     runtime.state.novelStreamBatchSize = config.novelStreamBatchSize;
+    runtime.state.webpageBatchItems = config.webpageBatchItems;
+    runtime.state.webpageBatchChars = config.webpageBatchChars;
+    runtime.state.webpageConcurrency = config.webpageConcurrency;
     runtime.state.displayMode = config.displayMode;
     runtime.state.webpageDisplayMode = config.displayMode;
     runtime.state.novelDisplayMode = config.displayMode;
@@ -154,6 +157,9 @@ export function prepareContentRuntime(runtime) {
       pretranslateMode: config.pretranslateMode, floatingSide: config.floatingSide,
       floatingYRatio: config.floatingYRatio, displayMode: config.displayMode,
       novelStreamBatchSize: config.novelStreamBatchSize,
+      webpageBatchItems: config.webpageBatchItems,
+      webpageBatchChars: config.webpageBatchChars,
+      webpageConcurrency: config.webpageConcurrency,
       webpageDisplayMode: config.displayMode, novelDisplayMode: config.displayMode });
     runtime.refreshWebpageDisplayMode?.();
     runtime.setNovelTranslationVisibility?.(runtime.getNovelState?.().showTranslation !== false);

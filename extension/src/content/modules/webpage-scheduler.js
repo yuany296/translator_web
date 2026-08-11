@@ -10,15 +10,10 @@
  */
 import { createSegment } from "./webpage-session.js";
 import { isUsableWebpageTranslation } from "./webpage-batches.js";
+import { getWebpageLanes, getWebpageBatchLimits } from "./webpage-scheduler-config.js";
 
-const LANES = 3, NEAR_SCREENS = 2, RETRY_BLOCKED_MS = 30_000, SCROLL_REPRIORITIZE_DEBOUNCE_MS = 120;
-const BATCH_LIMITS = Object.freeze({
-  0: { maxItems: 8, maxChars: 600 }, 1: { maxItems: 16, maxChars: 1200 },
-  2: { maxItems: 32, maxChars: 2400 }, 3: { maxItems: 32, maxChars: 2400 }
-});
-
+const NEAR_SCREENS = 2, RETRY_BLOCKED_MS = 30_000, SCROLL_REPRIORITIZE_DEBOUNCE_MS = 120;
 const ZONE_PRIORITY = Object.freeze({ viewport: 0, near: 1, background: 2, dynamic: 3 });
-
 export function installWebpageScheduler(runtime) {
   const state = {
     queue: [],
@@ -175,7 +170,7 @@ export function installWebpageScheduler(runtime) {
     for (let tier = 0; tier <= 3; tier += 1) {
       const candidates = state.queue.filter(segment => segment.status.translation === "pending" && segment.priority === tier);
       if (!candidates.length) continue;
-      const limits = BATCH_LIMITS[tier];
+      const limits = getWebpageBatchLimits(runtime)[tier];
       const segments = [];
       let chars = 0;
       for (const segment of candidates) {
@@ -192,9 +187,10 @@ export function installWebpageScheduler(runtime) {
     if (state.stopped || state.paused) return;
     // 队列中仍有视口/近屏段（含 in-flight）时后台只占一路，保持视口优先；
     // 纯后台长页允许后台占满所有 lane。
+    const lanes = getWebpageLanes(runtime);
     const hasViewportWork = state.queue.some(segment => segment.priority <= 1);
-    const lowPriorityLimit = hasViewportWork ? 1 : LANES;
-    while (state.activeBatches < LANES) {
+    const lowPriorityLimit = hasViewportWork ? 1 : lanes;
+    while (state.activeBatches < lanes) {
       const batch = composeBatch();
       if (!batch) break;
       if (batch.tier >= 2 && state.lowPriorityBatches >= lowPriorityLimit) break;

@@ -48,6 +48,21 @@
         <label><input type="radio" name="displayMode" value="bilingual" /><span>双语</span></label>
       </fieldset>
     </section>
+    <section class="card" aria-labelledby="speedHeading">
+      <div class="section-heading">
+        <div><h2 id="speedHeading">速度与调试</h2><p>网页翻译批次与 OCR 诊断</p></div>
+      </div>
+      <div class="toggle"><span>网页快速翻译</span><input id="webpageFastMode" type="checkbox" /></div>
+      <details id="speedAdvanced">
+        <summary>高级参数</summary>
+        <div class="grid">
+          <div class="field"><label for="webpageConcurrency">并发数</label><input id="webpageConcurrency" type="number" min="1" max="8" /></div>
+          <div class="field"><label for="webpageBatchItems">每批段数</label><input id="webpageBatchItems" type="number" min="4" max="96" /></div>
+        </div>
+        <div class="field"><label for="webpageBatchChars">每批字符数</label><input id="webpageBatchChars" type="number" min="400" max="8000" step="100" /></div>
+      </details>
+      <div class="toggle"><span>OCR 调试</span><input id="ocrDebug" type="checkbox" /></div>
+    </section>
     <button id="translateBtn" class="translate-button" type="button">
       <span class="translate-icon" aria-hidden="true">译</span>
       <span><b>翻译当前可视区</b><small>识别并翻译当前看到的漫画内容</small></span>

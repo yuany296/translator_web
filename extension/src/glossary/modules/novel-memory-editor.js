@@ -27,6 +27,8 @@ export function installNovelMemoryEditor(runtime) {
       runtime.setPendingStatus(`读取失败：${runtime.getErrorMessage(error)}`, true);
     });
     if (runtime.activeTab === "memory") void loadNovelMemory();
+    // 切换 tab 时通知批量操作模块（只在正式术语 tab 有效）。
+    runtime.handleGlossaryTabSwitch?.(runtime.activeTab);
   }
   runtime.switchTab = switchTab;
 

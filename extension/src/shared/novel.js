@@ -49,6 +49,36 @@ function buildChunks(items, targetChars = CHUNK_TARGET_CHARS) {
   return chunks;
 }
 
+// 判重用归一化：去掉所有空白与中英文标点，避免句读差异掩盖"两段译文完全相同"。
+const DUPLICATE_MIN_CHARS = 4;
+
+function normalizeComparableText(text) {
+  return String(text || "")
+    .replace(/\s+/gu, "")
+    .replace(/[，。！？!?.,;；:："'“”‘’()\[\]（）【】、…·]/gu, "");
+}
+
+function dedupeAcceptedTranslations(expected, accepted, errors) {
+  // 模型偶发把相邻两段合并后用同一译文回给两个 id：归一化译文相同且原文不同时,
+  // 只保留先出现的一行,后一行报 duplicate_translation 走逐段补翻。
+  const kept = [];
+  const seenTexts = new Map();
+  for (const row of accepted) {
+    const translatedKey = normalizeComparableText(row.translated_text);
+    const item = expected.get(row.id);
+    const originalKey = normalizeComparableText(item ? item.original_text : "");
+    const previous = seenTexts.get(translatedKey);
+    if (previous && previous.originalKey !== originalKey
+      && translatedKey.length >= DUPLICATE_MIN_CHARS) {
+      errors.push({ id: row.id, code: "duplicate_translation" });
+      continue;
+    }
+    if (!previous) seenTexts.set(translatedKey, { id: row.id, originalKey });
+    kept.push(row);
+  }
+  return kept;
+}
+
 function validateTranslations(items, rows, glossaryEntries = [], languages = {}) {
   const expected = new Map((Array.isArray(items) ? items : []).map(item => [String(item.id), item]));
   const accepted = [];
@@ -79,8 +109,9 @@ function validateTranslations(items, rows, glossaryEntries = [], languages = {})
       errors.push({ id, code: "source_language_leak" });
       continue;
     }
+    const translatedFolded = translatedText.toLocaleLowerCase();
     const violated = glossaryEntries.filter(term =>
-      glossaryCore.matchesSourceTerm(original, term.source) && !translatedText.includes(term.target)
+      glossaryCore.matchesSourceTerm(original, term.source) && !translatedFolded.includes(term.target.toLocaleLowerCase())
     );
     if (violated.length) {
       const terms = violated.map(term => term.source);
@@ -96,7 +127,8 @@ function validateTranslations(items, rows, glossaryEntries = [], languages = {})
       errors.push({ id, code: "missing_translation" });
     }
   }
-  return { accepted, glossaryFallbacks, errors };
+  const deduped = dedupeAcceptedTranslations(expected, accepted, errors);
+  return { accepted: deduped, glossaryFallbacks, errors };
 }
 
 function summarizeTranslationErrors(errors) {
@@ -111,6 +143,7 @@ function summarizeTranslationErrors(errors) {
   const labels = {
     glossary_violation: "术语不一致",
     missing_translation: "响应缺少 ID/译文",
+    duplicate_translation: "与相邻段落译文重复",
     source_language_leak: "返回内容仍以韩文为主",
     request_failed: "API 请求失败",
     retry_failed: "重试请求失败",

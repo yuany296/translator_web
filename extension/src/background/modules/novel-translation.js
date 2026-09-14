@@ -1,4 +1,6 @@
-const PROMPT_VERSION = "kakao-novel-v1";
+import llmProviders from "../../shared/llm-providers.js";
+
+const PROMPT_VERSION = "kakao-novel-v2";
 const CACHE_PREFIX = "mt_cache_v23:novel:";
 const REQUEST_TIMEOUT_MS = 90_000;
 
@@ -70,6 +72,8 @@ export function installNovelTranslation(runtime) {
       `Prompt version: ${PROMPT_VERSION}`,
       `Translate this web-novel passage from ${context.sourceLanguage || "auto-detected source"} into ${context.targetLanguage || "zh-CN"}.`,
       "Preserve paragraph ids and paragraph boundaries. Keep voice, viewpoint, relationships, honorifics, and suspense consistent.",
+      "Translate each input item independently. Never merge two items into one translation; never let one item's translation continue from or repeat another item's translation. Output exactly one translations entry per input id, covering only that id's own text.",
+      "Preserve dialogue quotation marks exactly as in the source. If a source paragraph is wrapped in quotes (e.g. “ ”, 「 」, 『 』), the translated paragraph must keep matching quotes around the same dialogue; never drop or add them.",
       "Use the previous translation and nearby context only for continuity; never add events absent from the source.",
       "Return JSON only with translations and memory_delta.",
       '{"translations":[{"id":"p1","translated_text":"..."}],"memory_delta":{"summary":"","characters":[],"relationships":[],"honorifics":[],"unresolved":[]}}',
@@ -114,7 +118,10 @@ export function installNovelTranslation(runtime) {
       }
     }
     const translation = configuration.translation;
-    if (!translation.apiKey) throw new Error("请先配置翻译 API Key");
+    // 免密钥本地服务商(Ollama 等)允许空 Key,只有 needsKey 服务商才要求配置
+    if (llmProviders.keyRequired(translation.provider) && !translation.apiKey) {
+      throw new Error(`翻译 API Key 未配置：请在设置页「翻译服务」中为当前服务商（${llmProviders.providerLabel(translation.provider)}）填写密钥`);
+    }
     const body = {
       model: translation.model || runtime.DEFAULT_TRANSLATION_MODEL,
       temperature: 0,
@@ -179,12 +186,10 @@ export function installNovelTranslation(runtime) {
   async function translatePending(items, context, glossary, configuration, signal = null) {
     const diagnostics = [];
     let first;
-    let requestRetried = false;
     try {
       first = await requestModel(items, context, glossary, configuration, diagnostics, signal);
     } catch (error) {
       if (signal && signal.aborted) throw error;
-      requestRetried = true;
       first = await requestModel(items, {
         ...context,
         retryErrors: [{ code: "request_failed", error: runtime.getErrorMessage(error) }]
@@ -199,7 +204,8 @@ export function installNovelTranslation(runtime) {
     let firstMemoryUsed = checked.accepted.length > 0;
     let errors = checked.errors;
     let retryDelta = null;
-    if (errors.length && !requestRetried) {
+    // 缺段/坏段必须走逐段补救重试：这是缺译文段落的唯一恢复路径，网络失败整体重试过也不例外。
+    if (errors.length) {
       const retryItems = items.filter(item => errors.some(error => error.id === item.id));
       const retryErrors = [];
       for (const item of retryItems) {
@@ -241,13 +247,6 @@ export function installNovelTranslation(runtime) {
         }
       }
       errors = retryErrors;
-    } else if (errors.length) {
-      errors = errors.filter(error => {
-        if (error.code !== "glossary_violation") return true;
-        const accepted = acceptGlossaryFallback(initialFallbacks.get(error.id), byId, warnings);
-        firstMemoryUsed ||= accepted;
-        return !accepted;
-      });
     }
     return {
       translations: [...byId.values()],
@@ -267,6 +266,15 @@ export function installNovelTranslation(runtime) {
       if (!items.length || items.length !== (Array.isArray(message.items) ? message.items.length : 0)) {
         return { ok: false, error: "TRANSLATE_NOVEL_CHUNK requires unique stable paragraph ids" };
       }
+      const originalById = new Map(items.map(item => [item.id, item.original_text]));
+      // LLM 偶发丢掉对话引号:按原文引号对做确定性兜底,缓存命中同样处理。
+      const restoreQuotes = rows => (Array.isArray(rows) ? rows : []).map(row => {
+        const original = originalById.get(String(row && row.id || ""));
+        return original ? {
+          ...row,
+          translated_text: runtime.restoreDialogueQuotes(original, String(row && row.translated_text || ""))
+        } : row;
+      });
       const configuration = await runtime.loadConfiguration();
       const { context, glossary, glossaryFingerprint } = await loadContext(message, configuration);
       const cachePayload = {
@@ -292,6 +300,7 @@ export function installNovelTranslation(runtime) {
           ok: true,
           cached: true,
           ...cached,
+          translations: restoreQuotes(cached.translations),
           diagnostics: [{
             source: "cache",
             status: "cache_hit",
@@ -314,7 +323,7 @@ export function installNovelTranslation(runtime) {
         if (controller) runtime.unregisterTaskAbort(taskId, controller);
       }
       const cacheValue = {
-        translations: result.translations,
+        translations: restoreQuotes(result.translations),
         memory_delta: result.memoryDelta,
         errors: result.errors,
         warnings: result.warnings,

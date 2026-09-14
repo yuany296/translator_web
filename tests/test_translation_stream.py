@@ -22,6 +22,26 @@ def _record_payload(segment: str, source: str) -> dict:
     }
 
 
+def test_stream_prompt_forbids_merging_neighbor_paragraphs():
+    from types import SimpleNamespace
+
+    from ocr_service.pipeline import translation_stream
+
+    payload = SimpleNamespace(
+        items=[
+            {"paragraphKey": "p1", "originalText": "첫째"},
+            {"paragraphKey": "p2", "originalText": "둘째"},
+        ],
+        glossary=[], context={}, sourceLanguage="auto", targetLanguage="zh-CN",
+    )
+    prompt = translation_stream._prompt(payload)
+    assert "cover only its own paragraph" in prompt
+    assert "never merge two paragraphs into one line" in prompt
+    assert "never repeat a neighboring paragraph's translation" in prompt
+    assert '"paragraphKey": "p1"' in prompt
+    assert '"paragraphKey": "p2"' in prompt
+
+
 def test_stream_heartbeat_does_not_cancel_a_slow_upstream_chunk():
     from ocr_service.pipeline import translation_stream
 

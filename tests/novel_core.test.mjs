@@ -95,6 +95,17 @@ test("novel glossary validation ignores terms embedded in longer Hangul words", 
   assert.deepEqual(standalone.glossaryFallbacks.map(row => row.id), ["short", "long"]);
 });
 
+test("novel glossary validation checks the target case-insensitively", () => {
+  const entries = [{ source: "Harry Potter", target: "Harry Potter" }];
+  const accepted = novel.validateTranslations([
+    { id: "p1", original_text: "Harry Potter appeared" }
+  ], [
+    { id: "p1", translated_text: "harry potter 出现了" }
+  ], entries);
+  assert.equal(accepted.errors.length, 0);
+  assert.deepEqual(accepted.accepted.map(row => row.id), ["p1"]);
+});
+
 test("novel diagnostics summarize validation and provider failures without source text", () => {
   const summary = novel.summarizeTranslationErrors([
     { id: "123", code: "glossary_violation", terms: ["아이템"] },
@@ -112,6 +123,53 @@ test("novel diagnostics summarize validation and provider failures without sourc
   ]);
   assert.equal(warnings.text, "已保留全部译文，其中 1 段未完全采用术语表指定译名。");
   assert.equal(warnings.warnings[0].code, "glossary_warning");
+});
+
+test("novel validation flags merged duplicate translations for per-segment retry", () => {
+  // 模型把相邻两段合并后用同一译文回给两个 id：归一化译文相同、原文不同 → 后一段报错补翻。
+  const duplicate = novel.validateTranslations(
+    [
+      { id: "p1", original_text: "첫째 문장이 여기에 있습니다." },
+      { id: "p2", original_text: "둘째 문장은 완전히 다릅니다." }
+    ],
+    [
+      { id: "p1", translated_text: "他说明天一早就动身回来。" },
+      { id: "p2", translated_text: "他说明天 一早就动身回来。" }
+    ]
+  );
+  assert.deepEqual(duplicate.accepted.map(row => row.id), ["p1"]);
+  assert.deepEqual(duplicate.errors, [{ id: "p2", code: "duplicate_translation" }]);
+
+  // 原文归一化后相同是小说里的真实重复句，两段都接受。
+  const legitRepeat = novel.validateTranslations(
+    [
+      { id: "p1", original_text: "다시 한번 말해 줘." },
+      { id: "p2", original_text: "다시 한번 말해 줘!" }
+    ],
+    [
+      { id: "p1", translated_text: "请再说一遍。" },
+      { id: "p2", translated_text: "请再说一遍。" }
+    ]
+  );
+  assert.deepEqual(legitRepeat.accepted.map(row => row.id), ["p1", "p2"]);
+  assert.equal(legitRepeat.errors.length, 0);
+
+  // 归一化译文不足 4 字的合法短重复不标记。
+  const shortRepeat = novel.validateTranslations(
+    [
+      { id: "p1", original_text: "네." },
+      { id: "p2", original_text: "그래." }
+    ],
+    [
+      { id: "p1", translated_text: "好。" },
+      { id: "p2", translated_text: "好！" }
+    ]
+  );
+  assert.deepEqual(shortRepeat.accepted.map(row => row.id), ["p1", "p2"]);
+  assert.equal(shortRepeat.errors.length, 0);
+
+  const summary = novel.summarizeTranslationErrors([{ id: "p2", code: "duplicate_translation" }]);
+  assert.match(summary.text, /与相邻段落译文重复 1 段/u);
 });
 
 test("novel memory reads only an earlier checkpoint and isolates books", () => {

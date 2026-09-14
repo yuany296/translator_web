@@ -10,6 +10,7 @@ import httpx
 from fastapi.responses import StreamingResponse
 
 from ..dependencies import runtime
+from term_extractor import _is_local_url
 
 MAX_MODEL_LINE = 256 * 1024
 HEARTBEAT_SECONDS = 15.0
@@ -37,6 +38,8 @@ def _prompt(payload: runtime.TranslationStreamPayload) -> str:
     return "\n".join([
         f"Translate this web novel from {payload.sourceLanguage} to {payload.targetLanguage}.",
         "Output exactly one compact JSON object per line as soon as that paragraph is complete.",
+        "Emit exactly one JSON line per input paragraphKey; each translation must cover only its own paragraph; "
+        "never merge two paragraphs into one line and never repeat a neighboring paragraph's translation.",
         'Schema: {"paragraphKey":"the supplied key","translation":"translated text"}',
         "Do not output Markdown fences, arrays, explanations, blank translations, or duplicate keys.",
         "Preserve meaning, names, tone, paragraph boundaries, and every supplied paragraphKey.",
@@ -54,8 +57,6 @@ async def _openai_content_chunks(payload: runtime.TranslationStreamPayload) -> A
         return
     upstream = payload.upstream
     api_key = str(upstream.get("apiKey") or "")
-    if not api_key:
-        raise ValueError("translation API key is required")
     request_body = {
         "model": str(upstream.get("model") or ""), "temperature": 0, "stream": True,
         "messages": [
@@ -63,11 +64,14 @@ async def _openai_content_chunks(payload: runtime.TranslationStreamPayload) -> A
             {"role": "user", "content": _prompt(payload)},
         ],
     }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     timeout = httpx.Timeout(connect=15, read=None, write=30, pool=15)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    url = _endpoint(upstream.get("baseUrl"))
+    async with httpx.AsyncClient(timeout=timeout, trust_env=not _is_local_url(url)) as client:
         async with client.stream(
-            "POST", _endpoint(upstream.get("baseUrl")), json=request_body,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            "POST", url, json=request_body, headers=headers,
         ) as response:
             if response.status_code >= 400:
                 detail = (await response.aread()).decode("utf-8", "replace")[:1000]

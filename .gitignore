@@ -20,6 +20,7 @@ Thumbs.db
 .agents/
 .claude/
 .codex/
+.workbuddy/
 
 # === Python cache ===
 __pycache__/

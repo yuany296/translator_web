@@ -450,7 +450,8 @@ test("batch move: moves to the target library and reports skipped duplicates and
   assert.equal(page.elements.get("batchMoveDialog").open, true, "点移动弹出目标库对话框");
   const options = page.elements.get("batchMoveTargetSelect").children
     .map(option => option.value);
-  assert.deepEqual(options, ["default", TARGET_LIBRARY_ID], "所有库都可作为目标（含默认库）");
+  assert.deepEqual(options, ["default", TARGET_LIBRARY_ID, "__new_library__"],
+    "所有库都可作为目标（含默认库），末尾多一个「＋ 新建术语库…」");
 
   page.elements.get("batchMoveTargetSelect").value = TARGET_LIBRARY_ID;
   await page.elements.get("batchMoveForm").dispatch("submit");
@@ -468,6 +469,72 @@ test("batch move: moves to the target library and reports skipped duplicates and
     .every(row => selectCheckboxOf(row).checked === false), true);
   // 持久化：storage 里的条目归属同步变化（498 占位 + 重复条目 + 移入的 b = 500）
   assert.equal(storedEntries(page).filter(entry => entry.libraryId === TARGET_LIBRARY_ID).length, 500);
+});
+
+test("batch move: can build a new library right inside the move dialog", async () => {
+  const page = await bootWithSeed([makeEntry("a", "성현"), makeEntry("b", "왕국")]);
+  await selectRows(page, ["a", "b"]);
+  await page.elements.get("batchMoveBtn").dispatch("click");
+
+  const select = page.elements.get("batchMoveTargetSelect");
+  assert.equal(select.children.some(option => option.value === "__new_library__"), true,
+    "下拉末尾要有「＋ 新建术语库…」");
+  assert.equal(page.elements.get("batchMoveNewField").classList.contains("hidden"), true,
+    "没选「新建」时不展开名称框（不往弹窗上多加一段东西）");
+
+  select.value = "__new_library__";
+  await select.dispatch("change");
+  assert.equal(page.elements.get("batchMoveNewField").classList.contains("hidden"), false,
+    "选了「新建」才展开名称输入");
+  assert.equal(page.elements.get("batchMoveSubmit").textContent, "新建并移动");
+
+  page.elements.get("batchMoveNewName").value = "剑之墓";
+  await page.elements.get("batchMoveForm").dispatch("submit");
+  await settle();
+
+  const libraries = page.stored.mt_glossary_v2.libraries;
+  assert.deepEqual(libraries.map(library => library.name), ["默认术语库", "骸骨皇女", "剑之墓"],
+    "原地把新库建出来了");
+  const created = libraries.find(library => library.name === "剑之墓");
+  assert.equal(storedEntries(page).find(entry => entry.id === "a").libraryId, created.id);
+  assert.equal(storedEntries(page).find(entry => entry.id === "b").libraryId, created.id);
+  assert.match(page.elements.get("statusText").textContent, /已新建术语库「剑之墓」并移入 2 条/u);
+  assert.equal(page.elements.get("batchMoveDialog").open, false, "成功了才关窗");
+  assert.equal(page.elements.get("batchActionBar").classList.contains("hidden"), true,
+    "搬完清空选择");
+});
+
+test("batch move: a bad new-library name stops there without creating or moving anything", async () => {
+  const page = await bootWithSeed([makeEntry("a", "성현")]);
+  await selectRows(page, ["a"]);
+  await page.elements.get("batchMoveBtn").dispatch("click");
+  const select = page.elements.get("batchMoveTargetSelect");
+  select.value = "__new_library__";
+  await select.dispatch("change");
+
+  // 空名：报错、不建库、不关窗、不搬
+  page.elements.get("batchMoveNewName").value = "   ";
+  await page.elements.get("batchMoveForm").dispatch("submit");
+  await settle();
+  assert.equal(page.elements.get("batchMoveNewError").classList.contains("hidden"), false);
+  assert.match(page.elements.get("batchMoveNewError").textContent, /请填写新术语库名称/u);
+  assert.equal(page.elements.get("batchMoveDialog").open, true, "没建成不能关窗");
+  assert.equal(page.stored.mt_glossary_v2.libraries.length, 2, "没建出空库");
+
+  // 重名：同样停在弹窗里，术语留在原库
+  page.elements.get("batchMoveNewName").value = "骸骨皇女";
+  await page.elements.get("batchMoveForm").dispatch("submit");
+  await settle();
+  assert.match(page.elements.get("batchMoveNewError").textContent, /已经有一个叫/u);
+  assert.equal(page.elements.get("batchMoveDialog").open, true);
+  assert.equal(page.stored.mt_glossary_v2.libraries.length, 2);
+  assert.equal(entryById(page, "a").libraryId, "default", "术语没被搬走");
+
+  // 边打字边把错误清掉
+  page.elements.get("batchMoveNewName").value = "剑之墓";
+  await page.elements.get("batchMoveNewName").dispatch("input");
+  assert.equal(page.elements.get("batchMoveNewError").classList.contains("hidden"), true,
+    "改了名字就把红字收起来");
 });
 
 test("batch move: skips everything with an explicit all-skipped notice", async () => {

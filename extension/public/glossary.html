@@ -1342,9 +1342,16 @@
           <select id="batchMoveTargetSelect"></select>
           <p class="library-hint">与目标库中已有术语重复的条目、以及超出单库容量（500 条）的条目会被跳过，其余条目会原样移动。</p>
         </div>
+        <!-- 选「＋ 新建术语库…」才出现：不用先退出去建库、再回来重选一遍 -->
+        <div class="field hidden" id="batchMoveNewField">
+          <label for="batchMoveNewName">新术语库名称</label>
+          <input id="batchMoveNewName" type="text" maxlength="60" autocomplete="off" placeholder="例如：骸骨皇女" />
+          <p class="library-hint">只建一个空库把选中的术语放进去；绑定网址、启用开关进去以后再填。</p>
+          <p id="batchMoveNewError" class="field-error hidden" aria-live="polite"></p>
+        </div>
         <div class="dialog-actions">
           <button id="batchMoveCancel" type="button">取消</button>
-          <button class="primary" type="submit">移动</button>
+          <button id="batchMoveSubmit" class="primary" type="submit">移动</button>
         </div>
       </form>
     </dialog>

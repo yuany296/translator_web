@@ -160,6 +160,9 @@ export function installGlossaryBatchActions(runtime) {
     }
     moveRequest = ids;
     runtime.fillLibraryOptions(moveTargetSelect, "");
+    // 下拉末尾补一个「＋ 新建术语库…」（哨兵项在 glossary-move-new-library 里处理）：
+    // 想就地建库的用户不用先退出去建、再回来重选一遍。
+    runtime.prepareMoveNewLibraryOption?.();
     moveDialog.showModal();
   }
 
@@ -185,15 +188,24 @@ export function installGlossaryBatchActions(runtime) {
 
   async function executeMove() {
     const ids = moveRequest ? moveRequest.filter(id => entryById(id)) : [];
-    moveRequest = null;
-    const targetId = moveTargetSelect.value || runtime.glossaryCore.DEFAULT_LIBRARY_ID;
-    if (moveDialog.open) {
-      moveDialog.close();
-    }
     if (!ids.length) {
+      moveRequest = null;
+      if (moveDialog.open) {
+        moveDialog.close();
+      }
       clearSelection();
       return;
     }
+    // 新建/选已有都在这里定下来（哨兵项那套在 glossary-move-new-library）；建库失败就停在弹窗里。
+    const target = await runtime.resolveMoveTarget();
+    if (!target) {
+      return;
+    }
+    moveRequest = null;
+    if (moveDialog.open) {
+      moveDialog.close();
+    }
+    const targetId = target.targetId;
     const targetName = runtime.glossaryCore.getLibraryName(runtime.glossary, targetId);
     if (!runtime.glossary.libraries.some(library => library.id === targetId)) {
       runtime.setStatus(`目标术语库「${targetName}」不存在`, true);
@@ -231,13 +243,16 @@ export function installGlossaryBatchActions(runtime) {
     const skipDetail = describeSkips(skippedDuplicate, skippedCapacity);
     clearSelection();
     if (!movedIds.size) {
-      runtime.setStatus(`没有术语移动到「${targetName}」${skipDetail}`, true);
+      runtime.setStatus(target.createdName
+        ? `新建了术语库「${targetName}」，但没有术语移动进去${skipDetail}`
+        : `没有术语移动到「${targetName}」${skipDetail}`, true);
       return;
     }
     const nextEntries = runtime.glossary.entries.map(entry =>
       movedIds.has(entry.id) ? { ...entry, libraryId: targetId } : entry);
-    await runtime.persistEntries(nextEntries,
-      `已移动 ${movedIds.size} 条到「${targetName}」${skipDetail}`);
+    await runtime.persistEntries(nextEntries, target.createdName
+      ? `已新建术语库「${targetName}」并移入 ${movedIds.size} 条${skipDetail}`
+      : `已移动 ${movedIds.size} 条到「${targetName}」${skipDetail}`);
   }
 
   async function executeDelete() {
@@ -319,7 +334,7 @@ export function installGlossaryBatchActions(runtime) {
       moveDialog.close();
     }
   });
-  // Esc / 点遮罩关闭 dialog：视为放弃本次移动。
+  // Esc / 点遮罩关闭 dialog：视为放弃本次移动（新建名称由 glossary-move-new-library 自己复位）。
   moveDialog.addEventListener("close", () => {
     moveRequest = null;
   });

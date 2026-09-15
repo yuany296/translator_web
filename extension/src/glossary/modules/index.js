@@ -5,6 +5,7 @@ import { installGlossaryTransfer } from "./glossary-transfer.js";
 import { installGlossaryTermsView } from "./glossary-terms-view.js";
 import { installGlossarySearch } from "./glossary-search.js";
 import { installGlossaryBatchActions } from "./glossary-batch-actions.js";
+import { installGlossaryMoveNewLibrary } from "./glossary-move-new-library.js";
 
 import { installGlossaryLibraryStore } from "./glossary-library-store.js";
 import { installGlossaryLibraryPanel } from "./glossary-library-panel.js";
@@ -23,6 +24,7 @@ export const glossaryInstallers = Object.freeze([
   installGlossarySearch,
   installGlossaryTermsView,
   installGlossaryBatchActions,
+  installGlossaryMoveNewLibrary,
   installGlossaryLibraryStore,
   installGlossaryLibraryPanel,
   installGlossaryLibrarySettings,

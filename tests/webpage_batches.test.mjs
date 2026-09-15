@@ -55,6 +55,16 @@ test("partial batch retries every missing item independently with bounded concur
   assert.equal(result.translations.size, 6);
 });
 
+test("partial retry keeps a readable reason when a missing item stays missing", async () => {
+  const first = { ok: true, partial: true, translations: new Map(), errors: [] };
+  const result = await completePartialWebpageBatch(["a"], first,
+    async () => ({ ok: true, translations: new Map(), errors: [] }));
+  assert.equal(result.translations.size, 0);
+  assert.equal(result.partial, true);
+  assert.equal(result.errors.length > 0, true, "空 errors 不再吞掉失败原因");
+  assert.equal(result.errors[0].error, "翻译响应漏项");
+});
+
 test("webpage accepts any non-empty string (protocol-only validation)", () => {
   // 1. 专名保持不变：글개미 → 글개미 → accepted，不重试不失败
   assert.equal(isUsableWebpageTranslation("글개미"), true, "专名保留韩文也接受");

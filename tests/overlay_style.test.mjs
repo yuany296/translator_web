@@ -58,7 +58,8 @@ test("OCR 原始框与合并框的标签使用独立垂直轨道", () => {
 
 test("悬浮球直接显示翻译成功和失败反馈", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
-  assert.match(css, /\.mt-floating-feedback\s*\{[\s\S]*?pointer-events:\s*none/);
+  // 浮层支持「点一下立刻关闭」，因此必须放开命中测试：pointer-events 由 none 改为 auto。
+  assert.match(css, /\.mt-floating-feedback\s*\{[\s\S]*?pointer-events:\s*auto/);
   assert.match(css, /\.mt-floating-feedback\.mt-error\s*\{/);
   assert.match(css, /\.mt-floating-feedback\.mt-success\s*\{/);
   assert.match(css, /\.mt-floating-feedback\[hidden\]\s*\{\s*display:\s*none/);
@@ -105,19 +106,23 @@ test("cross-page overlay uses one unclipped reading-area root and segmented cove
 
 test("cleanup cover keeps final blue geometry separate from raw text placement", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
-  const lifecycle = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "lifecycle-bubble.js"), "utf8");
+  const lifecycleBubble = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "lifecycle-bubble.js"), "utf8");
+  const lifecycleCover = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "lifecycle-cover.js"), "utf8");
+  const rendererCover = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "renderer-cover.js"), "utf8");
   const overlay = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "renderer-overlay.js"), "utf8");
   const crossPage = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "renderer-crosspage.js"), "utf8");
 
-  assert.match(lifecycle, /function createBubbleRenderNodes\(/);
-  assert.match(lifecycle, /const coverBox = resolveBubbleCoverBox\(bubble\)/);
-  assert.match(lifecycle, /x:\s*coverBox\.x[\s\S]*?y:\s*coverBox\.y[\s\S]*?w:\s*coverBox\.w[\s\S]*?h:\s*coverBox\.h/);
-  assert.match(lifecycle, /projection_role:\s*"cover_only"[\s\S]*?fill_box:\s*null[\s\S]*?region_polygon:\s*null/);
+  // 覆盖投影（最终蓝框 + 不旋转裁剪层）拆分后由 lifecycle-cover / renderer-cover 承担。
+  assert.match(lifecycleCover, /function createBubbleRenderNodes\(/);
+  assert.match(lifecycleCover, /const coverBox = resolveBubbleCoverBox\(bubble\)/);
+  assert.match(lifecycleCover, /x:\s*coverBox\.x[\s\S]*?y:\s*coverBox\.y[\s\S]*?w:\s*coverBox\.w[\s\S]*?h:\s*coverBox\.h/);
+  assert.match(lifecycleCover, /projection_role:\s*"cover_only"[\s\S]*?fill_box:\s*null[\s\S]*?region_polygon:\s*null/);
   // 旋转与 polygon 完全沿用原气泡，只增加不旋转的最终蓝框裁剪层。
-  const coverProjection = lifecycle.match(/function buildBubbleCoverProjection\([\s\S]*?\n\s*runtime\.buildBubbleCoverProjection/)?.[0] ?? "";
+  const coverProjection = lifecycleCover.match(/function buildBubbleCoverProjection\([\s\S]*?\n\s*runtime\.buildBubbleCoverProjection/)?.[0] ?? "";
   assert.match(coverProjection, /\.\.\.bubble[\s\S]*?projection_role:\s*"cover_only"/);
   assert.doesNotMatch(coverProjection, /rotation_deg:|\n\s+polygon:\s*null/);
-  assert.match(overlay, /function createBubbleCoverClipNode\([\s\S]*?resolveBubbleCoverBox\(bubble\)[\s\S]*?normalizeBubblePolygon\(bubble\.polygon,[\s\S]*?buildRegionClipPath\(polygon, box\.x, box\.y, box\.w, box\.h\)[\s\S]*?coverNode\.style\.setProperty\("--mt-base-transform",\s*"translate\(-50%, -50%\)"\)[\s\S]*?appendChild\(coverNode\)/);
+  // 裁剪层用遮罩四边形相对外接框的 clip-path 承担倾角，内层填充节点保持不旋转。
+  assert.match(rendererCover, /function createBubbleCoverClipNode\([\s\S]*?resolveBubbleCoverBox\(bubble\)[\s\S]*?normalizeBubblePolygon\(bubble\.polygon,[\s\S]*?polygonClipPathPercent\(geometry\.quad,[\s\S]*?coverNode\.style\.setProperty\("--mt-base-transform",\s*"translate\(-50%, -50%\)"\)[\s\S]*?appendChild\(coverNode\)/);
   assert.match(css, /\.mt-cover-clip\s*\{[\s\S]*?overflow:\s*hidden[\s\S]*?clip-path:\s*inset\(0\)/);
   assert.match(overlay, /appendBubbleRenderLayers\(root,\s*coverNodes,\s*bubbleNodes\)/);
   assert.match(overlay, /function appendBubbleRenderLayers\([\s\S]*?coverNodes[\s\S]*?root\.appendChild\(node\)[\s\S]*?textNodes[\s\S]*?root\.appendChild\(node\)/);
@@ -126,7 +131,7 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   assert.match(css, /\.mt-bubble\.mt-text-layer::before\s*\{[\s\S]*?content:\s*none\s*!important/);
   assert.match(css, /\.mt-bubble\.mt-text-layer\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
   assert.match(css, /\.mt-bubble\.mt-cover-only\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
-  assert.match(lifecycle, /if\s*\(!coverOnly\s*&&\s*!options\.textOnly\s*&&\s*bgType\s*===\s*"solid"[\s\S]*?fillDiv\.className\s*=\s*"mt-fill-tilted"/);
+  assert.match(lifecycleBubble, /if\s*\(!coverOnly\s*&&\s*!options\.textOnly\s*&&\s*bgType\s*===\s*"solid"[\s\S]*?fillDiv\.className\s*=\s*"mt-fill-tilted"/);
 });
 
 test("overlay bubbles always anchor at the source text block center and center their text", () => {

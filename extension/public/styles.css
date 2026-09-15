@@ -677,11 +677,57 @@
   position: absolute; right: 44px; bottom: 0; width: max-content; max-width: min(360px, calc(100vw - 96px));
   padding: 9px 12px; border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 10px;
   color: #fff; background: rgba(15, 23, 42, 0.96); box-shadow: 0 8px 24px rgba(15, 23, 42, 0.3);
-  font: 500 13px/1.45 system-ui, sans-serif; text-align: left; overflow-wrap: anywhere; pointer-events: none;
+  font: 500 13px/1.45 system-ui, sans-serif; text-align: left; overflow-wrap: anywhere; pointer-events: auto;
+  transition: opacity 180ms ease, transform 180ms ease;
 }
 .mt-floating-feedback.mt-error { background: rgba(153, 27, 27, 0.97); }
 .mt-floating-feedback.mt-success { background: rgba(21, 128, 61, 0.97); }
+.mt-floating-feedback.mt-fading { opacity: 0; transform: translateY(-4px); }
 .mt-floating-feedback[hidden] { display: none; }
+
+/* ============ 错误弹窗：错误提示不自动消失，必须由用户确认后关闭 ============ */
+.mt-error-dialog-root {
+  position: fixed; inset: 0; z-index: 2147483640;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.42);
+}
+.mt-error-dialog-root[hidden] { display: none; }
+.mt-error-dialog-card {
+  box-sizing: border-box; width: min(440px, 100%); max-height: min(60vh, 420px);
+  display: flex; flex-direction: column;
+  border-radius: 14px; overflow: hidden;
+  color: #172033; background: #ffffff;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.34);
+  font: 500 13px/1.5 system-ui, sans-serif;
+}
+.mt-error-dialog-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px;
+  color: #ffffff; background: #b42318;
+}
+.mt-error-dialog-title { font-size: 14px; font-weight: 700; }
+.mt-error-dialog-close {
+  border: 0; border-radius: 8px; padding: 2px 8px; cursor: pointer;
+  color: #ffffff; background: transparent;
+  font: 700 16px/1.2 system-ui, sans-serif;
+}
+.mt-error-dialog-close:hover { background: rgba(255, 255, 255, 0.18); }
+.mt-error-dialog-body {
+  flex: 1 1 auto; padding: 14px; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.mt-error-dialog-foot {
+  flex: 0 0 auto; display: flex; justify-content: flex-end;
+  padding: 10px 14px 14px;
+}
+.mt-error-dialog-dismiss {
+  border: 1px solid #cbd5e1; border-radius: 9px; padding: 7px 14px; cursor: pointer;
+  color: #263247; background: #ffffff; font: inherit;
+}
+.mt-error-dialog-dismiss:hover { background: #f8fafc; }
+
 .mt-floating-ball-wrap.mt-hidden {
   display: none;
 }

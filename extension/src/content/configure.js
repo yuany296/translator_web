@@ -79,6 +79,10 @@ export function prepareContentRuntime(runtime) {
     runtime.state.captureMode = config.captureMode;
     runtime.state.renderMode = config.renderMode;
     runtime.state.pretranslateMode = config.pretranslateMode;
+    // 手动模式只接受点击翻译；即使此前页面处于自动翻译状态，加载后也不恢复。
+    if (config.pretranslateMode === "manual") {
+      runtime.state.autoTranslatePageEnabled = false;
+    }
     runtime.state.floatingSide = config.floatingSide;
     runtime.state.floatingYRatio = config.floatingYRatio;
     runtime.state.novelStreamBatchSize = config.novelStreamBatchSize;
@@ -88,6 +92,7 @@ export function prepareContentRuntime(runtime) {
     runtime.state.displayMode = config.displayMode;
     runtime.state.webpageDisplayMode = config.displayMode;
     runtime.state.novelDisplayMode = config.displayMode;
+    runtime.state.coverPadding = config.overwriteCoverPadding;
     runtime.state.sourceLanguage = translation.sourceLanguage;
     runtime.state.targetLanguage = translation.targetLanguage;
     runtime.state.ocrLanguage = languages.translationLanguageToOcrLanguage(translation.sourceLanguage);
@@ -156,11 +161,20 @@ export function prepareContentRuntime(runtime) {
       captureMode: config.captureMode, renderMode: config.renderMode,
       pretranslateMode: config.pretranslateMode, floatingSide: config.floatingSide,
       floatingYRatio: config.floatingYRatio, displayMode: config.displayMode,
+      coverPadding: config.overwriteCoverPadding,
       novelStreamBatchSize: config.novelStreamBatchSize,
       webpageBatchItems: config.webpageBatchItems,
       webpageBatchChars: config.webpageBatchChars,
       webpageConcurrency: config.webpageConcurrency,
       webpageDisplayMode: config.displayMode, novelDisplayMode: config.displayMode });
+    // 切换到手动翻译时停止一切自动预翻译：关闭本页自动翻译、清空自动入队任务。
+    // 自动模式间的切换（领先/连续）保留用户的悬浮球自动翻译状态。
+    if (config.pretranslateMode === "manual") {
+      runtime.state.autoTranslatePageEnabled = false;
+      runtime.clearAutoTranslateRetryTimers?.();
+      runtime.dropAutoQueuedItems?.();
+    }
+    runtime.updateFloatingBallState?.();
     runtime.refreshWebpageDisplayMode?.();
     runtime.setNovelTranslationVisibility?.(runtime.getNovelState?.().showTranslation !== false);
     if (captureChanged) runtime.state.payloadCacheByTargetKey.clear();
@@ -180,5 +194,8 @@ export function completeContentRuntime(runtime) {
   runtime.api.__test.shouldUseKakaoCanonicalPipeline = runtime.shouldUseKakaoCanonicalPipeline;
   runtime.api.__test.getRenderScenes = () => runtime.renderScenesByPage || new Map();
   runtime.api.__test.createBubbleNode = runtime.createBubbleNode;
+  runtime.api.__test.createBubbleCoverClipNode = runtime.createBubbleCoverClipNode;
+  runtime.api.__test.buildBubbleCoverProjection = runtime.buildBubbleCoverProjection;
+  runtime.api.__test.resolveBubbleCoverGeometry = runtime.resolveBubbleCoverGeometry;
   runtime.api.__test.prepareBubbleMeasureProbe = runtime.prepareBubbleMeasureProbe;
 }

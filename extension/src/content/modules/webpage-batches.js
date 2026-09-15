@@ -55,7 +55,8 @@ export async function completePartialWebpageBatch(keys, initial, worker) {
     if (result?.cancelled) cancelled = true;
     result?.translations?.forEach((value, key) => translations.set(key, value));
     if (!result?.translations?.has(batch[0])) {
-      retryErrors.push(...(result?.errors || [{ error: "翻译响应漏项" }]));
+      // 空数组也是真值：不能用 || 兜底，否则真实失败原因会被吞成空 errors
+      retryErrors.push(...(result?.errors?.length ? result.errors : [{ error: "翻译响应漏项" }]));
     }
   }, PARTIAL_RETRY_CONCURRENCY);
   const unresolved = missing.filter(key => !translations.has(key));

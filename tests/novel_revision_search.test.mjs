@@ -23,6 +23,13 @@ test("侧栏面板渲染完成后应用当前搜索过滤", () => {
   assert.match(revisionUiSource, /applyFilter\(\);/);
 });
 
+test("侧栏搜索原文与译文都计入过滤文本", () => {
+  assert.match(revisionUiSource, /haystack\s*=/);
+  assert.match(revisionUiSource, /card\.textContent/);
+  assert.match(revisionUiSource, /source\?\.textContent/);
+  assert.match(revisionUiSource, /editor\?\.value/);
+});
+
 test("侧栏搜索框与隐藏卡片有对应样式", () => {
   assert.match(sidepanelHtml, /\.toolbar input\[type="search"\]\s*\{[\s\S]*?box-sizing:\s*border-box/);
   assert.match(sidepanelHtml, /\.card\[hidden\]\s*\{\s*display:\s*none/);
@@ -31,7 +38,7 @@ test("侧栏搜索框与隐藏卡片有对应样式", () => {
 
 test("侧栏卡片绑定 itemId 支持编辑后刷新", () => {
   assert.match(revisionUiSource, /dataset:\s*\{\s*itemId:\s*item\.id\s*\}/);
-  assert.match(revisionUiSource, /sendAction\s*=\s*\(action,\s*payload\s*=\s*\{\}\)\s*=>\s*sendTab\(/);
+  assert.match(revisionUiSource, /sendAction\s*=\s*\(action,\s*payload\s*=\s*\{\}\)\s*=>\s*sendTabTo\(/);
   assert.match(revisionUiSource, /refresh\(\)/);
   assert.match(contentSource, /performNovelRevisionAction/);
   assert.match(contentSource, /getNovelRevisionSnapshot/);

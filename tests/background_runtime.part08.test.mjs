@@ -218,12 +218,13 @@ test("extracting a term from context rejects missing input and surfaces provider
   });
   assert.equal(missing.ok, false);
   assert.match(missing.error, /缺少原文段落或选中文字/);
-  const noKey = await context.__backgroundTest.handleExtractTermFromContext({
+  const noConfig = await context.__backgroundTest.handleExtractTermFromContext({
     sourceText: "수연이는 웃었다.",
     selectedText: "秀妍"
   });
-  assert.equal(noKey.ok, false);
-  assert.match(noKey.error, /API Key/);
+  assert.equal(noConfig.ok, false);
+  assert.match(noConfig.error, /未选择句子级术语提取配置/);
+  assert.match(noConfig.error, /「翻译服务」/, "提示指向合并后的页面");
 });
 
 test("extracting a term from context returns the model term with source presence check", async () => {
@@ -255,6 +256,70 @@ test("extracting a term from context returns the model term with source presence
     });
     assert.equal(unmatched.foundInSource, false);
   } finally {
+    context.__backgroundTest.setBackgroundTestHooks(null);
+  }
+});
+
+test("extracting sentence terms keeps source terms and swaps reversed term/target", async () => {
+  const stored = {
+    mt_ocr_config_v1: {
+      provider: "local_paddle",
+      localPaddle: { baseUrl: "http://127.0.0.1:8765" }
+    },
+    mt_translation_config_v1: {
+      provider: "openai_compatible",
+      apiKey: "",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-chat"
+    },
+    mt_runtime_config_v1: {},
+    mt_term_extraction_config_v1: {},
+    mt_sentence_extraction_config_v1: {
+      provider: "ollama",
+      apiKey: "",
+      baseUrl: "http://127.0.0.1:11434/v1",
+      model: "qwen2.5:3b"
+    },
+    mt_glossary_v1: { entries: [] }
+  };
+  context.chrome.storage.local.get = (keys, callback) => {
+    const list = Array.isArray(keys) ? keys : [keys];
+    callback(Object.fromEntries(list.map(key => [key, stored[key]])));
+  };
+  context.chrome.storage.local.set = (value, callback) => {
+    Object.assign(stored, JSON.parse(JSON.stringify(value)));
+    callback();
+  };
+  const original = context.__backgroundTest.sendOpenAICompatibleTranslationRequest;
+  context.__backgroundTest.sendOpenAICompatibleTranslationRequest = async (endpoint, apiKey, body) => {
+    const content = String(body && body.messages && body.messages[1] && body.messages[1].content || "");
+    // 小模型把 term/target 填反：term 是译文、target 反而是原文
+    return {
+      content: content.includes("역전")
+        ? JSON.stringify({ terms: [{ term: "世振", target: "세진" }] })
+        : JSON.stringify({ terms: [{ term: "세진이", target: "世振" }] })
+    };
+  };
+  try {
+    const normal = await context.__backgroundTest.handleExtractTermsFromSentence({
+      sourceText: "세진이 너한테 기대가커",
+      translatedText: "世振对你期望很大",
+      targetLanguage: "zh-CN"
+    });
+    assert.equal(normal.ok, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(normal.terms)), [{ term: "세진이", target: "世振" }]);
+    const reversed = await context.__backgroundTest.handleExtractTermsFromSentence({
+      sourceText: "역전 세진이 너한테 기대가커",
+      translatedText: "世振对你期望很大",
+      targetLanguage: "zh-CN"
+    });
+    assert.equal(reversed.ok, true);
+    // term 不是原文但 target 是原文时交换，保证 term 是源句原文文字
+    assert.deepEqual(JSON.parse(JSON.stringify(reversed.terms)), [{ term: "세진", target: "世振" }]);
+    // 交换后 target 保留模型给出的译文
+    assert.equal(reversed.terms[0].target, "世振");
+  } finally {
+    context.__backgroundTest.sendOpenAICompatibleTranslationRequest = original;
     context.__backgroundTest.setBackgroundTestHooks(null);
   }
 });

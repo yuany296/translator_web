@@ -1,6 +1,7 @@
 export function installCanonicalTranslate(runtime, scope) {
   async function refreshCanonicalState({
     reason,
+    runId = "",
     focusPageIds = [],
     guard = null
   } = {}) {
@@ -27,6 +28,7 @@ export function installCanonicalTranslate(runtime, scope) {
       scope.store.setCoverageLedger(result.ledger);
       scope.store.setReconcileDiagnostics(result.diagnostics || {});
       runtime.assertCoverageInvariant(scope.store);
+      scope.timingPhase(runId, "reconcile");
       return result;
     });
     if (!reconciliation || !guardAllows()) return {
@@ -39,6 +41,7 @@ export function installCanonicalTranslate(runtime, scope) {
       debugOnly: true,
       focusPageIds
     });
+    scope.timingPhase(runId, "renderDebug");
     if (!guardAllows()) return {
       aborted: true
     };
@@ -50,7 +53,8 @@ export function installCanonicalTranslate(runtime, scope) {
     for (const pageId of focusPageIds) scope.store.setCanonicalPagePhase(pageId, runtime.CanonicalPhase.TRANSLATING);
     let translated;
     try {
-      translated = await scope.translateCanonicals(eligible, reason, guardAllows);
+      translated = await scope.translateCanonicals(eligible, reason, guardAllows, runId);
+      scope.timingPhase(runId, "translate");
     } catch (error) {
       // 新 revision 翻译失败时仍要把上一版唯一可见译文标成 provisional；
       // 错误继续向上抛给重试调度，页面则不会在此期间变成空白。
@@ -94,6 +98,7 @@ export function installCanonicalTranslate(runtime, scope) {
     }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds));
     scope.store.setProjections(projectionPlan.projections);
     await scope.refreshRequiredCleanedArtifacts(projectionPlan.projections, projectionPlan.seamSurfaceIndex);
+    scope.timingPhase(runId, "cleanArtifacts");
     if (!guardAllows()) return {
       aborted: true
     };
@@ -108,6 +113,7 @@ export function installCanonicalTranslate(runtime, scope) {
       seamSurfaceIndex: refreshedSeamSurfaceIndex,
       fallbackProjectionsByPage: ordinaryFallbackProjections
     });
+    scope.timingPhase(runId, "render");
     if (!guardAllows()) return {
       aborted: true
     };
@@ -138,7 +144,13 @@ export function installCanonicalTranslate(runtime, scope) {
     return false;
   }
   scope.canonicalWaitsForEdge = canonicalWaitsForEdge;
-  async function translateCanonicals(canonicals, reason, guardAllows = () => true) {
+  function recordTranslationTiming(runId, timing) {
+    if (!timing || typeof timing !== "object") return;
+    scope.timingAdd(runId, "translateLlm", timing.translateMs);
+    scope.timingAdd(runId, "translateOfficial", timing.officialLoadMs);
+  }
+  scope.recordTranslationTiming = recordTranslationTiming;
+  async function translateCanonicals(canonicals, reason, guardAllows = () => true, runId = "") {
     const candidates = canonicals.map(canonical => ({
       id: canonical.id,
       revision: Number(canonical.revision) || 1,
@@ -165,6 +177,7 @@ export function installCanonicalTranslate(runtime, scope) {
         targetLanguage: scope.adapters.targetLanguage || runtime.KAKAO_CANONICAL_TARGET_LANGUAGE,
         reason
       });
+      scope.recordTranslationTiming(runId, response && response.timing);
       if (!response || response.ok === false) {
         throw new runtime.CanonicalTranslationError(response && response.error || "Canonical translation request failed");
       }
@@ -206,6 +219,7 @@ export function installCanonicalTranslate(runtime, scope) {
           targetLanguage: scope.adapters.targetLanguage || runtime.KAKAO_CANONICAL_TARGET_LANGUAGE,
           reason: `${reason}:partial-retry`
         });
+        scope.recordTranslationTiming(runId, retryResponse && retryResponse.timing);
         if (!retryResponse || retryResponse.ok === false) {
           throw new runtime.CanonicalTranslationError(retryResponse && retryResponse.error || "Canonical translation retry failed");
         }

@@ -249,6 +249,41 @@ test("canonical text translation keeps same-ID revisions distinct within one req
   assert.equal(response.translations[1].revision, 2);
   assert.equal(response.translations[1].translated_text, "第二版");
 });
+test("canonical text translation restores dialogue quotes dropped by the model", async () => {
+  const background = context.__backgroundTest;
+  installMemoryStorage(separatedConfiguration({
+    translationApiKey: "translation-key",
+    translationModel: "model-quotes",
+    translationBaseUrl: "https://api.example.test"
+  }));
+  background.setBackgroundTestHooks({
+    requestCanonicalTranslationBatch: async ({
+      items
+    }) => items.map((item, index) => ({
+      id: item.id,
+      translated_text: index === 0 ? "住手！" : "“这就是答案。”"
+    }))
+  });
+  const response = await background.handleTranslateTextBlocks({
+    sourceLanguage: "ko",
+    targetLanguage: "zh-CN",
+    items: [{
+      id: "quoted",
+      revision: 1,
+      original_text: "“그만해!”"
+    }, {
+      id: "already-quoted",
+      revision: 1,
+      original_text: "“이게 답이야.”"
+    }]
+  });
+  background.setBackgroundTestHooks(null);
+  assert.equal(response.ok, true);
+  const byId = new Map(response.translations.map(row => [row.id, row]));
+  // NFKC 规范化会把全角感叹号转成半角,与引号无关;引号 “” 不受 NFKC 影响
+  assert.equal(byId.get("quoted").translated_text, "“住手!”");
+  assert.equal(byId.get("already-quoted").translated_text, "“这就是答案。”");
+});
 test("concurrent canonical fingerprints share one external request and warm cache performs zero calls", async () => {
   const background = context.__backgroundTest;
   const stored = installMemoryStorage(separatedConfiguration({

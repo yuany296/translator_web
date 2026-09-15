@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installComicTranslationStore } from "../extension/src/background/modules/comic-translation-store.js";
+import { installTranslationUtils } from "../extension/src/background/modules/translation-utils.js";
 
 function runtime(overrides = {}) {
   const value = {
@@ -9,6 +10,7 @@ function runtime(overrides = {}) {
     canonicalTranslationItemKey: item => `${item.id}@${item.revision || 1}`,
     ...overrides
   };
+  installTranslationUtils(value);
   installComicTranslationStore(value);
   return value;
 }
@@ -45,4 +47,23 @@ test("comic cache can serve an official IndexedDB snapshot while SQLite is offli
   assert.equal(loaded.online, false);
   assert.equal(loaded.outcome.get("c1@1").translatedText, "缓存译文");
   assert.equal(queries, 1);
+});
+
+test("official comic snapshot is patched in place when quotes were dropped", async () => {
+  const api = runtime({
+    getTranslationCacheRecords: async () => new Map(),
+    syncTranslationService: async recordKeys => ({
+      ok: true,
+      records: recordKeys.map(recordKey => ({
+        recordKey,
+        activeVersion: { translatedText: "住手!" }
+      }))
+    })
+  });
+  const descriptor = api.buildComicTranslationDescriptors([
+    { id: "c1", revision: 1, original_text: "“그만해!”" }
+  ], "ko", "zh-CN", { scopeKey: "comic:chapter" });
+  const loaded = await api.loadOfficialComicTranslations(descriptor);
+  assert.equal(loaded.online, true);
+  assert.equal(loaded.outcome.get("c1@1").translatedText, "“住手!”");
 });

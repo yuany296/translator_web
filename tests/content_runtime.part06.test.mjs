@@ -625,3 +625,10 @@ test("loading card anchors once and stops following on later syncs", () => {
     window.innerHeight = originalInnerHeight;
   }
 });
+test("comic ball clicks translate in manual mode and automatic modes start continuous", () => {
+  const click = contentSource.match(/async function onComicClick\(event\) \{[\s\S]*?\n  \}/);
+  assert.ok(click, "onComicClick source should be present");
+  assert.match(click[0], /isAutomaticPretranslateMode\(runtime\.state\.pretranslateMode\)[\s\S]*manualTranslateVisible\(\)[\s\S]*togglePageAutoTranslate\(true\)/);
+  assert.match(contentSource, /ctx\.pretranslateMode === "ahead" \|\| ctx\.pretranslateMode === "continuous"/);
+  assert.match(contentSource, /点击翻译当前视口/);
+});

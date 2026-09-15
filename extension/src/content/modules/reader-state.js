@@ -44,9 +44,9 @@ export function installReaderState(runtime) {
   runtime.AGGRESSIVE_PRELOAD_SWEEP_GAP_MS = AGGRESSIVE_PRELOAD_SWEEP_GAP_MS;
   const AGGRESSIVE_PRELOAD_MAX_QUEUE = 24;
   runtime.AGGRESSIVE_PRELOAD_MAX_QUEUE = AGGRESSIVE_PRELOAD_MAX_QUEUE;
-  const PAYLOAD_CACHE_TTL_MS = 90 * 1000;
+  const PAYLOAD_CACHE_TTL_MS = 30 * 60 * 1000;
   runtime.PAYLOAD_CACHE_TTL_MS = PAYLOAD_CACHE_TTL_MS;
-  const MAX_PAYLOAD_CACHE = 30;
+  const MAX_PAYLOAD_CACHE = 50;
   runtime.MAX_PAYLOAD_CACHE = MAX_PAYLOAD_CACHE;
   const RECOVERY_SCAN_GAP_MS = 650;
   runtime.RECOVERY_SCAN_GAP_MS = RECOVERY_SCAN_GAP_MS;
@@ -211,6 +211,8 @@ export function installReaderState(runtime) {
     showFloatingBall: true,
     captureMode: runtime.CAPTURE_MODE_DIRECT,
     renderMode: runtime.RENDER_MODE_OVERLAY,
+    /** 「覆盖范围」：遮罩绕文字框中心的外扩倍数（0 贴合轮廓，1.2 最大）。 */
+    coverPadding: 1.2,
     floatingBallWrap: null,
     floatingBall: null,
     floatingTextBall: null,

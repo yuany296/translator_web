@@ -677,3 +677,24 @@ test("boundary neighbor complementary seam text is kept despite identical transl
   assert.equal(boundaryNeighbor.bubbles.length, 1);
   assert.equal(adjacentOwn.bubbles.length, 1);
 });
+test("dropAutoQueuedItems purges ahead and page-auto jobs but keeps manual items", () => {
+  const originalQueue = runtime.__test.getTestTranslationQueue();
+  const ahead = { dataset: {}, isConnected: true };
+  const pageAuto = { dataset: {}, isConnected: true };
+  const manual = { dataset: {}, isConnected: true };
+  runtime.__test.setTestTranslationQueue([
+    { target: ahead, options: runtime.__test.buildAheadTranslationOptions("viewport") },
+    { target: manual, options: { manual: true, reason: "manual" } },
+    { target: pageAuto, options: { manual: true, reason: "page-auto" } }
+  ]);
+  try {
+    assert.equal(runtime.__test.isAutoTranslationOptions({ reason: "ahead-mutation" }), true);
+    assert.equal(runtime.__test.isAutoTranslationOptions({ reason: "page-auto" }), true);
+    assert.equal(runtime.__test.isAutoTranslationOptions({ reason: "manual" }), false);
+    assert.equal(runtime.__test.dropAutoQueuedItems(), 2);
+    assert.deepEqual(runtime.__test.getTestTranslationQueue().map(item => item.target), [manual]);
+    assert.equal(runtime.__test.dropAutoQueuedItems(), 0, "second purge is a no-op");
+  } finally {
+    runtime.__test.setTestTranslationQueue(originalQueue);
+  }
+});

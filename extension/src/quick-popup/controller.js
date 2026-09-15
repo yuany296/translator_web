@@ -133,14 +133,18 @@ async function loadTabStatus() {
   const response = await send({ type: "GET_TAB_STATUS", tabId: tab.id });
   if (response.status?.message && response.status.level !== "info") {
     setStatus(response.status.message, response.status.level === "error");
+    return true;
   }
+  return false;
 }
 
 async function load() {
+  setStatus("正在加载设置…");
   const response = await send({ type: "GET_CONFIGURATION" });
   configuration = response.configuration;
   fill(configuration);
-  await loadTabStatus().catch(() => undefined);
+  const statusApplied = await loadTabStatus().catch(() => false);
+  if (!statusApplied) setStatus("");
 }
 
 byId("runtimeEnabled").addEventListener("change", () => void saveRuntime());
@@ -178,11 +182,19 @@ byId("manageChapterBtn").addEventListener("click", () => void (async () => {
     if (!probe?.ok) throw new Error("当前标签页不可用，无法判断是否为可管理章节");
     const snapshot = await chrome.tabs.sendMessage(tab.id, { type: "GET_NOVEL_CHAPTER_SNAPSHOT" });
     if (!snapshot?.ok) throw new Error(snapshot?.error || "当前页面不是可管理的小说章节");
-    await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.sidePanel.open({ windowId: tab.windowId }).catch((error) => {
-      throw new Error(`侧栏无法打开：${error?.message || error}`);
-    });
-    setStatus(`已打开侧栏：${snapshot.chapter.chapterTitle || ""}`);
+    try {
+      // 记录来源标签页,让侧栏据此定位章节(而不是依赖"活动标签页")
+      try {
+        await chrome.storage.session.set({ mt_manage_tab: { tabId: tab.id, windowId: tab.windowId, at: Date.now() } });
+      } catch { /* session 存储不可用时退回活动标签页解析 */ }
+      await chrome.sidePanel.open({ windowId: tab.windowId });
+      setStatus(`已打开侧栏：${snapshot.chapter.chapterTitle || ""}`);
+    } catch {
+      // 侧栏打开失败时回退为新标签页打开同一管理界面(?tabId= 指向来源标签页)
+      const url = chrome.runtime.getURL("sidepanel.html") + `?tabId=${tab.id}`;
+      await chrome.tabs.create({ windowId: tab.windowId, url, active: true });
+      setStatus(`已在新标签页打开章节管理：${snapshot.chapter.chapterTitle || ""}`);
+    }
   } catch (error) {
     setStatus(error.message, true);
   } finally {

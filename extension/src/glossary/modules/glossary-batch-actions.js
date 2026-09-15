@@ -10,6 +10,8 @@ export function installGlossaryBatchActions(runtime) {
   const selectAllInput = document.getElementById("selectAllTerms");
   const actionBar = document.getElementById("batchActionBar");
   const countText = document.getElementById("batchSelectedCount");
+  const modeBtn = document.getElementById("batchModeBtn");
+  const tableContainer = document.getElementById("tableContainer");
   const moveBtn = document.getElementById("batchMoveBtn");
   const deleteBtn = document.getElementById("batchDeleteBtn");
   const clearBtn = document.getElementById("batchClearBtn");
@@ -26,13 +28,17 @@ export function installGlossaryBatchActions(runtime) {
 
   const selectedIds = new Set();
   let moveRequest = null;
+  // 批量模式：平时藏掉行首复选框列，点工具栏「批量操作」才进入（用户嫌入口不明显）。
+  let batchMode = false;
 
   function entryById(id) {
     return runtime.glossary.entries.find(entry => entry.id === id) || null;
   }
 
   function visibleRowIds() {
-    return runtime.termRows.children
+    // termRows.children 在浏览器里是 HTMLCollection：没有 .map，也不能用 [...] 展开，必须 Array.from。
+    // 少了这一步，每次渲染后的同步都会抛 TypeError，把它后面的「进入术语库」之类跳转一起打断。
+    return Array.from(runtime.termRows.children)
       .map(row => (row.dataset ? row.dataset.termId : ""))
       .filter(Boolean);
   }
@@ -48,8 +54,12 @@ export function installGlossaryBatchActions(runtime) {
 
   function updateActionBar() {
     pruneSelection();
-    actionBar.classList.toggle("hidden", selectedIds.size === 0);
-    countText.textContent = `已选 ${selectedIds.size} 条`;
+    // 批量模式下即使一条没选也显示这条栏（否则用户不知道下一步该干什么）；
+    // 非批量模式保持老行为：只有选中了才出现。
+    actionBar.classList.toggle("hidden", selectedIds.size === 0 && !batchMode);
+    countText.textContent = batchMode && selectedIds.size === 0
+      ? "已选 0 条 · 勾选下面要处理的术语"
+      : `已选 ${selectedIds.size} 条`;
   }
 
   function updateSelectAllState() {
@@ -65,16 +75,23 @@ export function installGlossaryBatchActions(runtime) {
     updateActionBar();
   }
 
-  function clearSelection() {
+  function clearSelection(options = {}) {
+    // 事件处理器会把 Event 当第一个参数传进来，所以这里只认显式的 { rerender:false }。
+    const rerender = !(options && options.rerender === false);
     selectedIds.clear();
     updateSelectAllState();
     updateActionBar();
     // 全量重建 tbody，把行内复选框恢复成未勾选。
-    runtime.renderGlossary();
+    if (rerender) {
+      runtime.renderGlossary();
+    }
   }
+  runtime.clearBatchSelection = clearSelection;
 
   function createTermSelectCell(entry) {
     const cell = document.createElement("td");
+    // col-select：非批量模式下整列藏起来（CSS 见 glossary.html）
+    cell.className = "col-select";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.className = "term-select";
@@ -220,10 +237,36 @@ export function installGlossaryBatchActions(runtime) {
     await runtime.persistEntries(nextEntries, `已删除 ${ids.length} 条术语`);
   }
 
-  // 切到「待确认」/「小说记忆」tab 时清空选择并隐藏批量栏（批量操作只作用于正式术语）。
+  /**
+   * 进入/退出批量模式。退出时清空已选：不然收起了复选框列还留着选择，
+   * 下次点「删除」会删掉看不见的东西。
+   */
+  function setBatchMode(on) {
+    const next = Boolean(on) && Boolean(modeBtn);
+    const hadSelection = selectedIds.size > 0;
+    batchMode = next;
+    if (!next) {
+      selectedIds.clear();
+    }
+    if (modeBtn) {
+      modeBtn.classList.toggle("active", batchMode);
+      modeBtn.textContent = batchMode ? "退出批量" : "批量操作";
+      modeBtn.setAttribute("aria-pressed", String(batchMode));
+    }
+    tableContainer?.classList.toggle("batch-mode", batchMode);
+    syncAfterRender();
+    if (!next && hadSelection) {
+      // 行内复选框的勾选状态只能靠重渲染复位。
+      runtime.renderGlossary();
+    }
+  }
+  runtime.setBatchMode = setBatchMode;
+  runtime.isBatchMode = () => batchMode;
+
+  // 切到「待确认」tab 时退出批量模式（批量操作只作用于正式术语）。
   function handleTabSwitch(tab) {
-    if (tab !== "official" && selectedIds.size) {
-      clearSelection();
+    if (tab !== "official") {
+      setBatchMode(false);
     }
   }
   runtime.handleGlossaryTabSwitch = handleTabSwitch;
@@ -237,6 +280,14 @@ export function installGlossaryBatchActions(runtime) {
 
   runtime.termRows.addEventListener("change", handleSelectChange);
   selectAllInput.addEventListener("change", handleSelectAllChange);
+  if (modeBtn) {
+    // batch-capable：有这个按钮才启用「平时藏复选框列」的样式，缺控件时表格保持原样。
+    tableContainer?.classList.add("batch-capable");
+    // 文案由模块自己写：单一真源，退出/进入批量时不会和 HTML 里的初始值打架。
+    modeBtn.textContent = "批量操作";
+    modeBtn.setAttribute("aria-pressed", "false");
+    modeBtn.addEventListener("click", () => setBatchMode(!batchMode));
+  }
   moveBtn.addEventListener("click", openMoveDialog);
   deleteBtn.addEventListener("click", () => void executeDelete());
   clearBtn.addEventListener("click", clearSelection);

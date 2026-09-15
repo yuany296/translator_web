@@ -268,6 +268,46 @@ test("novel chunk retries only rejected paragraphs and enforces the book glossar
   assert.equal(partial.diagnostics.at(-1).status, "request_failed");
   context.__backgroundTest.setBackgroundTestHooks(null);
 });
+test("novel chunk restores dialogue quotes on fresh and cached responses", async () => {
+  installMemoryStorage(separatedConfiguration({ translationApiKey: "test-key" }));
+  context.__backgroundTest.setBackgroundTestHooks({
+    requestNovelChunk() {
+      return {
+        translations: [
+          { id: "p1", translated_text: "但是，要吐的话就痛快吐出来，知道了吗？" },
+          { id: "p2", translated_text: "“这本来就是对的。”" }
+        ],
+        memory_delta: {}
+      };
+    }
+  });
+  const fresh = await context.__backgroundTest.handleTranslateNovelChunk({
+    scopeKey: "kakao:1",
+    chapterId: "c1",
+    chapterOrder: 1,
+    items: [
+      { id: "p1", original_text: "“근데 토할 때 그만 토껴, 알겠지?”" },
+      { id: "p2", original_text: "“원래 맞는 말이야.”" }
+    ]
+  });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.translations[0].translated_text, "“但是，要吐的话就痛快吐出来，知道了吗？”");
+  assert.equal(fresh.translations[1].translated_text, "“这本来就是对的。”");
+  // 缓存命中路径同样兜底;已带引号的译文保持原样
+  const cached = await context.__backgroundTest.handleTranslateNovelChunk({
+    scopeKey: "kakao:1",
+    chapterId: "c1",
+    chapterOrder: 1,
+    items: [
+      { id: "p1", original_text: "“근데 토할 때 그만 토껴, 알겠지?”" },
+      { id: "p2", original_text: "“원래 맞는 말이야.”" }
+    ]
+  });
+  assert.equal(cached.cached, true);
+  assert.equal(cached.translations[0].translated_text, "“但是，要吐的话就痛快吐出来，知道了吗？”");
+  assert.equal(cached.translations[1].translated_text, "“这本来就是对的。”");
+  context.__backgroundTest.setBackgroundTestHooks(null);
+});
 test("novel memory commits a complete checkpoint and excludes later chapters on back-read", async () => {
   installMemoryStorage({});
   const background = context.__backgroundTest;

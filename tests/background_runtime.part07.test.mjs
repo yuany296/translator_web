@@ -650,3 +650,74 @@ test("a single tilted OCR candidate keeps its exact blue polygon during final co
   assert.equal(JSON.stringify(merged.polygon), JSON.stringify(polygon));
   assert.notEqual(merged.polygon, polygon);
 });
+test("meaningless pattern text filters digits, repeated letters and lone characters only", () => {
+  const background = context.__backgroundTest;
+  const dropped = ["8888", "88888888", "12345678", "1 2 3 4 5 6", "llll", "MMMM", "xxxxx", "ssss", "lslsls", "xnxnxn", "l1l1l1", "7", "A", "a", "l", "1.", "9!"];
+  dropped.forEach(text => {
+    assert.equal(background.isMeaninglessPatternText(text), true, `should drop ${JSON.stringify(text)}`);
+    assert.equal(background.shouldDropMeaninglessAlphabeticBubble({ original_text: text }), true, `bubble ${JSON.stringify(text)} should drop`);
+  });
+  const kept = ["아", "가", "何", "ㅋㅋㅋㅋ", "ㅠㅠㅠ", "哈哈哈", "フフフ", "あはは", "hahaha", "aaaa", "Ahhh", "1984", "12", "OK", "No", "더", "25회", "7회", "1화", "V1", "SNS"];
+  kept.forEach(text => {
+    assert.equal(background.isMeaninglessPatternText(text), false, `should keep ${JSON.stringify(text)}`);
+    assert.equal(background.shouldDropMeaninglessAlphabeticBubble({ original_text: text }), false, `bubble ${JSON.stringify(text)} should keep`);
+  });
+});
+test("OCR and translation responses carry per-stage timing for profiling", async () => {
+  const background = context.__backgroundTest;
+  installMemoryStorage(separatedConfiguration({ translationApiKey: "translation-key", translationModel: "model-a", translationBaseUrl: "https://api.example.test" }));
+  background.setBackgroundTestHooks({
+    requestProviderNeutralOcr: async ({ request }) => ({
+      provider: "local_paddle", sourceType: "page", pageIds: request.pageIds,
+      imageRevisionByPage: request.imageRevisionByPage,
+      observations: [{ id: "page-timing", visual: { bgType: "solid" } }],
+      filteredObservations: [], edgeSignals: {}, counts: { eligible: 1, filtered: 0 }
+    }),
+    requestCanonicalTranslationBatch: async ({ items }) => items.map(item => ({ id: item.id, translated_text: `译文${item.id}` }))
+  });
+  try {
+    const ocrRequest = { dataUrl: "data:image/png;base64,VElNSU5H", sourceType: "page", pageIds: ["page-timing"], requireCleanedImage: false };
+    const ocrCold = await background.handleOcrDataUrl(ocrRequest);
+    assert.equal(ocrCold.ok, true);
+    assert.equal(typeof ocrCold.timing.totalMs, "number");
+    assert.equal(typeof ocrCold.timing.providerMs, "number");
+    const ocrWarm = await background.handleOcrDataUrl(ocrRequest);
+    assert.equal(ocrWarm.cached, true);
+    assert.equal(typeof ocrWarm.timing.totalMs, "number");
+    const translation = await background.handleTranslateTextBlocks({ sourceLanguage: "ko", targetLanguage: "zh-CN", mode: "comic", items: [{ id: "t1", revision: 1, original_text: "문장 하나" }] });
+    assert.equal(translation.ok, true);
+    assert.equal(typeof translation.timing.totalMs, "number");
+    assert.equal(typeof translation.timing.translateMs, "number");
+    assert.equal(typeof translation.timing.officialLoadMs, "number");
+    assert.equal(translation.translations[0].id, "t1");
+    assert.match(translation.translations[0].translated_text, /^译文/);
+  } finally {
+    background.setBackgroundTestHooks(null);
+  }
+});
+test("meaningless pattern observations are dropped at the final gate and never become canonicals", async () => {
+  const background = context.__backgroundTest;
+  installMemoryStorage(separatedConfiguration());
+  const build = texts => background.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request: { sourceType: "page", pageIds: ["page-noise"], imageRevisionByPage: { "page-noise": "revision-noise" }, imageDigest: "digest-noise", imageMeta: { pageSpans: [] } },
+    imageSize: { width: 760, height: 1200 },
+    normalized: texts.map((original_text, index) => ({
+      x: 10 + index * 10, y: 10 + index * 10, w: 20, h: 6, original_text,
+      confidence: 0.95,
+      rawBox: { left: 76 + index * 76, top: 120 + index * 120, width: 152, height: 72 },
+      bg_type: "solid", region_type: "speech_bubble"
+    })),
+    ocrTuning: background.getDefaultOcrTuning(),
+    ocrDebug: { filterReasons: [] },
+    ignoreSimplifiedChinese: false,
+    debug: false
+  });
+  const noise = build(["88888888", "lllllll", "7", "A"]);
+  assert.equal(noise.observations.length, 0);
+  assert.equal(noise.filteredObservations.length, 4);
+  assert.ok(noise.filteredObservations.every(item => item.filterReason === "meaningless-alphabetic-final"));
+  const clean = build(["ㅋㅋㅋㅋㅋ", "hahaha", "다음 페이지로 이어진다!"]);
+  assert.equal(clean.observations.length, 3);
+  assert.equal(clean.filteredObservations.length, 0);
+});

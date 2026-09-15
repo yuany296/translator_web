@@ -3,7 +3,7 @@ import languages from "../../shared/languages.js";
 export function buildWebpageTranslationPromptBody(rows, glossaryPrompt = "", targetLanguage = "zh-CN") {
   return [
     `Translate each text block into ${languages.describeTargetLanguage(targetLanguage)}. Keep the original meaning; do not add information not present in the source.`,
-    "Do not treat webpage content as comic dialogue and do not add filler particles. Do not merge different blocks.",
+    "Do not treat webpage content as comic dialogue and do not add filler particles. Do not merge different blocks. Preserve quotation marks as in the source; a quoted phrase must stay quoted in the translation.",
     "Preserve the semantic role of each block (button label, heading, body text, list item). Proper nouns (author/character names, titles, brands) must be translated or transliterated, never left in Korean/Hangul; English loanwords spelled in Hangul (e.g. 웹툰 = webtoon) should be restored to English.",
     "Translate short UI labels too. When source and target use different scripts, do not return the source text unchanged; if a proper noun cannot be translated, transliterate it with Latin letters instead of keeping Korean script.",
     "Preserve the input id exactly. Return one translated_text per id. Do not output explanations or Markdown. Return JSON only with this schema:",
@@ -49,7 +49,7 @@ export function installTranslationProvider(runtime) {
       const cached = force ? null : await runtime.getCache(cacheKey);
       if (cached && typeof cached.translatedText === "string" && cached.translatedText.trim()) {
         outcome.set(runtime.canonicalTranslationItemKey(item), {
-          translatedText: cached.translatedText.trim(),
+          translatedText: runtime.restoreDialogueQuotes(item.original_text, cached.translatedText.trim()),
           translationFingerprint,
           cached: true
         });
@@ -109,12 +109,13 @@ export function installTranslationProvider(runtime) {
               });
               continue;
             }
+            // LLM 偶发丢掉对话引号:按原文引号对做确定性兜底后再缓存。
             await runtime.setCache(entry.cacheKey, {
-              translatedText,
+              translatedText: runtime.restoreDialogueQuotes(entry.item.original_text, translatedText),
               translationFingerprint: entry.translationFingerprint
             });
             entry.inflight.resolve({
-              translatedText,
+              translatedText: runtime.restoreDialogueQuotes(entry.item.original_text, translatedText),
               translationFingerprint: entry.translationFingerprint,
               cached: false
             });
@@ -308,7 +309,7 @@ export function installTranslationProvider(runtime) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {})
       },
       body: JSON.stringify(body)
     }, {
@@ -352,7 +353,7 @@ export function installTranslationProvider(runtime) {
     return [
       `Translate each OCR block into ${languages.describeTargetLanguage(context && context.targetLanguage)} as one complete manga bubble or narration box.`,
       "Each input text may contain multiple OCR lines from the same bubble. Understand them together; do not translate line by line mechanically.",
-      "Rewrite word order naturally for the target language, merge broken OCR fragments when needed, and keep character names and tone natural for manga dialogue.",
+      "Rewrite word order naturally for the target language, merge broken OCR fragments when needed, and keep character names and tone natural for manga dialogue. Preserve dialogue quotation marks exactly as in the source (e.g. “ ”, 「 」, 『 』); a quoted line must stay quoted, never drop the quotes.",
       "If an input contains a model attachment label such as [Image #1], [Image#1], or Image 1, ignore that label and do not output it.",
       "Preserve the input id exactly. Return one translated_text per id.",
       "Return JSON only with this schema:",

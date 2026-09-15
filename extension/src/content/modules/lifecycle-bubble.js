@@ -75,7 +75,14 @@ export function installLifecycleBubble(runtime) {
     node.dataset.canonicalId = String(bubble.canonical_id || "");
     node.dataset.seamRenderKey = String(options.seamRenderKey || "");
     if (bgType === "none") {
-      const sourceBox = runtime.normalizeFillBox(bubble.cleaned_source_box) || {
+      // 遮盖层必须与元素自身的盒子对齐：清理图补丁是按元素盒子换算页面坐标的，
+      // 沿用更小的 cleaned_source_box 会让补丁错位、露出未清理的原图像素。
+      const sourceBox = coverOnly ? {
+        x,
+        y,
+        w,
+        h
+      } : runtime.normalizeFillBox(bubble.cleaned_source_box) || {
         x,
         y,
         w,
@@ -177,55 +184,6 @@ export function installLifecycleBubble(runtime) {
     return node;
   }
   runtime.createBubbleNode = createBubbleNode;
-  function resolveBubbleCoverBox(bubble) {
-    const allowVerticalOverflow = bubble && bubble.stitch_overflow === true;
-    const polygonBox = runtime.resolveBubblePolygonBox(bubble && bubble.polygon, allowVerticalOverflow);
-    const blueBox = polygonBox || runtime.normalizeFillBox(bubble, allowVerticalOverflow);
-    const fillBox = runtime.normalizeFillBox(bubble && bubble.fill_box, allowVerticalOverflow);
-    if (!blueBox) return fillBox;
-    if (polygonBox) return polygonBox;
-    if (!fillBox) return blueBox;
-    // 蓝框是最终渲染几何。OCR 的背景估计可以比它更大，但覆盖层不能因此
-    // 侵入相邻文字框；只保留 fill_box 与最终蓝框的交集。
-    const left = Math.max(blueBox.x, fillBox.x);
-    const top = Math.max(blueBox.y, fillBox.y);
-    const right = Math.min(blueBox.x + blueBox.w, fillBox.x + fillBox.w);
-    const bottom = Math.min(blueBox.y + blueBox.h, fillBox.y + fillBox.h);
-    return right > left && bottom > top ? {
-      x: left,
-      y: top,
-      w: right - left,
-      h: bottom - top
-    } : blueBox;
-  }
-  runtime.resolveBubbleCoverBox = resolveBubbleCoverBox;
-  function buildBubbleCoverProjection(bubble) {
-    const coverBox = resolveBubbleCoverBox(bubble) || {};
-    return {
-      ...bubble,
-      x: coverBox.x != null ? coverBox.x : bubble.x,
-      y: coverBox.y != null ? coverBox.y : bubble.y,
-      w: coverBox.w != null ? coverBox.w : bubble.w,
-      h: coverBox.h != null ? coverBox.h : bubble.h,
-      projection_role: "cover_only",
-      original_text: "",
-      translated_text: "",
-      fill_box: null,
-      region_polygon: null
-    };
-  }
-  runtime.buildBubbleCoverProjection = buildBubbleCoverProjection;
-  function createBubbleRenderNodes(bubble, index, options = {}) {
-    const role = String(bubble && bubble.projection_role || "text_primary");
-    const coverBubble = buildBubbleCoverProjection(bubble);
-    const coverNode = createBubbleNode(coverBubble, index, options);
-    const textNode = role === "cover_only" ? null : createBubbleNode(bubble, index, {
-      ...options,
-      textOnly: true
-    });
-    return { coverNode, textNode };
-  }
-  runtime.createBubbleRenderNodes = createBubbleRenderNodes;
   function applyBubbleAnchorStyle(node, {
     x = 0,
     y = 0,

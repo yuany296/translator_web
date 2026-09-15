@@ -162,6 +162,13 @@ export function installReaderApi(runtime) {
       passesKakaoAheadTargetFilter: runtime.passesKakaoAheadTargetFilter,
       isAheadTranslationOptions: runtime.isAheadTranslationOptions,
       getTranslationQueueInsertIndex: runtime.getTranslationQueueInsertIndex,
+      dropAutoQueuedItems: runtime.dropAutoQueuedItems,
+      isAutoTranslationOptions: runtime.isAutoTranslationOptions,
+      getTestTranslationQueue: () => runtime.state.queue,
+      setTestTranslationQueue: queue => {
+        runtime.state.queue = queue;
+        runtime.state.queuedTargets = new Set(queue.map(item => item && item.target));
+      },
       takeNextKakaoTranslationQueueItem: runtime.takeNextKakaoTranslationQueueItem,
       canStartKakaoTranslationQueueItem: runtime.canStartKakaoTranslationQueueItem,
       isKakaoReaderContentTarget: runtime.isKakaoReaderContentTarget,

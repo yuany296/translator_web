@@ -66,15 +66,387 @@
         box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
       }
 
-      .workspace {
-        display: grid;
-        grid-template-columns: 292px minmax(0, 1fr);
-        gap: 16px;
-        align-items: start;
+      /* 视图切换：列表页（有哪些库）→ 详情页（这个库的术语）→ 小说记忆 */
+      .view {
+        min-width: 0;
       }
 
-      .workspace-main {
+      .view.hidden,
+      .view-stack.hidden {
+        display: none;
+      }
+
+      .view-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .library-list-view {
+        padding: 18px 20px;
+      }
+
+      .view-hint {
+        margin: 0 0 12px;
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      .library-detail-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 14px 16px;
+      }
+
+      .detail-heading {
+        flex: 1;
         min-width: 0;
+      }
+
+      .detail-heading h2 {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      .detail-heading .subtitle {
+        margin: 4px 0 0;
+        font-size: 12px;
+      }
+
+      .detail-actions {
+        display: flex;
+        flex: 0 0 auto;
+        gap: 8px;
+      }
+
+      .back-button {
+        flex: 0 0 auto;
+        padding: 7px 12px;
+        border: 1px solid #dce4ef;
+        border-radius: 9px;
+        background: #f8fafc;
+        color: #334155;
+        cursor: pointer;
+      }
+
+      .back-button:hover {
+        background: #eef2f7;
+      }
+
+      .view-entries {
+        margin-top: 16px;
+        padding-top: 14px;
+        border-top: 1px solid #e8eef6;
+      }
+
+      .entry-button {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #dce4ef;
+        border-radius: 10px;
+        background: #f8fafc;
+        color: #172033;
+        font-size: 13px;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .entry-button:hover {
+        background: #eef2f7;
+      }
+
+      /* 进了单个库的详情页，「术语库」这一列是恒定值，藏掉把宽度让给术语本身 */
+      #tableContainer.single-library .col-library {
+        display: none;
+      }
+
+      /* 批量模式：平时藏掉行首复选框列，点「批量操作」才出现（入口要显眼，表格要干净） */
+      #tableContainer.batch-capable:not(.batch-mode) .col-select {
+        display: none;
+      }
+
+      #batchModeBtn.active {
+        border-color: #93c5fd;
+        background: #eff6ff;
+        color: #1d4ed8;
+      }
+
+      /* 列表页：两列大卡片（沉浸式翻译那种），整张卡可点——点进去才是那个库的管理界面 */
+      .library-list-view .library-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .library-list-view .library-row {
+        align-items: center;
+        gap: 12px;
+        padding: 18px;
+        border: 1px solid #e3eaf4;
+        border-radius: 16px;
+        background: #fbfdff;
+        cursor: pointer;
+      }
+
+      .library-list-view .library-row:hover {
+        border-color: #c7d7ee;
+        background: #f3f8ff;
+      }
+
+      .library-list-view .library-row[data-active="true"] {
+        border-color: #93c5fd;
+        background: #eff6ff;
+      }
+
+      .library-body {
+        display: flex;
+        flex: 1 1 auto;
+        min-width: 0;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .library-list-view .library-name {
+        flex: 0 0 auto;
+        font-size: 16px;
+        cursor: pointer;
+      }
+
+      .library-subtitle {
+        overflow: hidden;
+        color: #64748b;
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* 总览页的「导入文件格式」说明 */
+      .import-format {
+        margin: 0 0 14px;
+        padding: 10px 14px;
+        border: 1px solid #e3eaf4;
+        border-radius: 12px;
+        background: #f8fafc;
+        color: #475569;
+        font-size: 12px;
+      }
+
+      /* 「新建术语库」的两条路：直接新建 / 导入文件 */
+      .new-library-choices {
+        display: flex;
+        gap: 10px;
+        margin: 0 0 16px;
+      }
+
+      .new-library-choices button {
+        flex: 1 1 0;
+        padding: 12px 10px;
+        font-size: 14px;
+      }
+
+      .newLibraryForm .import-format,
+      #newLibraryDialog .import-format {
+        margin-bottom: 14px;
+      }
+
+      .import-format > summary {
+        color: #334155;
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      .import-format ul {
+        margin: 10px 0 0;
+        padding-left: 18px;
+        line-height: 1.75;
+      }
+
+      .import-format code {
+        padding: 1px 5px;
+        border-radius: 6px;
+        background: #eef2f7;
+        font-size: 11px;
+      }
+
+      /* 表格里可直接编辑的三格 */
+      .cell-input {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        padding: 6px 8px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+      }
+
+      .cell-input:hover {
+        border-color: #dce4ef;
+        background: #f8fafc;
+      }
+
+      .cell-input:focus {
+        border-color: #93c5fd;
+        background: #ffffff;
+        outline: none;
+      }
+
+      .scope-badge {
+        margin-left: 6px;
+      }
+
+      .dialog-hint {
+        margin: -4px 0 14px;
+        color: #64748b;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .memory-hint {
+        margin: 10px 16px 0;
+        color: #64748b;
+        font-size: 12px;
+        line-height: 1.7;
+      }
+
+      #memoryChapterSelect {
+        max-width: 320px;
+      }
+
+      .memory-delta {
+        margin: 0 0 8px;
+        color: #0f766e;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .library-list-view .library-count {
+        padding: 3px 10px;
+        border-radius: 999px;
+        background: #eef2f7;
+        color: #475569;
+      }
+
+      .library-pending {
+        flex: 0 0 auto;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #fef3c7;
+        color: #92400e;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      /* 库资料：常显卡片。网址一条条列出来，输入框平时无边框、聚焦才显形（跟表格里那三格一个路子）。 */
+      .library-saved {
+        color: #047857;
+        font-size: 12px;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+
+      .library-saved.on {
+        opacity: 1;
+      }
+
+      .field-error {
+        margin: 6px 0 0;
+        color: #b42318;
+        font-size: 12px;
+      }
+
+      .url-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .url-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .url-row-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        border-color: transparent;
+        background: #f8fafc;
+        font-size: 13px;
+      }
+
+      .url-row-input:hover {
+        border-color: #dce4ef;
+      }
+
+      .url-row-input:focus {
+        background: #ffffff;
+      }
+
+      .url-row button {
+        flex: 0 0 auto;
+        padding: 5px 9px;
+        font-size: 12px;
+      }
+
+      .library-settings .dialog-actions {
+        justify-content: flex-start;
+      }
+
+      .library-settings .dialog-actions:empty {
+        display: none;
+      }
+
+      /* 库资料：由标题行的「编辑资料」按钮展开（不再是藏在 <details> 里的折叠条） */
+      .library-settings-head {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 14px 16px;
+        border-bottom: 1px solid #e8eef6;
+      }
+
+      .library-settings-head h3 {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .library-settings-head small {
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      /* 库资料：常显表单，改完自动保存 */
+      .library-settings .dialog-content {
+        padding: 16px;
+      }
+
+      /* 标题行里的启用开关：跟列表卡片上那个开关同款样式 */
+      .detail-switch {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px;
+        border: 1px solid #dce4ef;
+        border-radius: 9px;
+        background: #f8fafc;
+        color: #334155;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
+      .detail-switch b {
+        font-weight: 600;
+      }
+
+      .settings-actions {
+        gap: 8px;
+      }
+
+      .settings-actions .danger {
+        margin-right: auto;
       }
 
       .library-panel {
@@ -177,16 +549,6 @@
         flex: 0 0 auto;
         color: #64748b;
         font-size: 12px;
-      }
-
-      .library-row-actions {
-        display: flex;
-        gap: 4px;
-      }
-
-      .library-row-actions button {
-        padding: 2px 6px;
-        font-size: 11px;
       }
 
       .library-hint,
@@ -490,7 +852,7 @@
       }
 
       .hidden {
-        display: none;
+        display: none !important;
       }
 
       .batch-bar {
@@ -645,12 +1007,12 @@
       }
 
       @media (max-width: 1040px) {
-        .workspace {
+        .library-list-view .library-list {
           grid-template-columns: 1fr;
         }
 
-        .library-row-actions {
-          margin-left: auto;
+        .library-detail-header {
+          flex-wrap: wrap;
         }
       }
 
@@ -700,6 +1062,17 @@
       .embedded .panel {
         box-shadow: none;
       }
+
+      /* 设置页的「小说记忆」分区直接嵌这一页（glossary.html?view=memory）：
+         那时页面只当记忆编辑器用，标题和「← 术语库」都要藏掉。 */
+      .embed-memory .page-header,
+      .embed-memory #backFromMemoryBtn {
+        display: none;
+      }
+
+      .embed-memory .detail-heading h2 {
+        font-size: 18px;
+      }
     </style>
   </head>
   <body>
@@ -709,38 +1082,86 @@
           <h1>术语库 · Next</h1>
           <p class="subtitle">统一角色名、地名和专有词译法；每个术语库有独立开关，绑定网址后该网址上察觉到的术语会自动归入对应术语库。</p>
         </div>
-        <button id="addBtn" class="primary" type="button">新增术语</button>
       </header>
 
-      <div class="workspace">
-        <aside id="libraryPanel" class="panel library-panel" aria-label="术语库列表">
-          <div class="library-header">
-            <h2>术语库</h2>
-            <button id="addLibraryBtn" class="primary" type="button">新建</button>
-          </div>
-          <div id="libraryList" class="library-list"></div>
-          <div class="library-hint">
-            开关控制整个库是否参与翻译；关闭后该库术语不再出现在提示词里，条目仍然保留。
-            绑定网址用于归集：在这些网址（含其下级章节页）上察觉到的候选术语会自动进入该库。
-            同名词条冲突时：本书范围优先于全局范围，其次是默认术语库。
-          </div>
-          <div id="libraryTotalText" class="library-total"></div>
-          <div id="libraryStatusText" class="library-status" aria-live="polite"></div>
-        </aside>
+      <!-- 视图一：术语库列表。点库名进入那个库的管理页（不再并排挤压表格宽度）。 -->
+      <section id="libraryListView" class="view panel library-list-view" aria-label="术语库列表">
+        <div class="library-header">
+          <h2>术语库</h2>
+          <button id="addLibraryBtn" class="primary" type="button">新建术语库</button>
+        </div>
+        <p class="view-hint">点库名进入这个库：管理它的术语、导入导出、清空。第一行「全部术语」是所有库的总览。</p>
+        <div id="libraryList" class="library-list"></div>
+        <div class="library-hint">
+          开关控制整个库是否参与翻译；关闭后该库术语不再出现在提示词里，条目仍然保留。
+          绑定网址用于归集：在这些网址（含其下级章节页）上察觉到的候选术语会自动进入该库；
+          也认 <code>*.google.com</code>、<code>google.com/mail/*</code>、<code>https://www.google.com/*</code> 这类通配写法（不写协议时 http/https 都算）。
+          同名词条冲突时：本书范围优先于全局范围，其次是默认术语库。
+        </div>
+        <div id="libraryTotalText" class="library-total"></div>
+        <div id="libraryStatusText" class="library-status" aria-live="polite"></div>
+      </section>
 
-        <div class="workspace-main">
-          <nav class="tabs" aria-label="术语库分区">
-            <button id="officialTabBtn" class="tab-button active" type="button">正式术语</button>
-            <button id="pendingTabBtn" class="tab-button" type="button">待确认（0）</button>
-            <button id="memoryTabBtn" class="tab-button" type="button">小说记忆</button>
-          </nav>
+      <!-- 视图二：某个库（或「全部术语」总览）的管理区 -->
+      <section id="libraryDetailView" class="view view-stack hidden">
+        <div class="panel library-detail-header">
+          <button id="backToListBtn" class="back-button" type="button">← 术语库</button>
+          <div class="detail-heading">
+            <h2 id="detailTitle">全部术语</h2>
+            <p id="detailSubtitle" class="subtitle"></p>
+          </div>
+          <div class="detail-actions">
+            <button id="libraryDeleteBtn" class="danger hidden" type="button">删除这个库</button>
+          </div>
+        </div>
+
+        <!-- 库资料：常显。改哪一格离开就自动保存（见 glossary-library-settings.js），没有「编辑资料/保存/收起」。
+             「参与翻译」开关不在这里也不在标题行：是否参与翻译只由列表页卡片的开关决定。 -->
+        <section id="librarySettings" class="panel library-settings hidden">
+          <div class="library-settings-head">
+            <h3>库资料</h3>
+            <span id="librarySavedHint" class="library-saved" aria-live="polite">已保存 ✓</span>
+          </div>
+          <form id="libraryForm" class="dialog-content">
+            <input id="libraryIdInput" type="hidden" />
+            <div class="field">
+              <label for="libraryNameInput">术语库名称</label>
+              <input id="libraryNameInput" type="text" maxlength="60" required placeholder="例如：骸骨皇女" />
+              <p id="libraryNameError" class="field-error hidden" aria-live="polite"></p>
+            </div>
+            <div class="field">
+              <label>绑定网址<small> · 写作品总览页，章节页会自动归入本库；也支持 <code>*.google.com</code> <code>google.com/mail/*</code> <code>https://www.google.com/*</code> 这类通配写法</small></label>
+              <div id="libraryUrlList" class="url-list"></div>
+              <div id="libraryUrlBulk" class="hidden">
+                <textarea id="libraryUrlsInput" spellcheck="false" placeholder="https://page.kakao.com/content/69299983/&#10;https://comic.naver.com/webtoon/list?titleId=123456&#10;https://www.pixiv.net/artworks/12345678&#10;*.google.com"></textarea>
+              </div>
+              <div class="inline-actions">
+                <button id="libraryUrlAddBtn" type="button">＋ 添加网址</button>
+                <button id="libraryUrlBulkBtn" type="button">批量编辑</button>
+                <button id="libraryUrlListBtn" class="hidden" type="button">回到列表</button>
+                <button id="libraryTestBtn" type="button">网址归属测试…</button>
+              </div>
+              <p id="libraryUrlHint" class="library-hint"></p>
+            </div>
+            <div class="dialog-actions settings-actions">
+              <button id="libraryDedupeBtn" class="danger hidden" type="button">清理其它库已有的</button>
+            </div>
+            <p id="libraryDedupeHint" class="library-hint"></p>
+          </form>
+        </section>
+
+        <nav class="tabs" aria-label="术语库分区">
+          <button id="officialTabBtn" class="tab-button active" type="button">术语表</button>
+          <button id="pendingTabBtn" class="tab-button" type="button">待确认（0）</button>
+        </nav>
 
           <section id="officialPanel" class="panel">
             <div class="toolbar">
               <input id="searchInput" class="search" type="search" placeholder="搜索原文、译文或备注" />
+              <button id="batchModeBtn" type="button" aria-pressed="false">批量操作</button>
+              <button id="addBtn" class="primary hidden" type="button">新增术语</button>
               <button id="importBtn" type="button">导入文件</button>
-              <button id="exportJsonBtn" type="button">导出 JSON</button>
-              <button id="exportCsvBtn" type="button">导出 CSV</button>
+              <button id="exportBtn" type="button">导出…</button>
               <button id="clearBtn" class="danger" type="button">清空全部</button>
               <input id="fileInput" class="hidden" type="file" accept=".json,.csv,.db,.sqlite,.sqlite3" />
             </div>
@@ -765,8 +1186,7 @@
                   <tr>
                     <th class="col-select"><input id="selectAllTerms" type="checkbox" aria-label="全选当前显示的术语" /></th>
                     <th>启用</th>
-                    <th>术语库</th>
-                    <th>范围</th>
+                    <th class="col-library">术语库</th>
                     <th>原文术语</th>
                     <th>固定译文</th>
                     <th>备注</th>
@@ -798,17 +1218,34 @@
             </div>
           </section>
 
-          <section id="memoryPanel" class="panel hidden">
-            <div class="toolbar">
-              <select id="memoryBookSelect" aria-label="选择小说作品"></select>
-              <button id="memorySaveBtn" class="primary" type="button">保存记忆</button>
+      </section>
+
+      <!-- 视图三：小说记忆（入口在列表页底部；最终位置待第三步定） -->
+      <section id="memoryView" class="view view-stack hidden">
+        <div class="panel library-detail-header">
+          <button id="backFromMemoryBtn" class="back-button" type="button">← 术语库</button>
+          <div class="detail-heading">
+            <h2>小说记忆</h2>
+            <p class="subtitle">按作品保存的翻译记忆</p>
+          </div>
+        </div>
+
+        <section id="memoryPanel" class="panel hidden">
+          <div class="toolbar">
+            <select id="memoryBookSelect" aria-label="选择小说作品"></select>
+            <select id="memoryChapterSelect" aria-label="选择要编辑的章节快照"></select>
+              <button id="memorySaveBtn" class="primary" type="button">保存这一话</button>
               <button id="memoryExportBtn" type="button">导出本书</button>
               <button id="memoryImportBtn" type="button">导入本书</button>
+              <button id="memoryDeleteChapterBtn" class="danger" type="button">清空这一话</button>
               <button id="memoryClearBtn" class="danger" type="button">清空本书</button>
+              <button id="memoryClearAllBtn" class="danger" type="button">清空全部记忆</button>
               <input id="memoryFileInput" class="hidden" type="file" accept=".json" />
             </div>
+            <p class="memory-hint">每一条是「到这一话为止累计的记忆」，<strong>只会影响这一话之后（不含本话）的翻译</strong>。回顾前面的章节时，选前面那一话改就行，后面的记忆不会被牵连；改错了可以用「导入本书」恢复上次导出的备份。</p>
             <div class="field">
-              <label for="memoryJsonInput">最近章节累计记忆（JSON）</label>
+              <label for="memoryJsonInput">选中这一话的累计记忆（JSON）</label>
+              <p id="memoryDeltaText" class="memory-delta">本话新增：—</p>
               <textarea id="memoryJsonInput" class="memory-json" spellcheck="false"></textarea>
             </div>
             <div class="summary">
@@ -816,31 +1253,44 @@
               <span id="memoryStatusText" aria-live="polite"></span>
             </div>
           </section>
+      </section>
+    </main>
+
+    <dialog id="libraryTestDialog">
+      <form id="libraryTestForm" class="dialog-content">
+        <h2>网址归属测试</h2>
+        <p class="dialog-hint">粘一个章节网址，看这条网址上察觉到的新术语会不会归入本库。按绑定网址逐条比对：不带 <code>*</code> 的按目录前缀命中，带 <code>*</code> 的按通配命中（<code>*.google.com</code> 只管子域，<code>google.com/mail/*</code> 管该目录下任意层级；不写协议时 http/https 都算）。</p>
+        <div class="field">
+          <label for="libraryTestInput">章节网址</label>
+          <input id="libraryTestInput" type="text" placeholder="https://page.kakao.com/content/69299983/viewer/69333586/" />
+          <div id="libraryTestResult" class="library-test"></div>
+        </div>
+        <div class="inline-actions">
+          <button id="libraryShortenBtn" type="button">缩短一级目录</button>
+          <button id="libraryAddTestUrlBtn" type="button">把这条加进绑定</button>
+        </div>
+        <div class="dialog-actions">
+          <button id="libraryTestCloseBtn" type="button">关闭</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="exportDialog">
+      <div class="dialog-content">
+        <h2 id="exportDialogTitle">导出术语</h2>
+        <p class="dialog-hint">CSV 给 Excel 或别的工具用（原文,译文,备注）；JSON 是完整备份，带着术语库结构，导入回来按库归还。</p>
+        <div class="dialog-actions">
+          <button id="exportCsvConfirm" type="button">导出 CSV</button>
+          <button id="exportJsonConfirm" class="primary" type="button">导出 JSON</button>
+          <button id="exportCancelBtn" type="button">取消</button>
         </div>
       </div>
-    </main>
+    </dialog>
 
     <dialog id="termDialog">
       <form id="termForm" class="dialog-content">
         <h2 id="dialogTitle">新增术语</h2>
-        <input id="termIdInput" type="hidden" />
-        <div class="field">
-          <label for="libraryInput">所属术语库</label>
-          <select id="libraryInput"></select>
-        </div>
-        <div class="field">
-          <label for="scopeInput">术语范围</label>
-          <select id="scopeInput">
-            <option value="global">全局</option>
-            <option value="series">本书</option>
-          </select>
-        </div>
-        <div id="seriesScopeFields" class="field hidden">
-          <label for="scopeKeyInput">作品标识（例如 kakao:65171279）</label>
-          <input id="scopeKeyInput" type="text" maxlength="160" />
-          <label for="scopeLabelInput">作品名称</label>
-          <input id="scopeLabelInput" type="text" maxlength="240" />
-        </div>
+        <p id="dialogHint" class="dialog-hint"></p>
         <div class="field">
           <label for="sourceInput">原文术语</label>
           <input id="sourceInput" type="text" maxlength="120" required />
@@ -853,10 +1303,6 @@
           <label for="noteInput">备注（可选，会作为翻译上下文）</label>
           <textarea id="noteInput" maxlength="240"></textarea>
         </div>
-        <div class="enabled-field">
-          <input id="enabledInput" type="checkbox" checked />
-          <label for="enabledInput">立即启用</label>
-        </div>
         <div class="dialog-actions">
           <button id="cancelBtn" type="button">取消</button>
           <button class="primary" type="submit">保存</button>
@@ -864,33 +1310,26 @@
       </form>
     </dialog>
 
-    <dialog id="libraryDialog">
-      <form id="libraryForm" class="dialog-content">
-        <h2 id="libraryDialogTitle">新建术语库</h2>
-        <input id="libraryIdInput" type="hidden" />
-        <div class="field">
-          <label for="libraryNameInput">术语库名称</label>
-          <input id="libraryNameInput" type="text" maxlength="60" required placeholder="例如：骸骨皇女" />
+    <dialog id="newLibraryDialog">
+      <form id="newLibraryForm" class="dialog-content" method="dialog">
+        <h2>新建术语库</h2>
+        <p class="dialog-hint">可以先建一个空库慢慢加术语，也可以直接从文件建库——CSV 的文件名就是库名。</p>
+        <div class="new-library-choices">
+          <button id="newLibraryBlankBtn" class="primary" type="button">直接新建</button>
+          <button id="newLibraryImportBtn" type="button">导入文件</button>
         </div>
-        <div class="enabled-field">
-          <input id="libraryEnabledInput" type="checkbox" checked />
-          <label for="libraryEnabledInput">启用（关闭后该库术语不参与翻译，条目保留）</label>
-        </div>
-        <div class="field">
-          <label for="libraryUrlsInput">绑定网址（每行一个）<small> · 作品总览页写在这里，章节页会自动归入本库</small></label>
-          <textarea id="libraryUrlsInput" spellcheck="false" placeholder="https://page.kakao.com/content/69299983/"></textarea>
-        </div>
-        <div class="field">
-          <label for="libraryTestInput">匹配自检（粘贴一个章节网址）</label>
-          <input id="libraryTestInput" type="text" placeholder="https://page.kakao.com/content/69299983/viewer/69333586/" />
-          <div id="libraryTestResult" class="library-test"></div>
-          <div class="inline-actions">
-            <button id="libraryShortenBtn" type="button">缩短一级目录</button>
-          </div>
-        </div>
+        <details class="import-format">
+          <summary>导入文件格式（点开看）</summary>
+          <ul>
+            <li><strong>CSV</strong>：三列就够 —— <code>原文,译文,备注</code>（也认 <code>source,target,note</code>）。<strong>文件名就是术语库名</strong>：<code>骸骨皇女.csv</code> 会进库「骸骨皇女」；同一个文件重复导入，只会覆盖相同原文的那几条，库里其它条目不动。</li>
+            <li><strong>JSON</strong>：本扩展「导出 JSON」出来的备份文件，自带术语库结构，导入时按文件里的库归还，适合换机器或备份恢复。</li>
+            <li><strong>SQLite（.db）</strong>：需要本地 OCR 服务在线，导入前会自动备份服务端数据库。</li>
+            <li><strong>导入到哪</strong>：在某个库的页面里导入 → 全部进这个库；在总览页（也就是这里）导入 → CSV 按文件名建库、JSON 按自带归属。</li>
+            <li>旧版 CSV 里的「库名」列已废弃，不再读取。</li>
+          </ul>
+        </details>
         <div class="dialog-actions">
-          <button id="libraryCancelBtn" type="button">取消</button>
-          <button class="primary" type="submit">保存</button>
+          <button id="newLibraryCancelBtn" type="button">取消</button>
         </div>
       </form>
     </dialog>
@@ -906,25 +1345,6 @@
         <div class="dialog-actions">
           <button id="batchMoveCancel" type="button">取消</button>
           <button class="primary" type="submit">移动</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="importTargetDialog">
-      <form id="importTargetForm" class="dialog-content">
-        <h2>确认导入</h2>
-        <div class="field">
-          <label for="importTargetSelect">导入到哪个术语库</label>
-          <select id="importTargetSelect"></select>
-          <p id="importTargetHint" class="library-hint"></p>
-        </div>
-        <div id="importNameField" class="field hidden">
-          <label for="importNameInput">术语库名称（可修改）</label>
-          <input id="importNameInput" type="text" maxlength="60" />
-        </div>
-        <div class="dialog-actions">
-          <button id="importTargetCancel" type="button">取消</button>
-          <button id="importTargetConfirm" class="primary" type="button">开始导入</button>
         </div>
       </form>
     </dialog>

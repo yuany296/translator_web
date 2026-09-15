@@ -5,7 +5,14 @@ import sqlite3
 import time
 from typing import Any
 
-from .common import normalize_scope, normalize_source, normalize_src_lng, normalize_tgt_lng
+from .common import (
+    DEFAULT_LIBRARY_ID,
+    normalize_library_id,
+    normalize_scope,
+    normalize_source,
+    normalize_src_lng,
+    normalize_tgt_lng,
+)
 
 
 class TransferMixin:
@@ -64,18 +71,22 @@ class TransferMixin:
                         entry.get("scope_key") or entry.get("scopeKey") or "",
                     )
                     scope_label = entry.get("scope_label") or entry.get("scopeLabel") or ""
+                    library = self._resolve_library(
+                        entry.get("library_id") or entry.get("libraryId") or "",
+                        entry.get("library_name") or entry.get("libraryName") or "",
+                    )
                     conn.execute(
                         """INSERT OR IGNORE INTO glossary_entries
                            (id, source, target, src_lng, tgt_lng, note, enabled, source_key,
-                            scope_type, scope_key, scope_label, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            scope_type, scope_key, scope_label, created_at, updated_at, library_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (eid, source, target,
                          normalize_src_lng(entry.get("sourceLanguage") or entry.get("src_lng")),
                          normalize_tgt_lng(entry.get("targetLanguage") or entry.get("tgt_lng")),
                          (entry.get("note") or "").strip(),
                          1 if entry.get("enabled") is not False else 0,
                          normalize_source(source), scope_type, scope_key, scope_label,
-                         now, now),
+                         now, now, library),
                     )
                     count += 1
                 conn.commit()
@@ -85,6 +96,7 @@ class TransferMixin:
 
     def export_json(self) -> dict[str, Any]:
         return {
+            "libraries": self.list_libraries(),
             "entries": self.get_entries(),
             "pending": self.get_pending(),
             "ignored": self.get_ignored(),
@@ -94,6 +106,7 @@ class TransferMixin:
     @staticmethod
     def _row_to_entry(row: tuple[Any, ...]) -> dict[str, Any]:
         if len(row) >= 13:
+            library_id = normalize_library_id(row[13]) if len(row) >= 14 else DEFAULT_LIBRARY_ID
             return {
                 "id": row[0], "source": row[1], "target": row[2],
                 "sourceLanguage": row[3], "src_lng": row[3],
@@ -103,6 +116,8 @@ class TransferMixin:
                 "workId": row[9], "scopeKey": row[9], "scope_key": row[9],
                 "scopeLabel": row[10], "scope_label": row[10],
                 "createdAt": row[11], "updatedAt": row[12],
+                "libraryId": library_id or DEFAULT_LIBRARY_ID,
+                "library_id": library_id or DEFAULT_LIBRARY_ID,
             }
         return {
             "id": row[0],
@@ -118,6 +133,7 @@ class TransferMixin:
 
     @staticmethod
     def _row_to_pending(row: tuple[Any, ...]) -> dict[str, Any]:
+        library_id = normalize_library_id(row[16]) if len(row) >= 17 else DEFAULT_LIBRARY_ID
         return {
             "id": row[0],
             "source": row[1],
@@ -135,4 +151,6 @@ class TransferMixin:
             "chapterTitle": row[13],
             "createdAt": row[14],
             "updatedAt": row[15],
+            "libraryId": library_id or DEFAULT_LIBRARY_ID,
+            "library_id": library_id or DEFAULT_LIBRARY_ID,
         }

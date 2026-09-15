@@ -60,6 +60,7 @@ export function installControlsUi(runtime) {
       runtime.state.overlayPreviousVisibility = "";
     }
     if (!runtime.state.floatingBallWrap || !runtime.state.floatingBallWrap.isConnected) {
+      runtime.hideFloatingBallFeedback?.();
       runtime.state.floatingBallWrap = null;
       runtime.state.floatingBall = null;
       runtime.state.floatingBallClose = null;
@@ -153,6 +154,7 @@ export function installControlsUi(runtime) {
     runtime.state.floatingBall = ball;
     runtime.state.floatingBallClose = closeBtn;
     runtime.state.floatingBallFeedback = feedback;
+    runtime.bindFloatingFeedbackBehavior(feedback);
     runtime.updateFloatingBallState();
   }
   runtime.createFloatingBall = createFloatingBall;
@@ -174,18 +176,8 @@ export function installControlsUi(runtime) {
     runtime.state.floatingBall.classList.toggle("mt-working", !!working);
   }
   runtime.setFloatingBallWorking = setFloatingBallWorking;
-  function showFloatingBallFeedback(message, level = "info") {
-    const feedback = runtime.state.floatingBallFeedback;
-    if (!feedback) return;
-    feedback.textContent = String(message || "");
-    feedback.className = `mt-floating-feedback mt-${level === "error" ? "error" : level === "success" ? "success" : "info"}`;
-    feedback.hidden = !feedback.textContent;
-  }
-  runtime.showFloatingBallFeedback = showFloatingBallFeedback;
-  function clearFloatingBallFeedback() {
-    runtime.showFloatingBallFeedback("");
-  }
-  runtime.clearFloatingBallFeedback = clearFloatingBallFeedback;
+  // showFloatingBallFeedback / clearFloatingBallFeedback / hideFloatingBallFeedback
+  // 已迁移到 floating-feedback.js（浮层时序控制器），此处不再定义，仅消费。
   function buildManualTranslateFeedback(result) {
     const visibleCount = Math.max(0, Number(result?.visibleCount || 0));
     const successCount = Math.max(0, Number(result?.successCount || 0));
@@ -319,6 +311,7 @@ export function installControlsUi(runtime) {
     runtime.updateFloatingBallState();
     if (!runtime.state.autoTranslatePageEnabled) {
       runtime.clearAutoTranslateRetryTimers();
+      runtime.dropAutoQueuedItems?.();
       await runtime.reportStatus("info", "page auto translate stopped", { pageUrl: location.href });
       return {
         enabled: false,

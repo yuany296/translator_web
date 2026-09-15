@@ -13,6 +13,12 @@ export function installGlossaryPending(runtime) {
     }));
   }
   runtime.renderIgnoredTerms = renderIgnoredTerms;
+  /** 候选卡所在章节当前指向的术语库（选择框优先，其次章节记录）。 */
+  function libraryIdForCard(card) {
+    const control = card.closest(".pending-chapter")?.querySelector(".chapter-library-select");
+    return control ? control.value : "";
+  }
+  runtime.libraryIdForCard = libraryIdForCard;
   async function handlePendingCandidateClick(event) {
     const button = event.target.closest("button[data-action]");
     if (!button) {
@@ -31,6 +37,10 @@ export function installGlossaryPending(runtime) {
         entries: sources.map(source => ({ chapterKey, source })),
         scope: "chapter"
       }, `本话已忽略 ${sources.length} 条`);
+      return;
+    }
+    if (button.dataset.action === "ai-extract" || button.dataset.action === "new-library") {
+      // 这两个按钮自带点击处理（AI 提取、按网址建库），不进入忽略/确认逻辑。
       return;
     }
     const card = event.target.closest(".candidate-card");
@@ -57,7 +67,9 @@ export function installGlossaryPending(runtime) {
         candidateSource,
         source,
         target,
-        note
+        note,
+        chapterKey,
+        libraryId: libraryIdForCard(card)
       }]);
       return;
     }
@@ -75,24 +87,29 @@ export function installGlossaryPending(runtime) {
       candidateSource: card.dataset.source,
       source: card.querySelector(".candidate-source-input").value.trim(),
       target: card.querySelector(".candidate-target").value.trim(),
-      note: card.querySelector(".candidate-note").value.trim()
+      note: card.querySelector(".candidate-note").value.trim(),
+      chapterKey: card.dataset.chapterKey,
+      libraryId: libraryIdForCard(card)
     })).filter(entry => entry.source && entry.target);
     if (entries.length === 0) {
       runtime.setPendingStatus("没有已填写译名的候选术语", true);
       return;
     }
-    await runtime.confirmPendingEntries(entries);
+    const libraries = new Set(entries.map(entry => runtime.libraryLabel(entry.libraryId) || runtime.glossaryCore.DEFAULT_LIBRARY_NAME));
+    await runtime.confirmPendingEntries(entries, libraries.size === 1
+      ? `将加入「${[...libraries][0]}」` : "");
   }
   runtime.confirmAllFilledCandidates = confirmAllFilledCandidates;
-  async function confirmPendingEntries(entries) {
+  async function confirmPendingEntries(entries, hint = "") {
     await runtime.runPendingAction({
       type: "CONFIRM_TERM_CANDIDATES",
       entries
-    }, `已加入 ${entries.length} 条正式术语`);
+    }, `已加入 ${entries.length} 条正式术语${hint ? `（${hint}）` : ""}`);
   }
   runtime.confirmPendingEntries = confirmPendingEntries;
   async function ignoreAllPendingCandidates() {
-    const chapters = runtime.pendingStore.chapters.filter(chapter => chapter.candidates.length > 0);
+    // 只忽略当前详情页范围内的候选：进了某个库，别把别的库的候选一起忽略掉。
+    const chapters = runtime.scopedPendingChapters();
     const entries = chapters.flatMap(chapter => chapter.candidates.map(candidate => ({
       chapterKey: chapter.key,
       source: candidate.source
@@ -111,6 +128,15 @@ export function installGlossaryPending(runtime) {
     }, `已永久忽略 ${entries.length} 条候选`);
   }
   runtime.ignoreAllPendingCandidates = ignoreAllPendingCandidates;
+  async function resetProcessedEvidence() {
+    if (!window.confirm("重置所有章节的“已处理”标记？之后重新翻译的章节会再次进行术语提取。")) {
+      return;
+    }
+    await runtime.runPendingAction({
+      type: "RESET_TERM_DISCOVERY_PROCESSED"
+    }, "已重置全部章节的已处理标记，重新翻译章节后会自动重新提取");
+  }
+  runtime.resetProcessedEvidence = resetProcessedEvidence;
   async function handleIgnoredClick(event) {
     const button = event.target.closest("button[data-action='restore']");
     if (!button) {
@@ -139,9 +165,11 @@ export function installGlossaryPending(runtime) {
     // "auto": try server, fall back to chrome.storage
     // "server": try server only
     // "storage": chrome.storage only
+    let serverFailed = false;
     if (source !== "storage") {
       const result = await runtime.loadGlossaryFromServer();
       if (result.ok) return;
+      serverFailed = true;
     }
     if (source === "server") return;
     try {
@@ -149,217 +177,34 @@ export function installGlossaryPending(runtime) {
         runtime.glossaryCore.STORAGE_KEY,
         runtime.glossaryCore.LEGACY_STORAGE_KEY
       ]);
-      const source = stored[runtime.glossaryCore.STORAGE_KEY] ??
+      const raw = stored[runtime.glossaryCore.STORAGE_KEY] ??
         stored[runtime.glossaryCore.LEGACY_STORAGE_KEY];
-      runtime.glossary = runtime.glossaryCore.normalizeGlossary(source);
-      if (stored[runtime.glossaryCore.STORAGE_KEY] === undefined && source !== undefined) {
+      runtime.glossary = runtime.glossaryCore.normalizeGlossary(raw);
+      if (stored[runtime.glossaryCore.STORAGE_KEY] === undefined && raw !== undefined) {
         await runtime.storageSet({ [runtime.glossaryCore.STORAGE_KEY]: runtime.glossary });
       }
       runtime.renderGlossary();
+      runtime.renderLibraryPanel();
+      runtime.refreshPendingLibraryControls();
+      if (serverFailed) {
+        // 服务离线时看到的是浏览器里那份副本，很容易被当成「数据都没了」——把话说清楚。
+        runtime.setStatus(
+          `本地服务离线：现在显示浏览器里保存的副本（${runtime.glossary.entries.length} 条术语）。`
+          + "SQLite 词库里的数据没有丢，服务恢复后刷新这一页就会同步回来。", true);
+      }
     } catch (error) {
       runtime.setStatus(`读取术语库失败：${runtime.getErrorMessage(error)}`, true);
     }
   }
   runtime.loadGlossary = loadGlossary;
-  function renderGlossary() {
-    const query = String(runtime.searchInput.value || "").trim().toLocaleLowerCase();
-    const filtered = runtime.glossary.entries.filter(entry => {
-      if (!query) {
-        return true;
-      }
-      return [entry.source, entry.target, entry.note, entry.scopeLabel, entry.scopeKey]
-        .some(value => String(value || "").toLocaleLowerCase().includes(query));
-    });
-    const enabledCount = runtime.glossary.entries.filter(entry => entry.enabled).length;
-    runtime.countText.textContent = query ? `共 ${runtime.glossary.entries.length} 条，匹配 ${filtered.length} 条，启用 ${enabledCount} 条` : `共 ${runtime.glossary.entries.length} 条，启用 ${enabledCount} 条`;
-    runtime.termRows.replaceChildren(...filtered.map(runtime.createTermRow));
-    runtime.emptyState.textContent = runtime.glossary.entries.length === 0 ? "暂无术语，点击“新增术语”开始建立词库。" : "没有匹配当前搜索条件的术语。";
-    runtime.emptyState.classList.toggle("hidden", filtered.length !== 0);
-  }
-  runtime.renderGlossary = renderGlossary;
-  function createTermRow(entry) {
-    const row = document.createElement("tr");
-    row.dataset.termId = entry.id;
-    const enabledCell = document.createElement("td");
-    const enabledToggle = document.createElement("input");
-    enabledToggle.type = "checkbox";
-    enabledToggle.checked = entry.enabled;
-    enabledToggle.dataset.action = "toggle";
-    enabledToggle.setAttribute("aria-label", `启用 ${entry.source}`);
-    enabledCell.append(enabledToggle);
-    const scopeCell = document.createElement("td");
-    scopeCell.textContent = entry.scope === "work"
-      ? `本书 · ${entry.scopeLabel || entry.scopeKey}` : "全局";
-    const sourceCell = document.createElement("td");
-    sourceCell.textContent = entry.source;
-    const targetCell = document.createElement("td");
-    targetCell.textContent = entry.target;
-    const noteCell = document.createElement("td");
-    noteCell.className = "note";
-    noteCell.textContent = entry.note || "—";
-    const actionsCell = document.createElement("td");
-    const actions = document.createElement("div");
-    actions.className = "row-actions";
-    actions.append(runtime.createActionButton("编辑", "edit"), runtime.createActionButton("删除", "delete", "danger"));
-    actionsCell.append(actions);
-    row.append(enabledCell, scopeCell, sourceCell, targetCell, noteCell, actionsCell);
-    return row;
-  }
-  runtime.createTermRow = createTermRow;
-  function createActionButton(label, action, className = "") {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    button.dataset.action = action;
-    if (className) {
-      button.className = className;
-    }
-    return button;
-  }
-  runtime.createActionButton = createActionButton;
-  function openEditor(entry = null) {
-    runtime.dialogTitle.textContent = entry ? "编辑术语" : "新增术语";
-    runtime.termIdInput.value = entry ? entry.id : "";
-    runtime.scopeInput.value = entry?.scope === "work" ? "series" : "global";
-    runtime.scopeKeyInput.value = entry?.scopeKey || "";
-    runtime.scopeLabelInput.value = entry?.scopeLabel || "";
-    runtime.sourceInput.value = entry ? entry.source : "";
-    runtime.targetInput.value = entry ? entry.target : "";
-    runtime.noteInput.value = entry ? entry.note : "";
-    runtime.enabledInput.checked = entry ? entry.enabled : true;
-    runtime.updateScopeFields();
-    runtime.termDialog.showModal();
-    runtime.sourceInput.focus();
-  }
-  runtime.openEditor = openEditor;
-  function updateScopeFields() {
-    const series = runtime.scopeInput.value === "series";
-    runtime.seriesScopeFields.classList.toggle("hidden", !series);
-    runtime.scopeKeyInput.required = series;
-  }
-  runtime.updateScopeFields = updateScopeFields;
-  async function saveEditor(event) {
-    event.preventDefault();
-    const id = String(runtime.termIdInput.value || "");
-    const source = String(runtime.sourceInput.value || "").trim();
-    const target = String(runtime.targetInput.value || "").trim();
-    const scope = runtime.scopeInput.value === "series" ? "work" : "global";
-    const scopeKey = scope === "work" ? runtime.scopeKeyInput.value.trim() : "";
-    const stored = await runtime.storageGet(["mt_translation_config_v1"]);
-    const translation = stored.mt_translation_config_v1 || {};
-    const sourceLanguage = entryLanguage(id, "sourceLanguage")
-      || (translation.sourceLanguage === "auto" ? "ko" : translation.sourceLanguage) || "ko";
-    const targetLanguage = entryLanguage(id, "targetLanguage") || translation.targetLanguage || "zh-CN";
-    const duplicate = runtime.glossary.entries.find(entry =>
-      entry.source === source && entry.sourceLanguage === sourceLanguage
-      && entry.targetLanguage === targetLanguage && entry.scope === scope
-      && entry.scopeKey === scopeKey && entry.id !== id);
-    if (duplicate) {
-      runtime.setStatus(`原文术语“${source}”已存在`, true);
-      runtime.sourceInput.focus();
-      return;
-    }
-    const nextEntry = runtime.glossaryCore.normalizeGlossaryEntry({
-      id: id || runtime.createTermId(),
-      source,
-      target,
-      sourceLanguage,
-      targetLanguage,
-      note: runtime.noteInput.value,
-      enabled: runtime.enabledInput.checked,
-      scope,
-      scopeKey,
-      scopeLabel: runtime.scopeLabelInput.value
-    });
-    if (!nextEntry) {
-      runtime.setStatus("原文术语和固定译文不能为空", true);
-      return;
-    }
-    const nextEntries = id ? runtime.glossary.entries.map(entry => entry.id === id ? nextEntry : entry) : [nextEntry, ...runtime.glossary.entries];
-    if (nextEntries.length > runtime.glossaryCore.MAX_ENTRIES) {
-      runtime.setStatus(`术语库最多保存 ${runtime.glossaryCore.MAX_ENTRIES} 条`, true);
-      return;
-    }
-    await runtime.persistEntries(nextEntries, id ? "术语已更新" : "术语已新增");
-    runtime.termDialog.close();
-  }
-  runtime.saveEditor = saveEditor;
-  function entryLanguage(id, key) {
-    return runtime.glossary.entries.find(entry => entry.id === id)?.[key] || "";
-  }
-  async function handleRowClick(event) {
-    const button = event.target.closest("button[data-action]");
-    const row = event.target.closest("tr[data-term-id]");
-    if (!button || !row) {
-      return;
-    }
-    const entry = runtime.glossary.entries.find(item => item.id === row.dataset.termId);
-    if (!entry) {
-      return;
-    }
-    if (button.dataset.action === "edit") {
-      runtime.openEditor(entry);
-      return;
-    }
-    if (button.dataset.action === "delete" && confirm(`确定删除术语“${entry.source}”吗？`)) {
-      await runtime.persistEntries(runtime.glossary.entries.filter(item => item.id !== entry.id), "术语已删除");
-    }
-  }
-  runtime.handleRowClick = handleRowClick;
-  async function handleRowToggle(event) {
-    if (event.target.dataset.action !== "toggle") {
-      return;
-    }
-    const row = event.target.closest("tr[data-term-id]");
-    if (!row) {
-      return;
-    }
-    const nextEntries = runtime.glossary.entries.map(entry => entry.id === row.dataset.termId ? {
-      ...entry,
-      enabled: event.target.checked
-    } : entry);
-    await runtime.persistEntries(nextEntries, event.target.checked ? "术语已启用" : "术语已停用");
-  }
-  runtime.handleRowToggle = handleRowToggle;
-  async function importGlossaryFile() {
-    const file = runtime.fileInput.files && runtime.fileInput.files[0];
-    if (!file) return;
-    const ext = (file.name.split(".").pop() || "").toLowerCase();
-    // Validate extension
-    if (!["json", "csv", "db", "sqlite", "sqlite3"].includes(ext)) {
-      runtime.fileInput.value = "";
-      runtime.setStatus("不支持的文件格式。请选择 JSON、CSV 或 SQLite 数据库文件。", true);
-      return;
-    }
-    runtime.importBtn.disabled = true;
-    try {
-      if (ext === "db" || ext === "sqlite" || ext === "sqlite3") {
-        await runtime.importGlossaryDbFile({ target: { files: [file] } });
-      } else {
-        const text = await file.text();
-        const imported = ext === "csv"
-          ? runtime.parseCsvGlossary(text)
-          : runtime.glossaryCore.normalizeGlossary(JSON.parse(text)).entries;
-        if (!imported.length) throw new Error("文件中没有有效术语");
-        // Upsert: merge by source, keeping existing IDs
-        const mergeKey = entry => `${entry.scope}\u0000${entry.scopeKey}\u0000${entry.source}`;
-        const merged = new Map(runtime.glossary.entries.map(e => [mergeKey(e), e]));
-        for (const entry of imported) {
-          const key = mergeKey(entry);
-          const prev = merged.get(key);
-          merged.set(key, { ...entry, id: prev ? prev.id : (entry.id || runtime.createTermId()) });
-        }
-        const result = Array.from(merged.values()).slice(0, runtime.glossaryCore.MAX_ENTRIES);
-        await runtime.persistEntries(result, `已导入 ${imported.length} 条，合并后共 ${result.length} 条`);
-      }
-      // Reload from server to get canonical data
-      await runtime.loadGlossary("server");
-    } catch (error) {
-      runtime.setStatus(`导入失败：${runtime.getErrorMessage(error)}`, true);
-    } finally {
-      runtime.importBtn.disabled = false;
-      runtime.fileInput.value = "";
-    }
-  }
-  runtime.importGlossaryFile = importGlossaryFile;
+  const pendingStatusText = document.getElementById("pendingStatusText");
+  runtime.pendingStatusText = pendingStatusText;
+  const ignoredPanel = document.getElementById("ignoredPanel");
+  runtime.ignoredPanel = ignoredPanel;
+  const ignoredRows = document.getElementById("ignoredRows");
+  runtime.ignoredRows = ignoredRows;
+  let pendingStore = runtime.termDiscoveryCore.normalizePendingStore(null);
+  runtime.pendingStore = pendingStore;
+  let ignoredStore = runtime.termDiscoveryCore.normalizeIgnoredStore(null);
+  runtime.ignoredStore = ignoredStore;
 }

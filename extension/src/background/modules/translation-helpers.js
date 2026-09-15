@@ -164,9 +164,12 @@ export function installTranslationHelpers(runtime) {
     return false;
   }
   runtime.shouldDropSymbolOnlyBubble = shouldDropSymbolOnlyBubble;
-  function shouldDropMeaninglessAlphabeticBubble() {
-    // 字母、拟声词和语气词即使很短也可能是有效漫画文本。
-    return false;
+  function shouldDropMeaninglessAlphabeticBubble(item) {
+    // 花纹/装饰被 OCR 成数字与重复字母时是纯噪声：单独数字/字母、
+    // 重复数字串、重复辅音串、无元音低多样性串。拟声词（hahaha、ㅋㅋㅋ）
+    // 与短词由其他过滤阶段判断，这里只拦截明确的模式噪声。
+    const original = String(item && (item.original_text || item.originalText || item.text) || "");
+    return runtime.isMeaninglessPatternText(original);
   }
   runtime.shouldDropMeaninglessAlphabeticBubble = shouldDropMeaninglessAlphabeticBubble;
   function shouldDropLocalPaddleCandidateBubble(item, imageSize) {

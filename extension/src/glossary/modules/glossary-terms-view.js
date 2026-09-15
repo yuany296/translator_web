@@ -4,7 +4,8 @@ export function installGlossaryTermsView(runtime) {
   }
   runtime.matchesActiveLibrary = matchesActiveLibrary;
   function renderGlossary() {
-    const query = String(runtime.searchInput.value || "").trim().toLocaleLowerCase();
+    // 搜索词按库各记各的（见 glossary-search）：这里只读当前库那一份，绝不直接读输入框。
+    const query = String(runtime.currentSearchQuery() || "").trim().toLocaleLowerCase();
     const scoped = runtime.glossary.entries.filter(matchesActiveLibrary);
     const filtered = scoped.filter(entry => {
       if (!query) {
@@ -16,7 +17,9 @@ export function installGlossaryTermsView(runtime) {
     });
     const enabledCount = scoped.filter(entry => entry.enabled).length;
     const libraryName = runtime.glossaryCore.getLibraryName(runtime.glossary, runtime.activeLibraryId);
-    const scopeLabel = runtime.activeLibraryId ? `「${libraryName}」共 ${scoped.length} 条` : `共 ${runtime.glossary.entries.length} 条`;
+    const scopeLabel = runtime.activeLibraryId
+      ? `「${libraryName}」共 ${scoped.length} 条`
+      : `「全部术语」共 ${scoped.length} 条`;
     runtime.countText.textContent = query
       ? `${scopeLabel}，匹配 ${filtered.length} 条，启用 ${enabledCount} 条`
       : `${scopeLabel}，启用 ${enabledCount} 条`;
@@ -27,6 +30,20 @@ export function installGlossaryTermsView(runtime) {
     runtime.emptyState.classList.toggle("hidden", filtered.length !== 0);
   }
   runtime.renderGlossary = renderGlossary;
+  /** 表格里可以直接改的三格之一：原文 / 固定译文 / 备注（回车或离开格子即存，Esc 还原）。 */
+  function createCellInput(entry, field) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "cell-input";
+    input.value = field === "note" ? (entry.note || "") : entry[field];
+    input.dataset.action = "edit-cell";
+    input.dataset.field = field;
+    input.dataset.termId = entry.id;
+    input.maxLength = field === "note" ? 240 : 120;
+    input.setAttribute("aria-label", `${field === "source" ? "原文术语" : field === "target" ? "固定译文" : "备注"} ${entry.source}`);
+    return input;
+  }
+  runtime.createCellInput = createCellInput;
   function createTermRow(entry) {
     const row = document.createElement("tr");
     row.dataset.termId = entry.id;
@@ -43,28 +60,36 @@ export function installGlossaryTermsView(runtime) {
     enabledToggle.setAttribute("aria-label", `启用 ${entry.source}`);
     enabledCell.append(enabledToggle);
     const libraryCell = document.createElement("td");
+    libraryCell.className = "col-library";
     const library = runtime.glossaryCore.getLibrary(runtime.glossary, entry.libraryId);
     libraryCell.textContent = library ? library.name : entry.libraryId;
     if (library && library.enabled === false) {
       libraryCell.classList.add("muted");
       libraryCell.textContent = `${libraryCell.textContent}（已停用）`;
     }
-    const scopeCell = document.createElement("td");
-    scopeCell.textContent = entry.scope === "work"
-      ? `本书 · ${entry.scopeLabel || entry.scopeKey}` : "全局";
     const sourceCell = document.createElement("td");
-    sourceCell.textContent = entry.source;
+    sourceCell.className = "col-source";
+    sourceCell.append(createCellInput(entry, "source"));
+    // 「术语范围」已从界面移除，但旧数据里按本书生效的条目仍然生效，用角标交代清楚。
+    if (entry.scope === "work") {
+      const badge = document.createElement("span");
+      badge.className = "badge scope-badge";
+      badge.textContent = "本书";
+      badge.title = `本书范围：${entry.scopeLabel || entry.scopeKey}（只在这一本书里生效）`;
+      sourceCell.append(badge);
+    }
     const targetCell = document.createElement("td");
-    targetCell.textContent = entry.target;
+    targetCell.append(createCellInput(entry, "target"));
     const noteCell = document.createElement("td");
     noteCell.className = "note";
-    noteCell.textContent = entry.note || "—";
+    noteCell.append(createCellInput(entry, "note"));
     const actionsCell = document.createElement("td");
     const actions = document.createElement("div");
     actions.className = "row-actions";
-    actions.append(runtime.createActionButton("编辑", "edit"), runtime.createActionButton("删除", "delete", "danger"));
+    // 编辑不再走弹窗、也不再需要按钮：原文/译文/备注三格直接改，启用是行首的开关。
+    actions.append(runtime.createActionButton("删除", "delete", "danger"));
     actionsCell.append(actions);
-    row.append(enabledCell, libraryCell, scopeCell, sourceCell, targetCell, noteCell, actionsCell);
+    row.append(enabledCell, libraryCell, sourceCell, targetCell, noteCell, actionsCell);
     return row;
   }
   runtime.createTermRow = createTermRow;
@@ -92,84 +117,154 @@ export function installGlossaryTermsView(runtime) {
       ? target : runtime.glossaryCore.DEFAULT_LIBRARY_ID;
   }
   runtime.fillLibraryOptions = fillLibraryOptions;
-  function openEditor(entry = null) {
-    runtime.dialogTitle.textContent = entry ? "编辑术语" : "新增术语";
-    runtime.termIdInput.value = entry ? entry.id : "";
-    runtime.scopeInput.value = entry?.scope === "work" ? "series" : "global";
-    runtime.scopeKeyInput.value = entry?.scopeKey || "";
-    runtime.scopeLabelInput.value = entry?.scopeLabel || "";
-    runtime.sourceInput.value = entry ? entry.source : "";
-    runtime.targetInput.value = entry ? entry.target : "";
-    runtime.noteInput.value = entry ? entry.note : "";
-    runtime.enabledInput.checked = entry ? entry.enabled : true;
-    fillLibraryOptions(runtime.libraryInput, entry ? entry.libraryId : runtime.activeLibraryId);
-    runtime.updateScopeFields();
+  /**
+   * 「新增术语」弹窗只收三样：原文、译文、备注（用户要求）。
+   * 进哪个库由「你现在在哪个库的页面」决定；启用与否在表格里用开关控制；
+   * 库里已有的术语不用弹窗，直接在表格三格里改。
+   */
+  function openEditor() {
+    const libraryId = runtime.glossaryCore.normalizeLibraryId(runtime.activeLibraryId);
+    if (!libraryId) {
+      runtime.setStatus("先在总览页点进一个术语库，再新增术语", true);
+      return;
+    }
+    runtime.dialogTitle.textContent = "新增术语";
+    runtime.dialogHint.textContent = `会加入「${runtime.glossaryCore.getLibraryName(runtime.glossary, libraryId)}」。已有的术语直接在表格里点原文、译文、备注就能改。`;
+    runtime.sourceInput.value = "";
+    runtime.targetInput.value = "";
+    runtime.noteInput.value = "";
     runtime.termDialog.showModal();
     runtime.sourceInput.focus();
   }
   runtime.openEditor = openEditor;
-  function updateScopeFields() {
-    const series = runtime.scopeInput.value === "series";
-    runtime.seriesScopeFields.classList.toggle("hidden", !series);
-    runtime.scopeKeyInput.required = series;
-  }
-  runtime.updateScopeFields = updateScopeFields;
   async function saveEditor(event) {
     event.preventDefault();
-    const id = String(runtime.termIdInput.value || "");
     const source = String(runtime.sourceInput.value || "").trim();
     const target = String(runtime.targetInput.value || "").trim();
-    const scope = runtime.scopeInput.value === "series" ? "work" : "global";
-    const scopeKey = scope === "work" ? runtime.scopeKeyInput.value.trim() : "";
-    const libraryId = runtime.libraryInput.value || runtime.glossaryCore.DEFAULT_LIBRARY_ID;
+    const note = String(runtime.noteInput.value || "").trim();
+    const libraryId = runtime.glossaryCore.normalizeLibraryId(runtime.activeLibraryId);
+    if (!libraryId) {
+      runtime.setStatus("先在总览页点进一个术语库，再新增术语", true);
+      return;
+    }
+    const libraryName = runtime.glossaryCore.getLibraryName(runtime.glossary, libraryId);
+    if (!source || !target) {
+      runtime.setStatus("原文术语和固定译文不能为空", true);
+      return;
+    }
     const stored = await runtime.storageGet(["mt_translation_config_v1"]);
     const translation = stored.mt_translation_config_v1 || {};
-    const sourceLanguage = entryLanguage(id, "sourceLanguage")
-      || (translation.sourceLanguage === "auto" ? "ko" : translation.sourceLanguage) || "ko";
-    const targetLanguage = entryLanguage(id, "targetLanguage") || translation.targetLanguage || "zh-CN";
+    const sourceLanguage = (translation.sourceLanguage === "auto" ? "ko" : translation.sourceLanguage) || "ko";
+    const targetLanguage = translation.targetLanguage || "zh-CN";
     const duplicate = runtime.glossary.entries.find(entry =>
-      entry.source === source && entry.sourceLanguage === sourceLanguage
-      && entry.targetLanguage === targetLanguage && entry.scope === scope
-      && entry.scopeKey === scopeKey && entry.libraryId === libraryId && entry.id !== id);
+      entry.libraryId === libraryId && entry.source === source
+      && entry.sourceLanguage === sourceLanguage && entry.targetLanguage === targetLanguage
+      && entry.scope === "global" && !entry.scopeKey);
     if (duplicate) {
-      runtime.setStatus(`“${runtime.glossaryCore.getLibraryName(runtime.glossary, libraryId)}”里已有原文术语“${source}”`, true);
+      runtime.setStatus(`「${libraryName}」里已有原文术语“${source}”`, true);
       runtime.sourceInput.focus();
       return;
     }
+    // 新增的术语一律全局生效（范围已从界面去掉），启用。
     const nextEntry = runtime.glossaryCore.normalizeGlossaryEntry({
-      id: id || runtime.createTermId(),
+      id: runtime.createTermId(),
       source,
       target,
       sourceLanguage,
       targetLanguage,
-      note: runtime.noteInput.value,
-      enabled: runtime.enabledInput.checked,
-      scope,
-      scopeKey,
-      scopeLabel: runtime.scopeLabelInput.value,
+      note,
+      enabled: true,
+      scope: "global",
+      scopeKey: "",
+      scopeLabel: "",
       libraryId
     }, 0, runtime.glossary.libraries);
     if (!nextEntry) {
       runtime.setStatus("原文术语和固定译文不能为空", true);
       return;
     }
-    const nextEntries = id ? runtime.glossary.entries.map(entry => entry.id === id ? nextEntry : entry) : [nextEntry, ...runtime.glossary.entries];
+    const nextEntries = [nextEntry, ...runtime.glossary.entries];
     const countInLibrary = nextEntries.filter(entry => entry.libraryId === libraryId).length;
     if (countInLibrary > runtime.glossaryCore.MAX_ENTRIES_PER_LIBRARY) {
-      runtime.setStatus(`术语库「${runtime.glossaryCore.getLibraryName(runtime.glossary, libraryId)}」最多保存 ${runtime.glossaryCore.MAX_ENTRIES_PER_LIBRARY} 条`, true);
+      runtime.setStatus(`术语库「${libraryName}」最多保存 ${runtime.glossaryCore.MAX_ENTRIES_PER_LIBRARY} 条`, true);
       return;
     }
     if (nextEntries.length > runtime.glossaryCore.MAX_TOTAL_ENTRIES) {
       runtime.setStatus(`全部术语库合计最多保存 ${runtime.glossaryCore.MAX_TOTAL_ENTRIES} 条`, true);
       return;
     }
-    await runtime.persistEntries(nextEntries, id ? "术语已更新" : "术语已新增");
+    await runtime.persistEntries(nextEntries, `已新增“${source}”`);
     runtime.termDialog.close();
   }
   runtime.saveEditor = saveEditor;
-  function entryLanguage(id, key) {
-    return runtime.glossary.entries.find(entry => entry.id === id)?.[key] || "";
+  /** 表格内改一格：回车 / 离开格子即存，Esc 还原（不写库）。 */
+  async function saveCellEdit(input) {
+    const row = input.closest("tr[data-term-id]");
+    const entry = runtime.glossary.entries.find(item => item.id === row?.dataset.termId);
+    if (!entry) {
+      return;
+    }
+    const field = input.dataset.field;
+    const value = String(input.value || "").trim();
+    const current = field === "note" ? (entry.note || "") : entry[field];
+    if (value === current) {
+      return;
+    }
+    const nextEntry = { ...entry, [field]: value };
+    const revert = () => {
+      input.value = current;
+    };
+    if (!nextEntry.source || !nextEntry.target) {
+      runtime.setStatus("原文术语和固定译文不能为空", true);
+      revert();
+      return;
+    }
+    const duplicate = runtime.glossary.entries.find(item => item.id !== entry.id
+      && item.libraryId === nextEntry.libraryId && item.scope === nextEntry.scope
+      && item.scopeKey === nextEntry.scopeKey && item.source === nextEntry.source
+      && item.sourceLanguage === nextEntry.sourceLanguage && item.targetLanguage === nextEntry.targetLanguage);
+    if (duplicate) {
+      runtime.setStatus(`「${runtime.glossaryCore.getLibraryName(runtime.glossary, entry.libraryId)}」里已有原文术语“${nextEntry.source}”`, true);
+      revert();
+      return;
+    }
+    await runtime.persistEntries(
+      runtime.glossary.entries.map(item => item.id === entry.id ? nextEntry : item),
+      `已更新“${nextEntry.source}”`
+    );
   }
+  runtime.saveCellEdit = saveCellEdit;
+  function handleCellChange(event) {
+    if (event.target?.dataset?.action !== "edit-cell") {
+      return;
+    }
+    void saveCellEdit(event.target);
+  }
+  runtime.handleCellChange = handleCellChange;
+  function handleCellKeydown(event) {
+    const input = event.target;
+    if (input?.dataset?.action !== "edit-cell") {
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      // 浏览器里 blur 会触发 change（统一走保存）；测试里的假 DOM 没有 blur，直接存。
+      if (typeof input.blur === "function") {
+        input.blur();
+      } else {
+        void saveCellEdit(input);
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      const row = input.closest("tr[data-term-id]");
+      const entry = runtime.glossary.entries.find(item => item.id === row?.dataset.termId);
+      if (entry) {
+        input.value = input.dataset.field === "note" ? (entry.note || "") : entry[input.dataset.field];
+      }
+    }
+  }
+  runtime.handleCellKeydown = handleCellKeydown;
   async function handleRowClick(event) {
     const button = event.target.closest("button[data-action]");
     const row = event.target.closest("tr[data-term-id]");
@@ -178,10 +273,6 @@ export function installGlossaryTermsView(runtime) {
     }
     const entry = runtime.glossary.entries.find(item => item.id === row.dataset.termId);
     if (!entry) {
-      return;
-    }
-    if (button.dataset.action === "edit") {
-      runtime.openEditor(entry);
       return;
     }
     if (button.dataset.action === "delete" && confirm(`确定删除术语“${entry.source}”吗？`)) {
@@ -204,6 +295,11 @@ export function installGlossaryTermsView(runtime) {
     await runtime.persistEntries(nextEntries, event.target.checked ? "术语已启用" : "术语已停用");
   }
   runtime.handleRowToggle = handleRowToggle;
+  /** 导入结果写到「看得见」的那条状态行：从总览页导入时用户停在列表页，详情页那条是看不见的。 */
+  function reportImportStatus(message, isError) {
+    runtime.setStatus(message, isError);
+    if (runtime.activeView !== "detail") runtime.setLibraryStatus(message, isError);
+  }
   async function importGlossaryFile() {
     const file = runtime.fileInput.files && runtime.fileInput.files[0];
     if (!file) return;
@@ -215,44 +311,31 @@ export function installGlossaryTermsView(runtime) {
       return;
     }
     runtime.importBtn.disabled = true;
-    let importSummary = "";
-    // 导入前选定的目标库（见 glossary-import-picker.js）：显式指定时优先级最高，
-    // 覆盖文件内自带的库名归属；「按文件内归属」则维持原行为。
-    const importTarget = runtime.consumePendingImportTarget?.() || null;
     try {
       if (ext === "db" || ext === "sqlite" || ext === "sqlite3") {
-        if (importTarget && importTarget.mode === "library") {
-          runtime.setStatus("数据库(.db)导入按文件自带的库归属执行，无法指定目标术语库", true);
-        }
         await runtime.importGlossaryDbFile({ target: { files: [file] } });
       } else {
+        const kind = ext === "csv" ? "csv" : "json";
+        // 去向零弹窗：左侧选中了库就进那个库；「显示全部」时 CSV 按文件名建库、JSON 按自带归属。
+        const target = runtime.resolveImportTarget({ fileName: file.name, kind });
         const text = await file.text();
-        const parsed = ext === "csv" ? null : runtime.glossaryCore.normalizeGlossary(JSON.parse(text));
-        const imported = ext === "csv"
-          ? runtime.parseCsvGlossary(text)
-          : parsed.entries;
+        const parsed = kind === "json" ? runtime.glossaryCore.normalizeGlossary(JSON.parse(text)) : null;
+        const imported = kind === "csv" ? runtime.parseCsvGlossary(text) : parsed.entries;
         if (!imported.length) throw new Error("文件中没有有效术语");
-        // JSON 里带的术语库定义先并入现有库，导入的条目才能保住归属。
-        // mergeImportedLibraries 是 async：漏掉 await 会拿到 Promise，后面 .map 直接抛错，整个导入功能失效。
-        const libraries = await (parsed
-          ? runtime.mergeImportedLibraries(parsed.libraries)
-          : runtime.mergeImportedLibraries([]));
-        const libraryIdByName = new Map(libraries.map(library => [library.name.toLocaleLowerCase(), library.id]));
-        // JSON 用自带的 libraryId；CSV 只带库名。凡是有库名的条目一律按名归属（未建则自动建库），
-        // 不能再用 "libraryId 是否为空" 判断——归一化总会把 libraryId 填成默认库，判断会永远跳过。
-        // JSON 用自带的 libraryId；CSV 只带库名。凡是有库名的条目一律按名归属（未建则自动建库），
-        // 不能再用 "libraryId 是否为空" 判断——归一化总会把 libraryId 填成默认库，判断会永远跳过。
-        // 用户在导入前显式指定了目标库时则跳过按名归位：目标库优先级最高，
-        // 也不为文件里的库名额外建库（一书一库时避免多出无关的库）。
-        if (importTarget && importTarget.mode === "library" && importTarget.libraryId) {
-          for (const entry of imported) entry.libraryId = importTarget.libraryId;
+        let targetName = "";
+        if (target.mode === "attribution") {
+          // JSON 是本扩展的备份格式，自带库结构：先把库定义并入，再按库名把条目归并到本机的库里。
+          // mergeImportedLibraries 是 async：漏掉 await 会拿到 Promise，整个导入功能失效。
+          const libraries = await runtime.mergeImportedLibraries(parsed.libraries);
+          runtime.realignImportedEntries(imported, parsed.libraries, libraries);
         } else {
+          const libraryId = target.mode === "library"
+            ? target.libraryId
+            : (await runtime.ensureLibraryForImport(target.name)).id;
           for (const entry of imported) {
-            const name = String(entry.library || "").trim();
-            if (!name) continue;
-            entry.libraryId = libraryIdByName.get(name.toLocaleLowerCase())
-              || (await runtime.ensureLibraryByName(name)).id;
+            entry.libraryId = libraryId;
           }
+          targetName = runtime.glossaryCore.getLibraryName(runtime.glossary, libraryId);
         }
         // Upsert: merge by 库 + 范围 + 原文，保留已有 ID
         const mergeKey = entry => `${entry.libraryId}\u0000${entry.scope}\u0000${entry.scopeKey}\u0000${entry.source}`;
@@ -263,8 +346,11 @@ export function installGlossaryTermsView(runtime) {
           merged.set(key, { ...entry, id: prev ? prev.id : (entry.id || runtime.createTermId()) });
         }
         const result = Array.from(merged.values()).slice(0, runtime.glossaryCore.MAX_TOTAL_ENTRIES);
-        importSummary = `已导入 ${imported.length} 条，合并后共 ${result.length} 条`;
-        await runtime.persistEntries(result, importSummary);
+        const summary = targetName
+          ? `已导入 ${imported.length} 条到「${targetName}」，合并后共 ${result.length} 条`
+          : `已导入 ${imported.length} 条（按文件自带的术语库归属），合并后共 ${result.length} 条`;
+        await runtime.persistEntries(result, summary);
+        reportImportStatus(summary, false);
       }
       // 服务器在线时用服务端权威数据刷新；离线/失败时保留导入环节自己写好的状态，
       // 不能让服务端的"加载失败"覆盖掉"已导入 N 条"或"数据库导入失败"这类真实结果。
@@ -272,10 +358,10 @@ export function installGlossaryTermsView(runtime) {
       const statusBeforeReloadError = runtime.statusText.dataset.error === "true";
       const reload = await runtime.loadGlossaryFromServer();
       if (!reload || reload.ok !== true) {
-        runtime.setStatus(statusBeforeReload, statusBeforeReloadError);
+        reportImportStatus(statusBeforeReload, statusBeforeReloadError);
       }
     } catch (error) {
-      runtime.setStatus(`导入失败：${runtime.getErrorMessage(error)}`, true);
+      reportImportStatus(`导入失败：${runtime.getErrorMessage(error)}`, true);
     } finally {
       runtime.importBtn.disabled = false;
       runtime.fileInput.value = "";
@@ -294,26 +380,14 @@ export function installGlossaryTermsView(runtime) {
   runtime.termForm = termForm;
   const dialogTitle = document.getElementById("dialogTitle");
   runtime.dialogTitle = dialogTitle;
-  const termIdInput = document.getElementById("termIdInput");
-  runtime.termIdInput = termIdInput;
-  const scopeInput = document.getElementById("scopeInput");
-  runtime.scopeInput = scopeInput;
-  const scopeKeyInput = document.getElementById("scopeKeyInput");
-  runtime.scopeKeyInput = scopeKeyInput;
-  const scopeLabelInput = document.getElementById("scopeLabelInput");
-  runtime.scopeLabelInput = scopeLabelInput;
-  const seriesScopeFields = document.getElementById("seriesScopeFields");
-  runtime.seriesScopeFields = seriesScopeFields;
-  const libraryInput = document.getElementById("libraryInput");
-  runtime.libraryInput = libraryInput;
+  const dialogHint = document.getElementById("dialogHint");
+  runtime.dialogHint = dialogHint;
   const sourceInput = document.getElementById("sourceInput");
   runtime.sourceInput = sourceInput;
   const targetInput = document.getElementById("targetInput");
   runtime.targetInput = targetInput;
   const noteInput = document.getElementById("noteInput");
   runtime.noteInput = noteInput;
-  const enabledInput = document.getElementById("enabledInput");
-  runtime.enabledInput = enabledInput;
   const searchInput = document.getElementById("searchInput");
   runtime.searchInput = searchInput;
   const importBtn = document.getElementById("importBtn");

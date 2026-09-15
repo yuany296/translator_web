@@ -1,5 +1,15 @@
 # Operations Log
 
+## 2026-09-10 — 修复「插件无法翻译」:免密钥服务商被密钥门槛拦住
+
+- 现场定位:用户激活的翻译档案是**无密钥本地 Ollama**(`provider: ollama`, `apiKey: ""`, `baseUrl: http://127.0.0.1:11434/v1`, `model: translategemma:12b`)。当前 Kakao 阅读页 45 个网页翻译段失败,其中 44 个失败节点 `title` 正是 `Translation API Key is missing. Please configure it in popup.`;悬浮球只显示笼统的「网页翻译失败」。`.local-data/translations.db` 中最后一次**新**网页译文提交为 8/12(此后全是缓存命中),与「新请求全部被拒」一致。本地 OCR 服务(8765)`/health`、`/translations/health` 正常,`ocrGeometryVersion` 与扩展一致,不是 OCR 或本地服务问题。
+- 根因:`background/modules/ocr-pipeline.js` 的翻译入口无条件要求 `settings.apiKey`,而 `shared/llm-providers.js` 早已声明 `ollama`/`custom` 的 `needsKey: false`,`providers/translation.js` 的 `validate()` 与本地服务 `translation_stream.py`(`if api_key:`)也都支持免密钥上游 ⇒ 免密钥本地服务永远无法翻译。修复:新增 `llmProviders.keyRequired(providerId)` 作为唯一判定来源,`ocr-pipeline.js`、`novel-translation.js` 改为按服务商能力判断,错误文案改为可定位的中文(含服务商名与设置位置);`sendOpenAICompatibleTranslationRequest` 仅在 Key 非空时发送 `Authorization` 头。
+- 次级缺陷 1:`config/vendors.js` 的 `applyVendorEntry` 把条目密钥当 legacy 回退值,而 `schema.js` 的槽位解析只在目标服务商槽位为空时才采用回退 ⇒ **同一服务商改 Key 不生效**(旧槽位永远胜出)。修复:条目写入自身服务商槽位并对其有最终决定权,其他服务商槽位保持不变。
+- 次级缺陷 2:失败原因被吞。`webpage-batches.js` 的 `result?.errors || [...]` 兜底对空数组失效;`webpage-translate.js` 丢弃后台顶层 `error`;`webpage-startup.js` 的返回结果从不带 `error`,导致界面只剩「翻译失败/网页翻译失败」。三处均已修复,失败节点标题与悬浮球提示现在显示真实原因。
+- 顺带清理:`content/modules/webpage-translate.js` 里 2 个字面 NUL 字节改为 `\u0000` 转义(运行时值不变;此前该文件被 ripgrep 判为二进制而整体跳过搜索)。
+- 现场验证(修复前置):直接向用户本机 Ollama 按扩展同款请求体发请求 → HTTP 200,`response_format: json_object` 下 12/12 id 合法 JSON,约 6s(请求超时 30s 内)。
+- 验证:新增/扩展 `llm_config`(keyRequired 矩阵)、`translation_vendors`(槽位覆盖、免密钥档案可翻译、缺 Key 中文提示)、`webpage_batches`(漏项原因不再被吞)、`webpage_scheduler`(启动结果与后台顶层 error 带出真实原因);定向运行 12/12、5/5、20/20 通过。`dist/` 为 gitignore 产物,需重新构建并在 `chrome://extensions` 重新加载扩展后在阅读页复核。
+
 ## 2026-07-15 - Codex
 
 - 通过 Chrome 现场状态与本地 OCR JSON 定位分段根因：`그런 / 의미에서 / 이름이에요.` 属于同一个 `caption_panel`，而同一行的 `고른` 被区域检测误标为一个嵌套的 `speech_bubble`。该小区域约 93% 被外层区域包含，但旧的区域兼容规则禁止不同区域类型合并，最终把一句话拆成两个翻译段。

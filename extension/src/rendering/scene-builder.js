@@ -1,5 +1,6 @@
 import { buildPlacementGeometry, groupPlacementRegions } from "../layout/placement.js";
 import { layoutInPlacement } from "../layout/crop-local-layout.js";
+import { polygonEdgeRotationDeg, resolveCoverQuad } from "./cover-geometry.js";
 import { createRenderScene } from "./render-scene.js";
 
 const point = (value) => ({
@@ -29,6 +30,16 @@ function sourceSizeFromVisual(visual) {
   return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? { width, height } : null;
 }
 
+/**
+ * 成员倾角：rotation_deg 优先；为空时用 polygon 首边兜底。
+ * OCR/投影把倾角只写进 polygon 而 rotation_deg 缺失时，场景文字层不能退回轴对齐，
+ * 否则遮罩已按四边形倾斜、译文却仍水平。
+ */
+function resolveMemberRotation(bubble, visual, rawPolygon) {
+  const explicit = Number(bubble?.rotation_deg || visual.rotationDeg) || 0;
+  return explicit !== 0 ? explicit : polygonEdgeRotationDeg(rawPolygon);
+}
+
 function detectedMembers(bubble, surface) {
   const visual = bubble?.visual || {};
   const sourceSize = sourceSizeFromVisual(visual);
@@ -55,7 +66,7 @@ function detectedMembers(bubble, surface) {
   return [{
     regionId: String(bubble?.region_id || bubble?.block_id || "region"),
     sourcePolygon,
-    rotationDeg: Number(bubble?.rotation_deg || visual.rotationDeg) || 0,
+    rotationDeg: resolveMemberRotation(bubble, visual, bubble?.polygon || visual.polygon),
     lineThickness: Math.max(1, lineThickness),
     geometryReliability: visual.geometryReliability === "fallback" ? "fallback" : "detected"
   }];
@@ -63,10 +74,27 @@ function detectedMembers(bubble, surface) {
 
 function cleanupGeometry(bubble) {
   const visual = bubble?.visual || {};
+  const polygon = bubble?.polygon || visual.polygon || null;
+  const box = {
+    x: Number(bubble?.x ?? visual.x),
+    y: Number(bubble?.y ?? visual.y),
+    w: Number(bubble?.w ?? visual.w),
+    h: Number(bubble?.h ?? visual.h)
+  };
+  // 斜排文字的遮罩几何：canvas 渲染器必须按四边形裁剪，否则轴对齐矩形会露出原文。
+  const cover = resolveCoverQuad({
+    polygon,
+    rotationDeg: Number(bubble?.rotation_deg ?? visual.rotationDeg) || 0,
+    box,
+    padding: 0
+  });
   return Object.freeze({
     fillBox: bubble?.fill_box || visual.fillBox || null,
     regionPolygon: bubble?.region_polygon || visual.regionPolygon || null,
-    textPolygon: bubble?.polygon || visual.polygon || null,
+    textPolygon: polygon,
+    coverQuad: cover ? cover.quad : null,
+    coverBounds: cover ? cover.bounds : null,
+    coverTilted: Boolean(cover && cover.tilted),
     bgType: String(bubble?.bg_type || visual.bgType || "none")
   });
 }

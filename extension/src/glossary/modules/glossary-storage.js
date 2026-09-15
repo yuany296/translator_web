@@ -2,108 +2,21 @@ export function installGlossaryStorage(runtime) {
   function getServiceHeaders(json = false) {
     return { ...(json ? { "Content-Type": "application/json" } : {}) };
   }
-  function parseCsvGlossary(text) {
-    const rows = runtime.parseCsvRows(String(text || "").replace(/^\uFEFF/, ""));
-    if (rows.length === 0) {
-      return [];
-    }
-    const header = rows[0].map(cell => cell.trim().toLocaleLowerCase());
-    const hasHeader = header.includes("source") && header.includes("target");
-    const sourceIndex = hasHeader ? header.indexOf("source") : 0;
-    const targetIndex = hasHeader ? header.indexOf("target") : 1;
-    const noteIndex = hasHeader ? header.indexOf("note") : 2;
-    const sourceLanguageIndex = hasHeader ? header.indexOf("source_language") : -1;
-    const targetLanguageIndex = hasHeader ? header.indexOf("target_language") : -1;
-    const enabledIndex = hasHeader ? header.indexOf("enabled") : 3;
-    const scopeIndex = hasHeader ? header.indexOf("scope") : -1;
-    const scopeKeyIndex = hasHeader ? header.indexOf("scope_key") : -1;
-    const scopeLabelIndex = hasHeader ? header.indexOf("scope_label") : -1;
-    return runtime.glossaryCore.normalizeGlossary((hasHeader ? rows.slice(1) : rows).map(row => ({
-      id: runtime.createTermId(),
-      source: row[sourceIndex],
-      target: row[targetIndex],
-      sourceLanguage: sourceLanguageIndex >= 0 ? row[sourceLanguageIndex] : "ko",
-      targetLanguage: targetLanguageIndex >= 0 ? row[targetLanguageIndex] : "zh-CN",
-      note: noteIndex >= 0 ? row[noteIndex] : "",
-      enabled: enabledIndex < 0 || !/^(false|0|no|否)$/i.test(String(row[enabledIndex] || "").trim()),
-      scope: scopeIndex >= 0 ? row[scopeIndex] : "global",
-      scopeKey: scopeKeyIndex >= 0 ? row[scopeKeyIndex] : "",
-      scopeLabel: scopeLabelIndex >= 0 ? row[scopeLabelIndex] : ""
-    }))).entries;
-  }
-  runtime.parseCsvGlossary = parseCsvGlossary;
-  function parseCsvRows(text) {
-    const rows = [];
-    let row = [];
-    let cell = "";
-    let quoted = false;
-    for (let index = 0; index < text.length; index += 1) {
-      const char = text[index];
-      if (quoted) {
-        if (char === '"' && text[index + 1] === '"') { cell += '"'; index += 1; }
-        else if (char === '"') { quoted = false; }
-        else { cell += char; }
-      } else if (char === '"') { quoted = true; }
-      else if (char === ",") {
-        row.push(cell);
-        cell = "";
-      } else if (char === "\n") {
-        row.push(cell);
-        rows.push(row);
-        row = [];
-        cell = "";
-      } else if (char !== "\r") {
-        cell += char;
-      }
-    }
-    row.push(cell);
-    if (row.some(value => value !== "")) {
-      rows.push(row);
-    }
-    return rows;
-  }
-  runtime.parseCsvRows = parseCsvRows;
-  function exportGlossaryJson() {
-    runtime.downloadFile(`manga-glossary-${runtime.formatDate()}.json`, JSON.stringify(runtime.glossary, null, 2), "application/json;charset=utf-8");
-    runtime.setStatus(`已导出 ${runtime.glossary.entries.length} 条术语`, false);
-  }
-  runtime.exportGlossaryJson = exportGlossaryJson;
-  function exportGlossaryCsv() {
-    const rows = [["source", "target", "source_language", "target_language", "note", "enabled", "scope", "scope_key", "scope_label"],
-      ...runtime.glossary.entries.map(entry => [
-        entry.source, entry.target, entry.sourceLanguage, entry.targetLanguage,
-        entry.note, String(entry.enabled),
-        entry.scope, entry.scopeKey, entry.scopeLabel
-      ])];
-    const csv = rows.map(row => row.map(runtime.escapeCsvCell).join(",")).join("\r\n");
-    runtime.downloadFile(`manga-glossary-${runtime.formatDate()}.csv`, `\uFEFF${csv}`, "text/csv;charset=utf-8");
-    runtime.setStatus(`已导出 ${runtime.glossary.entries.length} 条术语`, false);
-  }
-  runtime.exportGlossaryCsv = exportGlossaryCsv;
-  async function clearGlossary() {
-    if (runtime.glossary.entries.length === 0) return;
-    if (!confirm(`确定清空全部 ${runtime.glossary.entries.length} 条术语吗？此操作同时清空服务端数据库。`)) return;
-    runtime.clearBtn.disabled = true;
+  runtime.getServiceHeaders = getServiceHeaders;
+  /**
+   * 读接口一律带超时：本地服务单线程，批量写译文时会把队列占满（连 /glossary/health 都要排队），
+   * 没有超时的话页面会一直转圈、最后看起来「术语表是空的」。超时后照常走本地副本兜底。
+   */
+  async function fetchReadWithTimeout(url, options = {}, timeoutMs = 4000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      serverBaseUrl = await resolveServerBaseUrl();
-      const resp = await fetch(`${serverBaseUrl}/glossary/clear`, {
-        method: "POST", headers: await getServiceHeaders()
-      });
-      if (!resp.ok) throw new Error(`服务器错误 ${resp.status}`);
-      const data = await resp.json();
-      if (!data.ok) throw new Error(data.error || "清空失败");
-      runtime.glossary.entries = [];
-      runtime.glossary.revision = 0;
-      await runtime.storageSet({ [runtime.glossaryCore.STORAGE_KEY]: runtime.glossary });
-      runtime.renderGlossary();
-      runtime.setStatus(`已清空 ${data.deleted || 0} 条术语`, false);
-    } catch (error) {
-      runtime.setStatus(`清空失败：${runtime.getErrorMessage(error)}`, true);
+      return await fetch(url, { ...options, signal: controller.signal });
     } finally {
-      runtime.clearBtn.disabled = false;
+      clearTimeout(timer);
     }
   }
-  runtime.clearGlossary = clearGlossary;
+  runtime.fetchReadWithTimeout = fetchReadWithTimeout;
   // ── server-backed glossary sync ──
   let serverBaseUrl = localStorage.getItem("mt_glossary_server_url") || "http://127.0.0.1:8765";
   async function resolveServerBaseUrl() {
@@ -116,6 +29,7 @@ export function installGlossaryStorage(runtime) {
     return String(serverBaseUrl || "http://127.0.0.1:8765").replace(/\/+$/, "");
   }
   runtime.getServerBaseUrl = () => serverBaseUrl;
+  runtime.resolveServerBaseUrl = resolveServerBaseUrl;
   runtime.setServerBaseUrl = (url) => {
     serverBaseUrl = String(url || "http://127.0.0.1:8765").replace(/\/+$/, "");
     try { localStorage.setItem("mt_glossary_server_url", serverBaseUrl); } catch (_) {}
@@ -123,10 +37,14 @@ export function installGlossaryStorage(runtime) {
   runtime.getSyncRevision = () => { try { return Number(localStorage.getItem("mt_glossary_sync_revision")) || 0; } catch (_) { return 0; } };
   runtime.setSyncRevision = (rev) => { try { localStorage.setItem("mt_glossary_sync_revision", String(Number(rev) || 0)); } catch (_) {} };
   async function loadGlossaryFromServer() {
+    const stored = await runtime.storageGet([runtime.glossaryCore.STORAGE_KEY, runtime.glossaryCore.LEGACY_STORAGE_KEY]);
+    const localState = runtime.glossaryCore.normalizeGlossary(
+      stored[runtime.glossaryCore.STORAGE_KEY] ?? stored[runtime.glossaryCore.LEGACY_STORAGE_KEY]
+    );
     try {
       serverBaseUrl = await resolveServerBaseUrl();
       const fetchData = async () => {
-        const resp = await fetch(`${serverBaseUrl}/glossary?limit=2000`, {
+        const resp = await fetchReadWithTimeout(`${serverBaseUrl}/glossary?limit=2000`, {
           headers: await getServiceHeaders()
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -135,14 +53,18 @@ export function installGlossaryStorage(runtime) {
         return payload;
       };
       let data = await fetchData();
-      const entryKey = entry => [entry.sourceLanguage, entry.targetLanguage, entry.scope, entry.scopeKey, entry.source].join("\u0000");
-      const toEntry = e => ({ source: String(e.source || ""), sourceLanguage: e.sourceLanguage || e.src_lng || "ko", targetLanguage: e.targetLanguage || e.tgtLng || e.tgt_lng || "zh-CN", scope: e.scope || e.scope_type || "global", scopeKey: e.scopeKey || e.scope_key || "" });
+      const entryKey = entry => [entry.libraryId, entry.sourceLanguage, entry.targetLanguage, entry.scope, entry.scopeKey, entry.source].join("\u0000");
+      const toEntry = e => ({
+        libraryId: e.libraryId || e.library_id || runtime.glossaryCore.DEFAULT_LIBRARY_ID,
+        source: String(e.source || ""), sourceLanguage: e.sourceLanguage || e.src_lng || "ko",
+        targetLanguage: e.targetLanguage || e.tgtLng || e.tgt_lng || "zh-CN",
+        scope: e.scope || e.scope_type || "global", scopeKey: e.scopeKey || e.scope_key || ""
+      });
       // 迁移历史数据：修订面板确认的术语此前只写本地 chrome.storage，服务在线时补传服务端缺失条目。
       let pushed = 0;
       let missing = [];
       try {
-        const stored = await runtime.storageGet([runtime.glossaryCore.STORAGE_KEY, runtime.glossaryCore.LEGACY_STORAGE_KEY]);
-        const localEntries = runtime.glossaryCore.normalizeGlossary(stored[runtime.glossaryCore.STORAGE_KEY] ?? stored[runtime.glossaryCore.LEGACY_STORAGE_KEY]).entries;
+        const localEntries = localState.entries;
         if (localEntries.length) {
           const serverKeys = new Set(data.entries.map(entry => entryKey(toEntry(entry))));
           missing = localEntries.filter(entry => !serverKeys.has(entryKey(entry)));
@@ -151,7 +73,7 @@ export function installGlossaryStorage(runtime) {
               method: "POST",
               headers: await getServiceHeaders(true),
               body: JSON.stringify({
-                entries: missing.map(entry => ({ source: entry.source, target: entry.target, note: entry.note || "", enabled: entry.enabled !== false, src_lng: entry.sourceLanguage, tgt_lng: entry.targetLanguage, scope_type: entry.scope, scope_key: entry.scopeKey, scope_label: entry.scopeLabel })),
+                entries: missing.map(entry => ({ id: entry.id, source: entry.source, target: entry.target, note: entry.note || "", enabled: entry.enabled !== false, src_lng: entry.sourceLanguage, tgt_lng: entry.targetLanguage, scope_type: entry.scope, scope_key: entry.scopeKey, scope_label: entry.scopeLabel, library_id: entry.libraryId })),
                 tgt_lng: "zh-CN"
               })
             });
@@ -166,16 +88,27 @@ export function installGlossaryStorage(runtime) {
         // 迁移推送失败：合并本地独有条目，不因服务端旧数据覆盖而丢失。
         data = { ...data, entries: [...data.entries, ...missing] };
       }
+      // 服务端没返回库定义（旧版服务）时保留本地库，避免刷新即丢失库归属。
+      const serverLibraries = Array.isArray(data.libraries) && data.libraries.length ? data.libraries : null;
+      runtime.libraryServerSupported = Boolean(serverLibraries);
+      const libraries = serverLibraries
+        ? runtime.glossaryCore.normalizeLibraries([
+          ...serverLibraries,
+          ...localState.libraries.filter(local => !serverLibraries.some(item => item.id === local.id))
+        ])
+        : localState.libraries;
       runtime.glossary = runtime.glossaryCore.normalizeGlossary({
         version: runtime.glossaryCore.SCHEMA_VERSION,
         revision: Math.max(1, Math.round((data.revision || data.last_updated || 0) * 1000)),
         updatedAt: Date.now(),
+        libraries,
         entries: data.entries.map(e => ({
           id: e.id, source: e.source, target: e.target, note: e.note || "",
           sourceLanguage: e.sourceLanguage || e.src_lng || "ko",
           targetLanguage: e.targetLanguage || e.tgtLng || e.tgt_lng || "zh-CN",
           enabled: e.enabled !== false, scope: e.scope || e.scope_type,
-          scopeKey: e.scopeKey || e.scope_key, scopeLabel: e.scopeLabel || e.scope_label
+          scopeKey: e.scopeKey || e.scope_key, scopeLabel: e.scopeLabel || e.scope_label,
+          libraryId: e.libraryId || e.library_id || runtime.glossaryCore.DEFAULT_LIBRARY_ID
         }))
       });
       await runtime.storageSet({
@@ -183,8 +116,19 @@ export function installGlossaryStorage(runtime) {
       });
       if (data.revision) runtime.setSyncRevision(Number(data.revision));
       runtime.renderGlossary();
+      runtime.renderLibraryPanel();
+      // 服务端还缺的库定义补齐（含首次升级的服务端迁移），失败只提示不回滚本地。
+      const missingOnServer = serverLibraries
+        ? localState.libraries.filter(local => !serverLibraries.some(item => item.id === local.id))
+        : localState.libraries;
+      if (missingOnServer.length) {
+        const synced = await runtime.syncLibrariesToServer(missingOnServer).catch(() => 0);
+        if (synced < missingOnServer.length) {
+          runtime.setLibraryStatus("术语库定义暂未同步到本地服务：请重启本地 OCR 服务后再试", true);
+        }
+      }
       const migratedNote = pushed > 0 ? `，并补齐本地旧术语 ${pushed} 条` : missing.length ? `，本地旧术语 ${missing.length} 条未同步（已保留）` : "";
-      runtime.setStatus(`已从服务加载 ${data.total || runtime.glossary.entries.length} 条术语${migratedNote} (修订 ${runtime.getSyncRevision().toFixed(1)})`, false);
+      runtime.setStatus(`已从服务加载 ${data.total || runtime.glossary.entries.length} 条术语，${runtime.glossary.libraries.length} 个术语库${migratedNote} (修订 ${runtime.getSyncRevision().toFixed(1)})`, false);
       return { ok: true, entries: runtime.glossary.entries };
     } catch (error) {
       runtime.setStatus(`加载失败：${runtime.getErrorMessage(error)}`, true);
@@ -204,6 +148,8 @@ export function installGlossaryStorage(runtime) {
       body.scope_type = scope.scope === "work" ? "work" : "global";
       body.scope_key = body.scope_type === "work" ? String(scope.scopeKey || "") : "";
       body.scope_label = body.scope_type === "work" ? String(scope.scopeLabel || "") : "";
+      body.library_id = runtime.glossaryCore.normalizeLibraryId(scope.libraryId) || runtime.glossaryCore.DEFAULT_LIBRARY_ID;
+      body.library_name = runtime.glossaryCore.getLibraryName(runtime.glossary, body.library_id);
       if (entryId && !entryId.startsWith("term-new-")) body.id = entryId;
       const resp = await fetch(`${serverBaseUrl}/glossary`, {
         method: "PUT",
@@ -241,50 +187,14 @@ export function installGlossaryStorage(runtime) {
     }
   }
   runtime.deleteEntryFromServer = deleteEntryFromServer;
-  async function importDbFileToServer(file) {
-    try {
-      serverBaseUrl = await resolveServerBaseUrl();
-      const form = new FormData();
-      form.append("file", file);
-      const resp = await fetch(`${serverBaseUrl}/glossary/import-db`, {
-        method: "POST", headers: await getServiceHeaders(), body: form
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-      return data;
-    } catch (error) {
-      return { ok: false, error: runtime.getErrorMessage(error) };
-    }
-  }
-  runtime.importDbFileToServer = importDbFileToServer;
-  async function importGlossaryDbFile(event) {
-    const file = event?.target?.files?.[0];
-    if (!file) return;
-    if (!confirm(`将导入数据库文件 "${file.name}" (${(file.size / 1024).toFixed(1)} KB)。\n\n导入前会自动备份当前数据库，不会直接替换。\n确认继续？`)) {
-      event.target.value = "";
-      return;
-    }
-    try {
-      runtime.setStatus("正在导入数据库…", false);
-      const result = await runtime.importDbFileToServer(file);
-      if (result.ok === false) throw new Error(result.error || result.detail || "导入失败");
-      const msg = `导入完成：读取 ${result.read || 0} 条，新增 ${result.added || 0} 条，更新 ${result.updated || 0} 条，跳过 ${result.skipped || 0} 条`;
-      runtime.setStatus(msg + (result.backup ? ` (备份: ${result.backup})` : ""), false);
-      await runtime.loadGlossary("server");
-    } catch (error) {
-      runtime.setStatus(`数据库导入失败：${runtime.getErrorMessage(error)}`, true);
-    } finally {
-      event.target.value = "";
-    }
-  }
-  runtime.importGlossaryDbFile = importGlossaryDbFile;
-  // ── end server sync ──
   // ── end server sync ──
   async function persistEntries(entries, message) {
+    const previousIds = runtime.glossary.entries.map(entry => entry.id);
     const next = runtime.glossaryCore.normalizeGlossary({
       version: runtime.glossaryCore.SCHEMA_VERSION,
       revision: runtime.glossary.revision + 1,
       updatedAt: Date.now(),
+      libraries: runtime.glossary.libraries,
       entries
     });
     try {
@@ -296,15 +206,24 @@ export function installGlossaryStorage(runtime) {
       runtime.glossary = next;
       runtime.pendingStore = nextPending;
       runtime.renderGlossary();
+      runtime.renderLibraryPanel();
       runtime.renderPendingState();
       runtime.setStatus(message, false);
       // Sync to server in background
       try {
         serverBaseUrl = await resolveServerBaseUrl();
+        const nextIds = new Set(next.entries.map(entry => entry.id));
+        // 先删掉本地已移除的条目，避免下次从服务端加载时"复活"。
+        for (const id of previousIds.filter(id => !nextIds.has(id))) {
+          await runtime.deleteEntryFromServer(id).catch(() => undefined);
+        }
         const batchEntries = next.entries.map(e => ({
+          id: e.id,
           source: e.source, target: e.target, note: e.note || "", enabled: e.enabled !== false,
           src_lng: e.sourceLanguage, tgt_lng: e.targetLanguage,
-          scope_type: e.scope, scope_key: e.scopeKey, scope_label: e.scopeLabel
+          scope_type: e.scope, scope_key: e.scopeKey, scope_label: e.scopeLabel,
+          library_id: e.libraryId,
+          library_name: runtime.glossaryCore.getLibraryName(next, e.libraryId)
         }));
         const resp = await fetch(`${serverBaseUrl}/glossary/batch`, {
           method: "POST",
@@ -324,34 +243,6 @@ export function installGlossaryStorage(runtime) {
     }
   }
   runtime.persistEntries = persistEntries;
-  function downloadFile(filename, content, type) {
-    const url = URL.createObjectURL(new Blob([content], {
-      type
-    }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-  runtime.downloadFile = downloadFile;
-  function escapeCsvCell(value) {
-    const text = String(value || "");
-    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-  }
-  runtime.escapeCsvCell = escapeCsvCell;
-  function createTermId() {
-    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
-      return `term-${globalThis.crypto.randomUUID()}`;
-    }
-    return `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-  runtime.createTermId = createTermId;
-  function formatDate() {
-    const date = new Date();
-    return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
-  }
-  runtime.formatDate = formatDate;
   function setStatus(message, isError) {
     runtime.statusText.textContent = message;
     runtime.statusText.dataset.error = isError ? "true" : "false";

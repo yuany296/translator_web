@@ -1,9 +1,12 @@
 import languages from "../shared/languages.js";
+import llmProviders from "../shared/llm-providers.js";
 
 export const CONFIG_KEYS = Object.freeze({
   ocr: "mt_ocr_config_v1",
   translation: "mt_translation_config_v1",
-  runtime: "mt_runtime_config_v1"
+  runtime: "mt_runtime_config_v1",
+  termExtraction: "mt_term_extraction_config_v1",
+  sentenceExtraction: "mt_sentence_extraction_config_v1"
 });
 
 export const OCR_PROVIDERS = Object.freeze({ BAIDU: "baidu", LOCAL_PADDLE: "local_paddle" });
@@ -28,7 +31,7 @@ export const DEFAULT_OCR_CONFIG = Object.freeze({
 });
 
 export const DEFAULT_TRANSLATION_CONFIG = Object.freeze({
-  provider: TRANSLATION_PROVIDERS.OPENAI_COMPATIBLE,
+  provider: "deepseek",
   apiKey: "",
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-chat",
@@ -36,14 +39,36 @@ export const DEFAULT_TRANSLATION_CONFIG = Object.freeze({
   targetLanguage: "zh-CN"
 });
 
+// 提取类配置只保留「用配置库里的哪一条」（vendor）与两个兼容字段：
+// followTranslation 供旧存档解析，旧的自有字段在迁移后清空即表示「没有可用 AI 服务」。
+export const DEFAULT_TERM_EXTRACTION_CONFIG = Object.freeze({
+  provider: "",
+  apiKey: "",
+  baseUrl: "",
+  model: "qwen2.5:7b",
+  vendor: "",
+  followTranslation: true
+});
+
+export const DEFAULT_SENTENCE_EXTRACTION_CONFIG = Object.freeze({
+  provider: "",
+  apiKey: "",
+  baseUrl: "",
+  model: "qwen2.5:7b",
+  vendor: "",
+  followTranslation: true
+});
+
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   enabled: true, showBall: true, captureMode: "direct", renderMode: "overlay",
-  pretranslateMode: "manual", ignoreSimplifiedChinese: false,
+  pretranslateMode: "manual", ignoreSimplifiedChinese: false, novelMemoryEnabled: true,
   overwriteFontScale: 1, overwriteCoverPadding: 1.2,
   debugOverlayMode: "final", overwritePreviewMode: "full", termDiscoveryEnabled: true,
   floatingSide: "right", floatingYRatio: 0.72,
   displayMode: "translated", webpageDisplayMode: "translated", novelDisplayMode: "translated",
   novelStreamBatchSize: 50,
+  // 两个提取服务的开关：整章提取复用 termDiscoveryEnabled，句子级提取用 sentenceExtractionEnabled。
+  sentenceExtractionEnabled: true,
   webpageBatchItems: 32, webpageBatchChars: 3200, webpageConcurrency: 5
 });
 
@@ -97,14 +122,81 @@ export function normalizeOcrConfig(value = {}) {
 export function normalizeTranslationConfig(value = {}) {
   const sourceLanguage = languages.normalizeSourceLanguage(value.sourceLanguage);
   const targetLanguage = languages.normalizeTargetLanguage(value.targetLanguage);
+  const provider = llmProviders.getProvider(value.provider)
+    ? value.provider
+    : llmProviders.inferProviderId(value.baseUrl) || "custom";
+  const preset = llmProviders.getProvider(provider);
+  const baseUrl = httpUrl(value.baseUrl, preset && preset.baseUrl || DEFAULT_TRANSLATION_CONFIG.baseUrl);
+  const model = text(value.model, DEFAULT_TRANSLATION_CONFIG.model);
+  const perProvider = normalizePerProviderValues(value, provider, {
+    baseUrl,
+    model,
+    apiKey: text(value.apiKey)
+  });
   return {
-    provider: TRANSLATION_PROVIDERS.OPENAI_COMPATIBLE,
-    apiKey: text(value.apiKey),
-    baseUrl: httpUrl(value.baseUrl, DEFAULT_TRANSLATION_CONFIG.baseUrl),
-    model: text(value.model, DEFAULT_TRANSLATION_CONFIG.model),
+    provider,
+    baseUrl: perProvider.baseUrls[provider] || perProvider.baseUrls.custom || baseUrl,
+    baseUrls: perProvider.baseUrls,
+    model: perProvider.models[provider] || perProvider.models.custom || model,
+    models: perProvider.models,
+    apiKey: perProvider.apiKeys[provider] || perProvider.apiKeys.custom || "",
+    apiKeys: perProvider.apiKeys,
     sourceLanguage,
     targetLanguage
   };
+}
+
+function normalizeLlmExtractionConfig(value = {}, defaults) {
+  const selected = llmProviders.getProvider(value.provider) ? value.provider : "";
+  const baseUrl = httpUrl(value.baseUrl, llmProviders.getProvider(selected)?.baseUrl || "");
+  const provider = selected || llmProviders.inferProviderId(baseUrl) || "";
+  const perProvider = normalizePerProviderValues(value, provider, {
+    baseUrl,
+    model: text(value.model, defaults.model),
+    apiKey: text(value.apiKey)
+  });
+  return {
+    provider,
+    baseUrl: perProvider.baseUrls[provider] || perProvider.baseUrls.custom || baseUrl,
+    baseUrls: perProvider.baseUrls,
+    model: perProvider.models[provider] || perProvider.models.custom || text(value.model, defaults.model),
+    models: perProvider.models,
+    apiKey: perProvider.apiKeys[provider] || perProvider.apiKeys.custom || "",
+    apiKeys: perProvider.apiKeys,
+    // 配置库条目名（mt_translation_vendors_v1）：有名字就用它那一条，空则用本节自有字段。
+    vendor: text(value.vendor),
+    // 未显式关掉就跟随翻译服务（老的存档没有这个字段 → 也跟随，省得再填一遍 Key）
+    followTranslation: value.followTranslation !== false
+  };
+}
+
+function slotMap(value, key, fallback, provider) {
+  const map = {};
+  for (const p of llmProviders.LLM_PROVIDERS) {
+    const slot = value && typeof value === "object" && value[key]
+      ? value[key][p.id] : undefined;
+    map[p.id] = typeof slot === "string" ? slot.trim() : "";
+  }
+  if (fallback && !map[provider]) {
+    map[provider] = fallback;
+  }
+  return map;
+}
+
+function normalizePerProviderValues(value, provider, legacy) {
+  return {
+    baseUrls: slotMap(value, "baseUrls", legacy.baseUrl, provider),
+    models: slotMap(value, "models", legacy.model, provider),
+    apiKeys: slotMap(value, "apiKeys", legacy.apiKey, provider)
+  };
+}
+
+export function normalizeTermExtractionConfig(value = {}) {
+  return normalizeLlmExtractionConfig(value, DEFAULT_TERM_EXTRACTION_CONFIG);
+}
+
+export function normalizeSentenceExtractionConfig(value = {}) {
+  return normalizeLlmExtractionConfig(value, DEFAULT_SENTENCE_EXTRACTION_CONFIG);
 }
 
 export function normalizeRuntimeConfig(value = {}) {
@@ -123,6 +215,10 @@ export function normalizeRuntimeConfig(value = {}) {
     debugOverlayMode: ["raw", "filtered", "merged", "final"].includes(value.debugOverlayMode) ? value.debugOverlayMode : "final",
     overwritePreviewMode: ["full", "cover", "text"].includes(value.overwritePreviewMode) ? value.overwritePreviewMode : "full",
     termDiscoveryEnabled: value.termDiscoveryEnabled !== false,
+    // 句子级提取开关：关掉后候选卡的「AI 提取」与侧边栏提取按钮不再显示。
+    sentenceExtractionEnabled: value.sentenceExtractionEnabled !== false,
+    // 小说记忆总开关：关掉后翻译请求里不再带跨话记忆（长篇读多了能省不少 token）
+    novelMemoryEnabled: value.novelMemoryEnabled !== false,
     floatingSide: value.floatingSide === "left" ? "left" : "right",
     floatingYRatio: numberIn(value.floatingYRatio, 0, 1, DEFAULT_RUNTIME_CONFIG.floatingYRatio),
     // 流式请求每批段落数:整章拆成多个请求,每个请求结果一到就逐段替换,避免整章一次替换。

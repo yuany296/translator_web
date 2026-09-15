@@ -17,6 +17,7 @@
       <div class="nav-label">数据</div>
       <button data-route="glossary" type="button"><span>术</span>术语库</button>
       <button data-route="translations" type="button"><span>库</span>译文库</button>
+      <button data-route="memory" type="button"><span>忆</span>小说记忆</button>
       <div class="nav-label">系统</div>
       <button data-route="maintenance" type="button"><span>⚙</span>维护与诊断</button>
     </nav>
@@ -53,7 +54,7 @@
     <section class="settings-panel hidden" data-panel="ocr">
       <article class="setting-card">
         <div class="card-title"><div><h2>OCR 服务</h2><p>语言由“常规”中的原文语言自动决定。</p></div></div>
-        <div class="form-grid two"><label>OCR Provider<select id="ocrProvider"><option value="local_paddle">Local Paddle</option><option value="baidu">百度 OCR</option></select></label><label id="ocrModeField">识别模式<select id="ocrMode"><option value="fast">快速</option><option value="enhanced">增强</option></select></label></div>
+        <div class="form-grid two"><label>OCR 服务商<select id="ocrProvider"><option value="local_paddle">Local Paddle</option><option value="baidu">百度 OCR</option></select></label><label id="ocrModeField">识别模式<select id="ocrMode"><option value="fast">快速</option><option value="enhanced">增强</option></select></label></div>
         <div id="localPaddleFields">
           <label>本地服务地址<input id="ocrBaseUrl" type="url" /></label>
           <div class="form-grid three"><label>检测阈值<input id="detThresh" type="number" min="0.01" max="0.99" step="0.01" /></label><label>文本框阈值<input id="detBoxThresh" type="number" min="0.01" max="0.99" step="0.01" /></label><label>扩张比例<input id="detUnclipRatio" type="number" min="1" max="5" step="0.1" /></label></div>
@@ -75,15 +76,93 @@
 
     <section class="settings-panel hidden" data-panel="translation">
       <article class="setting-card">
-        <div class="card-title"><div><h2>OpenAI-compatible 服务</h2><p>用于漫画、小说和网页的正式翻译请求。</p></div></div>
-        <div class="form-grid two"><label>Model<input id="translationModel" type="text" /></label><label>Base URL<input id="translationUrl" type="url" /></label></div><label>API Key<input id="translationKey" type="password" autocomplete="off" /></label>
+        <div class="card-title"><div><h2>翻译服务</h2><p>下面的配置库由翻译、整章术语提取、句子级术语提取共用：按「选择服务商 → 填 API Key 与 Model → 命名 → 保存」建立命名配置，可存多套随时切换；修改请点「编辑」。</p></div></div>
+        <div class="form-grid two">
+          <label>配置档案<select id="vendorSelect"><option value="">暂无配置，请先新建</option></select></label>
+          <div class="vendor-current"><b id="vendorCurrentName">未启用命名配置</b><small id="vendorCurrentDetail">点击「新建配置」创建第一套配置</small></div>
+        </div>
+        <div class="vendor-actions">
+          <button id="vendorNewBtn" class="primary" type="button">新建配置</button>
+          <button id="vendorManageBtn" type="button">管理配置档案…</button>
+          <span id="vendorStatus" class="inline-status"></span>
+        </div>
+        <div class="panel-actions"><button id="testTranslationBtn" type="button">测试连接</button><span id="translationStatus" class="inline-status"></span></div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>整章术语提取</h2><p>翻译完成后由 AI 通读整章，提取专有名词并给出备注与建议译文；关掉后不再自动发现候选术语，也不会请求 AI。</p></div><label class="switch-row"><input id="termDiscoveryEnabled" type="checkbox" /><span></span><b>启用</b></label></div>
+        <div class="form-grid two">
+          <label>配置档案<select id="termServiceSelect"><option value="">暂无配置，请先新建</option></select></label>
+          <div class="vendor-current"><b id="termServiceName">未选择配置</b><small id="termServiceDetail">选择一条配置后由 AI 通读整章提取术语</small></div>
+        </div>
+        <div class="vendor-actions"><button id="termServiceNewBtn" type="button">新建配置</button><button id="termServiceManageBtn" type="button">管理配置档案…</button><span id="serviceSelectionStatus" class="inline-status"></span></div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>句子级术语提取</h2><p>待确认候选卡的「AI 提取」按钮与侧边栏「提取韩文原文」使用此服务；关掉或没选配置时相关按钮不显示。</p></div><label class="switch-row"><input id="sentenceExtractionEnabled" type="checkbox" /><span></span><b>启用</b></label></div>
+        <div class="form-grid two">
+          <label>配置档案<select id="sentenceServiceSelect"><option value="">暂无配置，请先新建</option></select></label>
+          <div class="vendor-current"><b id="sentenceServiceName">未选择配置</b><small id="sentenceServiceDetail">选择一条配置后候选卡才显示「AI 提取」</small></div>
+        </div>
+        <div class="vendor-actions"><button id="sentenceServiceNewBtn" type="button">新建配置</button><button id="sentenceServiceManageBtn" type="button">管理配置档案…</button></div>
       </article>
       <article class="setting-card">
         <div class="card-title"><div><h2>本地正式译文库</h2><p>首次点击“检查状态”时，请在 Chrome 的“访问本机设备”提示中选择允许。</p></div></div>
         <div class="pair-row"><button id="checkServiceBtn" type="button">检查状态</button></div>
         <span id="serviceStatus" class="inline-status"></span>
       </article>
-      <div class="panel-actions"><button id="saveTranslationBtn" class="primary" type="button">保存翻译服务</button><button id="testTranslationBtn" type="button">测试连接</button><span id="translationStatus" class="inline-status"></span></div>
+
+      <dialog id="vendorManagerDialog" class="vendor-dialog">
+        <div class="dialog-content">
+          <h2>管理配置档案</h2>
+          <p class="vendor-hint">
+            翻译、整章术语提取、句子级术语提取共用这一个配置库。「谁在用」列写清某套配置被哪个服务用着：
+            删除只删这一套 API 配置，<b>翻译功能和其他配置都不受影响</b>。
+          </p>
+          <table class="vendor-manager-table">
+            <thead>
+              <tr>
+                <th>配置名称</th>
+                <th>服务商 · 模型</th>
+                <th>谁在用</th>
+                <th class="vendor-manager-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="vendorManagerRows"></tbody>
+          </table>
+          <p id="vendorManagerEmpty" class="vendor-hint hidden">还没有任何配置，点下面的「新建配置」建第一套。</p>
+          <p id="vendorManagerError" class="vendor-form-error"></p>
+          <div class="dialog-actions">
+            <button id="vendorManagerNewBtn" class="primary" type="button">新建配置</button>
+            <button id="vendorManagerCloseBtn" type="button">关闭</button>
+          </div>
+        </div>
+      </dialog>
+
+      <dialog id="vendorDialog" class="vendor-dialog">
+        <div class="dialog-content">
+          <h2 id="vendorDialogTitle">新建配置 · 选择服务商</h2>
+
+          <div id="vendorStepProvider">
+            <p class="vendor-hint">先选择服务商，下一步填写 API Key 与 Model。</p>
+            <div id="vendorProviderList" class="vendor-provider-list"></div>
+          </div>
+
+          <div id="vendorStepForm" class="hidden">
+            <label>配置名称<input id="vendorName" type="text" autocomplete="off" placeholder="例如：DeepSeek 日常" /></label>
+            <label>服务商<input id="vendorProviderLabel" type="text" readonly /></label>
+            <label>Base URL<input id="vendorUrl" type="text" autocomplete="off" /></label>
+            <label>API Key<input id="vendorKey" type="password" autocomplete="off" /><small id="vendorKeyHint"></small></label>
+            <label>Model<select id="vendorModel"></select><input id="vendorModelCustom" type="text" autocomplete="off" placeholder="输入自定义模型名" hidden /><small>可选下拉选择，或点“获取模型列表”拉取全部模型；也可手动输入。</small></label>
+            <div class="vendor-model-row"><button id="vendorFetchModelsBtn" type="button">获取模型列表</button><span id="vendorModelStatus" class="inline-status"></span></div>
+          </div>
+
+          <p id="vendorFormError" class="vendor-form-error"></p>
+          <div class="dialog-actions">
+            <button id="vendorBackBtn" type="button" class="hidden">返回选服务商</button>
+            <button id="vendorCancelBtn" type="button">取消</button>
+            <button id="vendorSubmitBtn" type="button" class="primary">创建配置</button>
+          </div>
+        </div>
+      </dialog>
     </section>
 
     <section class="settings-panel hidden" data-panel="reading">
@@ -93,7 +172,7 @@
       </article>
       <article class="setting-card">
         <div class="card-title"><div><h2>阅读辅助</h2><p>管理悬浮入口、术语发现和文本处理。</p></div></div>
-        <div class="toggle-list"><label><span><b>显示悬浮按钮</b><small>在页面右侧显示漫画、小说和网页操作入口</small></span><input id="showBall" type="checkbox" /></label><label><span><b>自动发现候选术语</b><small>翻译后将可能的人名与专有词加入待确认列表</small></span><input id="termDiscoveryEnabled" type="checkbox" /></label><label><span><b>忽略简体中文内容</b><small>扫描网页时跳过确认是简体中文的文本</small></span><input id="ignoreSimplifiedChinese" type="checkbox" /></label></div>
+        <div class="toggle-list"><label><span><b>显示悬浮按钮</b><small>在页面右侧显示漫画、小说和网页操作入口</small></span><input id="showBall" type="checkbox" /></label><label><span><b>使用小说记忆</b><small>跨话记住人名、称呼与剧情状态；关掉后每个请求都不再带记忆（读长篇更省 token）</small></span><input id="novelMemoryEnabled" type="checkbox" /></label><label><span><b>忽略简体中文内容</b><small>扫描网页时跳过确认是简体中文的文本</small></span><input id="ignoreSimplifiedChinese" type="checkbox" /></label></div>
         <div class="form-grid three"><label>悬浮侧边<select id="floatingSide"><option value="right">右侧</option><option value="left">左侧</option></select></label><label>译文缩放<input id="overwriteFontScale" type="number" min="0.5" max="2.5" step="0.05" /></label><label>覆盖范围<input id="overwriteCoverPadding" type="number" min="0" max="1.2" step="0.05" /></label></div>
         <div class="form-grid three"><label>小说流式分段<input id="novelStreamBatchSize" type="number" min="5" max="150" step="5" /><small>每个流式请求翻译的段落数，越小结果分批到达越频繁</small></label></div>
       </article>
@@ -106,6 +185,7 @@
 
     <section class="settings-panel library-panel hidden" data-panel="glossary"><iframe id="glossaryFrame" title="术语库" data-src="glossary.html?embedded=1"></iframe></section>
     <section class="settings-panel library-panel hidden" data-panel="translations"><iframe id="translationsFrame" title="译文库" data-src="translations.html?embedded=1"></iframe></section>
+    <section class="settings-panel library-panel hidden" data-panel="memory"><iframe id="memoryFrame" title="小说记忆" data-src="glossary.html?embedded=1&view=memory"></iframe></section>
 
     <section class="settings-panel hidden" data-panel="maintenance">
       <div class="diagnostic-grid">

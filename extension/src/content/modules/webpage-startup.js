@@ -52,6 +52,15 @@ export function installWebpageStartup(runtime) {
     }
   }
 
+  /** 首个失败原因:交给悬浮球/状态提示,避免只显示笼统的「网页翻译失败」 */
+  function firstFailureReason(session, webpage) {
+    if (webpage.pageFault) return String(webpage.pageFault.error || "");
+    for (const segment of session.segments.values()) {
+      if (segment.status.translation === "failed") return String(segment.errors?.[0]?.error || "");
+    }
+    return "";
+  }
+
   function progressState(session) {
     let done = 0;
     let total = 0;
@@ -139,6 +148,7 @@ export function installWebpageStartup(runtime) {
       const blocked = webpage.pageFault ? session.segments.size : 0;
       return {
         ok: blocked === 0 && progress.realFailed === 0,
+        error: firstFailureReason(session, webpage),
         total: session.segments.size,
         applied: progress.viewportDone + progress.backgroundDone,
         viewportTotal: progress.viewportTotal,

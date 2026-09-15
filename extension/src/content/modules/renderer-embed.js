@@ -248,7 +248,9 @@ export function installRendererEmbed(runtime) {
       let w = runtime.clamp(Number(bubble.w), 0, 100) / 100 * canvasWidth;
       let h = runtime.clamp(Number(bubble.h), 0, 100) / 100 * canvasHeight;
       const polygon = runtime.getEmbeddedPolygonGeometry(bubble.polygon, canvasWidth, canvasHeight);
-      const rotation = runtime.normalizeBubbleRotation(bubble.rotation_deg, bubble.region_type);
+      // 与 DOM 覆盖层同源：rotation_deg 缺失时用 polygon 兜底恢复倾角，
+      // 否则画布译文会退回水平（“覆盖层没有倾斜”）。
+      const rotation = runtime.resolveBubblePolygonRotation(bubble.polygon, bubble.rotation_deg);
       if (polygon) {
         x = polygon.centerX - polygon.width / 2;
         y = polygon.centerY - polygon.height / 2;
@@ -286,7 +288,13 @@ export function installRendererEmbed(runtime) {
       }
       if (bgType === "solid") {
         ctx.save();
-        const clipPoly = Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3 ? bubble.region_polygon : Array.isArray(bubble.polygon) && bubble.polygon.length >= 4 ? bubble.polygon : null;
+        // 遮罩必须跟着原文字形：斜排文字用倾斜四边形裁剪，而不是气泡区域框
+        // （区域框是轴对齐的，正是「遮罩保持水平、露出斜排原文」的来源）。
+        const coverGeometry = runtime.resolveBubbleCoverGeometry(bubble);
+        const coverPoints = coverGeometry && coverGeometry.tilted ? coverGeometry.quad : null;
+        const coverBox = coverPoints
+          ? runtime.getCanvasFillBox(coverGeometry.bounds, canvasWidth, canvasHeight) : null;
+        const clipPoly = coverPoints || (Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3 ? bubble.region_polygon : Array.isArray(bubble.polygon) && bubble.polygon.length >= 4 ? bubble.polygon : null);
         if (clipPoly) {
           ctx.beginPath();
           clipPoly.forEach((point, index) => {
@@ -299,7 +307,8 @@ export function installRendererEmbed(runtime) {
           ctx.clip();
         }
         ctx.fillStyle = String(bubble.bg_color || "#ffffff");
-        ctx.fillRect(fillBox.x, fillBox.y, fillBox.w, fillBox.h);
+        if (coverBox) ctx.fillRect(coverBox.x, coverBox.y, coverBox.w, coverBox.h);
+        else ctx.fillRect(fillBox.x, fillBox.y, fillBox.w, fillBox.h);
         ctx.restore();
       }
       ctx.save();

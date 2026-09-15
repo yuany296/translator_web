@@ -5,6 +5,15 @@ import { createTranslationProviders } from "./providers/translation.js";
 import { OCR_COORDINATE_MODEL_VERSION, OCR_GEOMETRY_VERSION } from "../config/versions.js";
 import languages from "../shared/languages.js";
 
+/** 服务商配置操作统一包装:业务错误返回 {ok:false, error},避免消息通道断开 */
+async function runVendorOperation(operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    return { ok: false, error: error.message || "服务商配置操作失败" };
+  }
+}
+
 export function configureBackgroundRuntime(runtime) {
   runtime.LOCAL_OCR_GEOMETRY_VERSION = OCR_GEOMETRY_VERSION;
   runtime.OCR_COORDINATE_MODEL_VERSION = OCR_COORDINATE_MODEL_VERSION;
@@ -32,7 +41,8 @@ export function configureBackgroundRuntime(runtime) {
       return runtime.backgroundTestHooks.requestCanonicalTranslationBatch(args);
     }
     const config = await store.load();
-    const provider = translationProviders.get(config.translation.provider);
+    // 配置里的 provider 是 UI 预设(各家 OpenAI 兼容服务),运行时只有一个 OpenAI 兼容实现。
+    const provider = translationProviders.get("openai_compatible");
     const error = provider.validate(config.translation);
     if (error) throw new Error(error);
     return provider.translateBatch(args);
@@ -50,13 +60,39 @@ export function configureBackgroundRuntime(runtime) {
       }
       return { ok: true, section: message.section, value: await store.save(message.section, message.value) };
     }
+    // ── 翻译服务商命名配置(选服务商 → 填 Key/Model → 命名 → 保存) ──
+    if (message.type === "GET_TRANSLATION_VENDORS") {
+      return { ok: true, ...await store.getTranslationVendors() };
+    }
+    if (message.type === "SAVE_TRANSLATION_VENDOR") {
+      // originalName 表示「编辑并改名」:引用旧名的提取小节会一起改成新名
+      return runVendorOperation(
+        () => store.saveTranslationVendor(message.name, message.entry, message.originalName)
+          .then(name => ({ ok: true, name }))
+      );
+    }
+    if (message.type === "ACTIVATE_TRANSLATION_VENDOR") {
+      return runVendorOperation(
+        () => store.activateTranslationVendor(message.name).then(name => ({ ok: true, name }))
+      );
+    }
+    if (message.type === "RENAME_TRANSLATION_VENDOR") {
+      return runVendorOperation(
+        () => store.renameTranslationVendor(message.oldName, message.newName).then(name => ({ ok: true, name }))
+      );
+    }
+    if (message.type === "DELETE_TRANSLATION_VENDOR") {
+      return runVendorOperation(
+        () => store.deleteTranslationVendor(message.name).then(state => ({ ok: true, state }))
+      );
+    }
     if (message.type === "TEST_OCR_CONFIGURATION") {
       const config = await store.load();
       return ocrProviders.get(config.ocr.provider).checkHealth(config.ocr);
     }
     if (message.type === "TEST_TRANSLATION_CONFIGURATION") {
       const config = await store.load();
-      return translationProviders.get(config.translation.provider).checkHealth(config.translation);
+      return translationProviders.get("openai_compatible").checkHealth(config.translation);
     }
     if (message.type === "GET_TRANSLATION_SERVICE_STATUS") return runtime.getTranslationServiceStatus();
     if (message.type === "QUERY_TRANSLATION_SERVICE") {

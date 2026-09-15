@@ -1,16 +1,78 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import sqlite3
 import threading
+import time
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_SRC_LNG = "ko"
 DEFAULT_TGT_LNG = "zh-CN"
+DEFAULT_LIBRARY_ID = "default"
+DEFAULT_LIBRARY_NAME = "默认术语库"
+MAX_LIBRARY_NAME = 60
+MAX_LIBRARY_URLS = 20
 
 
 def normalize_source(value: str) -> str:
     return value.strip().lower() if value else ""
+
+
+def normalize_library_id(value: str) -> str:
+    """库标识只保留字母数字与 `-`/`_`；空值表示"未指定"，由调用方决定是否落到默认库。"""
+    cleaned = "".join(ch for ch in (value or "").strip() if ch.isalnum() or ch in "-_")
+    return cleaned[:60]
+
+
+def normalize_library_name(value: str) -> str:
+    return " ".join((value or "").split())[:MAX_LIBRARY_NAME] or DEFAULT_LIBRARY_NAME
+
+
+_LIBRARY_URL_PATTERN_RE = re.compile(
+    r"^(?:https?://)?(?:\*|[A-Za-z0-9.*\-]+)(?::\d+)?(?:/.*)?$"
+)
+
+
+def _looks_like_library_url_pattern(value: str) -> bool:
+    """`*.google.com` / `google.com/mail/*` / `https://www.google.com/*` 这类通配写法。"""
+    text = value.strip()
+    if not text or "*" not in text or " " in text:
+        return False
+    return bool(_LIBRARY_URL_PATTERN_RE.match(text))
+
+
+def normalize_library_urls(value) -> list[str]:
+    """绑定网址只保存 `协议//主机/路径`（去查询串、片段与末尾斜杠）。
+
+    通配模式（`*.google.com`、`google.com/mail/*`、`https://www.google.com/*`）原样保留：
+    匹配由扩展侧做，服务端只负责存下来；不带协议的写法表示 http/https 都匹配。
+    """
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            parsed = [value]
+        value = parsed
+    result: list[str] = []
+    for item in value if isinstance(value, list) else []:
+        raw = str(item or "").strip()
+        if "*" in raw:
+            pattern = raw.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+            if _looks_like_library_url_pattern(pattern) and pattern not in result:
+                result.append(pattern)
+            if len(result) >= MAX_LIBRARY_URLS:
+                break
+            continue
+        if not raw.lower().startswith(("http://", "https://")):
+            continue
+        url = raw.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+        if url and url not in result:
+            result.append(url)
+        if len(result) >= MAX_LIBRARY_URLS:
+            break
+    return result
 
 
 def normalize_tgt_lng(value: str) -> str:
@@ -39,7 +101,8 @@ def normalize_scope(scope_type: str, scope_key: str) -> tuple[str, str]:
 class GlossaryBase:
     def __init__(self, db_path: str) -> None:
         self._path = os.path.abspath(db_path)
-        self._lock = threading.Lock()
+        # 可重入锁：条目写入会在持锁期间补建/查询术语库定义。
+        self._lock = threading.RLock()
         self._init_db()
 
     def _init_db(self) -> None:
@@ -81,6 +144,15 @@ class GlossaryBase:
                     CREATE INDEX IF NOT EXISTS idx_glossary_source_key
                         ON glossary_entries(source_key);
 
+                    CREATE TABLE IF NOT EXISTS glossary_libraries (
+                        id         TEXT PRIMARY KEY,
+                        name       TEXT NOT NULL,
+                        enabled    INTEGER NOT NULL DEFAULT 1,
+                        urls       TEXT NOT NULL DEFAULT '[]',
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+
                     CREATE TABLE IF NOT EXISTS pending_candidates (
                         id                TEXT PRIMARY KEY,
                         source            TEXT NOT NULL,
@@ -119,6 +191,15 @@ class GlossaryBase:
                     self._migrate_v3(conn)
                 if cur_ver < 4:
                     self._migrate_v4(conn)
+                if cur_ver < 5:
+                    self._migrate_v5(conn)
+                # 默认库必须始终存在：新库、旧库迁移、以及被手工删空的情况都要补回。
+                now = time.time()
+                conn.execute(
+                    "INSERT OR IGNORE INTO glossary_libraries "
+                    "(id, name, enabled, urls, created_at, updated_at) VALUES (?, ?, 1, '[]', ?, ?)",
+                    (DEFAULT_LIBRARY_ID, DEFAULT_LIBRARY_NAME, now, now),
+                )
                 conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
@@ -166,3 +247,27 @@ class GlossaryBase:
             "ON glossary_entries(source_key, src_lng, tgt_lng, scope_type, scope_key)"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_src_lng ON glossary_entries(src_lng)")
+
+    @staticmethod
+    def _migrate_v5(conn: sqlite3.Connection) -> None:
+        """Add term libraries: existing entries and pending candidates join the default library."""
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(glossary_entries)").fetchall()]
+        if "library_id" not in cols:
+            conn.execute(
+                "ALTER TABLE glossary_entries ADD COLUMN library_id TEXT NOT NULL DEFAULT '"
+                + DEFAULT_LIBRARY_ID + "'"
+            )
+        pending_cols = [r[1] for r in conn.execute("PRAGMA table_info(pending_candidates)").fetchall()]
+        if "library_id" not in pending_cols:
+            conn.execute(
+                "ALTER TABLE pending_candidates ADD COLUMN library_id TEXT NOT NULL DEFAULT '"
+                + DEFAULT_LIBRARY_ID + "'"
+            )
+        conn.execute("UPDATE glossary_entries SET library_id = ? WHERE library_id = ''", (DEFAULT_LIBRARY_ID,))
+        # 新唯一索引比旧索引多一列（library_id），旧索引严格更窄，因此重建不会因重复行失败。
+        conn.execute("DROP INDEX IF EXISTS idx_glossary_unique_language_scope")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_unique_library_language_scope "
+            "ON glossary_entries(source_key, src_lng, tgt_lng, scope_type, scope_key, library_id)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_library ON glossary_entries(library_id)")

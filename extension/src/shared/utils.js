@@ -123,6 +123,39 @@ function normalizeComparableText(value) {
   return normalizeText(value).toLocaleLowerCase().replace(/\s+/gu, "");
 }
 
+/**
+ * LLM 翻译时常把对话引号当作"可省略的格式"丢掉(尤其 JSON 模式下),
+ * 而流水线里没有任何环节会主动删引号。此函数做确定性兜底:若原文是
+ * 被成对引号包裹的对话,且译文里一个引号字符都没有,就把同一对引号
+ * 加回译文。已有引号(任意风格)的译文保持原样,避免双重包裹。
+ */
+const DIALOGUE_QUOTE_PAIRS = Object.freeze([
+  ["\u201c", "\u201d"], // “ ”
+  ["\u300c", "\u300d"], // 「 」
+  ["\u300e", "\u300f"], // 『 』
+  ["\u00ab", "\u00bb"], // « »
+  ["\u2018", "\u2019"], // ‘ ’(只参与检测,不参与包裹)
+  ["\"", "\""],
+  ["'", "'"]
+]);
+
+export function restoreDialogueQuotes(originalText, translatedText) {
+  const source = String(originalText || "").trim();
+  const translated = String(translatedText || "");
+  if (!source || !translated.trim()) return translated;
+  // 译文里只要出现任意引号字符就认为引号语义仍在,不再包裹。
+  const anyQuoteChar = new Set(DIALOGUE_QUOTE_PAIRS.flat());
+  for (const char of translated) {
+    if (anyQuoteChar.has(char)) return translated;
+  }
+  for (const [open, close] of DIALOGUE_QUOTE_PAIRS) {
+    if (source.length >= 2 && source.startsWith(open) && source.endsWith(close)) {
+      return `${open}${translated.trim()}${close}`;
+    }
+  }
+  return translated;
+}
+
 // ── 几何 ──
 
 /** 矩形归一化：确保 x/y/w/h 为有效数字 */
@@ -194,6 +227,8 @@ export default Object.freeze({
   getErrorMessage,
   normalizeText,
   normalizeComparableText,
+  DIALOGUE_QUOTE_PAIRS,
+  restoreDialogueQuotes,
   normalizeRectLike,
   storageGet,
   storageSet,

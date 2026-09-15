@@ -1,3 +1,5 @@
+import sharedUtils from "../../shared/utils.js";
+
 export function installNovelWorkflow(runtime) {
   function getTranslatableParagraphs(chapter) {
     const targetLanguage = runtime.getTargetLanguage?.() || "zh-CN";
@@ -81,7 +83,11 @@ export function installNovelWorkflow(runtime) {
       const serverByKey = new Map((service.records || []).map(record => [record.recordKey, record]));
       allItems.forEach(item => {
         const snapshot = serverByKey.get(buildNovelRecordKey(chapter, item));
-        const translated = String(snapshot?.activeVersion?.translatedText || "").trim();
+        // 旧译文缺少对话引号时直接就地修补,不重译。
+        const translated = sharedUtils.restoreDialogueQuotes(
+          item.original_text,
+          String(snapshot?.activeVersion?.translatedText || "").trim()
+        );
         if (!translated) return;
         state.translations.set(item.id, translated);
         runtime.renderNovelTranslation(item.node, translated, true);

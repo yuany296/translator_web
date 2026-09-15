@@ -5,7 +5,7 @@ import sqlite3
 import time
 from typing import Any
 
-from .common import normalize_source
+from .common import DEFAULT_LIBRARY_ID, normalize_library_id, normalize_source
 
 
 class PendingMixin:
@@ -13,7 +13,7 @@ class PendingMixin:
         parts = [
             "SELECT id, source, source_key, kind, score, occurrences, evidence_ids, contexts,"
             " suggested_targets, suggested_target, ambiguous, chapter_key, chapter_url, chapter_title,"
-            " created_at, updated_at FROM pending_candidates"
+            " created_at, updated_at, library_id FROM pending_candidates"
         ]
         params: list[Any] = []
         if chapter_key:
@@ -62,10 +62,11 @@ class PendingMixin:
                     contexts: list[dict[str, str]] | None = None,
                     suggested_targets: list[str] | None = None,
                     chapter_key: str = "", chapter_url: str = "",
-                    chapter_title: str = "") -> str:
+                    chapter_title: str = "", library_id: str = "") -> str:
         now = time.time()
         src_key = normalize_source(source)
         eid = f"pending-{now}-{hash(source)}"
+        library = normalize_library_id(library_id) or DEFAULT_LIBRARY_ID
         with self._lock:
             conn = sqlite3.connect(self._path, check_same_thread=False)
             try:
@@ -73,8 +74,8 @@ class PendingMixin:
                     """INSERT OR REPLACE INTO pending_candidates
                        (id, source, source_key, kind, score, occurrences, evidence_ids, contexts,
                         suggested_targets, suggested_target, ambiguous,
-                        chapter_key, chapter_url, chapter_title, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        chapter_key, chapter_url, chapter_title, created_at, updated_at, library_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (eid, source.strip(), src_key, kind, score,
                      len(evidence_ids or []),
                      json.dumps(evidence_ids or [], ensure_ascii=False),
@@ -82,7 +83,7 @@ class PendingMixin:
                      json.dumps(suggested_targets or [], ensure_ascii=False),
                      (suggested_targets or [""])[0] if len(suggested_targets or []) == 1 else "",
                      1 if len(suggested_targets or []) > 1 else 0,
-                     chapter_key, chapter_url, chapter_title, now, now),
+                     chapter_key, chapter_url, chapter_title, now, now, library),
                 )
                 conn.commit()
             finally:
@@ -97,20 +98,21 @@ class PendingMixin:
             try:
                 # Find matching pending
                 row = conn.execute(
-                    "SELECT source FROM pending_candidates WHERE source_key = ? LIMIT 1",
+                    "SELECT source, library_id FROM pending_candidates WHERE source_key = ? LIMIT 1",
                     (src_key,),
                 ).fetchone()
                 if not row:
                     return False
                 original_source = row[0]
+                library = normalize_library_id(row[1]) or DEFAULT_LIBRARY_ID
                 # Add to glossary
                 now = time.time()
                 eid = f"term-{now}-{hash(original_source)}"
                 conn.execute(
                     """INSERT INTO glossary_entries
-                       (id, source, target, note, enabled, source_key, created_at, updated_at)
-                       VALUES (?, ?, ?, '', 1, ?, ?, ?)""",
-                    (eid, original_source, target.strip(), src_key, now, now),
+                       (id, source, target, note, enabled, source_key, created_at, updated_at, library_id)
+                       VALUES (?, ?, ?, '', 1, ?, ?, ?, ?)""",
+                    (eid, original_source, target.strip(), src_key, now, now, library),
                 )
                 # Remove from pending
                 conn.execute("DELETE FROM pending_candidates WHERE source_key = ?", (src_key,))

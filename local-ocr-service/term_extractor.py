@@ -1,379 +1,388 @@
 from __future__ import annotations
 
+import json
 import re
-import threading
 import unicodedata
+from collections import Counter
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import urlparse
 
-try:
-    from kiwipiepy import Kiwi
-except Exception as exc:  # pragma: no cover - 由健康检查暴露依赖问题
-    Kiwi = None
-    KIWI_IMPORT_ERROR = exc
-else:
-    KIWI_IMPORT_ERROR = None
+import httpx
 
-
-NOUN_TAGS = {"NNP", "NNG"}
+LLM_READ_TIMEOUT = 300.0
+LLM_CONNECT_TIMEOUT = 10.0
+# 分段过大会让 8B 级模型脱轨（输出总结而非 JSON）；3000 字符 ≈ 800 tokens 稳定。
+LLM_MAX_CHUNK_CHARS = 3000
+LLM_CHUNK_OVERLAP = 200
+VALID_KINDS = {"person", "location", "organization", "title", "group", "latin_name", "latin_title"}
+MAX_SOURCE_LENGTH = 120
+MAX_NOTE_LENGTH = 240
+MAX_TARGET_LENGTH = 120
+SENTENCE_ONLY_SCORE = 0.35
 COMMON_KOREAN_SURNAMES = set(
     "김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예봉사부가복"
 )
 COMPOUND_KOREAN_SURNAMES = {"남궁", "독고", "동방", "망절", "사공", "서문", "선우", "제갈", "황보"}
-KOREAN_STOP_WORDS = {
-    # 一般名词（在术语语境中不应作为候选的常见词）
-    "한국", "사람", "장소", "이야기", "생각", "시간", "너무", "정말",
-    "모든", "우리", "그것", "무엇", "어떤", "때문", "안녕", "감사",
-    "다시", "지금", "오늘", "내일", "어제", "여기", "저기", "거기",
-    "아마", "진짜", "항상", "가장", "같은", "다른", "이런", "저런",
-    "그런", "없이", "함께", "바로", "아직", "이미", "처음", "마지막",
-    "사실", "물론", "아니", "응", "그래", "하지만", "그리고", "근데",
-    "이제", "저도", "그럼", "아까", "각자", "모두", "전부", "일부",
-    "나중", "중간", "옆", "위", "밑", "안", "밖", "앞", "뒤", "근처",
-    "주변", "확인", "시작", "끝", "방법", "경우", "이유", "결과",
-    "정도", "한번", "가끔", "자주", "늘", "언제", "어디", "누구",
-    "왜", "얼마", "몇", "대한", "관한", "의해", "통해",
-    "어떠한", "어느", "이것", "저것", "이분", "그분", "저분", "여러분",
-    "이쪽", "그쪽", "저쪽", "이런저런",
-    # 常见动词词干（可能被误标记为名词）
-    "하다", "되다", "있다", "없다", "않다", "그렇다", "이렇다", "저렇다",
-    "아니다", "그러다", "모르다", "알다", "보이다", "들리다",
-    "좋다", "싫다", "많다", "적다", "크다", "작다", "길다", "짧다",
-    "높다", "낮다", "넓다", "좁다", "멀다", "가깝다",
-    "예쁘다", "아름답다", "귀엽다", "멋있다", "재미있다",
-    # 常见副词
-    "아주", "매우", "거의", "별로", "전혀", "결코", "과연", "설마",
-    "제일", "조금", "약간", "많이", "빨리", "천천히",
-    "드디어", "마침내", "겨우", "간신히", "대충", "일단", "우선",
-    "곧", "바로", "방금", "일찍", "늦게",
-    "또", "또한", "더", "덜", "아주", "훨씬", "오히려", "도리어",
-    # 高频依存名词（조사/어미가 붙은 형태의 어근）
-    "것", "수", "데", "거", "게", "줄", "길", "일", "중", "때",
-    "곳", "쪽", "분", "군", "듯", "채", "만", "대로", "뿐", "나름",
-    "척", "양", "터", "적", "판", "참", "통", "동안", "무렵", "즈음",
-}
-LATIN_STOP_TERMS = {
-    "AD",
-    "CEO",
-    "CFO",
-    "CTO",
-    "DJ",
-    "DR",
-    "ETC",
-    "MR",
-    "MRS",
-    "NO",
-    "OK",
-    "PD",
-    "SNS",
-    "TV",
-    "VS",
-    "YES",
-}
-LATIN_PHRASE_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9&'.-]*)(?:[ \t]+[A-Z][A-Z0-9&'.-]*){0,4}(?![A-Za-z0-9])"
-)
+LATIN_STOP_TERMS = {"AD", "CEO", "CFO", "CTO", "DJ", "DR", "ETC", "MR", "MRS", "NO", "OK", "PD", "SNS", "TV", "VS", "YES"}
+LATIN_PHRASE_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9&'.-]*)(?:[ \t]+[A-Z][A-Z0-9&'.-]*){0,4}(?![A-Za-z0-9])")
+KOREAN_PARTICLES = ("이", "가", "은", "는", "을", "를", "의", "에", "에서", "에게", "한테", "께", "으로", "로", "와", "과", "도", "만", "부터", "까지", "마다", "보다", "처럼", "이나", "나", "이라도", "라도", "밖에", "조차", "마저", "커녕", "이고", "이며", "이랑", "랑", "이라고", "라고", "이면", "면", "이다", "이었다", "였다", "이야", "야", "아")
+KATAKANA_SEQ_RE = re.compile(r"(?<![ァ-ヺー])([ァ-ヺー]{2,6})(?![ァ-ヺー])")
+BRACKETED_RE = re.compile(r"[【『][^【】『』\n]{2,40}[】』]")
+CJK_REPEAT_RE = re.compile(r"[가-힣ぁ-ゖァ-ヺ一-鿿]+")
+LATIN_WORD_RE = re.compile(r"[A-Za-z]{4,}")
 MODEL_PLACEHOLDER_RE = re.compile(r"[\[（(【<]\s*image\s*#?\s*\d+\s*[\]）)】>]", re.IGNORECASE)
-
-_kiwi_instance: Any = None
-_kiwi_lock = threading.Lock()
-_kiwi_user_word_lock = threading.Lock()
+KOREAN_JOSA_RE = re.compile(r"[은는이가을를의에와]$")
 
 
-def get_term_extractor_status(check_runtime: bool = False) -> dict[str, Any]:
-    runtime_error = KIWI_IMPORT_ERROR
-    if check_runtime and runtime_error is None:
-        try:
-            get_kiwi()
-        except Exception as exc:  # pragma: no cover - 依赖或词典损坏时由接口健康检查暴露
-            runtime_error = exc
-    return {
-        "available": runtime_error is None,
-        "engine": "kiwi",
-        "error": str(runtime_error) if runtime_error else "",
+def _in_source_text(text: str, term: str) -> bool:
+    """term 是否逐字出现在原文中；忽略空白差异并容忍一个结尾韩语助词。"""
+    haystack = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or ""))).casefold()
+    needle = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(term or ""))).casefold()
+    if not needle or not haystack:
+        return False
+    if needle in haystack:
+        return True
+    stripped = KOREAN_JOSA_RE.sub("", needle)
+    return len(stripped) >= 2 and stripped in haystack
+
+
+def _is_local_url(url: str) -> bool:
+    return urlparse(str(url or "")).hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def get_term_extractor_status(
+    check_runtime: bool = False,
+    base_url: str = "",
+    api_key: str = "",
+) -> dict[str, Any]:
+    """Extraction engine availability: heuristic mode when no LLM URL, else probe /models."""
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        return {"available": True, "engine": "heuristic", "error": ""}
+    if not check_runtime:
+        return {"available": True, "engine": "ollama", "error": ""}
+    try:
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        with httpx.Client(timeout=httpx.Timeout(connect=5, read=8, write=5, pool=5), trust_env=not _is_local_url(normalized)) as client:
+            response = client.get(f"{normalized}/models", headers=headers)
+            response.raise_for_status()
+        return {"available": True, "engine": "ollama", "error": ""}
+    except Exception as exc:  # noqa: BLE001 - 任何网络/响应异常都视为离线
+        return {"available": False, "engine": "ollama", "error": f"LLM 服务不可达：{exc}"}
+
+
+def _endpoint(base_url: Any) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    normalized = normalized.removesuffix("/chat/completions").removesuffix("/responses")
+    if not normalized.startswith(("http://", "https://")):
+        raise ValueError("invalid LLM base URL")
+    return f"{normalized}/chat/completions"
+
+
+def _llm_extract_chunk(chunk: str, base_url: str, model: str, api_key: str,
+                       target_language: str, source_text: str = "") -> list[dict[str, Any]]:
+    prompt = "\n".join([
+        "你是网络小说/漫画术语提取助手。从下面的源语言文本中提取所有专有名词与人名：",
+        "- 人名（含姓氏的完整写法）、地名、机构名、作品名、团体名、英文/外来专名；不要提取普通名词、动词、助词或描述性短语",
+        "- 文本可能是韩语、日语、英语、中文或其他语言，按文本实际语言提取；同一实体有多种写法时使用最完整写法",
+        "- 每段原文后可能带一行「译文：xxx」参考译文，suggestedTarget 必须从参考译文对应处得出并填写；没有参考译文（没有「译文：」行）时才可留空",
+        f"- 目标语言为 {target_language}",
+        "输出 JSON 数组，每项格式：",
+        '{"source": "原文术语", "kind": "person|location|organization|title|group|latin_name|latin_title", "note": "目标语言简短说明，无把握则留空", "suggestedTarget": "建议的目标语言译文；有参考译文时不得留空"}',
+        "只输出 JSON 数组本身，不要 Markdown 代码块、不要多余解释。",
+        f"源文本：\n{chunk}",
+    ])
+    body = {
+        "model": str(model or "").strip() or "qwen2.5:7b",
+        "temperature": 0,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": "You are a web-novel terminology extractor. Return strict JSON only."},
+            {"role": "user", "content": prompt},
+        ],
     }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        endpoint = _endpoint(base_url)
+        with httpx.Client(timeout=httpx.Timeout(connect=LLM_CONNECT_TIMEOUT, read=LLM_READ_TIMEOUT, write=30, pool=5), trust_env=not _is_local_url(endpoint)) as client:
+            response = client.post(endpoint, json=body, headers=headers)
+    except httpx.TimeoutException as exc:
+        raise RuntimeError("LLM 术语提取超时") from exc
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"LLM 术语提取请求失败：{exc}") from exc
+    if response.status_code >= 400:
+        detail = response.text[:300]
+        raise RuntimeError(f"LLM 服务 HTTP {response.status_code}: {detail}")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("LLM 返回了无法解析的响应") from exc
+    content = ""
+    for choice in data.get("choices") or []:
+        message = choice.get("message") or {}
+        content = str(message.get("content") or "")
+        if content:
+            break
+    return _validate_llm_output(content, source_text or chunk)
 
 
-def get_kiwi() -> Any:
-    global _kiwi_instance
-    if KIWI_IMPORT_ERROR is not None or Kiwi is None:
-        raise RuntimeError(f"Kiwi import failed: {KIWI_IMPORT_ERROR}")
-    if _kiwi_instance is not None:
-        return _kiwi_instance
-    with _kiwi_lock:
-        if _kiwi_instance is None:
-            # 内置维基词典有助于识别作品名和公开人物名，未知漫画角色仍由上下文词性与姓名结构兜底。
-            _kiwi_instance = Kiwi(num_workers=1, load_default_dict=True)
-    return _kiwi_instance
+def _extract_json_array(content: str) -> list[Any] | None:
+    text = str(content or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text)
+    try:
+        value = json.loads(text)
+    except ValueError:
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if not match:
+            return None
+        try:
+            value = json.loads(match.group(0))
+        except ValueError:
+            return None
+    return value if isinstance(value, list) else None
 
 
-def extract_term_candidates(
+def _validate_llm_output(content: str, source_text: str) -> list[dict[str, Any]]:
+    """Parse the model answer; drop hallucinated or out-of-schema entries.
+
+    source 必须出现在原文里（source_text 不含「译文：」行——模型偶尔会从译文行抓词填
+    source，否则待确认区会出现"原文术语=中文译文"）；source/suggestedTarget 填反时交换。
+    """
+    values = _extract_json_array(content)
+    if not values:
+        return []
+    seen: set[str] = set()
+    candidates: list[dict[str, Any]] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        source = unicodedata.normalize("NFKC", str(value.get("source") or "")).strip()
+        kind = str(value.get("kind") or "").strip().lower()
+        note = str(value.get("note") or "").strip()
+        target = str(value.get("suggestedTarget") or "").strip()
+        if not source or len(source) > MAX_SOURCE_LENGTH or kind not in VALID_KINDS:
+            continue
+        if not _in_source_text(source_text, source) and target and _in_source_text(source_text, target):
+            source, target = target, source
+        if not _in_source_text(source_text, source):
+            continue
+        key = source.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append({
+            "source": source,
+            "kind": kind,
+            "note": note[:MAX_NOTE_LENGTH],
+            "suggestedTarget": target[:MAX_TARGET_LENGTH],
+            "score": _kind_score(kind),
+        })
+    return candidates
+
+
+def _kind_score(kind: str) -> float:
+    scores = {"person": 0.94, "title": 0.9, "group": 0.9, "organization": 0.88, "location": 0.88, "latin_name": 0.82, "latin_title": 0.9}
+    return scores.get(kind, 0.85)
+
+
+def _split_chunks(text: str, max_chars: int = LLM_MAX_CHUNK_CHARS, overlap: int = LLM_CHUNK_OVERLAP) -> list[str]:
+    if len(text) <= max_chars:
+        return [text] if text.strip() else []
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        chunks.append(text[start:end])
+        if end >= len(text):
+            break
+        start = max(start, end - overlap)
+    return chunks
+
+
+def extract_term_candidates_llm(
     blocks: Iterable[dict[str, Any]],
-    analyzer: Any | None = None,
-    user_terms: Iterable[str] | None = None,
+    base_url: str,
+    model: str,
+    api_key: str,
+    target_language: str = "zh-CN",
 ) -> list[dict[str, Any]]:
-    kiwi = analyzer or get_kiwi()
-    register_confirmed_person_aliases(kiwi, user_terms or [])
-    merged: dict[str, dict[str, Any]] = {}
-    prepared_blocks = [
-        {"id": str(block.get("id") or "").strip(), "text": normalize_text(block.get("text"))}
+    """Extract proper nouns with an LLM over the whole chapter; 原文/译文 pairs let the model fill suggestedTarget."""
+    prepared = [
+        {"id": str(block.get("id") or "").strip(), "text": normalize_text(block.get("text")), "translatedText": normalize_text(block.get("translatedText"))}
         for block in blocks
+        if str(block.get("id") or "").strip() and normalize_text(block.get("text"))
     ]
-
-    # 先学习同批次中可确定的全名，再正式分析；即使“성현”排在“김성현”前面，
-    # 第二遍也能把无姓称呼按独立 NNP 候选提取出来。
-    for block in prepared_blocks:
-        text = block["text"]
-        if not block["id"] or not text:
-            continue
-        tokens = normalize_tokens(kiwi.tokenize(text), text)
-        person_names = [
-            item["source"]
-            for item in extract_korean_candidates(text, tokens)
-            if item.get("kind") == "person"
-        ]
-        register_confirmed_person_aliases(kiwi, person_names)
-
-    for raw_block in prepared_blocks:
-        evidence_id = raw_block["id"]
-        text = raw_block["text"]
-        if not evidence_id or not text:
-            continue
-
-        tokens = normalize_tokens(kiwi.tokenize(text), text)
-        candidates = extract_korean_candidates(text, tokens) + extract_latin_candidates(text)
-        for candidate in candidates:
-            source = normalize_candidate(candidate.get("source"))
-            if not is_usable_candidate(source):
-                continue
-            key = source.casefold()
+    if not prepared:
+        return []
+    full_text = "\n".join(f"{block['text']}\n译文：{block['translatedText']}" if block["translatedText"] else block["text"] for block in prepared)
+    original_text = "\n".join(block["text"] for block in prepared)  # 校验基准只含原文：译文行绝不能作为 source 来源
+    if not full_text.strip():
+        return []
+    merged: dict[str, dict[str, Any]] = {}
+    for chunk in _split_chunks(full_text):
+        for candidate in _llm_extract_chunk(chunk, base_url, model, api_key, target_language, source_text=original_text):
+            key = candidate["source"].casefold()
             current = merged.get(key)
             if current is None:
-                current = {
-                    "source": source,
-                    "kind": str(candidate.get("kind") or "proper_noun"),
-                    "score": float(candidate.get("score") or 0.0),
-                    "evidenceIds": [],
-                }
-                merged[key] = current
-            elif float(candidate.get("score") or 0.0) > current["score"]:
-                current["kind"] = str(candidate.get("kind") or current["kind"])
-                current["score"] = float(candidate.get("score") or current["score"])
-            if evidence_id not in current["evidenceIds"]:
-                current["evidenceIds"].append(evidence_id)
-            if candidate.get("kind") == "person":
-                register_confirmed_person_aliases(kiwi, [source])
+                merged[key] = candidate
+            else:
+                for field in ("note", "suggestedTarget"):
+                    if not current[field] and candidate.get(field):
+                        current[field] = candidate[field]
+                current["score"] = max(current["score"], candidate["score"])
+    for candidate in merged.values():
+        candidate["evidenceIds"] = [block["id"] for block in prepared if _in_source_text(block["text"], candidate["source"])]
+    return sorted(merged.values(), key=lambda item: (-float(item["score"]), -len(str(item["source"])), str(item["source"])))
 
+
+def extract_candidate_sentences(blocks: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Zero-dependency fallback: high-confidence channels pre-fill terms, repeated phrases stay sentence-only."""
+    prepared = [
+        {"id": str(block.get("id") or "").strip(), "text": normalize_text(block.get("text"))}
+        for block in blocks
+        if str(block.get("id") or "").strip() and normalize_text(block.get("text"))
+    ]
+    if not prepared:
+        return []
+    merged: dict[str, dict[str, Any]] = {}
+    phrase_counts = _repeated_phrase_counts(prepared)
+
+    def add(source: str, kind: str, score: float, evidence_id: str, sentence_only: bool = False) -> None:
+        if not source or len(source) > MAX_SOURCE_LENGTH:
+            return
+        key = source.casefold()
+        current = merged.get(key)
+        if current is None:
+            current = {"source": source, "kind": kind, "score": score, "note": "", "suggestedTarget": "",
+                       "evidenceIds": [], "sentenceOnly": sentence_only}
+            merged[key] = current
+        if evidence_id and evidence_id not in current["evidenceIds"]:
+            current["evidenceIds"].append(evidence_id)
+        if not current["sentenceOnly"] and sentence_only:
+            current["sentenceOnly"] = True
+        current["score"] = max(current["score"], score)
+
+    for block in prepared:
+        text = block["text"]
+        evidence_id = block["id"]
+        for word in _scan_korean_names(text):
+            add(word, "person", 0.94, evidence_id)
+        for match in KATAKANA_SEQ_RE.finditer(text):
+            # 连续片假名通常是日语人名或外来专名。
+            add(match.group(1), "latin_name", 0.82, evidence_id)
+        for match in LATIN_PHRASE_RE.finditer(text):
+            source = normalize_candidate(match.group(0))
+            words = source.split()
+            if not words:
+                continue
+            if len(words) == 1:
+                word = words[0].upper()
+                if len(word) < 3 or word in LATIN_STOP_TERMS:
+                    continue
+                add(source, "latin_name", 0.82, evidence_id)
+            else:
+                if all(word.upper() in LATIN_STOP_TERMS or word.upper() == "THE" for word in words):
+                    continue
+                add(source, "latin_title", 0.9, evidence_id)
+        for match in BRACKETED_RE.finditer(text):
+            add(normalize_candidate(match.group(0)[1:-1]), "title", 0.86, evidence_id)
+    for phrase in phrase_counts:
+        if phrase.casefold() in merged:
+            continue
+        # 丢弃被更长候选完整包含的碎片短语（如 "하이파이" ⊂ "하이파이브"）。
+        if any(phrase in other["source"].replace(" ", "") and len(other["source"]) > len(phrase) for other in merged.values()):
+            continue
+        matching = [
+            block["id"] for block in prepared
+            if phrase in re.sub(r"\s+", "", block["text"])
+        ]
+        add(phrase, "proper_noun", SENTENCE_ONLY_SCORE, "", sentence_only=True)
+        merged[phrase.casefold()]["evidenceIds"] = matching
+    # 外来词截断抑制：人名被非人名候选完整包含则丢弃（如 "하이파" ⊂ "하이파이브"）；
+    # 人名简称（"성현" ⊂ "김성현"）不受影响，彼此时 kind 都是 person。
+    for key in list(merged.keys()):
+        item = merged[key]
+        if item["kind"] != "person":
+            continue
+        if any(item["source"] in other["source"].replace(" ", "") and other["source"] != item["source"] for other in merged.values() if other is not item):
+            del merged[key]
     return sorted(
         merged.values(),
         key=lambda item: (-float(item["score"]), -len(str(item["source"])), str(item["source"])),
     )
 
 
-def normalize_tokens(tokens: Iterable[Any], text: str) -> list[dict[str, Any]]:
-    normalized = []
-    for token in tokens:
-        start = max(0, int(getattr(token, "start", 0) or 0))
-        length = max(0, int(getattr(token, "len", 0) or 0))
-        form = str(getattr(token, "form", "") or "").strip()
-        tag = str(getattr(token, "tag", "") or "").strip().upper()
-        if not form or not tag:
+def _scan_korean_names(text: str) -> list[str]:
+    """3-4 syllable Korean names inside Hangul runs, tolerating a following particle."""
+    names: list[str] = []
+    for run in re.finditer(r"[가-힣]+", text):
+        chunk = run.group(0)
+        for size in (4, 3):
+            head = chunk[:size]
+            if not _is_name_shape(head):
+                continue
+            rest = chunk[size:]
+            if not rest or any(rest.startswith(particle) for particle in KOREAN_PARTICLES):
+                names.append(head)
+                break
+    return names
+
+
+def _is_name_shape(value: str) -> bool:
+    return (len(value) == 3 and value[:1] in COMMON_KOREAN_SURNAMES) or (len(value) == 4 and value[:2] in COMPOUND_KOREAN_SURNAMES)
+
+
+def _repeated_phrase_counts(prepared: list[dict[str, Any]]) -> list[str]:
+    """Repeated terms: CJK/kana n-grams or 4+ letter Latin words seen in ≥2 blocks."""
+    counts: Counter[str] = Counter()
+    block_keys: dict[str, set[str]] = {}
+    for block in prepared:
+        compact = re.sub(r"\s+", "", block["text"])
+        if not compact:
             continue
-        surface = text[start : start + length] if length > 0 else form
-        normalized.append(
-            {
-                "form": form,
-                "tag": tag,
-                "start": start,
-                "end": start + max(length, len(surface)),
-                "surface": surface or form,
-                "baseForm": str(getattr(token, "base_form", "") or "").strip(),
-            }
+        phrases: set[str] = set()
+        for size in (5, 4, 3, 2):
+            for index in range(0, max(1, len(compact) - size + 1)):
+                phrase = compact[index : index + size]
+                if not phrase or not CJK_REPEAT_RE.fullmatch(phrase) or _is_name_shape(phrase):
+                    continue
+                phrases.add(phrase)
+        for match in LATIN_WORD_RE.finditer(block["text"]):
+            word = match.group(0)
+            if word.upper() not in LATIN_STOP_TERMS:
+                phrases.add(word)
+        block_keys[block["id"]] = phrases
+        for phrase in phrases:
+            counts[phrase] += 1
+    result: list[str] = []
+    for phrase, count in counts.items():
+        if count < 2 or sum(1 for phrases in block_keys.values() if phrase in phrases) < 2:
+            continue
+        result.append(phrase)
+    return sorted(result, key=lambda item: (-counts[item], -len(item)))
+
+
+def extract_term_candidates(
+    blocks: Iterable[dict[str, Any]],
+    upstream: dict[str, Any] | None = None,
+    target_language: str = "zh-CN",
+) -> list[dict[str, Any]]:
+    """Dispatch: LLM extraction when an upstream is configured, else heuristic."""
+    base_url = str((upstream or {}).get("baseUrl") or "").strip()
+    if base_url:
+        return extract_term_candidates_llm(
+            blocks, base_url, str((upstream or {}).get("model") or ""),
+            str((upstream or {}).get("apiKey") or ""), target_language,
         )
-    return sorted(normalized, key=lambda item: (item["start"], item["end"]))
-
-
-def extract_korean_candidates(text: str, tokens: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    stripped_text = normalize_candidate(text)
-    compact_text = re.sub(r"\s+", "", stripped_text)
-    # Kiwi 偶尔会把姓名末字误判成语尾，例如“김솔음”中的“음/EF”。
-    # 对恰好占满 OCR 块且满足姓名结构的文本，先用完整 token 序列恢复全名，避免只留下“김솔”。
-    if is_korean_person_name(compact_text, tokens):
-        return [{"source": stripped_text, "kind": "person", "score": 0.94}]
-    groups: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
-
-    for token in tokens:
-        if token["tag"] not in NOUN_TAGS or not contains_hangul(token["form"]):
-            if current:
-                groups.append(current)
-                current = []
-            continue
-        if current and not can_join_noun_tokens(text, current[-1], token, len(current)):
-            groups.append(current)
-            current = []
-        current.append(token)
-    if current:
-        groups.append(current)
-
-    for group in groups:
-        start = group[0]["start"]
-        end = group[-1]["end"]
-        surface = normalize_candidate(text[start:end])
-        tags = {token["tag"] for token in group}
-        compact = re.sub(r"\s+", "", surface)
-        is_full_block = compact == re.sub(r"\s+", "", stripped_text)
-        is_person = is_korean_person_name(compact, group)
-
-        if is_person:
-            candidates.append({"source": surface, "kind": "person", "score": 0.94})
-            continue
-        # NNP + NNG 混合组中 NNP 部分是人名结构（如"정다준 성인"的"정다준"）时，
-        # 组合通常是"人名 + 普通名词"的粘连而非固定术语，直接排除；
-        # "샤이닝 스타"这类专名+通用词的作品名 NNP 部分不是人名，仍保留。
-        if "NNP" in tags and "NNG" in tags:
-            nnp_group = [token for token in group if token["tag"] == "NNP"]
-            nnp_surface = "".join(token["surface"] for token in nnp_group)
-            if is_korean_person_name(nnp_surface, nnp_group):
-                continue
-        if "NNP" in tags and len(compact) >= 2:
-            kind = "title" if len(group) >= 2 and is_full_block else "proper_noun"
-            candidates.append({"source": surface, "kind": kind, "score": 0.9 if kind == "proper_noun" else 0.86})
-            continue
-        # 平衡模式允许完整 OCR 块中的短名词短语进入人工确认，但不接受普通单个名词。
-        if is_full_block and 2 <= len(group) <= 4 and " " in surface and len(compact) >= 4:
-            # 纯 NNG 短语只有在全部由停用词组成时才丢弃；“연습 시간”这类
-            # 含通用词但整体有术语意义的短语仍应进入人工确认。
-            if "NNP" not in tags:
-                if not all(token["form"] in KOREAN_STOP_WORDS for token in group):
-                    candidates.append({"source": surface, "kind": "title", "score": 0.72})
-            else:
-                candidates.append({"source": surface, "kind": "title", "score": 0.72})
-
-    return candidates
-
-
-def extract_latin_candidates(text: str) -> list[dict[str, Any]]:
-    candidates = []
-    for match in LATIN_PHRASE_RE.finditer(text):
-        source = normalize_candidate(match.group(0))
-        words = source.split()
-        if not source or not words:
-            continue
-        if len(words) == 1:
-            word = words[0].upper()
-            if len(word) < 3 or word in LATIN_STOP_TERMS:
-                continue
-            kind = "latin_name"
-            score = 0.82
-        else:
-            if all(word.upper() in LATIN_STOP_TERMS or word.upper() == "THE" for word in words):
-                continue
-            kind = "latin_title"
-            score = 0.9
-        candidates.append({"source": source, "kind": kind, "score": score})
-    return candidates
-
-
-def can_join_noun_tokens(text: str, previous: dict[str, Any], current: dict[str, Any], group_size: int) -> bool:
-    if group_size >= 4:
-        return False
-    gap = text[int(previous["end"]) : int(current["start"])]
-    return not gap or gap.isspace()
-
-
-def is_korean_person_name(value: str, tokens: list[dict[str, Any]] | None = None) -> bool:
-    has_single_surname_shape = len(value) == 3 and value[:1] in COMMON_KOREAN_SURNAMES
-    has_compound_surname_shape = len(value) == 4 and value[:2] in COMPOUND_KOREAN_SURNAMES
-    if not (
-        all("가" <= char <= "힣" for char in value)
-        and (has_single_surname_shape or has_compound_surname_shape)
-    ):
-        return False
-    if not tokens:
-        return True
-    has_nnp = any(token.get("tag") == "NNP" for token in tokens)
-    all_unseen = all(not token.get("baseForm") for token in tokens)
-    if len(tokens) == 1 and tokens[0].get("tag") == "NNP":
-        # Kiwi 的词典中也包含真实姓名；有 baseForm 不代表它是普通名词。
-        return True
-    surname_length = 2 if has_compound_surname_shape else 1
-    first = tokens[0] if tokens else {}
-    final = tokens[-1] if tokens else {}
-    recovered_ending_name = (
-        first.get("tag") == "NNP"
-        and str(first.get("surface") or first.get("form") or "") == value[:surname_length]
-        and str(final.get("tag") or "").startswith("E")
-        and all(token.get("tag") in NOUN_TAGS or str(token.get("tag") or "").startswith("E") for token in tokens)
-    )
-    if recovered_ending_name:
-        # OCR 人名末字偶尔被分析成语尾（例如 김/NNP+솔/NNG+음/EF）。
-        return True
-    # 排除"김밥"(김/NNP+밥/NNG)等混合标签的常见名词：如果前 1~2 字是姓氏且剩余部分
-    # 有 baseForm（即词典已知），则不是人名。
-    tokens_by_tag = {}
-    for token in tokens:
-        tokens_by_tag.setdefault(token.get("tag"), []).append(token)
-    nng_with_baseform = [
-        t for t in tokens_by_tag.get("NNG", []) if t.get("baseForm")
-    ]
-    nnp_without_baseform = [
-        t for t in tokens_by_tag.get("NNP", []) if not t.get("baseForm")
-    ]
-    # 如果只含 NNP 且全部无 baseForm → 词典外专名，大概率是人名（如"김철수"）
-    if has_nnp and not tokens_by_tag.get("NNG") and nnp_without_baseform:
-        return True
-    # NNP + NNG 混合：NNG 有词典定义 → 是合成名词（如"김밥"）而非人名
-    if has_nnp and nng_with_baseform:
-        return False
-    # 纯 NNP 但有 baseForm → 词典已知词，不一定是人名
-    if has_nnp and not all_unseen:
-        return False
-    return has_nnp or all_unseen
-
-
-def register_confirmed_person_aliases(kiwi: Any, terms: Iterable[str]) -> None:
-    add_user_word = getattr(kiwi, "add_user_word", None)
-    if not callable(add_user_word):
-        return
-    aliases = []
-    for raw_term in terms:
-        term = re.sub(r"\s+", "", normalize_candidate(raw_term))
-        tokens = normalize_tokens(kiwi.tokenize(term), term)
-        if not is_korean_person_name(term, tokens):
-            continue
-        surname_length = 2 if term[:2] in COMPOUND_KOREAN_SURNAMES else 1
-        alias = term[surname_length:]
-        if 2 <= len(alias) <= 3 and alias not in aliases:
-            aliases.append(alias)
-    with _kiwi_user_word_lock:
-        for alias in aliases:
-            try:
-                add_user_word(alias, "NNP")
-            except Exception:
-                # 某些测试分析器或只读实现不支持动态词典，跳过即可。
-                continue
-
-
-def is_usable_candidate(value: str) -> bool:
-    if not value or len(value) < 2 or len(value) > 60:
-        return False
-    if MODEL_PLACEHOLDER_RE.fullmatch(value):
-        return False
-    if all(char.isdigit() or char.isspace() or unicodedata.category(char).startswith("P") for char in value):
-        return False
-    if not contains_hangul(value) and not bool(re.search(r"[A-Za-z]", value)):
-        return False
-    # 停用词过滤：去除空白后直接匹配
-    compact = re.sub(r"\s+", "", value)
-    if compact in KOREAN_STOP_WORDS:
-        return False
-    # 前缀匹配：处理"한국에"→"한국"、"시작이다"→"시작"等变形
-    for length in range(2, min(len(compact), 6) + 1):
-        if compact[:length] in KOREAN_STOP_WORDS:
-            return False
-    return True
+    return extract_candidate_sentences(blocks)
 
 
 def normalize_text(value: Any) -> str:

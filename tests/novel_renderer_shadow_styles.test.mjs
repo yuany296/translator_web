@@ -88,6 +88,61 @@ test("renderNovelTranslation injects styles into the paragraph's root node", () 
   });
 });
 
+function makeVisibleNode() {
+  const shadowRoot = { nodeType: 11, appendChild() {} };
+  return {
+    dataset: {},
+    style: {},
+    firstChild: null,
+    querySelector() {
+      return null;
+    },
+    appendChild() {},
+    getRootNode() {
+      return shadowRoot;
+    }
+  };
+}
+
+test("rendering a translation visible flips the global show intent for reapplies", () => {
+  withFakeDocument(() => {
+    const state = { showTranslation: false };
+    const runtime = {
+      state: { displayMode: "translated" },
+      getNovelState: () => state
+    };
+    installNovelRenderer(runtime);
+    runtime.renderNovelTranslation(makeVisibleNode(), "译文", true);
+    assert.equal(state.showTranslation, true,
+      "a visible render must flip the global show intent so reapply keeps it visible");
+    runtime.renderNovelTranslation(makeVisibleNode(), "译文", false);
+    assert.equal(state.showTranslation, true,
+      "a hidden render must not flip the intent back to original");
+  });
+});
+
+test("rendering hidden leaves the global show intent untouched", () => {
+  withFakeDocument(() => {
+    const state = { showTranslation: false };
+    const runtime = {
+      state: { displayMode: "translated" },
+      getNovelState: () => state
+    };
+    installNovelRenderer(runtime);
+    runtime.renderNovelTranslation(makeVisibleNode(), "译文", false);
+    assert.equal(state.showTranslation, false);
+  });
+});
+
+test("renderers without novel state stay a no-op for the intent flip", () => {
+  withFakeDocument(() => {
+    const runtime = { state: { displayMode: "translated" } };
+    installNovelRenderer(runtime);
+    assert.equal(runtime.renderNovelTranslation(makeVisibleNode(), "译文", true), true,
+      "optional chaining keeps legacy runtimes working");
+  });
+});
+
 test("findParagraphNode resolves pid#ordinal ids against duplicated data-p-id nodes", () => {
   withFakeDocument(() => {
     const runtime = {};

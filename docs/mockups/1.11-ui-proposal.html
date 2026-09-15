@@ -1,0 +1,1427 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>1.11 界面调整提案 · 先看这个再改代码</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
+        color: #172033;
+        background: #f4f7fb;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 720px;
+      }
+
+      main,
+      .page-head,
+      .page-foot {
+        width: min(1180px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .page-head {
+        padding: 30px 0 14px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 26px;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+
+      p {
+        margin: 0 0 8px;
+        line-height: 1.65;
+      }
+
+      .lead {
+        color: #475569;
+        font-size: 13px;
+      }
+
+      /* 顶部分区切换 */
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 18px;
+      }
+
+      .tab {
+        padding: 9px 14px;
+        border: 1px solid #dce4ef;
+        border-radius: 10px;
+        background: #ffffff;
+        color: #334155;
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .tab.active {
+        border-color: #93c5fd;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-weight: 700;
+      }
+
+      .decided {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
+        padding: 10px 12px;
+        border: 1px solid #bbf7d0;
+        border-radius: 12px;
+        background: #f0fdf4;
+        font-size: 12px;
+      }
+
+      .decided b {
+        color: #166534;
+      }
+
+      .decided span {
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: #ffffff;
+        color: #166534;
+      }
+
+      .decided span.pending {
+        background: #fffbeb;
+        color: #92400e;
+      }
+
+      section[data-panel] {
+        display: none;
+      }
+      section[data-panel].active {
+        display: block;
+      }
+
+      .card {
+        margin-bottom: 16px;
+        border: 1px solid #dce4ef;
+        border-radius: 16px;
+        background: #ffffff;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      }
+
+      .card-head {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 14px 18px;
+        border-bottom: 1px solid #eef2f7;
+      }
+
+      .card-head .tag {
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .tag.now {
+        color: #92400e;
+        background: #fef3c7;
+      }
+
+      .tag.next {
+        color: #1d4ed8;
+        background: #dbeafe;
+      }
+
+      .card-body {
+        padding: 16px 18px 18px;
+      }
+
+      .card.now {
+        border-style: dashed;
+        background: #fcfdff;
+        box-shadow: none;
+      }
+
+      .card.next {
+        border-color: #bfdbfe;
+      }
+
+      .points {
+        margin: 14px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .points li {
+        display: flex;
+        gap: 9px;
+        margin-bottom: 9px;
+        color: #334155;
+        font-size: 13px;
+        line-height: 1.65;
+      }
+
+      .num {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 19px;
+        height: 19px;
+        margin-top: 2px;
+        border-radius: 50%;
+        background: #2563eb;
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .num.gray {
+        background: #94a3b8;
+      }
+
+      code {
+        padding: 1px 5px;
+        border-radius: 6px;
+        background: #eef2f7;
+        font-size: 12px;
+      }
+
+      /* ---- 简笔画：用灰框示意现在的布局 ---- */
+      .sketch {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px;
+        border: 1px dashed #cbd5e1;
+        border-radius: 12px;
+        background: #f8fafc;
+      }
+
+      .sk-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .sk-box {
+        padding: 6px 10px;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #475569;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .sk-box.strong {
+        color: #172033;
+        font-weight: 700;
+      }
+
+      .sk-box.blue {
+        border-color: #93c5fd;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-weight: 700;
+      }
+
+      .sk-box.red {
+        border-color: #fecaca;
+        color: #b42318;
+      }
+
+      .sk-box.folded {
+        border-style: dashed;
+        color: #94a3b8;
+      }
+
+      .sk-caption {
+        color: #b45309;
+        font-size: 12px;
+      }
+
+      .sk-arrow {
+        color: #94a3b8;
+        font-size: 12px;
+      }
+
+      /* ---- 拟真控件（跟扩展里现有样式一致） ---- */
+      .variants {
+        margin-bottom: 14px;
+        padding: 12px 14px;
+        border: 1px dashed #c7d7ee;
+        border-radius: 12px;
+        background: #f7faff;
+      }
+
+      .variants > b {
+        display: block;
+        margin-bottom: 10px;
+        color: #1d4ed8;
+        font-size: 13px;
+      }
+
+      .variant-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+
+      .variant-label {
+        flex: 0 0 150px;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .seg {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .seg-btn {
+        padding: 6px 11px;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        background: #ffffff;
+        color: #475569;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .seg-btn.active {
+        border-color: #2563eb;
+        background: #2563eb;
+        color: #ffffff;
+        font-weight: 700;
+      }
+
+      .variant-note {
+        margin: 6px 0 0;
+        color: #64748b;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .url-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+
+      .url-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        border: 1px solid #dce4ef;
+        border-radius: 9px;
+        background: #ffffff;
+      }
+
+      .url-row code {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        background: transparent;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .url-hint {
+        margin: 8px 0 0;
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      .panel {
+        border: 1px solid #dce4ef;
+        border-radius: 14px;
+        background: #ffffff;
+        overflow: hidden;
+      }
+
+      .panel-pad {
+        padding: 16px;
+      }
+
+      .detail-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid #eef2f7;
+      }
+
+      .detail-header .title {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .detail-header h2 {
+        margin: 0;
+        font-size: 19px;
+      }
+
+      .detail-header .sub {
+        margin: 3px 0 0;
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      button.demo {
+        padding: 7px 12px;
+        border: 1px solid #cbd5e1;
+        border-radius: 9px;
+        background: #ffffff;
+        color: #263247;
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      button.demo:hover {
+        background: #f8fafc;
+      }
+
+      button.demo.primary {
+        border-color: #2563eb;
+        background: #2563eb;
+        color: #ffffff;
+      }
+
+      button.demo.danger {
+        border-color: #fecaca;
+        color: #b42318;
+      }
+
+      button.demo.small {
+        padding: 4px 9px;
+        font-size: 12px;
+      }
+
+      .switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px;
+        border: 1px solid #dce4ef;
+        border-radius: 9px;
+        background: #f8fafc;
+        color: #334155;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .switch input {
+        margin: 0;
+      }
+
+      .library-form {
+        border: 1px solid #e3eaf4;
+        border-radius: 14px;
+        background: #fbfdff;
+      }
+
+      .library-form .form-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 11px 14px;
+        border-bottom: 1px solid #eef2f7;
+      }
+
+      .library-form .form-head h3 {
+        flex: 1;
+        margin: 0;
+      }
+
+      .saved {
+        color: #047857;
+        font-size: 12px;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+
+      .saved.on {
+        opacity: 1;
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px 14px;
+        align-items: end;
+      }
+
+      .field {
+        margin-bottom: 13px;
+      }
+
+      .field:last-child {
+        margin-bottom: 0;
+      }
+
+      .field label {
+        display: block;
+        margin-bottom: 6px;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .field label small {
+        color: #64748b;
+        font-weight: 400;
+      }
+
+      input[type="text"],
+      input[type="search"],
+      textarea {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 9px;
+        padding: 9px 11px;
+        background: #ffffff;
+        color: inherit;
+        font: inherit;
+        font-size: 13px;
+      }
+
+      textarea {
+        min-height: 66px;
+        resize: vertical;
+        line-height: 1.5;
+      }
+
+      input:focus,
+      textarea:focus {
+        border-color: #2563eb;
+        outline: 3px solid rgba(37, 99, 235, 0.12);
+      }
+
+      .form-foot {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid #eef2f7;
+      }
+
+      .form-foot .grow {
+        flex: 1;
+        color: #64748b;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .test-result {
+        margin-top: 6px;
+        color: #b45309;
+        font-size: 12px;
+      }
+
+      .test-result.hit {
+        color: #047857;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 14px;
+        border-bottom: 1px solid #eef2f7;
+      }
+
+      .toolbar .search-wrap {
+        position: relative;
+        flex: 1 1 260px;
+        min-width: 220px;
+      }
+
+      .toolbar .search-wrap input {
+        padding-left: 30px;
+      }
+
+      .toolbar .search-wrap .icon {
+        position: absolute;
+        top: 9px;
+        left: 10px;
+        color: #94a3b8;
+        font-size: 13px;
+      }
+
+      .scope-hint {
+        padding: 9px 14px;
+        border-bottom: 1px solid #eef2f7;
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      .scope-hint b {
+        color: #1d4ed8;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+
+      th,
+      td {
+        padding: 9px 12px;
+        border-bottom: 1px solid #edf1f6;
+        text-align: left;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+
+      th {
+        background: #f8fafc;
+        color: #475569;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      td.num-cell {
+        width: 46px;
+        color: #94a3b8;
+        text-align: center;
+      }
+
+      .chip {
+        display: inline-block;
+        margin: 0 4px 2px 0;
+        padding: 1px 8px;
+        border-radius: 999px;
+        background: #eef2f7;
+        color: #475569;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .chip.blue {
+        background: #dbeafe;
+        color: #1d4ed8;
+      }
+
+      .chip.warn {
+        background: #fef3c7;
+        color: #92400e;
+      }
+
+      .lib-switch-row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .lib-pill {
+        padding: 7px 12px;
+        border: 1px solid #dce4ef;
+        border-radius: 10px;
+        background: #ffffff;
+        color: #334155;
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .lib-pill.active {
+        border-color: #93c5fd;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-weight: 700;
+      }
+
+      .callout {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-left: 3px solid #2563eb;
+        border-radius: 0 8px 8px 0;
+        background: #f5f9ff;
+        color: #334155;
+        font-size: 12px;
+        line-height: 1.65;
+      }
+
+      .callout.warn {
+        border-left-color: #f59e0b;
+        background: #fffbeb;
+      }
+
+      /* 配置档案表 */
+      .vendor-table td {
+        vertical-align: middle;
+      }
+
+      .vendor-name {
+        font-weight: 700;
+      }
+
+      .row-actions {
+        display: flex;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+
+      .mock-dialog {
+        margin-top: 14px;
+        border: 1px solid #dce4ef;
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow: 0 18px 44px rgba(15, 23, 42, 0.14);
+      }
+
+      .mock-dialog .dialog-head {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 14px 16px;
+        border-bottom: 1px solid #eef2f7;
+      }
+
+      .mock-dialog .dialog-head h3 {
+        flex: 1;
+        margin: 0;
+      }
+
+      .dialog-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        border-bottom: 1px solid #f1f5f9;
+        font-size: 13px;
+      }
+
+      .dialog-row:last-of-type {
+        border-bottom: 0;
+      }
+
+      .dialog-row .grow {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .dialog-foot {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid #eef2f7;
+      }
+
+      .confirm-dialog {
+        max-width: 560px;
+        margin: 14px 0 0;
+        border: 1px solid #fecaca;
+        border-radius: 14px;
+        background: #fffdfd;
+      }
+
+      .confirm-dialog .dialog-body {
+        padding: 16px;
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .confirm-dialog .dialog-foot {
+        border-top-color: #fde8e8;
+      }
+
+      footer {
+        padding: 8px 0 60px;
+        color: #64748b;
+        font-size: 12px;
+        line-height: 1.7;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page-head">
+      <h1>1.11 界面调整提案（改代码之前先看这个）</h1>
+      <p class="lead">
+        这里只画「改成什么样」，还没有动扩展的代码。三个问题各一页：库资料表单常显、搜索不串库、配置档案单独管。
+        右侧／下面凡是带 <span class="chip blue">蓝框</span> 的都是可以点的，能直接体验改完的手感。
+      </p>
+      <nav class="tabs">
+        <button class="tab active" type="button" data-tab="p1">① 术语库详情页：表单常显</button>
+        <button class="tab" type="button" data-tab="p2">② 搜索不再串库</button>
+        <button class="tab" type="button" data-tab="p3">③ 配置档案：单独一个界面</button>
+      </nav>
+      <div class="decided" id="decidedBox">
+        <b>已确认的方向</b>
+        <span>① 库资料常显 + 改完自动保存</span>
+        <span>② 每个库各记各的搜索词</span>
+        <span>③ 配置档案统一进「管理配置档案…」弹窗</span>
+        <span class="pending">已按这份定稿实现（2026-09-15）：扩展代码已改完，npm run verify 全绿（Node 1094 例 + Python 102 例 + lint + 构建）——这份页面留着当对照，不用再改</span>
+      </div>
+    </div>
+
+    <main>
+      <!-- ===================== ① 术语库详情页 ===================== -->
+      <section data-panel="p1" class="active">
+        <div class="card now">
+          <div class="card-head">
+            <span class="tag now">现在的样子</span>
+            <h2>要改库名 / 绑网址，得先点「编辑资料」</h2>
+          </div>
+          <div class="card-body">
+            <div class="sketch">
+              <div class="sk-row">
+                <span class="sk-box">← 术语库</span>
+                <span class="sk-box strong">骸骨皇女</span>
+                <span class="sk-box">1 条术语 · 未绑定网址（点「编辑资料」绑定…）</span>
+                <span class="sk-box">参与翻译 ⏻</span>
+                <span class="sk-box blue">编辑资料</span>
+                <span class="sk-box red">删除这个库</span>
+                <span class="sk-box">新增术语</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-caption">↑ 改名字、绑网址、写自检，都要先点这个按钮</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-box folded">库资料（默认折叠着，点了才展开）</span>
+                <span class="sk-arrow">→</span>
+                <span class="sk-box">名称 · 绑定网址 · 匹配自检</span>
+                <span class="sk-arrow">→</span>
+                <span class="sk-box">保存</span>
+                <span class="sk-box">收起</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-caption">
+                  ↑ 「删除这个库」和「参与翻译」开关挤在同一行，都挨着「编辑资料」；改完还要再点一次「保存」
+                </span>
+              </div>
+            </div>
+            <ul class="points">
+              <li><span class="num gray">1</span>多一步：进库 → 点「编辑资料」→ 才看到表单。</li>
+              <li><span class="num gray">2</span>两个按钮（保存 / 收起）语义接近，改完不知道点哪个才会存下去。</li>
+              <li><span class="num gray">3</span>「删除这个库」离「参与翻译」开关太近，看着像在删整个术语功能。</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="tag" style="color: #0f766e; background: #ccfbf1">对照</span>
+            <h2>沉浸式翻译的术语库详情页是怎么做的</h2>
+          </div>
+          <div class="card-body">
+            <p class="lead">
+              Chrome 那个标签页重启后没了，我直接读了本机装的沉浸式翻译（1.33.1）的界面代码，它的库详情页是：
+            </p>
+            <ul class="points">
+              <li><span class="num gray">·</span><strong>名称、描述是两个常显输入框</strong>，onChange 直接存 —— 页面上根本没有「保存 / 编辑资料」按钮。</li>
+              <li><span class="num gray">·</span>「匹配域名」是一份常显的网址列表，带「添加 / 编辑 / 删除」。</li>
+              <li><span class="num gray">·</span>「删除术语库」是独立的一个动作 + 确认弹窗，弹窗里带库名。</li>
+              <li><span class="num gray">·</span>下面才是术语表格（单元格直接编辑）+ 导入/导出/新增/搜索一条工具栏。</li>
+            </ul>
+            <p class="lead" style="margin-top: 10px">
+              提案就是把这套做法搬到我们的「库资料」：名称 / 绑定网址 / 匹配自检 / 启用开关全部常显、直接改。
+            </p>
+          </div>
+        </div>
+
+        <div class="card next">
+          <div class="card-head">
+            <span class="tag next">提案</span>
+            <h2>进库就直接看到表单，改完自动存</h2>
+          </div>
+          <div class="card-body">
+            <div class="variants">
+              <b>已按你最新三条改完（这里都能点）</b>
+              <p class="variant-note">
+                ① 参与翻译开关从详情页拿掉，只剩列表页卡片上那一个；② 网址归属测试是「网址归属测试…」按钮 + 弹窗；
+                ③ 新增术语搬到工具栏（导入文件旁边），导出合成一个「导出…」，点了再弹窗选格式。
+              </p>
+              <div class="sketch" style="margin-top: 10px">
+                <div class="sk-row">
+                  <span class="sk-box">术语库列表页卡片（参与翻译的<strong>唯一</strong>开关）</span>
+                  <span class="sk-box strong">骸骨皇女</span>
+                  <span class="sk-box">12 条 · 绑定 1 个网址</span>
+                  <span class="sk-box blue">⏻ 参与翻译</span>
+                </div>
+                <div class="sk-row">
+                  <span class="sk-caption">详情页不再有这个开关，两处不会打架；详情页副标题只把状态写出来给人看</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="detail-header">
+                <button class="demo" type="button">← 术语库</button>
+                <div class="title">
+                  <h2>骸骨皇女</h2>
+                  <p class="sub">12 条术语 · 已启用（开关在术语库列表页）· 绑定 1 个网址</p>
+                </div>
+                <button class="demo danger delete-slot" type="button">删除这个库…</button>
+              </div>
+
+              <div class="panel-pad">
+                <div class="library-form">
+                  <div class="form-head">
+                    <h3>库资料</h3>
+                    <span class="saved" id="savedHint">已保存 ✓</span>
+                  </div>
+                  <div class="panel-pad">
+                    <div class="field">
+                      <label for="mockName">术语库名称</label>
+                      <input id="mockName" type="text" value="骸骨皇女" />
+                    </div>
+
+                    <div class="field">
+                      <label>
+                        绑定网址<small> · 写作品总览页，章节页会自动归入本库；也支持 <code>*.google.com</code> <code>google.com/mail/*</code> 这类通配写法</small>
+                      </label>
+                      <div id="urlModeList">
+                        <div class="url-list">
+                          <div class="url-row">
+                            <code>https://page.kakao.com/content/69299983</code>
+                            <button class="demo small danger" type="button">删除</button>
+                          </div>
+                          <div class="url-row">
+                            <code>https://comic.naver.com/webtoon/list</code>
+                            <button class="demo small danger" type="button">删除</button>
+                          </div>
+                          <div class="url-row">
+                            <code>*.google.com</code>
+                            <button class="demo small danger" type="button">删除</button>
+                          </div>
+                        </div>
+                        <div class="inline-actions">
+                          <button class="demo small" type="button">＋ 添加网址</button>
+                          <button class="demo small" id="bulkEditBtn" type="button">批量编辑</button>
+                          <button class="demo small" id="matchTestBtn" type="button">网址归属测试…</button>
+                        </div>
+                        <p class="url-hint">
+                          示例：<code>page.kakao.com/content/69299983</code>（作品总览页，章节页自动归入）、
+                          <code>comic.naver.com/webtoon/list</code>、<code>*.google.com</code>（所有子域）、
+                          <code>google.com/mail/*</code>（该目录下任意层级）、<code>https://www.google.com/*</code>（该站任意页面）。
+                          保存时去掉查询串、片段与末尾斜杠。
+                        </p>
+                      </div>
+                      <div id="urlModeText" class="hidden">
+                        <textarea id="mockUrls" spellcheck="false">https://page.kakao.com/content/69299983/
+https://comic.naver.com/webtoon/list?titleId=123456
+https://www.pixiv.net/artworks/12345678
+*.google.com</textarea>
+                        <div class="inline-actions">
+                          <button class="demo small" id="backToListBtn2" type="button">回到列表</button>
+                          <button class="demo small" id="matchTestBtn2" type="button">网址归属测试…</button>
+                        </div>
+                        <p class="url-hint">整列粘贴用这个：一行一个，离开格子自动存，回来就是一条条列表。</p>
+                      </div>
+                    </div>
+
+                    <div class="form-foot">
+                      <span class="grow">
+                        改完离开格子就自动保存（回车也行），不用再找「保存」按钮。删除在标题行最右。
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="confirm-dialog hidden" id="deleteConfirm">
+                  <div class="dialog-body">
+                    <b>删除术语库「骸骨皇女」？</b><br />
+                    库里的 <b>12 条术语会移到默认术语库</b>，不会丢。删掉的只是这个库的名字和绑定网址。
+                  </div>
+                  <div class="dialog-foot">
+                    <button class="demo small" type="button" id="cancelDelete">取消</button>
+                    <button class="demo small danger" type="button">删除这个库</button>
+                  </div>
+                </div>
+
+                <div class="mock-dialog hidden" id="matchDialog">
+                  <div class="dialog-head">
+                    <h3>网址归属测试</h3>
+                    <span class="chip">粘一个章节网址，看它会不会归入本库</span>
+                  </div>
+                  <div class="panel-pad">
+                    <p class="variant-note" style="margin-bottom: 10px">
+                      逐条比对绑定网址：不带 <code>*</code> 的按目录前缀命中；带 <code>*</code> 的按通配命中
+                      （<code>*.google.com</code> 只管子域，<code>google.com/mail/*</code> 管该目录下任意层级；不写协议时 http/https 都算）。
+                    </p>
+                    <div class="field">
+                      <label for="mockTest">粘贴一个章节网址</label>
+                      <input id="mockTest" type="text" value="https://page.kakao.com/content/69299983/viewer/69333586/" />
+                      <div class="test-result hit">✓ 会命中：这条网址会归入本库（匹配 https://page.kakao.com/content/69299983）</div>
+                    </div>
+                    <div class="inline-actions">
+                      <button class="demo small" type="button">缩短一级目录</button>
+                      <button class="demo small" type="button">把这条加进绑定</button>
+                    </div>
+                  </div>
+                  <div class="dialog-foot">
+                    <button class="demo" type="button" id="closeMatch">关闭</button>
+                  </div>
+                </div>
+
+                <div class="mock-dialog hidden" id="exportDialog">
+                  <div class="dialog-head">
+                    <h3>导出「骸骨皇女」</h3>
+                    <span class="chip">12 条术语</span>
+                  </div>
+                  <div class="dialog-row">
+                    <div class="grow"><b>CSV</b> · <small>原文,译文,备注 —— 交给 Excel 或别的工具</small></div>
+                    <button class="demo small" type="button">导出 CSV</button>
+                  </div>
+                  <div class="dialog-row">
+                    <div class="grow"><b>JSON</b> · <small>完整备份，含术语库结构；导入回来按库归还</small></div>
+                    <button class="demo small" type="button">导出 JSON</button>
+                  </div>
+                  <div class="dialog-foot">
+                    <button class="demo" type="button" id="closeExport">取消</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="toolbar">
+                <div class="search-wrap">
+                  <span class="icon">⌕</span>
+                  <input type="search" placeholder="在「骸骨皇女」中搜索原文、译文或备注" />
+                </div>
+                <button class="demo" type="button">批量操作</button>
+                <button class="demo primary" type="button">新增术语</button>
+                <button class="demo" type="button">导入文件</button>
+                <button class="demo" id="exportBtn" type="button">导出…</button>
+                <button class="demo danger" type="button">清空本库</button>
+              </div>
+              <div class="scope-hint">「骸骨皇女」共 12 条，启用 12 条</div>
+              <table>
+                <thead>
+                  <tr><th>原文术语</th><th>固定译文</th><th>备注</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>해골 황녀</td><td>骸骨皇女</td><td>女主角的称号</td></tr>
+                  <tr><td>왕국</td><td>王国</td><td></td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <ul class="points">
+              <li><span class="num">1</span>库资料表单<strong>常显</strong>：进库直接改，没有「编辑资料」这一步。</li>
+              <li><span class="num">2</span><strong>自动保存</strong>：离开格子（或回车）就存，右上角闪「已保存 ✓」；没有「保存 / 收起」两个按钮。保存失败（比如名字撞车）就在名称下面出一行红字，<strong>你输入的内容不会被吞掉</strong>。</li>
+              <li><span class="num">3</span><strong>「参与翻译」开关从详情页撤掉</strong>，只留术语库列表页卡片上那一个；详情页副标题只写状态（已启用 / 已停用），避免两处开关打架。</li>
+              <li><span class="num">4</span><strong>网址归属测试改成按钮 + 弹窗</strong>：就长在绑定网址旁边，点开是个弹窗（粘章节网址 → 归本库 / 不归 → 缩短一级目录 / 把这条加进绑定），不占常显表单的地方。整页的规矩：<strong>能弹窗的就不往页面上多塞一段</strong>。</li>
+              <li><span class="num">5</span><strong>新增术语搬到工具栏</strong>（导入文件旁边）；<strong>导出合成一个「导出…」</strong>，点了再选 CSV / JSON，工具栏少一个按钮。</li>
+              <li><span class="num">6</span>「删除这个库…」留在标题行最右，确认框第一句说清术语移到默认库、不会丢。</li>
+              <li><span class="num">7</span>「清理其它库已有的」只在默认术语库出现，位置挪到库资料卡片底部（功能没删）。</li>
+            </ul>
+            <div class="callout">
+              网址列表 / 批量编辑 / 测试匹配 三件事都只服务「绑定网址」这一项，所以都放在网址下面那一行；不想要哪一个直接说。
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== ② 搜索 ===================== -->
+      <section data-panel="p2">
+        <div class="card now">
+          <div class="card-head">
+            <span class="tag now">现在的样子</span>
+            <h2>搜索框全页只有一个，换个库还留着上一个库的词</h2>
+          </div>
+          <div class="card-body">
+            <div class="sketch">
+              <div class="sk-row">
+                <span class="sk-box blue">骸骨皇女</span>
+                <span class="sk-box">搜索：왕국</span>
+                <span class="sk-arrow">→ 匹配 1 条</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-arrow">↓ 点进另一个库</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-box blue">剑之墓</span>
+                <span class="sk-box">搜索：왕국</span>
+                <span class="sk-arrow">→ 匹配 0 条</span>
+                <span class="sk-caption">↑ 搜索词跟过来了，看着像「这个库是空的」</span>
+              </div>
+            </div>
+            <ul class="points">
+              <li><span class="num gray">1</span>搜索词、搜索结果条数、空状态提示都跟着跨库保留。</li>
+              <li><span class="num gray">2</span>切库后如果这个词在新库里没有，页面就是「没有匹配的术语」——很容易误以为库空了或数据没了。</li>
+              <li><span class="num gray">3</span>「全部术语」总览和单个库共用同一个框，缩窄到单库后范围也说不清。</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card next">
+          <div class="card-head">
+            <span class="tag next">提案</span>
+            <h2>每个库各记各的搜索；框里写清「在哪个库里搜」</h2>
+          </div>
+          <div class="card-body">
+            <div class="lib-switch-row">
+              <button class="lib-pill active" type="button" data-lib="kakao">骸骨皇女（3 条）</button>
+              <button class="lib-pill" type="button" data-lib="sword">剑之墓（3 条）</button>
+              <button class="lib-pill" type="button" data-lib="all">全部术语（6 条）</button>
+            </div>
+
+            <div class="panel">
+              <div class="toolbar">
+                <div class="search-wrap">
+                  <span class="icon">⌕</span>
+                  <input id="mockSearch" type="search" placeholder="在「骸骨皇女」中搜索原文、译文或备注" />
+                </div>
+                <button class="demo" type="button">批量操作</button>
+                <button class="demo primary" type="button">新增术语</button>
+                <button class="demo" type="button">导入文件</button>
+                <button class="demo" type="button">导出…</button>
+              </div>
+              <div class="scope-hint" id="mockScope">「骸骨皇女」共 3 条，启用 3 条</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th class="num-cell">#</th>
+                    <th>原文术语</th>
+                    <th>固定译文</th>
+                    <th>备注</th>
+                  </tr>
+                </thead>
+                <tbody id="mockRows"></tbody>
+              </table>
+            </div>
+
+            <ul class="points">
+              <li><span class="num">1</span><strong>搜索不再共享</strong>：当前在哪个库，就用哪个库自己的搜索词。切到别的库，看到的是那个库的全部术语，不会莫名其妙只剩几条。</li>
+              <li><span class="num">2</span>每个库各记各的：在 A 库搜过的词，切回 A 库还在；切到 B 库是 B 自己的状态（上面点按钮就能试）。</li>
+              <li><span class="num">3</span>搜索框 placeholder 带上库名，摘要行也从「共 3 条」改成「「骸骨皇女」共 3 条，匹配 1 条」，范围一眼可见。</li>
+              <li><span class="num">4</span>右上角加一个「×」一键清空当前库的搜索；「全部术语」总览有它自己独立的一份搜索词。</li>
+            </ul>
+            <div class="callout warn">
+              另一种更简单的做法：切库时<strong>直接把搜索框清空</strong>（不记忆上次的词）。好处是绝不会「怎么还有字」，坏处是来回对比两个库时要重新输入。你选哪种？
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== ③ 配置档案 ===================== -->
+      <section data-panel="p3">
+        <div class="card now">
+          <div class="card-head">
+            <span class="tag now">现在的样子</span>
+            <h2>服务卡片里并排着「新建 / 编辑 / 删除」，删除看着像删功能</h2>
+          </div>
+          <div class="card-body">
+            <div class="sketch">
+              <div class="sk-row">
+                <span class="sk-box strong">翻译服务</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-box">配置档案 [DeepSeek 日常 ▾]</span>
+                <span class="sk-box blue">新建配置</span>
+                <span class="sk-box">编辑</span>
+                <span class="sk-box red">删除</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-caption">↑ 这个「删除」到底删的是这套 API 配置，还是整个翻译功能？看不出。</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-box">整章术语提取 [DeepSeek 日常 ▾]</span>
+                <span class="sk-box blue">新建配置</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-box">句子级术语提取 [Kimi 长文 ▾]</span>
+                <span class="sk-box blue">新建配置</span>
+              </div>
+              <div class="sk-row">
+                <span class="sk-caption">↑ 三处都能新建，但改／删只在第一处有；删掉一套被别处用着的配置，也不知道会发生什么。</span>
+              </div>
+            </div>
+            <ul class="points">
+              <li><span class="num gray">1</span>「删除」和「启用开关 / 服务选择」在同一个卡片里，语义像是动服务本身。</li>
+              <li><span class="num gray">2</span>删一套正被「整章术语提取」用着的配置，会静默变成「未选择配置」，事后才发现提取不跑了。</li>
+              <li><span class="num gray">3</span>新建入口散在三张卡片上，建完不回到你想用的那一处。</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card next">
+          <div class="card-head">
+            <span class="tag next">提案</span>
+            <h2>服务卡片只负责「用哪套」；改删都进「管理配置档案」那一页</h2>
+          </div>
+          <div class="card-body">
+            <div class="panel">
+              <div class="panel-pad">
+                <div class="grid-2">
+                  <div class="field" style="margin-bottom: 0">
+                    <label>使用哪套配置</label>
+                    <input type="text" value="DeepSeek 日常 · deepseek-chat · api.deepseek.com" readonly />
+                  </div>
+                  <button class="demo" type="button" id="openManager">管理配置档案…</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="mock-dialog">
+              <div class="dialog-head">
+                <h3>配置档案（3 套）</h3>
+                <span class="chip">翻译 / 整章提取 / 句子提取 共用这个库</span>
+                <button class="demo primary" type="button">新建配置</button>
+              </div>
+              <table class="vendor-table">
+                <thead>
+                  <tr>
+                    <th>配置名称</th>
+                    <th>服务商 / 模型</th>
+                    <th>谁在用</th>
+                    <th style="width: 190px; text-align: right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="vendor-name">DeepSeek 日常</td>
+                    <td>DeepSeek · deepseek-chat</td>
+                    <td>
+                      <span class="chip blue">翻译</span>
+                      <span class="chip blue">整章提取</span>
+                    </td>
+                    <td>
+                      <div class="row-actions">
+                        <button class="demo small" type="button">编辑</button>
+                        <button class="demo small" type="button">复制</button>
+                        <button class="demo small danger" type="button">删除</button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="vendor-name">Kimi 长文</td>
+                    <td>Moonshot · moonshot-v1-8k</td>
+                    <td><span class="chip blue">句子提取</span></td>
+                    <td>
+                      <div class="row-actions">
+                        <button class="demo small" type="button">编辑</button>
+                        <button class="demo small" type="button">复制</button>
+                        <button class="demo small danger" type="button" id="askDeleteVendor">删除</button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="vendor-name">Google 备用</td>
+                    <td>Google · gemini-1.5-flash</td>
+                    <td><span class="chip">没人用</span></td>
+                    <td>
+                      <div class="row-actions">
+                        <button class="demo small" type="button">编辑</button>
+                        <button class="demo small" type="button">复制</button>
+                        <button class="demo small danger" type="button">删除</button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="dialog-foot">
+                <button class="demo" type="button">关闭</button>
+              </div>
+            </div>
+
+            <div class="confirm-dialog hidden" id="vendorConfirm">
+              <div class="dialog-body">
+                <b>删除配置档案「Kimi 长文」？</b><br />
+                <span style="color: #64748b">
+                  只删这一套 API 配置（地址 / 密钥 / 模型），<b>翻译功能和其他配置都不受影响</b>。<br />
+                  它现在被 <b>句子级术语提取</b> 用着，删完那里会变成「未选择配置」，那个开关在重新选一套之前不工作。
+                </span>
+              </div>
+              <div class="dialog-foot">
+                <button class="demo small" type="button" id="cancelDeleteVendor">取消</button>
+                <button class="demo small danger" type="button">删除这套配置</button>
+              </div>
+            </div>
+
+            <ul class="points">
+              <li><span class="num">1</span>服务卡片里<strong>不再出现「删除」</strong>：只留「使用哪套配置」+「管理配置档案…」。想删东西只能进管理页，位置固定。</li>
+              <li><span class="num">2</span>档案统一列在一张表里，一眼看到<strong>「谁在用」</strong>：删之前就知道会影响哪个服务；没人用的那套标「没人用」。</li>
+              <li><span class="num">3</span>删除确认文案写明影响面（<code>翻译功能和其他配置都不受影响</code> + 具体哪个服务会变成未选择），按钮文案也叫「删除这套配置」。</li>
+              <li><span class="num">4</span>顺手加「复制」：想拿同一套密钥换个模型试，不用重新填 Key。</li>
+              <li><span class="num">5</span>新建 / 编辑还是现在那个「选服务商 → 填 Key 和 Model → 命名」的向导，只是入口统一到管理页（服务卡片上的「管理配置档案…」也能直接新建后回填给这一处）。</li>
+            </ul>
+            <div class="callout">
+              另一个选择：把管理页做成设置页里独立的一个分区（左栏多一项「配置档案」），而不是弹窗。弹窗的好处是改完就回到你原来那处；独立分区的好处是能一直开着对照。倾向弹窗。
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="page-foot">
+        这是提案页，不是扩展本身。确认后我按这个改：术语库详情页（<code>glossary.html</code> + <code>glossary-library-settings.js</code> + 视图路由）、
+        搜索的按库隔离（<code>glossary-terms-view.js</code>）、配置档案管理（<code>settings.html</code> + <code>settings/vendor-ui.js</code>），并同步更新对应测试。
+      </footer>
+
+    <script>
+      // 分区切换
+      const tabs = Array.from(document.querySelectorAll(".tab"));
+      const panels = Array.from(document.querySelectorAll("section[data-panel]"));
+      tabs.forEach(tab => {
+        tab.addEventListener("click", () => {
+          tabs.forEach(item => item.classList.toggle("active", item === tab));
+          panels.forEach(panel => panel.classList.toggle("active", panel.dataset.panel === tab.dataset.tab));
+        });
+      });
+
+      // ① 「已保存」提示：离开输入框时闪一下，示意自动保存
+      const savedHint = document.getElementById("savedHint");
+      let savedTimer = null;
+      function flashSaved() {
+        savedHint.classList.add("on");
+        clearTimeout(savedTimer);
+        savedTimer = setTimeout(() => savedHint.classList.remove("on"), 1600);
+      }
+      ["mockName", "mockUrls", "mockTest"].forEach(id => {
+        document.getElementById(id).addEventListener("blur", flashSaved);
+      });
+      const deleteConfirm = document.getElementById("deleteConfirm");
+      Array.from(document.querySelectorAll(".delete-slot")).forEach(button => {
+        button.addEventListener("click", () => deleteConfirm.classList.remove("hidden"));
+      });
+      document.getElementById("cancelDelete").addEventListener("click", () => deleteConfirm.classList.add("hidden"));
+
+      // ① 绑定网址：列表为主，「批量编辑」切整列粘贴的文本框
+      const urlList = document.getElementById("urlModeList");
+      const urlText = document.getElementById("urlModeText");
+      function showUrlMode(mode) {
+        urlList.classList.toggle("hidden", mode !== "list");
+        urlText.classList.toggle("hidden", mode !== "text");
+      }
+      document.getElementById("bulkEditBtn").addEventListener("click", () => showUrlMode("text"));
+      document.getElementById("backToListBtn2").addEventListener("click", () => showUrlMode("list"));
+      showUrlMode("list");
+
+      // ① 匹配自检 → 弹窗；导出 → 一个按钮再选格式
+      const matchDialog = document.getElementById("matchDialog");
+      const exportDialog = document.getElementById("exportDialog");
+      ["matchTestBtn", "matchTestBtn2"].forEach(id => {
+        document.getElementById(id).addEventListener("click", () => matchDialog.classList.remove("hidden"));
+      });
+      document.getElementById("closeMatch").addEventListener("click", () => matchDialog.classList.add("hidden"));
+      document.getElementById("exportBtn").addEventListener("click", () => exportDialog.classList.remove("hidden"));
+      document.getElementById("closeExport").addEventListener("click", () => exportDialog.classList.add("hidden"));
+
+      // ② 每个库各记各的搜索词（提案行为的最小演示）
+      const LIBS = {
+        kakao: {
+          label: "骸骨皇女",
+          rows: [
+            ["骸骨皇女", "해골 황녀", "女主角的称号"],
+            ["王国", "왕국", ""],
+            ["剑之墓", "검의 무덤", "地名"]
+          ]
+        },
+        sword: {
+          label: "剑之墓",
+          rows: [
+            ["骑士团", "기사단", ""],
+            ["大团长", "대단장", "职位"],
+            ["圣剑", "성검", ""]
+          ]
+        },
+        all: {
+          label: "全部术语",
+          rows: [
+            ["骸骨皇女", "해골 황녀", "女主角的称号"],
+            ["王国", "왕국", ""],
+            ["剑之墓", "검의 무덤", "地名"],
+            ["骑士团", "기사단", ""],
+            ["大团长", "대단장", "职位"],
+            ["圣剑", "성검", ""]
+          ]
+        }
+      };
+      const queries = { kakao: "", sword: "", all: "" };
+      let activeLib = "kakao";
+      const searchInput = document.getElementById("mockSearch");
+      const scope = document.getElementById("mockScope");
+      const rowsBody = document.getElementById("mockRows");
+
+      function renderLib() {
+        const lib = LIBS[activeLib];
+        const query = queries[activeLib].trim().toLocaleLowerCase();
+        const rows = query
+          ? lib.rows.filter(cells => cells.some(cell => String(cell).toLocaleLowerCase().includes(query)))
+          : lib.rows;
+        const enabled = lib.rows.length;
+        scope.textContent = query
+          ? `「${lib.label}」共 ${lib.rows.length} 条，匹配 ${rows.length} 条，启用 ${enabled} 条`
+          : `「${lib.label}」共 ${lib.rows.length} 条，启用 ${enabled} 条`;
+        rowsBody.replaceChildren(...rows.map((cells, index) => {
+          const tr = document.createElement("tr");
+          const number = document.createElement("td");
+          number.className = "num-cell";
+          number.textContent = String(index + 1);
+          tr.append(number);
+          cells.forEach(cell => {
+            const td = document.createElement("td");
+            td.textContent = cell;
+            tr.append(td);
+          });
+          return tr;
+        }));
+        searchInput.placeholder = `在「${lib.label}」中搜索原文、译文或备注`;
+        searchInput.value = queries[activeLib];
+        document.querySelectorAll(".lib-pill").forEach(pill => {
+          pill.classList.toggle("active", pill.dataset.lib === activeLib);
+        });
+      }
+
+      searchInput.addEventListener("input", () => {
+        queries[activeLib] = searchInput.value;
+        renderLib();
+      });
+      document.querySelectorAll(".lib-pill").forEach(pill => {
+        pill.addEventListener("click", () => {
+          activeLib = pill.dataset.lib;
+          renderLib();
+        });
+      });
+      renderLib();
+
+      // ③ 删除确认示意
+      const vendorConfirm = document.getElementById("vendorConfirm");
+      document.getElementById("askDeleteVendor").addEventListener("click", () => vendorConfirm.classList.remove("hidden"));
+      document.getElementById("cancelDeleteVendor").addEventListener("click", () => vendorConfirm.classList.add("hidden"));
+      document.getElementById("openManager").addEventListener("click", () => {
+        document.querySelector(".mock-dialog").scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    </script>
+  </body>
+</html>

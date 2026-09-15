@@ -47,15 +47,15 @@ test("sampleTranslatedParagraphs skips paragraphs without translations or empty 
 });
 
 test("sampleTranslatedParagraphs evenly samples a long chapter and always keeps the first block", () => {
-  const chapter = makeChapter(100);
+  const chapter = makeChapter(500);
   const translations = new Map(chapter.paragraphs.map(item => [item.id, `译文 ${item.index}`]));
   const blocks = core.sampleTranslatedParagraphs(chapter, translations);
 
-  assert.equal(blocks.length, 60);
+  assert.equal(blocks.length, 300);
   assert.equal(blocks[0].id, "hash-p0");
   const ids = Array.from(blocks, block => block.id);
   assert.equal(new Set(ids).size, ids.length);
-  assert.ok(ids[ids.length - 1].endsWith("-p98"));
+  assert.ok(ids[ids.length - 1].endsWith("-p498"));
 });
 
 test("sampleTranslatedParagraphs guards invalid maxBlocks and non-Map translations", () => {

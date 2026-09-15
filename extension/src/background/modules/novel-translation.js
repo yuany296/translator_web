@@ -78,7 +78,7 @@ export function installNovelTranslation(runtime) {
       "Return JSON only with translations and memory_delta.",
       '{"translations":[{"id":"p1","translated_text":"..."}],"memory_delta":{"summary":"","characters":[],"relationships":[],"honorifics":[],"unresolved":[]}}',
       ...(glossaryPrompt ? [glossaryPrompt] : []),
-      `Book memory: ${runtime.stableSerialize(context.memory || {})}`,
+      `Book memory: ${runtime.stableSerialize(runtime.novelMemoryCore.trimMemoryForPrompt(context.memory))}`,
       `Previous translated block: ${String(context.previousTranslation || "").slice(-5000)}`,
       `Nearby preceding text: ${String(context.beforeText || "").slice(-3000)}`,
       `Nearby following text: ${String(context.afterText || "").slice(0, 3000)}`,

@@ -56,6 +56,45 @@ export function installCanonicalSetup(runtime, scope) {
   scope.targetHandleIds = targetHandleIds;
   const activeRunByTarget = new WeakMap();
   scope.activeRunByTarget = activeRunByTarget;
+  const timingByRun = new Map();
+  scope.timingByRun = timingByRun;
+  function timingStart(runId) {
+    const timings = {
+      start: scope.now(),
+      _last: scope.now(),
+      phases: {}
+    };
+    timingByRun.set(runId, timings);
+    return timings;
+  }
+  scope.timingStart = timingStart;
+  function timingPhase(runId, name) {
+    const timings = timingByRun.get(runId);
+    if (!timings) return;
+    const now = scope.now();
+    if (timings._last !== undefined) {
+      timings.phases[name] = (timings.phases[name] || 0) + Math.round(now - timings._last);
+    }
+    timings._last = now;
+  }
+  scope.timingPhase = timingPhase;
+  function timingAdd(runId, name, ms) {
+    const timings = timingByRun.get(runId);
+    if (!timings) return;
+    const value = Math.max(0, Math.round(Number(ms) || 0));
+    timings.phases[name] = (timings.phases[name] || 0) + value;
+  }
+  scope.timingAdd = timingAdd;
+  function timingFinish(runId) {
+    const timings = timingByRun.get(runId);
+    if (!timings) return {};
+    timingByRun.delete(runId);
+    // total 是整次 run 的墙钟时间，而不是各阶段之和；未打点的间隙也计入 total。
+    timings.phases.total = Math.round(scope.now() - timings.start);
+    delete timings._last;
+    return timings.phases;
+  }
+  scope.timingFinish = timingFinish;
   function getTargetHandleId(target) {
     if (!target || typeof target !== "object" && typeof target !== "function") return "no-target";
     let id = scope.targetHandleIds.get(target);
@@ -192,7 +231,18 @@ export function installCanonicalSetup(runtime, scope) {
       identity.suppressLoadingClear = !!previousRun && previousRun !== identity;
       scope.activeRunByTarget.set(target, identity);
       scope.store.beginPageJob(identity.jobKey, identity);
-      return scope.execute(target, identity, options);
+      scope.timingStart(identity.runId);
+      try {
+        const result = await scope.execute(target, identity, options);
+        const timings = scope.timingFinish(identity.runId);
+        return result && typeof result === "object" && Object.keys(timings).length > 0
+          ? { ...result, timings }
+          : result;
+      } finally {
+        if (scope.timingByRun.has(identity.runId)) {
+          scope.timingByRun.delete(identity.runId);
+        }
+      }
     });
   }
   scope.run = run;

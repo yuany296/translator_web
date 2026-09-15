@@ -1,4 +1,5 @@
 import { installMessages } from "./messages.js";
+import { installTermDiscoveryMessages } from "./term-discovery-messages.js";
 import { installTermDiscovery } from "./term-discovery.js";
 import { installOcrPipeline } from "./ocr-pipeline.js";
 import { installOcrDispatch } from "./ocr-dispatch.js";
@@ -40,6 +41,7 @@ import { installBootstrap } from "./bootstrap.js";
 
 export const backgroundInstallers = Object.freeze([
   installMessages,
+  installTermDiscoveryMessages,
   installTermDiscovery,
   installOcrPipeline,
   installOcrDispatch,
@@ -80,6 +82,7 @@ export const backgroundInstallers = Object.freeze([
 export const backgroundPhases = Object.freeze({
   functions: Object.freeze([
     installMessages,
+    installTermDiscoveryMessages,
     installTermDiscovery,
     installOcrPipeline,
     installOcrDispatch,

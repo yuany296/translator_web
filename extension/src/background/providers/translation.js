@@ -1,4 +1,5 @@
 import { TRANSLATION_PROVIDERS, normalizeTranslationConfig } from "../../config/schema.js";
+import llmProviders from "../../shared/llm-providers.js";
 import languages from "../../shared/languages.js";
 
 export function createTranslationProviders(runtime, registry) {
@@ -7,7 +8,8 @@ export function createTranslationProviders(runtime, registry) {
     normalizeConfig: normalizeTranslationConfig,
     validate(config) {
       const normalized = normalizeTranslationConfig(config);
-      if (!normalized.apiKey) return "翻译 API Key 未配置";
+      const keyRequired = llmProviders.keyRequired(normalized.provider);
+      if (!normalized.apiKey && keyRequired) return "翻译 API Key 未配置";
       if (!normalized.model) return "翻译模型未配置";
       if (languages.isSameLanguagePair(normalized.sourceLanguage, normalized.targetLanguage)) {
         return "源语言与目标语言不能相同（简体与繁体互转除外）";
@@ -21,7 +23,7 @@ export function createTranslationProviders(runtime, registry) {
       const endpoint = `${normalized.baseUrl.replace(/\/+$/u, "")}/models`;
       try {
         const { response } = await runtime.fetchJsonWithTimeout(endpoint, {
-          headers: { Authorization: `Bearer ${normalized.apiKey}` }
+          headers: normalized.apiKey ? { Authorization: `Bearer ${normalized.apiKey}` } : {}
         }, { timeoutMs: 8000, timeoutMessage: "翻译服务连接超时" });
         return response.ok ? { ok: true, provider: this.id } : { ok: false, error: `HTTP ${response.status}` };
       } catch (healthError) {

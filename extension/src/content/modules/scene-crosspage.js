@@ -211,6 +211,14 @@ export function installSceneCrossPage(runtime) {
 
   function buildCrossPageBubbleGeometry(surface, bubble, targetRects, rootRect) {
     const textBox = toCompositeBox(surface, bubble);
+    // 斜排文字的遮罩四边形（coverQuad/coverTilted）用与 DOM 覆盖层同源的推导。
+    // 该钩子由 lifecycle-cover 安装；精简 runtime（如跨页 DOM 单测）可能没装，
+    // 此时优雅降级为轴对齐，而不是整段跨页几何抛错。
+    const coverGeometry = typeof runtime.resolveBubbleCoverGeometry === "function"
+      ? runtime.resolveBubbleCoverGeometry(bubble) : null;
+    // 每页遮罩段的映射盒子沿用最终蓝框：它既与清洗图补丁/页面坐标一致，也
+    // 让分页之间的真实页面间隙保持整数像素。倾斜可见范围由 coverQuad 单独裁剪，
+    // 不靠放大映射盒子实现（放大盒子会把页面间隙压成浮点误差）。
     const coverBox = toCompositeBox(surface, runtime.resolveBubbleCoverBox(bubble) || bubble);
     if (!textBox || !coverBox) return null;
     const mapBox = box => surface.segments.map(segment => {
@@ -265,7 +273,9 @@ export function installSceneCrossPage(runtime) {
         ...segment,
         left: segment.left - outer.left,
         top: segment.top - outer.top
-      }))
+      })),
+      coverQuad: coverGeometry ? coverGeometry.quad : null,
+      coverTilted: Boolean(coverGeometry && coverGeometry.tilted)
     };
   }
   runtime.buildCrossPageBubbleGeometry = buildCrossPageBubbleGeometry;

@@ -130,6 +130,7 @@ export function installPlatformRuntime(runtime) {
     }
     runtime.clearAllOverlays();
     runtime.clearAutoTranslateRetryTimers();
+    runtime.hideFloatingBallFeedback?.();
     if (runtime.state.kakaoProjectionRefreshTimer) {
       window.clearTimeout(runtime.state.kakaoProjectionRefreshTimer);
       runtime.state.kakaoProjectionRefreshTimer = 0;
@@ -162,6 +163,7 @@ export function installPlatformRuntime(runtime) {
   }
   runtime.markInvalidated = markInvalidated;
   function destroy() {
+    runtime.hideFloatingBallFeedback?.();
     runtime.restoreAllNovelText();
     runtime.disconnectNovelReader();
     runtime.uninstallWebpageRouteObserver?.();

@@ -32,12 +32,21 @@ class BackgroundDebugRequest(BaseModel):
 class TermExtractionBlock(BaseModel):
     id: str
     text: str
+    translatedText: str = ""
+
+
+class TermExtractionUpstream(BaseModel):
+    baseUrl: str = ""
+    model: str = ""
+    apiKey: str = ""
 
 
 class TermExtractionRequest(BaseModel):
-    blocks: list[TermExtractionBlock] = Field(default_factory=list, max_length=200)
+    blocks: list[TermExtractionBlock] = Field(default_factory=list, max_length=500)
     mode: str = "balanced"
     user_terms: list[str] = Field(default_factory=list, max_length=200)
+    upstream: TermExtractionUpstream | None = None
+    target_language: str = "zh-CN"
 
 
 class GlossaryEntryPayload(BaseModel):
@@ -51,6 +60,15 @@ class GlossaryEntryPayload(BaseModel):
     scope_type: str = "global"
     scope_key: str = ""
     scope_label: str = ""
+    library_id: str = ""
+    library_name: str = ""
+
+
+class GlossaryLibraryPayload(BaseModel):
+    id: str = ""
+    name: str = ""
+    enabled: bool = True
+    urls: list[str] = Field(default_factory=list, max_length=20)
 
 
 class GlossaryBatchPayload(BaseModel):
@@ -76,6 +94,7 @@ class GlossaryAddPendingPayload(BaseModel):
     chapter_key: str = ""
     chapter_url: str = ""
     chapter_title: str = ""
+    library_id: str = ""
 
 
 class GlossaryImportPayload(BaseModel):

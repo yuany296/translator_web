@@ -63,7 +63,9 @@ function buildNovelState(ctx = {}) {
     id: "novel",
     availability: "enabled",
     availabilityReason: "",
-    phase: ctx.textStatus === "working" ? "loading" : ctx.textStatus === "partial" ? "error" : "idle",
+    // 强制重译正文/图片等瞬时动作(novelActionWorking)也用转圈表达,
+    // 否则「进行中」没有任何可见反馈(文字浮层只承载终态)。
+    phase: ctx.actionWorking || ctx.textStatus === "working" ? "loading" : ctx.textStatus === "partial" ? "error" : "idle",
     displayMode: ctx.showTranslation ? "translated" : "original",
     cacheCoverage: ctx.textStatus === "complete" ? "full" : ctx.textStatus === "partial" ? "partial" : coverage,
     hasTranslation: ctx.translatedCount > 0 || ctx.textStatus === "complete",
@@ -84,7 +86,8 @@ function buildComicState(ctx = {}) {
     phase: running ? "running" : working ? "loading" : "idle",
     displayMode: "original",
     cacheCoverage: "none",
-    overlayVisibility: ctx.overlayVisible === false ? "hidden" : "visible"
+    overlayVisibility: ctx.overlayVisible === false ? "hidden" : "visible",
+    automatic: ctx.pretranslateMode === "ahead" || ctx.pretranslateMode === "continuous"
   };
 }
 
@@ -171,10 +174,10 @@ function presentComic(state) {
     return { disabled: false, spinner: true, runningRing: false, badge: null, tooltip, ariaLabel: toAriaLabel(tooltip) };
   }
   if (state.overlayVisibility === "hidden") {
-    const tooltip = joinTooltip("漫画翻译", "译文覆盖层已隐藏，点击开始连续翻译");
+    const tooltip = joinTooltip("漫画翻译", state.automatic ? "译文覆盖层已隐藏，点击开始连续翻译" : "译文覆盖层已隐藏，点击翻译当前视口");
     return { disabled: false, spinner: false, runningRing: false, badge: "hidden", tooltip, ariaLabel: toAriaLabel(tooltip) };
   }
-  const tooltip = joinTooltip("漫画翻译", "点击开始连续翻译，已显示的覆盖层保留");
+  const tooltip = joinTooltip("漫画翻译", state.automatic ? "点击开始连续翻译，已显示的覆盖层保留" : "点击翻译当前视口");
   return { disabled: false, spinner: false, runningRing: false, badge: null, tooltip, ariaLabel: toAriaLabel(tooltip) };
 }
 

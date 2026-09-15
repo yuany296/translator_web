@@ -123,31 +123,6 @@ export function installRendererOverlay(runtime) {
     });
   }
   runtime.renderOverlay = renderOverlay;
-  function createBubbleCoverClipNode(bubble, coverNode) {
-    const box = runtime.resolveBubbleCoverBox(bubble) || runtime.normalizeFillBox(bubble, bubble?.stitch_overflow === true);
-    if (!coverNode || !box) return coverNode;
-    const rotation = Number(coverNode.dataset.rotationDeg) || 0;
-    const polygon = runtime.normalizeBubblePolygon(bubble.polygon, bubble?.stitch_overflow === true);
-    const clipNode = document.createElement("div");
-    clipNode.className = "mt-cover-clip";
-    Object.assign(clipNode.dataset, { mangaTranslatorOverlay: "true", canonicalId: String(bubble.canonical_id || ""), rotationDeg: String(rotation) });
-    clipNode.style.left = `${box.x + box.w / 2}%`;
-    clipNode.style.top = `${box.y + box.h / 2}%`;
-    clipNode.style.width = `${box.w}%`;
-    clipNode.style.height = `${box.h}%`;
-    clipNode.style.transform = `translate(-50%, -50%)${polygon ? "" : ` rotate(${rotation.toFixed(2)}deg)`}`;
-    clipNode.style.transformOrigin = "center center";
-    if (polygon) clipNode.style.clipPath = runtime.buildRegionClipPath(polygon, box.x, box.y, box.w, box.h);
-    const x = Number(coverNode.dataset.xPercent), y = Number(coverNode.dataset.yPercent), w = Number(coverNode.dataset.wPercent), h = Number(coverNode.dataset.hPercent);
-    Object.assign(coverNode.style, {
-      left: `${(x + w / 2 - box.x) / box.w * 100}%`, top: `${(y + h / 2 - box.y) / box.h * 100}%`,
-      width: `${w / box.w * 100}%`, height: `${h / box.h * 100}%`
-    });
-    coverNode.style.setProperty("--mt-base-transform", "translate(-50%, -50%)");
-    clipNode.appendChild(coverNode);
-    return clipNode;
-  }
-  runtime.createBubbleCoverClipNode = createBubbleCoverClipNode;
   function appendBubbleRenderLayers(root, coverNodes, textNodes) {
     // 所有背景先绘制、所有译文后绘制。即使相邻蓝框非常接近，任何背景
     // 节点也不能凭 DOM 顺序盖住另一个文字节点。

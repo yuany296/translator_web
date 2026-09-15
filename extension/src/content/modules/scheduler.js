@@ -162,6 +162,10 @@ export function installScheduler(runtime) {
     return String(options && options.reason || "").startsWith("ahead-");
   }
   runtime.isAheadTranslationOptions = isAheadTranslationOptions;
+  function isAutoTranslationOptions(options) {
+    return /^(?:ahead-|page-auto)/.test(String(options && options.reason || ""));
+  }
+  runtime.isAutoTranslationOptions = isAutoTranslationOptions;
   function getTranslationQueueInsertIndex(queue, options) {
     const items = Array.isArray(queue) ? queue : [];
     if (runtime.isAheadTranslationOptions(options)) return items.length;
@@ -308,6 +312,22 @@ export function installScheduler(runtime) {
     }
   }
   runtime.pumpPreloadQueue = pumpPreloadQueue;
+  function dropAutoQueuedItems() {
+    if (!Array.isArray(runtime.state.queue) || runtime.state.queue.length === 0) return 0;
+    let dropped = 0;
+    for (let index = runtime.state.queue.length - 1; index >= 0; index -= 1) {
+      const item = runtime.state.queue[index];
+      if (!item || !runtime.isAutoTranslationOptions(item.options)) continue;
+      runtime.state.queue.splice(index, 1);
+      runtime.state.queuedTargets.delete(item.target);
+      if (typeof runtime.clearKakaoLoadingOverlay === "function") {
+        try { runtime.clearKakaoLoadingOverlay(item.target); } catch {/* 清理失败不影响队列状态 */}
+      }
+      dropped += 1;
+    }
+    return dropped;
+  }
+  runtime.dropAutoQueuedItems = dropAutoQueuedItems;
   function getMaxPreloadJobs() {
     return runtime.state.aggressivePreload ? runtime.AGGRESSIVE_PRELOAD_JOBS : runtime.MAX_PRELOAD_JOBS;
   }

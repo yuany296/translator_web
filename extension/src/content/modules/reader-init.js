@@ -51,6 +51,7 @@ export function installReaderInit(runtime) {
       return;
     }
     runtime.claimRuntimeOwnership();
+    runtime.connectKeepAlive();
     await runtime.loadLocalSettings();
     runtime.ensureOverlayLayer();
     runtime.createFloatingBall();
@@ -68,6 +69,26 @@ export function installReaderInit(runtime) {
     runtime.scheduleAheadPretranslation("page-load");
   }
   runtime.init = init;
+  /**
+   * 在 Kakao 阅读器页面建立常驻端口,让后台 service worker 保持存活。
+   * 这样悬浮球消息与扩展弹窗的配置加载都不必等待 SW 冷启动,
+   * 也避免 MV3 空闲回收瞬间消息失败(“Receiving end does not exist”)。
+   */
+  function connectKeepAlive() {
+    if (!runtime.IS_KAKAOPAGE_READER || runtime.state.keepAlivePort) return;
+    try {
+      const port = chrome.runtime.connect({ name: "mt-keepalive" });
+      runtime.state.keepAlivePort = port;
+      port.onDisconnect.addListener(() => {
+        runtime.state.keepAlivePort = null;
+        // SW 重启/崩溃后端口断开,延迟重连以保持长驻。
+        window.setTimeout(connectKeepAlive, 1000);
+      });
+    } catch {
+      runtime.state.keepAlivePort = null;
+    }
+  }
+  runtime.connectKeepAlive = connectKeepAlive;
   function hasExtensionApis() {
     return typeof chrome !== "undefined" && !!chrome.runtime && !!chrome.runtime.id && !!chrome.runtime.onMessage && !!chrome.storage && !!chrome.storage.local;
   }

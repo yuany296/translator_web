@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installSceneCrossPage } from "../extension/src/content/modules/scene-crosspage.js";
+import { installCrossPageCover } from "../extension/src/content/modules/crosspage-cover.js";
 import { installRendererCrossPage } from "../extension/src/content/modules/renderer-crosspage.js";
 import { installCrossPageLifecycle } from "../extension/src/content/modules/crosspage-lifecycle.js";
 
@@ -128,6 +129,7 @@ function createRuntime(targets) {
     get layoutCalls() { return layoutCalls; }
   };
   installSceneCrossPage(runtime);
+  installCrossPageCover(runtime);
   installRendererCrossPage(runtime);
   installCrossPageLifecycle(runtime);
   return runtime;

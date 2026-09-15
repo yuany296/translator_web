@@ -21,21 +21,37 @@ def health() -> dict[str, runtime.Any]:
 
 runtime.health = health
 
-def terms_health() -> dict[str, runtime.Any]:
-    status = runtime.get_term_extractor_status(check_runtime=True)
+def terms_health(request: runtime.Request) -> dict[str, runtime.Any]:
+    query = request.query_params
+    base_url = str(query.get('base_url') or '').strip()
+    api_key = str(query.get('api_key') or '').strip()
+    status = runtime.get_term_extractor_status(
+        check_runtime=bool(base_url),
+        base_url=base_url,
+        api_key=api_key,
+    )
     return {'ok': status['available'], **status}
 
 runtime.terms_health = terms_health
 
 async def extract_terms(payload: runtime.TermExtractionRequest) -> dict[str, runtime.Any]:
-    status = await runtime.asyncio.to_thread(runtime.get_term_extractor_status, True)
-    if not status['available']:
-        raise runtime.HTTPException(status_code=503, detail=status['error'] or 'Kiwi is unavailable')
-    if payload.mode != 'balanced':
-        raise runtime.HTTPException(status_code=400, detail='only balanced mode is supported')
-    blocks = [{'id': block.id.strip(), 'text': block.text.strip()} for block in payload.blocks if block.id.strip() and block.text.strip()]
-    candidates = await runtime.asyncio.to_thread(runtime.extract_term_candidates, blocks, None, payload.user_terms)
-    return {'ok': True, 'engine': 'kiwi', 'candidates': candidates}
+    blocks = [
+        {'id': block.id.strip(), 'text': block.text.strip(), 'translatedText': block.translatedText.strip()}
+        for block in payload.blocks
+        if block.id.strip() and block.text.strip()
+    ]
+    if not blocks:
+        return {'ok': True, 'engine': 'heuristic', 'candidates': []}
+    upstream = {
+        'baseUrl': (payload.upstream.baseUrl or '').strip() if payload.upstream else '',
+        'model': (payload.upstream.model or '').strip() if payload.upstream else '',
+        'apiKey': (payload.upstream.apiKey or '').strip() if payload.upstream else '',
+    }
+    engine = 'ollama' if upstream['baseUrl'] else 'heuristic'
+    candidates = await runtime.asyncio.to_thread(
+        runtime.extract_term_candidates, blocks, upstream, payload.target_language or 'zh-CN'
+    )
+    return {'ok': True, 'engine': engine, 'candidates': candidates}
 
 runtime.extract_terms = extract_terms
 
@@ -46,7 +62,7 @@ def glossary_health() -> dict[str, runtime.Any]:
         count = db.get_entry_count()
         pending = db.get_pending_count()
         revision = db.get_revision()
-        return {'ok': True, 'entryCount': count, 'pendingCount': pending, 'revision': revision, 'schemaVersion': SCHEMA_VERSION}
+        return {'ok': True, 'entryCount': count, 'pendingCount': pending, 'revision': revision, 'schemaVersion': SCHEMA_VERSION, 'libraryCount': len(db.list_libraries())}
     except Exception as exc:
         import traceback; traceback.print_exc()
         return {'ok': False, 'error': str(exc)}
@@ -57,7 +73,7 @@ def glossary_list(
     search: str = '', enabled_only: bool = False,
     tgt_lng: str = '', keyword: str = '',
     limit: int = 0, offset: int = 0,
-    updated_after: float = 0.0,
+    updated_after: float = 0.0, library_id: str = '',
 ) -> dict[str, runtime.Any]:
     try:
         db = runtime.get_glossary_db()
@@ -65,11 +81,11 @@ def glossary_list(
             search=search, enabled_only=enabled_only,
             tgt_lng=tgt_lng, keyword=keyword,
             limit=limit, offset=offset,
-            updated_after=updated_after,
+            updated_after=updated_after, library_id=library_id,
         )
         total = db.get_entry_count(tgt_lng=tgt_lng, keyword=keyword or search, enabled_only=enabled_only)
         revision = db.get_revision()
-        return {'ok': True, 'entries': entries, 'total': total, 'revision': revision}
+        return {'ok': True, 'entries': entries, 'total': total, 'revision': revision, 'libraries': db.list_libraries()}
     except Exception as exc:
         import traceback; traceback.print_exc()
         raise runtime.HTTPException(status_code=500, detail=str(exc))
@@ -89,6 +105,8 @@ def glossary_upsert(payload: runtime.GlossaryEntryPayload) -> dict[str, runtime.
             scope_type=getattr(payload, 'scope_type', 'global'),
             scope_key=getattr(payload, 'scope_key', ''),
             scope_label=getattr(payload, 'scope_label', ''),
+            library_id=getattr(payload, 'library_id', ''),
+            library_name=getattr(payload, 'library_name', ''),
         )
         return {'ok': True, 'entry': entry}
     except Exception as exc:
@@ -181,135 +199,9 @@ def glossary_export() -> dict[str, runtime.Any]:
 
 runtime.glossary_export = glossary_export
 
-async def glossary_import(request: runtime.Request) -> dict[str, runtime.Any]:
-    try:
-        body = await request.json()
-    except Exception:
-        raise runtime.HTTPException(status_code=400, detail='Invalid JSON body')
-    entries = body.get('entries', []) if isinstance(body, dict) else []
-    if not isinstance(entries, list):
-        raise runtime.HTTPException(status_code=400, detail='entries must be a list')
-    db = runtime.get_glossary_db()
-    try:
-        count = db.import_entries(entries)
-    except Exception as exc:
-        import traceback
-        traceback.print_exc()
-        raise runtime.HTTPException(status_code=500, detail=f'import_entries failed: {exc}')
-    return {'ok': True, 'imported': count}
-
-runtime.glossary_import = glossary_import
-
-async def glossary_import_db(request: runtime.Request) -> dict[str, runtime.Any]:
-    """Import entries from an uploaded SQLite glossary database."""
-    import shutil
-    import tempfile
-    try:
-        form = await request.form()
-        uploaded = form.get("file")
-        if not uploaded or not hasattr(uploaded, "filename"):
-            raise runtime.HTTPException(status_code=400, detail="No database file uploaded")
-        filename = getattr(uploaded, "filename", "upload.db")
-        if not filename.lower().endswith((".db", ".sqlite", ".sqlite3")):
-            raise runtime.HTTPException(status_code=400, detail="Only .db / .sqlite / .sqlite3 files are accepted")
-        # Save upload to temp file
-        content = await uploaded.read()
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        try:
-            tmp.write(content)
-            tmp.close()
-            # Verify it's a valid SQLite database with a compatible table
-            import sqlite3 as _sqlite3
-            src = _sqlite3.connect(tmp.name)
-            try:
-                tables = [r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-                if "glossary_entries" not in tables:
-                    raise runtime.HTTPException(status_code=400, detail=f"Uploaded database has no glossary_entries table. Found tables: {', '.join(tables[:8])}")
-                cols = [r[1] for r in src.execute("PRAGMA table_info(glossary_entries)").fetchall()]
-                has_source = "source" in cols
-                has_target = "target" in cols
-                if not has_source or not has_target:
-                    raise runtime.HTTPException(status_code=400, detail=f"glossary_entries table must have source and target columns. Found: {', '.join(cols[:12])}")
-                has_tgt = "tgt_lng" in cols
-                has_note = "note" in cols
-                has_enabled = "enabled" in cols
-                has_scope_type = "scope_type" in cols
-                has_scope_key = "scope_key" in cols
-                has_scope_label = "scope_label" in cols
-                select_cols = ["source", "target"]
-                if has_tgt:
-                    select_cols.append("tgt_lng")
-                if has_note:
-                    select_cols.append("note")
-                if has_enabled:
-                    select_cols.append("enabled")
-                if has_scope_type:
-                    select_cols.append("scope_type")
-                if has_scope_key:
-                    select_cols.append("scope_key")
-                if has_scope_label:
-                    select_cols.append("scope_label")
-                rows = src.execute(f"SELECT {', '.join(select_cols)} FROM glossary_entries").fetchall()
-                entries = []
-                for row in rows:
-                    entry = {"source": row[0] or "", "target": row[1] or ""}
-                    ci = 2
-                    if has_tgt:
-                        entry["tgt_lng"] = row[ci] or ""
-                        ci += 1
-                    if has_note:
-                        entry["note"] = row[ci] or ""
-                        ci += 1
-                    if has_enabled:
-                        entry["enabled"] = bool(row[ci])
-                        ci += 1
-                    if has_scope_type:
-                        entry["scope_type"] = row[ci] or "global"
-                        ci += 1
-                    if has_scope_key:
-                        entry["scope_key"] = row[ci] or ""
-                        ci += 1
-                    if has_scope_label:
-                        entry["scope_label"] = row[ci] or ""
-                    entries.append(entry)
-                src.close()
-            finally:
-                if src:
-                    src.close()
-                os.unlink(tmp.name)
-        except Exception:
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
-            raise
-        if not entries:
-            return {"ok": True, "read": 0, "added": 0, "updated": 0, "skipped": 0, "failed": 0, "failures": [], "backup": ""}
-        # Backup current DB
-        db = runtime.get_glossary_db()
-        backup_path = ""
-        try:
-            backup_name = f"glossary_backup_{int(runtime.time.time())}.db"
-            backup_path = str(runtime.Path(db._path).parent / backup_name)
-            shutil.copy2(db._path, backup_path)
-        except Exception:
-            backup_path = ""
-        # Import
-        stats = db.upsert_batch(entries)
-        stats["backup"] = backup_path
-        return stats
-    except runtime.HTTPException:
-        raise
-    except Exception as exc:
-        import traceback
-        traceback.print_exc()
-        raise runtime.HTTPException(status_code=500, detail=f"Import failed: {exc}")
-
-runtime.glossary_import_db = glossary_import_db
-
 def glossary_pending_add(payload: runtime.GlossaryAddPendingPayload) -> dict[str, runtime.Any]:
     db = runtime.get_glossary_db()
-    db.add_pending(source=payload.source, kind=payload.kind, score=payload.score, evidence_ids=payload.evidence_ids, chapter_key=payload.chapter_key, chapter_url=payload.chapter_url, chapter_title=payload.chapter_title)
+    db.add_pending(source=payload.source, kind=payload.kind, score=payload.score, evidence_ids=payload.evidence_ids, chapter_key=payload.chapter_key, chapter_url=payload.chapter_url, chapter_title=payload.chapter_title, library_id=getattr(payload, 'library_id', ''))
     return {'ok': True}
 
 runtime.glossary_pending_add = glossary_pending_add

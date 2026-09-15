@@ -6,12 +6,22 @@ export function installRecognitionWorkflow(runtime) {
         ? await runtime.kakaoCanonicalPipeline.runCached(target, null, options)
         : await runtime.kakaoCanonicalPipeline.run(target, options);
       if (result?.ok) {
+        const timings = result.timings && typeof result.timings === "object" ? result.timings : null;
+        if (timings) {
+          console.info("[MangaTranslator][timing]", {
+            pageId: result.pageId || "",
+            reason: options?.reason || "",
+            cached: result.cached === true || result.reused === true,
+            ...timings
+          });
+        }
         await runtime.reportStatus("info", "translation done", {
           reason: options?.reason,
           pageId: result.pageId || "",
           bubbles: Number(result.bubbles || 0),
           cached: result.cached === true || result.reused === true,
-          pipeline: "canonical-v2"
+          pipeline: "canonical-v2",
+          timings
         });
       }
       return result;

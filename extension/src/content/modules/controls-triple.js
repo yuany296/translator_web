@@ -29,7 +29,8 @@ export function installControlsTriple(runtime) {
       showTranslation: novel.showTranslation,
       cacheStatus: Date.now() < Number(novel.cacheBadgeUntil || 0) ? "none" : (novel.cacheStatus || "none"),
       translatedCount: novel.translations.size,
-      errorMessage: novel.progress?.textDiagnostic || ""
+      errorMessage: novel.progress?.textDiagnostic || "",
+      actionWorking: runtime.state.novelActionWorking || null
     };
   }
 
@@ -39,7 +40,7 @@ export function installControlsTriple(runtime) {
       invalidated: runtime.state.invalidated,
       running: runtime.state.autoTranslatePageEnabled && runtime.state.enabled,
       working: runtime.state.comicWorking === true,
-      overlayVisible: runtime.getOverlayLayerVisibility?.() !== false
+      overlayVisible: runtime.getOverlayLayerVisibility?.() !== false, pretranslateMode: runtime.state.pretranslateMode
     };
   }
 
@@ -78,7 +79,7 @@ export function installControlsTriple(runtime) {
       return;
     }
     if (state.availability === "detecting") {
-      runtime.showFloatingBallFeedback("正在检测 Kakao 小说页面…", "info");
+      // 检测是瞬态:由小球 working(转圈)表达,不写文字浮层。
       return;
     }
     if (state.phase === "loading") {
@@ -102,6 +103,9 @@ export function installControlsTriple(runtime) {
       await runtime.togglePageAutoTranslate(false);
       runtime.showFloatingBallFeedback("已停止漫画连续翻译，已显示的译文保留", "info");
       return;
+    }
+    if (!runtime.isAutomaticPretranslateMode(runtime.state.pretranslateMode)) {
+      await runtime.manualTranslateVisible(); return;
     }
     await runtime.togglePageAutoTranslate(true);
     runtime.showFloatingBallFeedback("开始漫画连续翻译", "info");
@@ -297,27 +301,22 @@ export function installControlsTriple(runtime) {
           if (result?.ok === false && result.error) runtime.showFloatingBallFeedback(result.error, "error");
         });
       case "retranslate-text":
-        // 只强制重译正文,不动已处理的图片。
-        return void runtime.translateNovelChapter({ force: true, textOnly: true }).then(result => {
-          runtime.updateNovelProgressPanel?.();
-          if (result?.ok === false && result.error) runtime.showFloatingBallFeedback(result.error, "error");
-          else runtime.showFloatingBallFeedback("正在强制重新翻译正文", "info");
-        });
+        // 只强制重译正文,不动已处理的图片。进行中由小球转圈表达,结束必补终态浮层。
+        return void runtime.runNovelActionWithFeedback("text",
+          () => runtime.translateNovelChapter({ force: true, textOnly: true }),
+          () => runtime.updateNovelProgressPanel?.());
       case "retranslate-images":
-        // 只强制重新处理全部图片,不动正文译文。
-        return void runtime.retryNovelImages(true).then(result => {
-          runtime.renderNovelImagePanel?.();
-          if (result?.ok === false && result.error) runtime.showFloatingBallFeedback(result.error, "error");
-          else if (result?.ok !== false) runtime.showFloatingBallFeedback("正在强制重新处理图片", "info");
-        });
+        // 只强制重新处理全部图片,不动正文译文。进行中由 novelActionWorking 驱动小球转圈。
+        return void runtime.runNovelActionWithFeedback("image",
+          () => runtime.retryNovelImages(true),
+          () => runtime.renderNovelImagePanel?.());
       case "manage-chapter":
         return void (async () => {
-          const fallback = "无法直接打开侧栏，请点扩展图标 → 「管理当前章节译文」";
+          const fallback = "无法打开章节译文管理界面";
           try {
             const r = await runtime.sendRuntimeMessage({ type: "OPEN_NOVEL_SIDEPANEL" });
-            runtime.showFloatingBallFeedback(
-              r?.ok ? "已打开侧栏，可在右侧编辑译文" : (r?.error || fallback),
-              r?.ok ? "info" : "error");
+            if (r?.ok) runtime.clearFloatingBallFeedback?.();
+            else runtime.showFloatingBallFeedback(r?.error || fallback, "error");
           } catch (error) {
             runtime.showFloatingBallFeedback(fallback, "info");
           }

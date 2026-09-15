@@ -5,20 +5,34 @@ import sqlite3
 import time
 from typing import Any
 
-from .common import normalize_scope, normalize_source, normalize_src_lng, normalize_tgt_lng
+from .common import (
+    DEFAULT_LIBRARY_ID,
+    normalize_library_id,
+    normalize_scope,
+    normalize_source,
+    normalize_src_lng,
+    normalize_tgt_lng,
+)
 
 ENTRY_COLUMNS = (
     "id, source, target, src_lng, tgt_lng, note, enabled, source_key, "
-    "scope_type, scope_key, scope_label, created_at, updated_at"
+    "scope_type, scope_key, scope_label, created_at, updated_at, library_id"
 )
 
 
 class EntriesMixin:
+    def _resolve_library(self, library_id: str, name: str = "") -> str:
+        """库标识归一化：未知库按名称补建，完全没指定时落到默认库。"""
+        ensure = getattr(self, "ensure_library", None)
+        if callable(ensure):
+            return ensure(library_id, name)
+        return normalize_library_id(library_id) or DEFAULT_LIBRARY_ID
+
     def get_entries(
         self, search: str = "", enabled_only: bool = False,
         tgt_lng: str = "", keyword: str = "",
         limit: int = 0, offset: int = 0,
-        updated_after: float = 0.0,
+        updated_after: float = 0.0, library_id: str = "",
     ) -> list[dict[str, Any]]:
         """Return glossary entries, optionally filtered and paginated."""
         parts = [f"SELECT {ENTRY_COLUMNS} FROM glossary_entries"]
@@ -29,6 +43,9 @@ class EntriesMixin:
         if tgt_lng:
             where.append("tgt_lng = ?")
             params.append(normalize_tgt_lng(tgt_lng))
+        if library_id:
+            where.append("library_id = ?")
+            params.append(normalize_library_id(library_id) or DEFAULT_LIBRARY_ID)
         if keyword:
             where.append("(source LIKE ? OR target LIKE ? OR note LIKE ?)")
             like = f"%{keyword}%"
@@ -107,8 +124,9 @@ class EntriesMixin:
         self, source: str, target: str, tgt_lng: str = "", src_lng: str = "",
         note: str = "", enabled: bool = True, entry_id: str = "",
         scope_type: str = "global", scope_key: str = "", scope_label: str = "",
+        library_id: str = "", library_name: str = "",
     ) -> dict[str, Any]:
-        """Upsert by source, target language, and scope."""
+        """Upsert by source, target language, scope and library."""
         src = source.strip()
         if not src or not target.strip():
             raise ValueError("source and target are required")
@@ -116,14 +134,15 @@ class EntriesMixin:
         lng = normalize_tgt_lng(tgt_lng)
         source_lng = normalize_src_lng(src_lng)
         normalized_scope, normalized_key = normalize_scope(scope_type, scope_key)
+        library = self._resolve_library(library_id, library_name)
         now = time.time()
         with self._lock:
             conn = sqlite3.connect(self._path, check_same_thread=False)
             try:
                 existing = conn.execute(
                     "SELECT id FROM glossary_entries WHERE source_key = ? AND src_lng = ? AND tgt_lng = ? "
-                    "AND scope_type = ? AND scope_key = ?",
-                    (src_key, source_lng, lng, normalized_scope, normalized_key),
+                    "AND scope_type = ? AND scope_key = ? AND library_id = ?",
+                    (src_key, source_lng, lng, normalized_scope, normalized_key, library),
                 ).fetchone()
                 if existing:
                     eid = existing[0]
@@ -138,9 +157,10 @@ class EntriesMixin:
                     conn.execute(
                         "INSERT INTO glossary_entries "
                         "(id, source, target, src_lng, tgt_lng, note, enabled, source_key, scope_type, "
-                        "scope_key, scope_label, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "scope_key, scope_label, created_at, updated_at, library_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (eid, src, target.strip(), source_lng, lng, note.strip(), 1 if enabled else 0,
-                         src_key, normalized_scope, normalized_key, scope_label.strip(), now, now),
+                         src_key, normalized_scope, normalized_key, scope_label.strip(), now, now, library),
                     )
                 conn.commit()
                 row = conn.execute(
@@ -177,10 +197,14 @@ class EntriesMixin:
                         scope_label = (
                             entry.get("scope_label") or entry.get("scopeLabel") or ""
                         ).strip()
+                        library = self._resolve_library(
+                            entry.get("library_id") or entry.get("libraryId") or "",
+                            entry.get("library_name") or entry.get("libraryName") or "",
+                        )
                         existing = conn.execute(
                             "SELECT id FROM glossary_entries WHERE source_key = ? AND src_lng = ? AND tgt_lng = ? "
-                            "AND scope_type = ? AND scope_key = ?",
-                            (src_key, entry_source_lng, entry_lng, scope_type, scope_key),
+                            "AND scope_type = ? AND scope_key = ? AND library_id = ?",
+                            (src_key, entry_source_lng, entry_lng, scope_type, scope_key, library),
                         ).fetchone()
                         note = (entry.get("note") or "").strip()
                         enabled = 0 if entry.get("enabled") is False else 1
@@ -196,9 +220,10 @@ class EntriesMixin:
                             conn.execute(
                                 "INSERT INTO glossary_entries "
                                 "(id, source, target, src_lng, tgt_lng, note, enabled, source_key, scope_type, "
-                                "scope_key, scope_label, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                "scope_key, scope_label, created_at, updated_at, library_id) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (eid, src, tgt, entry_source_lng, entry_lng, note, enabled, src_key,
-                                 scope_type, scope_key, scope_label, now, now),
+                                 scope_type, scope_key, scope_label, now, now, library),
                             )
                             stats["added"] += 1
                     except Exception as exc:

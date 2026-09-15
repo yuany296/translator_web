@@ -499,3 +499,81 @@ test("select-all only covers visible rows, selection survives filtering, and tab
   page.attachAll();
   assert.equal(selectCheckboxOf(rowByTermId(page, "c")).checked, false);
 });
+
+// ── 批量模式入口（工具栏「批量操作」按钮）：用户反馈「批量操作不明显」──
+
+test("默认不在批量模式：复选框列收起，点「批量操作」才进入并给出提示", async () => {
+  const page = await bootWithSeed([makeEntry("a", "성현"), makeEntry("b", "왕국")]);
+  const container = page.elements.get("tableContainer");
+  const modeBtn = page.elements.get("batchModeBtn");
+  const bar = page.elements.get("batchActionBar");
+
+  assert.equal(container.classList.contains("batch-capable"), true, "有按钮才启用「平时藏复选框列」的样式");
+  assert.equal(container.classList.contains("batch-mode"), false, "默认不在批量模式");
+  assert.equal(modeBtn.textContent, "批量操作");
+  assert.equal(bar.classList.contains("hidden"), true, "既没进批量模式也没选中 → 不显示批量栏");
+
+  await modeBtn.dispatch("click");
+  await settle();
+  assert.equal(container.classList.contains("batch-mode"), true, "点按钮进入批量模式");
+  assert.equal(modeBtn.textContent, "退出批量");
+  assert.equal(modeBtn.getAttribute("aria-pressed"), "true");
+  assert.equal(bar.classList.contains("hidden"), false, "进批量模式立即显示批量栏");
+  assert.equal(page.elements.get("batchSelectedCount").textContent, "已选 0 条 · 勾选下面要处理的术语");
+});
+
+test("退出批量会清空已选并收起复选框列", async () => {
+  const page = await bootWithSeed([makeEntry("a", "성현"), makeEntry("b", "왕국")]);
+  const container = page.elements.get("tableContainer");
+  const modeBtn = page.elements.get("batchModeBtn");
+  await modeBtn.dispatch("click");
+  await settle();
+  await selectRows(page, ["a", "b"]);
+  assert.equal(page.elements.get("batchSelectedCount").textContent, "已选 2 条");
+
+  await modeBtn.dispatch("click");
+  await settle();
+  page.attachAll();
+  assert.equal(container.classList.contains("batch-mode"), false);
+  assert.equal(modeBtn.textContent, "批量操作");
+  assert.equal(page.elements.get("batchActionBar").classList.contains("hidden"), true);
+  assert.equal(page.elements.get("selectAllTerms").checked, false, "退出后表头全选框复位");
+  assert.equal(page.elements.get("termRows").children
+    .every(row => selectCheckboxOf(row).checked === false), true,
+  "行内复选框也要复位，避免留下看不见的已选");
+});
+
+test("切到待确认标签会退出批量模式", async () => {
+  const page = await bootWithSeed([makeEntry("a", "성현")]);
+  const container = page.elements.get("tableContainer");
+  await page.elements.get("batchModeBtn").dispatch("click");
+  await settle();
+  await selectRows(page, ["a"]);
+  assert.equal(container.classList.contains("batch-mode"), true);
+
+  await page.elements.get("pendingTabBtn").dispatch("click");
+  await settle();
+  assert.equal(container.classList.contains("batch-mode"), false, "离开术语表要退出批量模式");
+  assert.equal(page.elements.get("batchModeBtn").textContent, "批量操作");
+});
+
+test("切换术语库会清空批量选择（免得在 B 库里删掉看不见的 A 库条目）", async () => {
+  const page = await bootWithSeed([
+    makeEntry("a", "성현"),
+    makeEntry("b", "왕국", { libraryId: TARGET_LIBRARY_ID })
+  ]);
+  await page.elements.get("batchModeBtn").dispatch("click");
+  await settle();
+  await selectRows(page, ["a"]);
+  assert.equal(page.elements.get("batchSelectedCount").textContent, "已选 1 条");
+
+  page.attachAll();
+  const list = page.elements.get("libraryList");
+  const row = list.querySelectorAll(`[data-library-id="${TARGET_LIBRARY_ID}"]`)[0];
+  await list.dispatch("click", { target: row.querySelector(".library-name") });
+  await settle();
+
+  assert.match(page.elements.get("batchSelectedCount").textContent, /已选 0 条/u, "换库后选择要清零");
+  assert.equal(page.elements.get("selectAllTerms").checked, false);
+  assert.equal(storedEntries(page).length, 2, "切库不动数据");
+});

@@ -5,6 +5,7 @@ import test from "node:test";
 import glossary from "../extension/src/shared/glossary.js";
 import novel from "../extension/src/shared/novel.js";
 import novelMemory from "../extension/src/shared/novel-memory.js";
+import { normalizeRuntimeConfig } from "../extension/src/config/schema.js";
 import {
   buildNovelProgressView
 } from "../extension/src/content/modules/novel-progress-panel.js";
@@ -191,6 +192,123 @@ test("novel memory reads only an earlier checkpoint and isolates books", () => {
   });
   assert.match(middle.memory.summary, /第一章/u);
   assert.doesNotMatch(middle.memory.summary, /第三章|另一本/u);
+});
+
+test("novel memory 不把「话号认不出来」的快照当成前面的章节（回顾前面时不会被后面的记忆污染）", () => {
+  // 用户场景：先看后面、再回看前面。话号没认出来的快照以前会被 Number(null)=0 存成第 0 话，
+  // 在章节序里排在所有真实章节之前 → 每一话都会把它当成「前面的记忆」，于是前后颠倒。
+  let store = novelMemory.normalizeStore({
+    version: 1,
+    books: [{
+      key: "kakao:1", title: "骸骨皇女", revision: 1,
+      checkpoints: [
+        { chapterId: "cX", chapterTitle: "几十话之后的特别篇", chapterOrder: null, updatedAt: 900, memory: { summary: "后面的剧情" } },
+        { chapterId: "c3", chapterTitle: "第3话", chapterOrder: 3, updatedAt: 300, memory: { summary: "第三章" } }
+      ]
+    }]
+  });
+  const book = novelMemory.getBook(store, "kakao:1");
+  assert.equal(book.checkpoints.find(item => item.chapterId === "cX").chapterOrder, null,
+    "话号认不出来要留空，不能变成 0 话");
+  assert.notEqual(book.checkpoints[0].chapterId, "cX",
+    "不能因为话号未知就排到最前面（那等于当成第 0 话）");
+
+  // 回看第 1 话：只能用到「更早」的快照，这里一个都没有 → 不能把后面那话的记忆塞进来
+  const first = novelMemory.getContext(store, "kakao:1", { chapterId: "c1", chapterOrder: 1 });
+  assert.equal(first.checkpoint, null, "第 1 话前面没有快照，就该是空的");
+  assert.equal(first.memory.summary, "");
+
+  // 翻第 4 话：应当拿到第 3 话的累积，而不是那条话号未知的
+  const fourth = novelMemory.getContext(store, "kakao:1", { chapterId: "c4", chapterOrder: 4 });
+  assert.match(fourth.memory.summary, /第三章/u);
+  assert.doesNotMatch(fourth.memory.summary, /后面的剧情/u);
+
+  // 旧数据里已经存成 0 的，读出来也要被纠正成空
+  store = novelMemory.normalizeStore({
+    version: 1,
+    books: [{
+      key: "kakao:1", title: "骸骨皇女", revision: 1,
+      checkpoints: [{ chapterId: "old", chapterTitle: "旧数据", chapterOrder: 0, updatedAt: 1, memory: { summary: "旧的" } }]
+    }]
+  });
+  assert.equal(novelMemory.getBook(store, "kakao:1").checkpoints[0].chapterOrder, null);
+});
+
+test("同一话重翻/补翻是叠加不覆盖，而且每话的贡献能单独读出来（可拆分）", () => {
+  let store = novelMemory.normalizeStore(null);
+  const save = (chapterId, chapterOrder, memoryDeltas) => {
+    store = novelMemory.saveCheckpoint(store, {
+      key: "kakao:1", chapterId, chapterOrder, memoryDeltas
+    }).store;
+  };
+  save("c3", 3, [{ summary: "第三章：甲出场", characters: ["甲"] }]);
+  // 补翻（只重翻缺的几段）：这一话先前学到的「甲」不能被覆盖掉
+  save("c3", 3, [{ summary: "第三章补翻：乙登场", characters: ["乙"] }]);
+  const c3 = novelMemory.getBook(store, "kakao:1").checkpoints.find(item => item.chapterId === "c3");
+  assert.deepEqual(c3.memory.characters, ["甲", "乙"], "同一话的两次翻译结果要叠加");
+  assert.match(c3.memory.summary, /甲出场/u);
+  assert.match(c3.memory.summary, /乙登场/u);
+  assert.deepEqual(c3.delta.characters, ["甲", "乙"], "「本话新增」要能单独读出来");
+
+  save("c8", 8, [{ summary: "第八章：甲成为国王", characters: ["甲"] }]);
+  const c8 = novelMemory.getBook(store, "kakao:1").checkpoints.find(item => item.chapterId === "c8");
+  assert.deepEqual(c8.memory.characters, ["甲", "乙"], "累计＝第 3 话 + 第 8 话");
+  assert.deepEqual(c8.delta.characters, ["甲"], "第 8 话的新增只有甲，不含第 3 话的");
+
+  // 回看第 3 话：拿到的是这一话自己已有的记忆，既不是空的，也不会带上第 8 话
+  const back = novelMemory.getContext(store, "kakao:1", { chapterId: "c3", chapterOrder: 3 });
+  assert.deepEqual(back.memory.characters, ["甲", "乙"]);
+  assert.doesNotMatch(back.memory.summary, /第八章/u);
+});
+
+test("旧数据（没有 delta 的累计快照）继续能用：当基线，既不重复也不丢", () => {
+  // 旧版把每话的累计整份存下来（摘要因此是层层拼接的），这里如实模拟
+  const store0 = novelMemory.normalizeStore({
+    version: 1,
+    books: [{
+      key: "kakao:1", title: "骸骨皇女", revision: 3,
+      checkpoints: [
+        { chapterId: "c1", chapterOrder: 1, revision: 1, updatedAt: 100, memory: { summary: "旧累计：开场", characters: ["甲"] } },
+        { chapterId: "c3", chapterOrder: 3, revision: 2, updatedAt: 300, memory: { summary: "旧累计：开场\n旧累计：甲登场", characters: ["甲"] } }
+      ]
+    }]
+  });
+  const before = novelMemory.getBook(store0, "kakao:1");
+  assert.equal(before.checkpoints.every(item => item.delta === null), true, "旧快照没有 delta");
+
+  const store = novelMemory.saveCheckpoint(store0, {
+    key: "kakao:1", chapterId: "c5", chapterOrder: 5,
+    memoryDeltas: [{ summary: "第五章：乙登场", characters: ["乙"] }]
+  }).store;
+  const c5 = novelMemory.getBook(store, "kakao:1").checkpoints.find(item => item.chapterId === "c5");
+  assert.match(c5.memory.summary, /旧累计：甲登场/u, "旧累计要作为基线保留");
+  assert.equal(c5.memory.summary.match(/旧累计：开场/gu).length, 1, "更早的旧累计不能又被叠一遍");
+  assert.match(c5.memory.summary, /第五章：乙登场/u);
+  assert.deepEqual(c5.memory.characters, ["甲", "乙"]);
+  assert.deepEqual(c5.delta.characters, ["乙"], "新数据本身仍然只记本话新增");
+});
+
+test("注入提示词的记忆会被结构化裁剪（长篇读久了也不会越带越多）", () => {
+  const big = {
+    summary: "甲".repeat(5000),
+    characters: Array.from({ length: 60 }, (_, index) => ({ name: `角色${index}`, note: "备".repeat(60) })),
+    relationships: Array.from({ length: 60 }, (_, index) => ({ subject: `角色${index}`, relation: "朋友" })),
+    honorifics: Array.from({ length: 60 }, (_, index) => ({ source: `호칭${index}`, target: "大人" })),
+    unresolved: Array.from({ length: 60 }, () => ({ note: "待解" }))
+  };
+  const trimmed = novelMemory.trimMemoryForPrompt(big);
+  assert.ok(JSON.stringify(trimmed).length <= 4000, "注入长度要有硬上限，实际 " + JSON.stringify(trimmed).length);
+  assert.equal(trimmed.characters.length <= 24, true, "列表按上限保留");
+  assert.equal(trimmed.summary.length <= 1200, true, "摘要取尾部且不超上限");
+  assert.match(trimmed.summary, /甲$/u, "摘要保留最后（最近）的部分");
+  // 小记忆不受影响
+  const small = novelMemory.normalizeMemory({ summary: "短", characters: ["甲"] });
+  assert.deepEqual(novelMemory.trimMemoryForPrompt(small).characters, ["甲"]);
+});
+
+test("小说记忆总开关默认开、关掉后保持关（关掉＝请求里不再带记忆）", () => {
+  assert.equal(normalizeRuntimeConfig({}).novelMemoryEnabled, true);
+  assert.equal(normalizeRuntimeConfig({ novelMemoryEnabled: false }).novelMemoryEnabled, false);
 });
 
 test("novel UI contracts expose three icon-only grouped controls and independent image retry", () => {

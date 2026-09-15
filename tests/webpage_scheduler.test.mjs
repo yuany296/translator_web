@@ -371,6 +371,29 @@ test("partial batch retries missing items once; final missing counts as real fai
   assert.equal(segment.status.translation, "failed");
 });
 
+test("batch failures surface the real reason instead of a generic message", async () => {
+  const runtime = makeRuntime();
+  const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
+  runtime.getWebpageState().session = session;
+  runtime.collectWebpageTextNodes = () => [makeEntry(makeNode("v1", 100), "v1")];
+  runtime.translateWebpageBatchWithRetry = async () => ({
+    ok: true, partial: true, translations: new Map(),
+    errors: [{ error: "翻译 API Key 未配置：请在设置页「翻译服务」中为当前服务商（Ollama）填写密钥" }]
+  });
+  const result = await runtime.startWebpageViewportTranslation({ session, generation: 1 });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /翻译 API Key 未配置/u, "悬浮球提示带出真实原因");
+});
+
+test("background top-level errors become readable segment errors", async () => {
+  const runtime = makeRuntime();
+  installWebpageTranslate(runtime);
+  runtime.sendRuntimeMessage = async () => ({ ok: false, error: "Translation response omitted 1 item(s)" });
+  const result = await runtime.translateWebpageBatchWithRetry(["原文"]);
+  assert.equal(result.translations.size, 0);
+  assert.equal(result.errors[0].error, "Translation response omitted 1 item(s)");
+});
+
 test("late responses from a stale session save to cache but never render", async () => {
   const runtime = makeRuntime();
   const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);

@@ -32,7 +32,11 @@ export function installComicTranslationStore(runtime) {
     const byKey = new Map((snapshots || []).map(snapshot => [snapshot.recordKey, snapshot]));
     descriptors.forEach(descriptor => {
       const snapshot = byKey.get(descriptor.recordKey);
-      const translatedText = String(snapshot?.activeVersion?.translatedText || "").trim();
+      // 旧译文缺少对话引号时直接就地修补,不重译。
+      const translatedText = runtime.restoreDialogueQuotes(
+        descriptor.item.original_text,
+        String(snapshot?.activeVersion?.translatedText || "").trim()
+      );
       if (!translatedText) return;
       outcome.set(runtime.canonicalTranslationItemKey(descriptor.item), {
         translatedText, translationFingerprint: String(snapshot.activeVersion?.configFingerprint || ""),

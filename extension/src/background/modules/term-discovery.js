@@ -1,4 +1,29 @@
 export function installTermDiscovery(runtime) {
+  /**
+   * 用户为某个章节手动指定术语库（留空表示回到"按网址自动匹配"）。
+   * 手动指定会被标记，之后同一章节再次察觉术语时不会覆盖。
+   */
+  async function handleSetPendingChapterLibrary(message) {
+    return runtime.enqueueTermDiscoveryMutation(async () => {
+      const stored = await runtime.storageGet([runtime.STORAGE_KEYS.glossaryPending]);
+      const store = runtime.termDiscoveryCore.normalizePendingStore(stored[runtime.STORAGE_KEYS.glossaryPending]);
+      const chapterKey = runtime.termDiscoveryCore.getChapterKey(String(message.chapterKey || message.url || ""));
+      const chapter = store.chapters.find(item => item.key === chapterKey);
+      if (!chapter) {
+        return { ok: false, error: "未找到该章节的待确认记录" };
+      }
+      chapter.libraryId = runtime.glossaryCore.normalizeLibraryId(message.libraryId);
+      chapter.libraryManual = Boolean(chapter.libraryId);
+      store.updatedAt = Date.now();
+      await runtime.storageSet({ [runtime.STORAGE_KEYS.glossaryPending]: store });
+      return {
+        ok: true,
+        pending: store,
+        pendingCount: runtime.termDiscoveryCore.getPendingCount(store)
+      };
+    });
+  }
+  runtime.handleSetPendingChapterLibrary = handleSetPendingChapterLibrary;
   async function handleRestoreIgnoredTerm(message) {
     return runtime.enqueueTermDiscoveryMutation(async () => {
       const stored = await runtime.storageGet([runtime.STORAGE_KEYS.glossaryIgnored]);
@@ -26,6 +51,24 @@ export function installTermDiscovery(runtime) {
 
   // ── OCR Service (health check only) ─────────────────────────────
   runtime.handleRestoreIgnoredTerm = handleRestoreIgnoredTerm;
+  async function handleResetTermDiscoveryProcessed() {
+    return runtime.enqueueTermDiscoveryMutation(async () => {
+      const stored = await runtime.storageGet([runtime.STORAGE_KEYS.glossaryPending]);
+      const store = runtime.termDiscoveryCore.normalizePendingStore(stored[runtime.STORAGE_KEYS.glossaryPending]);
+      for (const chapter of store.chapters) {
+        chapter.processedEvidenceIds = [];
+      }
+      store.updatedAt = Date.now();
+      await runtime.storageSet({
+        [runtime.STORAGE_KEYS.glossaryPending]: store
+      });
+      return {
+        ok: true,
+        chapters: store.chapters.length
+      };
+    });
+  }
+  runtime.handleResetTermDiscoveryProcessed = handleResetTermDiscoveryProcessed;
   async function handleIgnoreTermCandidates(message) {
     return runtime.enqueueTermDiscoveryMutation(async () => {
       const entries = (Array.isArray(message.entries) ? message.entries : []).slice(0, 500).map(entry => ({
@@ -176,47 +219,54 @@ export function installTermDiscovery(runtime) {
     };
   }
   runtime.getTermExtractorStatusSnapshot = getTermExtractorStatusSnapshot;
-  function markTermExtractorOnline(now = Date.now()) {
+  function markTermExtractorOnline(engine = "", now = Date.now()) {
     runtime.termExtractorRuntime = {
       state: "online",
+      engine: String(engine || "").slice(0, 40),
       error: "",
       checkedAt: now,
       cooldownUntil: 0
     };
   }
   runtime.markTermExtractorOnline = markTermExtractorOnline;
-  function markTermExtractorOffline(error, now = Date.now()) {
+  function markTermExtractorOffline(error, engine = "", now = Date.now()) {
     runtime.termExtractorRuntime = {
       state: "offline",
+      engine: String(engine || "").slice(0, 40),
       error: runtime.getErrorMessage(error) || "术语提取器离线",
       checkedAt: now,
       cooldownUntil: now + runtime.TERM_EXTRACTOR_COOLDOWN_MS
     };
   }
   runtime.markTermExtractorOffline = markTermExtractorOffline;
-  async function probeTermExtractor(baseUrlValue) {
+  async function probeTermExtractor(baseUrlValue, termExtraction = null) {
     const now = Date.now();
     if (runtime.termExtractorRuntime.checkedAt > 0 && now - runtime.termExtractorRuntime.checkedAt < runtime.TERM_EXTRACTOR_HEALTH_CACHE_MS) {
       return runtime.getTermExtractorStatusSnapshot();
     }
     const baseUrl = runtime.sanitizeLocalOcrBaseUrl(baseUrlValue || runtime.DEFAULT_LOCAL_OCR_BASE_URL);
+    const llmBaseUrl = String(termExtraction && termExtraction.baseUrl || "").trim();
+    const query = llmBaseUrl
+      ? `?base_url=${encodeURIComponent(llmBaseUrl)}&api_key=${encodeURIComponent(String(termExtraction && termExtraction.apiKey || "").trim())}`
+      : "";
     try {
-      const payload = await runtime.requestTermExtractorJson(`${baseUrl}/terms/health`, {
+      const payload = await runtime.requestTermExtractorJson(`${baseUrl}/terms/health${query}`, {
         method: "GET"
       });
       if (!payload || payload.ok !== true || payload.available === false) {
-        throw new Error(String(payload && payload.error || "Kiwi 加载失败"));
+        throw new Error(String(payload && payload.error || "术语提取器不可用"));
       }
-      runtime.markTermExtractorOnline();
+      runtime.markTermExtractorOnline(payload.engine);
     } catch (error) {
-      runtime.markTermExtractorOffline(error);
+      runtime.markTermExtractorOffline(error, "ollama");
     }
     return runtime.getTermExtractorStatusSnapshot();
   }
   runtime.probeTermExtractor = probeTermExtractor;
-  async function requestTermExtractorJson(url, options) {
+  async function requestTermExtractorJson(url, options, timeoutMs) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), runtime.TERM_EXTRACTOR_TIMEOUT_MS);
+    const timeoutValue = Math.max(1, Number(timeoutMs) || runtime.TERM_EXTRACTOR_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutValue);
     try {
       const response = await fetch(url, {
         ...options,

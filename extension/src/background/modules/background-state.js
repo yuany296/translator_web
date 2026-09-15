@@ -131,10 +131,15 @@ export function installBackgroundState(runtime) {
   runtime.LOCAL_OCR_BUBBLE_JOIN_GAP_RATIO = LOCAL_OCR_BUBBLE_JOIN_GAP_RATIO;
   const TERM_EXTRACTOR_TIMEOUT_MS = 8000;
   runtime.TERM_EXTRACTOR_TIMEOUT_MS = TERM_EXTRACTOR_TIMEOUT_MS;
+  // LLM 提取按 3000 字符分段串行调用，整章（几十段）可能需数分钟。
+  const TERM_EXTRACTOR_LLM_TIMEOUT_MS = 600 * 1000;
+  runtime.TERM_EXTRACTOR_LLM_TIMEOUT_MS = TERM_EXTRACTOR_LLM_TIMEOUT_MS;
   const TERM_EXTRACTOR_COOLDOWN_MS = 5 * 60 * 1000;
   runtime.TERM_EXTRACTOR_COOLDOWN_MS = TERM_EXTRACTOR_COOLDOWN_MS;
   const TERM_EXTRACTOR_HEALTH_CACHE_MS = 30 * 1000;
   runtime.TERM_EXTRACTOR_HEALTH_CACHE_MS = TERM_EXTRACTOR_HEALTH_CACHE_MS;
+  const TERM_EXTRACTOR_THROTTLE_MS = 30 * 1000;
+  runtime.TERM_EXTRACTOR_THROTTLE_MS = TERM_EXTRACTOR_THROTTLE_MS;
   const LOCAL_OCR_REQUEST_TIMEOUT_MS = 60 * 1000;
   runtime.LOCAL_OCR_REQUEST_TIMEOUT_MS = LOCAL_OCR_REQUEST_TIMEOUT_MS;
   const TRANSLATION_REQUEST_TIMEOUT_MS = 30 * 1000;
@@ -231,6 +236,7 @@ export function installBackgroundState(runtime) {
   runtime.termDiscoveryMutationQueue = termDiscoveryMutationQueue;
   let termExtractorRuntime = {
     state: "unknown",
+    engine: "",
     error: "",
     checkedAt: 0,
     cooldownUntil: 0

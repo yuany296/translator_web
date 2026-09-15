@@ -36,6 +36,26 @@ export function installNovelRenderer(runtime) {
   }
   runtime.findNovelParagraphNode = findParagraphNode;
 
+  /**
+   * 正向映射:DOM 节点 → 已有段落 id(形如 "52#3")。
+   * 必须复用 extractKakaoNovelChapter 的提取结果,因为那里的序号是按数值 id
+   * 排序后算出来的;若在这里按 DOM 顺序自行推算,会与侧边栏卡片对不上号。
+   */
+  function findParagraphIdForNode(surface, node) {
+    if (!surface || !node) return null;
+    const paragraphs = runtime.extractKakaoNovelChapter?.(surface)?.paragraphs || [];
+    for (const paragraph of paragraphs) {
+      const candidate = paragraph.node;
+      if (!candidate) continue;
+      if (candidate === node) return String(paragraph.id || "");
+      if (typeof candidate.contains === "function" && candidate.contains(node)) {
+        return String(paragraph.id || "");
+      }
+    }
+    return null;
+  }
+  runtime.findParagraphIdForNode = findParagraphIdForNode;
+
   function ensureNovelWrappers(node) {
     injectNovelStyles(node.getRootNode());
     let source = node.querySelector?.(":scope > .mt-novel-source");
@@ -66,6 +86,13 @@ export function installNovelRenderer(runtime) {
     const { source, translation } = ensureNovelWrappers(node);
     translation.textContent = String(translatedText).trim();
     applyVisibility(source, translation, showTranslation);
+    if (showTranslation) {
+      // 译文按"显示译文"意图渲染后同步翻转全局意图:随后的 reconcile/reapply
+      // 以 state.showTranslation 为准,若不翻转会把刚到达的译文重新藏回原文。
+      // 切换回原文走 setNovelTranslationVisibility(false),不经由此处,不会误翻转。
+      const novelState = runtime.getNovelState?.();
+      if (novelState) novelState.showTranslation = true;
+    }
     node.dataset.mtNovelTranslated = "true";
     return true;
   }

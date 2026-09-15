@@ -9,13 +9,24 @@ function percentBox(value, width, height) {
   return [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0 ? { x, y, w, h } : null;
 }
 
+function solidCoverGeometry(geometry, bubble, width, height) {
+  // 斜排原文：遮罩按 OCR 四边形裁剪（气泡区域框是轴对齐的，会露出倾斜的字）。
+  const quad = Array.isArray(geometry.coverQuad) && geometry.coverTilted ? geometry.coverQuad : null;
+  const bounds = quad ? percentBox(geometry.coverBounds, width, height) : null;
+  if (quad && bounds) return { clipPoints: quad, bounds };
+  return {
+    clipPoints: Array.isArray(geometry.regionPolygon) ? geometry.regionPolygon : [],
+    bounds: percentBox(geometry.fillBox, width, height) || percentBox(bubble, width, height)
+  };
+}
+
 function fillSolidCover(context, layer, width, height) {
   const bubble = layer.content?.bubble || {};
   const geometry = layer.geometry || {};
   if (String(geometry.bgType) !== "solid") return;
-  const fill = percentBox(geometry.fillBox, width, height) || percentBox(bubble, width, height);
-  if (!fill) return;
-  const polygon = Array.isArray(geometry.regionPolygon) ? geometry.regionPolygon : [];
+  const cover = solidCoverGeometry(geometry, bubble, width, height);
+  if (!cover.bounds) return;
+  const polygon = cover.clipPoints;
   context.save();
   if (polygon.length >= 3) {
     context.beginPath();
@@ -28,7 +39,7 @@ function fillSolidCover(context, layer, width, height) {
     context.clip();
   }
   context.fillStyle = String(bubble.bg_color || "#ffffff");
-  context.fillRect(fill.x, fill.y, fill.w, fill.h);
+  context.fillRect(cover.bounds.x, cover.bounds.y, cover.bounds.w, cover.bounds.h);
   context.restore();
 }
 

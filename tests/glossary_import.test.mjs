@@ -4,8 +4,10 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
-// 用户缺陷「导入术语库功能无法实施」的端到端复现：加载真实构建产物，
-// 用伪 DOM + 伪 chrome + 离线 fetch 驱动一次真实导入，断言条目数、库归属与离线行为。
+// 「导入术语 v2」端到端：加载真实构建产物 dist/extension/glossary.js，
+// 用伪 DOM + 伪 chrome + 离线 fetch 驱动一次真实导入，断言去向与状态行。
+// 用户拍板的规则：零弹窗；左侧选中库 → 全进该库；「显示全部」时 CSV 按文件名建库、
+// JSON 保留自带归属；CSV 的 library（库名）列已废弃。
 const root = path.resolve(import.meta.dirname, "..");
 const source = fs.readFileSync(path.join(root, "dist", "extension", "glossary.js"), "utf8");
 
@@ -200,9 +202,7 @@ function createPage() {
       await input.dispatch("change");
       await settle();
     },
-    attachAll() {
-      for (const element of elements.values()) attachParent(element);
-    }
+    status() { return elements.get("statusText").textContent; }
   };
 }
 
@@ -222,44 +222,121 @@ async function bootedPage() {
   return page;
 }
 
-test("CSV 导入按库名归属，缺失的库会自动建库", async () => {
+/** 预置本地已有数据（库列表 / 条目），用于「已选中某个库」「库数量到上限」等场景。 */
+async function seededPage(libraries = [], entries = []) {
+  const page = createPage();
+  page.stored.mt_glossary_v2 = { version: 4, libraries, entries };
+  page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE" ? discoveryState : { ok: true });
+  await page.boot();
+  return page;
+}
+
+/** 模拟用户在左侧术语库列表里点某个库：点完 activeLibraryId 才有值，导入才会走「全部进该库」。 */
+async function selectLibrary(page, libraryId) {
+  const list = page.elements.get("libraryList");
+  const row = list.querySelectorAll(`[data-library-id="${libraryId}"]`)[0];
+  assert.ok(row, `左侧列表应有 ${libraryId} 这一行`);
+  attachParent(row);
+  row.parent = list;
+  const button = row.querySelectorAll("button[data-action=\"focus-library\"]")[0];
+  assert.ok(button, "库行上应有可点击的库名");
+  await list.dispatch("click", { target: button });
+  await settle();
+}
+
+const TWO_LIBRARIES = [
+  { id: "lib-haigu", name: "骸骨皇女", enabled: true, urls: [] },
+  { id: "lib-other", name: "另一本书", enabled: true, urls: [] }
+];
+
+test("点「导入文件」零弹窗，直接打开系统文件框", async () => {
+  const page = await bootedPage();
+  const fileInput = page.elements.get("fileInput");
+  let opened = false;
+  fileInput.click = () => { opened = true; };
+  await page.elements.get("importBtn").dispatch("click");
+  await settle();
+  assert.equal(opened, true, "点击后应立即打开文件选择框");
+  const html = fs.readFileSync(path.join(root, "extension", "public", "glossary.html"), "utf8");
+  assert.doesNotMatch(html, /importTargetDialog/u, "术语库页不应再残留「导入目标」对话框");
+});
+
+test("CSV 按文件名建库，文件里的 library 列不再生效", async () => {
   const page = await bootedPage();
   const csv = "\uFEFFsource,target,note,enabled,scope,scope_key,scope_label,library\r\n"
-    + "성현,成贤,,true,global,,,骸骨皇女\r\n"
-    + "왕국,王国,,true,global,,,骸骨皇女\r\n";
-  await page.importFile("glossary.csv", csv);
+    + "성현,成贤,,true,global,,,别的书\r\n"
+    + "왕국,王国,,true,global,,,别的书\r\n";
+  await page.importFile("骸骨皇女.csv", csv);
 
   const glossary = page.stored.mt_glossary_v2;
   assert.equal(glossary.entries.length, 2, "两条 CSV 术语都应写入");
-  assert.deepEqual(glossary.entries.map(entry => entry.source), ["성현", "왕국"]);
   const novel = glossary.libraries.find(library => library.name === "骸骨皇女");
-  assert.ok(novel, "CSV 里出现的库名应被自动建库");
-  assert.notEqual(novel.id, "default");
+  assert.ok(novel, "应按文件名自动建库");
   assert.ok(glossary.entries.every(entry => entry.libraryId === novel.id),
-    "CSV 条目应按库名归属，而不是全部退回默认库");
+    "条目应全部进文件名对应的库");
+  assert.equal(glossary.libraries.some(library => library.name === "别的书"), false,
+    "library 列已废弃：不应为它另外建库");
 
-  const status = page.elements.get("statusText").textContent;
-  assert.match(status, /已导入 2 条/);
-  assert.doesNotMatch(status, /加载失败|导入失败/, "本地服务离线不能让已成功的导入显示失败");
+  assert.equal(page.status(), "已导入 2 条到「骸骨皇女」，合并后共 2 条");
+  assert.doesNotMatch(page.status(), /加载失败|导入失败/u, "本地服务离线不能让已成功的导入显示失败");
 });
 
-test("CSV 没有库名列时条目落在默认库", async () => {
+test("CSV 文件名直接作为库名（plain.csv → 库「plain」）", async () => {
   const page = await bootedPage();
   await page.importFile("plain.csv", "source,target\r\n성현,成贤\r\n");
   const glossary = page.stored.mt_glossary_v2;
   assert.equal(glossary.entries.length, 1);
-  assert.equal(glossary.entries[0].libraryId, "default");
-  assert.deepEqual(glossary.libraries.map(library => library.id), ["default"]);
+  const plain = glossary.libraries.find(library => library.name === "plain");
+  assert.ok(plain, "文件名就是库名，不再进默认库");
+  assert.equal(glossary.entries[0].libraryId, plain.id);
+  assert.equal(page.status(), "已导入 1 条到「plain」，合并后共 1 条");
 });
 
-test("JSON 导入保留自带的术语库定义与条目归属", async () => {
+test("CSV 中文表头（原文,译文,备注）不再被当成一条术语", async () => {
+  const page = await bootedPage();
+  await page.importFile("骸骨皇女.csv", "原文,译文,备注\r\n성현,晟玄,人名\r\n왕국,王国,\r\n");
+  const glossary = page.stored.mt_glossary_v2;
+  assert.equal(glossary.entries.length, 2, "表头行不应入库");
+  assert.deepEqual(glossary.entries.map(entry => entry.source), ["성현", "왕국"]);
+  assert.equal(glossary.entries[0].target, "晟玄");
+  assert.equal(glossary.entries[0].note, "人名");
+});
+
+test("文件名推导：剥掉尾部语言码与复制副本后缀", async () => {
+  const cases = [
+    ["terms_ko.csv", "terms"],
+    ["骸骨皇女 (1).csv", "骸骨皇女"],
+    ["骸骨皇女 - 副本.csv", "骸骨皇女"]
+  ];
+  for (const [fileName, expected] of cases) {
+    const page = await bootedPage();
+    await page.importFile(fileName, "原文,译文\r\n성현,晟玄\r\n");
+    const names = page.stored.mt_glossary_v2.libraries.map(library => library.name);
+    assert.ok(names.includes(expected), `${fileName} 应进库「${expected}」，实际是 ${names.join("、")}`);
+  }
+});
+
+test("JSON 里库 id 与本机不同但库名相同时，按库名归并而不是掉进默认库", async () => {
+  const page = await seededPage([{ id: "library-local", name: "骸骨皇女", enabled: true, urls: [] }]);
+  await page.importFile("backup.json", JSON.stringify({
+    version: 4,
+    libraries: [{ id: "novel", name: "骸骨皇女", enabled: true, urls: [] }],
+    entries: [{ id: "e1", source: "성현", target: "晟玄", libraryId: "novel", scope: "global" }]
+  }));
+  const glossary = page.stored.mt_glossary_v2;
+  assert.equal(glossary.libraries.length, 2, "同名库不该再建一个");
+  assert.equal(glossary.entries.length, 1);
+  assert.equal(glossary.entries[0].libraryId, "library-local", "条目要归并到本机的同名库");
+});
+
+test("JSON 保留自带的术语库定义与条目归属", async () => {
   const page = await bootedPage();
   const payload = {
     version: 4,
     libraries: [{ id: "novel", name: "骸骨皇女", enabled: true, urls: [] }],
     entries: [{ id: "term-novel-1", source: "성현", target: "晟玄", libraryId: "novel", scope: "global" }]
   };
-  await page.importFile("glossary.json", JSON.stringify(payload));
+  await page.importFile("backup.json", JSON.stringify(payload));
 
   const glossary = page.stored.mt_glossary_v2;
   assert.equal(glossary.entries.length, 1);
@@ -268,127 +345,31 @@ test("JSON 导入保留自带的术语库定义与条目归属", async () => {
   assert.equal(novel.id, "novel");
   assert.equal(glossary.entries[0].libraryId, "novel");
   assert.equal(glossary.entries[0].target, "晟玄");
-  assert.match(page.elements.get("statusText").textContent, /已导入 1 条/);
+  assert.equal(glossary.libraries.some(library => library.name === "backup"), false,
+    "JSON 按自带归属，不应按文件名建库");
+  assert.match(page.status(), /已导入 1 条/u);
+  assert.match(page.status(), /合并后共 1 条/u);
+});
+
+test("左侧选中某个库时，导入全部进该库且不为文件名/库名列建库", async () => {
+  const page = await seededPage(TWO_LIBRARIES);
+  await selectLibrary(page, "lib-haigu");
+  const csv = "source,target,library\r\n성현,成贤,别的书\r\n왕국,王国,别的书\r\n";
+  await page.importFile("无所谓的名字.csv", csv);
+
+  const glossary = page.stored.mt_glossary_v2;
+  assert.equal(glossary.entries.length, 2);
+  assert.ok(glossary.entries.every(entry => entry.libraryId === "lib-haigu"),
+    "选中的库优先级最高，全部条目都应归到该库");
+  const names = glossary.libraries.map(library => library.name);
+  assert.equal(names.includes("别的书"), false, "不应为文件里的库名建库");
+  assert.equal(names.includes("无所谓的名字"), false, "选中库时不再按文件名建库");
+  assert.equal(page.status(), "已导入 2 条到「骸骨皇女」，合并后共 2 条");
 });
 
 test("SQLite(.db) 导入离线时给出明确的失败提示且不误报成功", async () => {
   const page = await bootedPage();
   await page.importFile("glossary.db", "SQLite format 3\u0000");
-  const status = page.elements.get("statusText").textContent;
-  assert.match(status, /数据库导入失败/);
-  assert.doesNotMatch(status, /已导入/);
-});
-
-// ── 导入前选择目标术语库（glossary-import-picker）──────────────────────────
-
-function seededPage(libraries) {
-  const page = createPage();
-  Object.assign(page.stored, {
-    mt_glossary_v2: { version: 4, libraries, entries: [] }
-  });
-  page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE" ? discoveryState : { ok: true });
-  return page;
-}
-
-/** 走完整 UI 流程：点「导入文件」→ 选目标库 → 确认 → 系统文件框 → 选文件 → 导入。 */
-async function pickAndImport(page, { choice, file }) {
-  const fileInput = page.elements.get("fileInput");
-  let fileDialogOpened = false;
-  fileInput.click = () => { fileDialogOpened = true; };
-  await page.elements.get("importBtn").dispatch("click");
-  await settle();
-  const dialog = page.elements.get("importTargetDialog");
-  assert.equal(dialog.open, true, "点「导入文件」应先弹出目标库选择窗");
-  if (!choice) {
-    await page.elements.get("importTargetCancel").dispatch("click");
-    await settle();
-    return { fileDialogOpened };
-  }
-  const select = page.elements.get("importTargetSelect");
-  if (choice.libraryId) select.value = `library:${choice.libraryId}`;
-  if (choice.create) {
-    select.value = "create";
-    select.dispatch("change");
-    page.elements.get("importNewLibraryName").value = choice.create;
-  }
-  await page.elements.get("importTargetConfirm").dispatch("click");
-  await settle();
-  assert.equal(fileDialogOpened, true, "确认目标库后应打开系统文件选择框");
-  fileInput.files = [{ name: file.name, size: file.content.length, text: async () => file.content }];
-  await fileInput.dispatch("change");
-  await settle();
-  return { fileDialogOpened };
-}
-
-const TWO_LIBRARIES = [
-  { id: "lib-haigu", name: "骸骨皇女", enabled: true, urls: [] },
-  { id: "lib-other", name: "另一本书", enabled: true, urls: [] }
-];
-
-// 导入流程重构 WIP，待原会话落地后更新（旧「导入前弹窗选库」流程已被 glossary-import-target.js 替换）
-test("导入前选定目标库时，覆盖文件内自带的库名归属", { skip: "导入流程重构 WIP，待原会话落地后更新" }, async () => {
-  const page = seededPage(TWO_LIBRARIES);
-  await page.boot();
-  const csv = "source,target,library\r\n"
-    + "성현,成贤,别的书\r\n"
-    + "왕국,王国,别的书\r\n";
-  await pickAndImport(page, { choice: { libraryId: "lib-haigu" }, file: { name: "terms.csv", content: csv } });
-
-  const glossary = page.stored.mt_glossary_v2;
-  assert.equal(glossary.entries.length, 2);
-  assert.ok(glossary.entries.every(entry => entry.libraryId === "lib-haigu"),
-    "显式指定的目标库优先级最高，全部条目都应归到该库");
-  assert.equal(glossary.libraries.some(library => library.name === "别的书"), false,
-    "文件里的库名被目标库覆盖后，不应再自动建那个库");
-});
-
-// 导入流程重构 WIP，待原会话落地后更新
-test("导入前选「新建术语库」会自动建库并把条目归进去", { skip: "导入流程重构 WIP，待原会话落地后更新" }, async () => {
-  const page = seededPage(TWO_LIBRARIES);
-  await page.boot();
-  await pickAndImport(page, {
-    choice: { create: "新书·测试" },
-    file: { name: "terms.csv", content: "source,target\r\n성현,成贤\r\n" }
-  });
-  const glossary = page.stored.mt_glossary_v2;
-  const created = glossary.libraries.find(library => library.name === "新书·测试");
-  assert.ok(created, "应在导入时自动创建新库");
-  assert.equal(glossary.entries.length, 1);
-  assert.equal(glossary.entries[0].libraryId, created.id);
-});
-
-// 导入流程重构 WIP，待原会话落地后更新（旧「导入前弹窗选库」流程已被 glossary-import-target.js 替换）
-test("选「按文件内归属」时保持原有行为（无库名列进默认库）", { skip: "导入流程重构 WIP，待原会话落地后更新" }, async () => {
-  const page = seededPage(TWO_LIBRARIES);
-  await page.boot();
-  await pickAndImport(page, {
-    choice: { auto: true },
-    file: { name: "terms.csv", content: "source,target\r\n성현,成贤\r\n" }
-  });
-  const glossary = page.stored.mt_glossary_v2;
-  assert.equal(glossary.entries.length, 1);
-  assert.equal(glossary.entries[0].libraryId, "default");
-});
-
-// 导入流程重构 WIP，待原会话落地后更新
-test("选「按文件内归属」且 CSV 带库名列时按库名归位", { skip: "导入流程重构 WIP，待原会话落地后更新" }, async () => {
-  const page = seededPage(TWO_LIBRARIES);
-  await page.boot();
-  await pickAndImport(page, {
-    choice: { auto: true },
-    file: { name: "terms.csv", content: "source,target,library\r\n성현,成贤,另一本书\r\n" }
-  });
-  const glossary = page.stored.mt_glossary_v2;
-  assert.equal(glossary.entries[0].libraryId, "lib-other");
-});
-
-// 导入流程重构 WIP，待原会话落地后更新
-test("取消目标库选择则不打开文件框、不写入任何数据", { skip: "导入流程重构 WIP，待原会话落地后更新" }, async () => {
-  const page = seededPage(TWO_LIBRARIES);
-  await page.boot();
-  const { fileDialogOpened } = await pickAndImport(page, { choice: null });
-  assert.equal(fileDialogOpened, false, "取消后不应打开系统文件选择框");
-  const glossary = page.stored.mt_glossary_v2;
-  assert.equal(glossary.entries.length, 0);
-  assert.equal(glossary.libraries.length, 2, "不应多出任何库");
+  assert.match(page.status(), /数据库导入失败/u);
+  assert.doesNotMatch(page.status(), /已导入/u);
 });

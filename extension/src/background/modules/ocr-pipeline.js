@@ -1,5 +1,8 @@
+import llmProviders from "../../shared/llm-providers.js";
+
 export function installOcrPipeline(runtime) {
   async function handleOcrDataUrl(message) {
+    const startedAt = Date.now();
     const dataUrl = String(message && message.dataUrl || "").trim();
     if (!runtime.isDataUrl(dataUrl)) {
       return {
@@ -74,7 +77,8 @@ export function installOcrPipeline(runtime) {
       return {
         ok: true,
         result: runtime.deepFreezeObservationResult(cached),
-        cached: true
+        cached: true,
+        timing: { totalMs: Date.now() - startedAt, providerMs: 0 }
       };
     }
     if (runtime.inflightOcrByCacheKey.has(inflightKey)) {
@@ -82,10 +86,12 @@ export function installOcrPipeline(runtime) {
     }
     const task = (async () => {
       try {
+        const providerStartedAt = Date.now();
         const refreshed = await runtime.requestProviderNeutralOcr({
           request,
           settings
         });
+        const providerMs = Date.now() - providerStartedAt;
         // 持久 OCR 缓存中的 Observation 是权威语义结果。暖缓存仅因渲染需要
         // cleaned image 而刷新时，只取新的图像产物，避免一次非确定性 OCR
         // 重新改写 canonical 证据并触发不必要的翻译。
@@ -102,12 +108,14 @@ export function installOcrPipeline(runtime) {
         return {
           ok: true,
           result,
-          cached: false
+          cached: false,
+          timing: { totalMs: Date.now() - startedAt, providerMs }
         };
       } catch (error) {
         return {
           ok: false,
-          error: `OCR failed (${settings.provider}): ${runtime.getErrorMessage(error) || "Unknown OCR error"}`
+          error: `OCR failed (${settings.provider}): ${runtime.getErrorMessage(error) || "Unknown OCR error"}`,
+          timing: { totalMs: Date.now() - startedAt }
         };
       } finally {
         runtime.inflightOcrByCacheKey.delete(inflightKey);
@@ -118,12 +126,16 @@ export function installOcrPipeline(runtime) {
   }
   runtime.handleOcrDataUrl = handleOcrDataUrl;
   async function handleTranslateTextBlocks(message, sender = {}) {
+    const startedAt = Date.now();
     const mode = message && message.mode === "webpage" ? "webpage" : "comic";
     const rawItems = Array.isArray(message && message.items) ? message.items : [];
     if (rawItems.some(item => !String(item && item.id || "").trim())) {
       return {
         ok: false,
-        error: "TRANSLATE_TEXT_BLOCKS requires a stable canonical id for every item"
+        error: "TRANSLATE_TEXT_BLOCKS requires a stable canonical id for every item",
+        timing: {
+          totalMs: Date.now() - startedAt
+        }
       };
     }
     const items = rawItems.map(item => ({
@@ -137,7 +149,8 @@ export function installOcrPipeline(runtime) {
         ok: true,
         partial: false,
         translations: [],
-        errors: []
+        errors: [],
+        timing: { totalMs: Date.now() - startedAt, translateMs: 0, officialLoadMs: 0 }
       };
     }
     const translatableItems = items.filter(item => !item.non_translate);
@@ -152,7 +165,8 @@ export function installOcrPipeline(runtime) {
           translationFingerprint: `passthrough_${runtime.stableHash128(item.original_text)}`,
           cached: true
         })),
-        errors: []
+        errors: [],
+        timing: { totalMs: Date.now() - startedAt, translateMs: 0, officialLoadMs: 0 }
       };
     }
     const settings = await runtime.loadSettings();
@@ -172,10 +186,13 @@ export function installOcrPipeline(runtime) {
     let serviceError = "";
     const bypassOfficialLibrary = Boolean(runtime.backgroundTestHooks?.requestCanonicalTranslationBatch)
       || !globalThis.indexedDB;
+    let officialLoadMs = 0;
     if (mode === "comic" && !bypassOfficialLibrary) {
+      const officialStartedAt = Date.now();
       const official = force
         ? await runtime.getTranslationServiceStatus()
         : await runtime.loadOfficialComicTranslations(descriptors);
+      officialLoadMs = Date.now() - officialStartedAt;
       serviceOnline = official.online ?? official.ok === true;
       serviceError = official.error || "本地服务未启动，当前仅显示已缓存译文";
       if (official.outcome) outcome = official.outcome;
@@ -183,16 +200,20 @@ export function installOcrPipeline(runtime) {
     const requestItems = translatableItems.filter(item =>
       !outcome.has(runtime.canonicalTranslationItemKey(item))
     );
-    if (requestItems.length && (!serviceOnline || !settings.apiKey)) {
+    // 免密钥服务商(Ollama/自定义本地服务)不得被密钥门槛拦住,只有 needsKey 服务商才要求 Key
+    const translationProviderId = settings.translationConfig?.provider || settings.translationProvider || "";
+    const keyMissing = llmProviders.keyRequired(translationProviderId) && !settings.apiKey;
+    if (requestItems.length && (!serviceOnline || keyMissing)) {
       const error = !serviceOnline ? serviceError
-        : "Translation API Key is missing. Please configure it in popup.";
+        : `翻译 API Key 未配置：请在设置页「翻译服务」中为当前服务商（${llmProviders.providerLabel(translationProviderId)}）填写密钥`;
       requestItems.forEach(item => outcome.set(runtime.canonicalTranslationItemKey(item), { error }));
     }
     const taskId = String(message && message.taskId || "");
     const controller = taskId ? new AbortController() : null;
     if (controller) runtime.registerTaskAbort(taskId, controller, sender && sender.tab && sender.tab.id);
     try {
-      const requested = requestItems.length && serviceOnline && settings.apiKey
+      const translateStartedAt = Date.now();
+      const requested = requestItems.length && serviceOnline && !keyMissing
         ? await runtime.requestCanonicalTextTranslations({
         items: requestItems,
         apiKey: settings.apiKey,
@@ -209,56 +230,58 @@ export function installOcrPipeline(runtime) {
         signal: controller ? controller.signal : null,
         taskId
       }) : new Map();
+      const translateMs = Date.now() - translateStartedAt;
       requested.forEach((value, key) => outcome.set(key, value));
+      const configFingerprint = mode === "comic"
+        ? await runtime.getTranslationConfigFingerprint("comic") : "";
+      const pendingRecordKeys = mode === "comic" && serviceOnline && !bypassOfficialLibrary
+        ? await runtime.commitOfficialComicTranslations(descriptors, outcome, configFingerprint)
+        : new Set();
+      const translations = [];
+      const errors = [];
+      items.forEach(item => {
+        const row = item.non_translate ? {
+          translatedText: item.original_text,
+          translationFingerprint: `passthrough_${runtime.stableHash128(item.original_text)}`,
+          cached: true
+        } : outcome.get(runtime.canonicalTranslationItemKey(item));
+        if (!row || !row.translatedText) {
+          errors.push({
+            id: item.id,
+            revision: item.revision,
+            translationFingerprint: row && row.translationFingerprint || "",
+            error: row && row.error || "model_missing_translation"
+          });
+          return;
+        }
+        translations.push({
+          id: item.id,
+          revision: item.revision,
+          translated_text: runtime.cleanDecorativeSymbols(row.translatedText),
+          translationFingerprint: row.translationFingerprint,
+          cached: row.cached === true,
+          pending: descriptors.some(descriptor => descriptor.item.id === item.id
+            && pendingRecordKeys.has(descriptor.recordKey))
+        });
+      });
+      if (controller) runtime.unregisterTaskAbort(taskId, controller);
+      return {
+        ok: errors.length === 0 || translations.length > 0,
+        partial: errors.length > 0,
+        translations,
+        errors,
+        timing: { totalMs: Date.now() - startedAt, translateMs, officialLoadMs },
+        ...(errors.length > 0 ? {
+          error: `Translation response omitted ${errors.length} item(s)`
+        } : {})
+      };
     } catch (error) {
       if (controller) runtime.unregisterTaskAbort(taskId, controller);
       if (runtime.isAbortError(error)) {
-        return { ok: false, cancelled: true, translations: [], errors: [] };
+        return { ok: false, cancelled: true, translations: [], errors: [], timing: { totalMs: Date.now() - startedAt, translateMs: 0, officialLoadMs } };
       }
       throw error;
     }
-    if (controller) runtime.unregisterTaskAbort(taskId, controller);
-    const configFingerprint = mode === "comic"
-      ? await runtime.getTranslationConfigFingerprint("comic") : "";
-    const pendingRecordKeys = mode === "comic" && serviceOnline && !bypassOfficialLibrary
-      ? await runtime.commitOfficialComicTranslations(descriptors, outcome, configFingerprint)
-      : new Set();
-    const translations = [];
-    const errors = [];
-    items.forEach(item => {
-      const row = item.non_translate ? {
-        translatedText: item.original_text,
-        translationFingerprint: `passthrough_${runtime.stableHash128(item.original_text)}`,
-        cached: true
-      } : outcome.get(runtime.canonicalTranslationItemKey(item));
-      if (!row || !row.translatedText) {
-        errors.push({
-          id: item.id,
-          revision: item.revision,
-          translationFingerprint: row && row.translationFingerprint || "",
-          error: row && row.error || "model_missing_translation"
-        });
-        return;
-      }
-      translations.push({
-        id: item.id,
-        revision: item.revision,
-        translated_text: runtime.cleanDecorativeSymbols(row.translatedText),
-        translationFingerprint: row.translationFingerprint,
-        cached: row.cached === true,
-        pending: descriptors.some(descriptor => descriptor.item.id === item.id
-          && pendingRecordKeys.has(descriptor.recordKey))
-      });
-    });
-    return {
-      ok: errors.length === 0 || translations.length > 0,
-      partial: errors.length > 0,
-      translations,
-      errors,
-      ...(errors.length > 0 ? {
-        error: `Translation response omitted ${errors.length} item(s)`
-      } : {})
-    };
   }
   runtime.handleTranslateTextBlocks = handleTranslateTextBlocks;
   function setBackgroundTestHooks(value) {

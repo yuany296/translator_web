@@ -143,6 +143,10 @@ test("pretranslation requires explicit activation in the current page", () => {
 test("page translation toggle does not persist activation globally", () => {
   assert.equal(/storageSet\(\{\s*mt_pretranslate_mode\s*:/.test(contentSource), false);
 });
+test("switching pretranslation mode to manual stops page auto-translate and purges the auto queue", () => {
+  assert.match(contentSource, /if \(config\.pretranslateMode === "manual"\) \{[\s\S]*?runtime\.state\.autoTranslatePageEnabled = false;[\s\S]*?runtime\.clearAutoTranslateRetryTimers\?\.\(\);[\s\S]*?runtime\.dropAutoQueuedItems\?\.\(\);[\s\S]*?\}/);
+  assert.match(contentSource, /loadLocalSettings[\s\S]*if \(config\.pretranslateMode === "manual"\) \{[\s\S]*?runtime\.state\.autoTranslatePageEnabled = false;/);
+});
 test("floating ball click follows configured pretranslation mode before manual viewport translation", () => {
   assert.match(contentSource, /ball\.addEventListener\("click", async event => \{[\s\S]*?runtime\.state\.autoTranslatePageEnabled[\s\S]*?runtime\.togglePageAutoTranslate\(false\)[\s\S]*?runtime\.isAutomaticPretranslateMode\(runtime\.state\.pretranslateMode\)[\s\S]*?runtime\.togglePageAutoTranslate\(true\)[\s\S]*?await runtime\.manualTranslateVisible\(\);[\s\S]*?\}\);/);
   assert.doesNotMatch(contentSource, /runtime\.togglePageAutoTranslate\(!runtime\.state\.autoTranslatePageEnabled\)/);

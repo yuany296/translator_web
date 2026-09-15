@@ -15,6 +15,7 @@ export function installCanonicalPageOcr(runtime, scope) {
       if (!scope.isCurrentJob(target, identity)) return scope.cancelJob(target, identity, "", "sourceChanged before fetch");
       const snapshot = typeof scope.adapters.captureTargetSnapshot === "function" ? scope.adapters.captureTargetSnapshot(target) : null;
       const payload = await scope.withCanonicalTimeout(scope.extractTargetPayload(target, identity.scopedTargetKey), scope.extractTimeoutMs, "Page fetch timed out");
+      scope.timingPhase(identity.runId, "fetch");
       if (!scope.isCurrentJob(target, identity)) return scope.cancelJob(target, identity, "", "sourceChanged after fetch");
       const authoritativePayload = await scope.isAuthoritativePagePayload(payload, target);
       if (!scope.isCurrentJob(target, identity)) {
@@ -27,6 +28,7 @@ export function installCanonicalPageOcr(runtime, scope) {
         ...identity,
         deferBind: true
       }), scope.identityTimeoutMs, "Page identity timed out");
+      scope.timingPhase(identity.runId, "identity");
       if (!scope.isCurrentJob(target, identity)) {
         return scope.cancelJob(target, identity, "", "sourceChanged while hashing page bytes");
       }
@@ -67,6 +69,7 @@ export function installCanonicalPageOcr(runtime, scope) {
       });
       scope.loading(target, identity.targetKey, "识别当前页...");
       const response = await scope.store.getOrCreateInflightJob(`canonical-page-ocr:${pageRecord.pageId}:${pageRecord.imageRevision}`, () => scope.withCanonicalTimeout(scope.requestOcrForPayload(payload, runtime.buildOcrMeta("page", [pageRecord])), scope.pageOcrTimeoutMs, "Page OCR timed out"));
+      scope.timingPhase(identity.runId, "pageOcr");
       if (!response || !response.ok) {
         throw new runtime.CanonicalPageOcrError(response && response.error ? response.error : "Page OCR failed");
       }
@@ -87,6 +90,7 @@ export function installCanonicalPageOcr(runtime, scope) {
       // 不同 imageRevision 的旧证据仍保留并由 ledger 标记 stale_revision。
       scope.store.replacePageRevisionObservations(pageRecord.pageId, pageRecord.imageRevision, evidence.observations, evidence.filteredObservations);
       const edgeSides = runtime.collectPageEdgeSides(pageRecord, evidence.observations, evidence.filteredObservations, evidence.edgeSignals);
+      scope.timingPhase(identity.runId, "observe");
       let adjacentTargets = [];
       if (options.isolatedPage !== true) {
         adjacentTargets = runtime.normalizeAdjacentTargets(preserveReadyPhase ? pageRecord.adjacentTargets : []);
@@ -103,6 +107,7 @@ export function installCanonicalPageOcr(runtime, scope) {
       if (!scope.isCurrentJob(target, identity) || !scope.isCurrentPageRevision(pageRecord)) {
         return scope.cancelJob(target, identity, pageRecord.pageId, "sourceChanged during neighbor discovery");
       }
+      scope.timingPhase(identity.runId, "adjacent");
       const retainedCleanedImage = evidence.cleanedImage || (pageRecord.cleanedImageRevision === pageRecord.imageRevision ? pageRecord.cleanedImage : null);
       pageRecord = scope.store.registerPageHandle({
         ...pageRecord,
@@ -145,6 +150,7 @@ export function installCanonicalPageOcr(runtime, scope) {
       scope.loading(target, identity.targetKey, "翻译文字中...");
       const pageRefresh = await scope.refreshCanonicalState({
         reason: "page-ocr",
+        runId: identity.runId,
         focusPageIds: [pageRecord.pageId],
         guard: () => scope.isCurrentJob(target, identity) && scope.isCurrentPageRevision(pageRecord)
       });
@@ -162,11 +168,13 @@ export function installCanonicalPageOcr(runtime, scope) {
       if (pairResult.aborted || !scope.isCurrentJob(target, identity) || !scope.isCurrentPageRevision(pageRecord)) {
         return scope.cancelJob(target, identity, pageRecord.pageId, "sourceChanged during seam processing");
       }
+      scope.timingPhase(identity.runId, "seam");
       const pairPageIds = pairResult.pageIds;
       if (options.isolatedPage !== true) scope.releaseCompletedEdgeWaits();
       scope.loading(target, identity.targetKey, "渲染结果...");
       const pairRefresh = await scope.refreshCanonicalState({
         reason: "pair-terminal",
+        runId: identity.runId,
         focusPageIds: Array.from(new Set([pageRecord.pageId, ...pairPageIds])),
         guard: () => scope.isCurrentJob(target, identity) && scope.isCurrentPageRevision(pageRecord)
       });

@@ -6,10 +6,64 @@ function sendBackground(message) {
   }));
 }
 
-async function sendTab(message) {
+// 章节目标标签页的解析优先级:
+//   1) URL ?tabId=(悬浮球回退为「新标签页打开」时显式指定)
+//   2) chrome.storage.session 中 SW 打开侧栏前记录的来源标签页
+//   3) 当前窗口的活动标签页
+//   4) 扫描当前窗口所有标签页,找到能返回章节快照的小说页
+// 解析结果固定复用,避免刷新/操作期间用户切换标签页导致目标漂移。
+const TARGET_TAB_ID = (() => {
+  const raw = new URLSearchParams(location.search).get("tabId");
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+})();
+
+const MANAGE_TAB_KEY = "mt_manage_tab";
+
+function isValidTabId(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+async function readManagedTabFromSession() {
+  try {
+    const record = await chrome.storage.session.get(MANAGE_TAB_KEY);
+    const value = record && record[MANAGE_TAB_KEY];
+    if (!value || !isValidTabId(value.tabId)) return null;
+    const tab = await chrome.tabs.get(value.tabId).catch(() => null);
+    if (!tab) return null;
+    // 多窗口时,只在记录的窗口与侧栏所在窗口一致时才采用,
+    // 避免在另一个窗口打开侧栏却去管理别的窗口的章节。
+    const win = await chrome.windows.getCurrent();
+    if (win && isValidTabId(value.windowId) && win.id !== value.windowId) return null;
+    return value.tabId;
+  } catch {
+    return null;
+  }
+}
+
+async function findNovelTabInWindow() {
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    if (String(tab.url || "").startsWith("chrome")) continue;
+    try {
+      const probe = await chrome.tabs.sendMessage(tab.id, { type: "PING_CONTENT_SCRIPT" });
+      if (!probe?.ok) continue;
+      const snapshot = await chrome.tabs.sendMessage(tab.id, { type: "GET_NOVEL_CHAPTER_SNAPSHOT" });
+      if (snapshot?.ok) return tab.id;
+    } catch {
+      // 该标签页没有可用的内容脚本
+    }
+  }
+  return null;
+}
+
+async function resolveManagedTabId() {
+  if (TARGET_TAB_ID !== null) return TARGET_TAB_ID;
+  const sessionTabId = await readManagedTabFromSession();
+  if (sessionTabId !== null) return sessionTabId;
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tabs[0]?.id) throw new Error("找不到活动标签页");
-  return await chrome.tabs.sendMessage(tabs[0].id, message);
+  return tabs[0]?.id != null ? tabs[0].id : null;
 }
 
 function el(tag, props = {}, children = []) {
@@ -57,6 +111,14 @@ export function installRevisionPanel() {
   let snapshot = null;
   let activeFingerprint = "";
   let collapseOnly = false;
+  let managedTabId = TARGET_TAB_ID;
+
+  // 首帧可等待点:定位请求必须等首次 render() 完成(卡片此时才存在),
+  // 否则会出现「卡片还没渲染就滚动」的落空竞态。
+  let resolveFirstRender = null;
+  const whenFirstRender = new Promise(resolve => { resolveFirstRender = resolve; });
+
+  const sendTabTo = (tabId, message) => chrome.tabs.sendMessage(tabId, message);
 
   refreshBtn.addEventListener("click", () => void refresh());
   searchInput.addEventListener("input", () => applyFilter());
@@ -68,15 +130,31 @@ export function installRevisionPanel() {
 
   async function refresh() {
     refreshBtn.disabled = true;
-    statusEl.textContent = "正在连接活动标签页…";
+    statusEl.textContent = "正在连接小说章节…";
     try {
-      const probe = await sendTab({ type: "PING_CONTENT_SCRIPT" }).catch(() => ({ ok: false }));
+      if (managedTabId === null) {
+        managedTabId = await resolveManagedTabId();
+      }
+      let probe = managedTabId !== null
+        ? await sendTabTo(managedTabId, { type: "PING_CONTENT_SCRIPT" }).catch(() => ({ ok: false }))
+        : { ok: false };
+      if (!probe?.ok && managedTabId !== null) {
+        // 目标标签页内容脚本未响应(常见于扩展刚重新加载),
+        // 尝试扫描窗口内其他小说标签页。
+        const found = await findNovelTabInWindow();
+        if (found !== null && found !== managedTabId) {
+          managedTabId = found;
+          probe = await sendTabTo(managedTabId, { type: "PING_CONTENT_SCRIPT" }).catch(() => ({ ok: false }));
+        }
+      }
       if (!probe?.ok) {
-        statusEl.textContent = "当前标签页未注入扩展内容，无法读取章节";
+        statusEl.textContent = managedTabId !== null
+          ? "已找到小说章节标签页，但内容脚本未响应（扩展可能刚重新加载）。请刷新该标签页后重试。"
+          : "未找到小说章节标签页。请先打开 Kakao 小说页面，再点「管理当前章节译文」。";
         bodyEl.replaceChildren();
         return;
       }
-      const response = await sendTab({ type: "GET_NOVEL_CHAPTER_SNAPSHOT" });
+      const response = await sendTabTo(managedTabId, { type: "GET_NOVEL_CHAPTER_SNAPSHOT" });
       if (!response?.ok) {
         statusEl.textContent = response?.error || "当前页面不是可管理的小说章节";
         bodyEl.replaceChildren();
@@ -99,6 +177,15 @@ export function installRevisionPanel() {
   }
 
   function render() {
+    renderCards();
+    // 首帧完成:此后到达的定位请求都可以安全地查找卡片。
+    if (resolveFirstRender) {
+      resolveFirstRender();
+      resolveFirstRender = null;
+    }
+  }
+
+  function renderCards() {
     bodyEl.replaceChildren();
     const items = snapshot?.items || [];
     if (!items.length) {
@@ -128,7 +215,7 @@ export function installRevisionPanel() {
       }
     };
 
-    const sendAction = (action, payload = {}) => sendTab({
+    const sendAction = (action, payload = {}) => sendTabTo(managedTabId, {
       type: "NOVEL_REVISION_ACTION", action, payload: { itemId: item.id, ...payload }
     });
 
@@ -238,7 +325,9 @@ export function installRevisionPanel() {
         match = match && !!(editor && editor.value.trim());
       }
       if (query) {
-        const haystack = `${card.dataset.itemId || ""} ${card.textContent || ""}`.toLowerCase();
+        const editor = card.querySelector("textarea");
+        const source = card.querySelector(".source");
+        const haystack = `${card.dataset.itemId || ""} ${card.textContent || ""} ${source?.textContent || ""} ${editor?.value || ""}`.toLowerCase();
         match = match && haystack.includes(query);
       }
       card.hidden = !match;
@@ -246,4 +335,23 @@ export function installRevisionPanel() {
   }
 
   void refresh();
+
+  // 交由 revision-focus 控制器消费:定位/滚动/高亮/清筛选都在那边实现,
+  // 这里只暴露内部依赖(避免把 revision-ui 顶破行数门禁)。
+  return {
+    bodyEl,
+    statusEl,
+    searchInput,
+    collapseBtn,
+    applyFilter,
+    setCollapseOnly(value) {
+      collapseOnly = value === true;
+      collapseBtn.textContent = collapseOnly ? "显示全部段落" : "仅显示有译文";
+    },
+    getCollapseOnly: () => collapseOnly,
+    whenFirstRender,
+    getManagedTabId: () => managedTabId,
+    setManagedTabId: value => { managedTabId = value; },
+    requestRefresh: () => refresh()
+  };
 }

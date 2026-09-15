@@ -1,4 +1,4 @@
-const DEFAULT_MAX_BLOCKS = 60;
+const DEFAULT_MAX_BLOCKS = 300;
 
 /**
  * 采样已翻译的小说段落用于术语发现：等距抽样，章节首段（标题段，书名

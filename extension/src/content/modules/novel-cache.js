@@ -7,6 +7,8 @@
  * auto-save records. Cache status on page load drives the novel ball state
  * (cached / partial / idle) without calling the API.
  */
+import sharedUtils from "../../shared/utils.js";
+
 export function installNovelCache(runtime) {
   function buildRecordId(workId, chapterId, sourceText, paragraphKey = "") {
     const normalized = runtime.normalizeTranslationCacheText(sourceText);
@@ -42,9 +44,15 @@ export function installNovelCache(runtime) {
     items.forEach((item, index) => {
       const match = classify(records.get(ids[index]), fingerprint);
       if (!isUsableMatch(match)) return;
-      const translated = String(records.get(ids[index]).translatedText).trim();
+      // 旧译文缺少对话引号时直接就地修补,不重译。
+      const translated = sharedUtils.restoreDialogueQuotes(
+        item.original_text,
+        String(records.get(ids[index]).translatedText).trim()
+      );
       state.translations.set(item.id, translated);
-      runtime.renderNovelTranslation?.(item.node, translated, state.showTranslation);
+      // 命中缓存即按"显示译文"意图渲染:首次点击时 state.showTranslation 尚未翻转,
+      // 显式传 true 让缓存段落与随后到达的流式译文保持一致,立即可见。
+      runtime.renderNovelTranslation?.(item.node, translated, true);
       hit += 1;
       if (match === "stale-config") stale += 1;
     });

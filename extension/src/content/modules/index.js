@@ -13,11 +13,14 @@ import { installSceneCrossPage } from "./scene-crosspage.js";
 import { installSceneCanonical } from "./scene-canonical.js";
 import { installSceneDispatch } from "./scene-dispatch.js";
 import { installRendererOverlay } from "./renderer-overlay.js";
+import { installRendererCover } from "./renderer-cover.js";
+import { installCrossPageCover } from "./crosspage-cover.js";
 import { installRendererCrossPage } from "./renderer-crosspage.js";
 import { installCrossPageLifecycle } from "./crosspage-lifecycle.js";
 import { installRendererEmbed } from "./renderer-embed.js";
 import { installRendererCanvas } from "./renderer-canvas.js";
 import { installLifecycleBubble } from "./lifecycle-bubble.js";
+import { installLifecycleCover } from "./lifecycle-cover.js";
 import { installLifecyclePosition } from "./lifecycle-position.js";
 import { installLifecycleFontFit } from "./lifecycle-font-fit.js";
 import { installLifecycleOverlayCleanup } from "./lifecycle-overlay-cleanup.js";
@@ -31,6 +34,9 @@ import { installNovelTermDiscovery } from "./novel-term-discovery.js";
 import { installNovelStreamClient } from "./novel-stream-client.js";
 import { installNovelStreamWorkflow } from "./novel-stream-workflow.js";
 import { installNovelImageWorkflow } from "./novel-image-workflow.js";
+import { installFloatingFeedback } from "./floating-feedback.js";
+import { installNovelActionFeedback } from "./novel-action-feedback.js";
+import { installNovelFocusClick } from "./novel-focus-click.js";
 import { installControlsUi } from "./controls-ui.js";
 import { installControlsTriple } from "./controls-triple.js";
 import { installFloatingMenu } from "./floating-menu.js";
@@ -75,11 +81,14 @@ export const contentInstallers = Object.freeze([
   installSceneCanonical,
   installSceneDispatch,
   installRendererOverlay,
+  installRendererCover,
+  installCrossPageCover,
   installRendererCrossPage,
   installCrossPageLifecycle,
   installRendererEmbed,
   installRendererCanvas,
   installLifecycleBubble,
+  installLifecycleCover,
   installLifecyclePosition,
   installLifecycleFontFit,
   installLifecycleOverlayCleanup,
@@ -93,8 +102,11 @@ export const contentInstallers = Object.freeze([
   installNovelStreamClient,
   installNovelStreamWorkflow,
   installNovelImageWorkflow,
+  installFloatingFeedback,
+  installNovelActionFeedback,
   installControlsUi,
   installControlsTriple,
+  installNovelFocusClick,
   installFloatingMenu,
   installFloatingPosition,
   installNovelProgressPanel,
@@ -139,11 +151,14 @@ export const contentPhases = Object.freeze({
     installSceneCanonical,
     installSceneDispatch,
     installRendererOverlay,
+    installRendererCover,
+    installCrossPageCover,
     installRendererCrossPage,
     installCrossPageLifecycle,
     installRendererEmbed,
     installRendererCanvas,
     installLifecycleBubble,
+    installLifecycleCover,
     installLifecyclePosition,
     installLifecycleFontFit,
     installLifecycleOverlayCleanup,
@@ -157,8 +172,11 @@ export const contentPhases = Object.freeze({
     installNovelStreamClient,
     installNovelStreamWorkflow,
     installNovelImageWorkflow,
+    installFloatingFeedback,
+    installNovelActionFeedback,
     installControlsUi,
     installControlsTriple,
+    installNovelFocusClick,
     installFloatingMenu,
     installFloatingPosition,
     installNovelProgressPanel,

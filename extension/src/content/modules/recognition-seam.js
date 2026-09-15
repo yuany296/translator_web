@@ -271,8 +271,16 @@ export function installRecognitionSeam(runtime) {
       ? response.errors : Array.isArray(response?.result?.errors) ? response.result.errors
         : response?.error ? [{ error: response.error }] : []);
     const partial = errors.length > 0 || responses.some(response => response?.partial === true);
+    const timing = responses.reduce((acc, response) => {
+      const t = response && response.timing;
+      if (!t) return acc;
+      acc.totalMs += Number(t.totalMs) || 0;
+      acc.translateMs += Number(t.translateMs) || 0;
+      acc.officialLoadMs += Number(t.officialLoadMs) || 0;
+      return acc;
+    }, { totalMs: 0, translateMs: 0, officialLoadMs: 0 });
     if (!translations.length && errors.length) {
-      return { ok: false, partial, translations, errors, error: errors[0]?.error || "translation_failed" };
+      return { ok: false, partial, translations, errors, timing, error: errors[0]?.error || "translation_failed" };
     }
     const normalized = {
       translations: translations.map(item => ({
@@ -289,6 +297,7 @@ export function installRecognitionSeam(runtime) {
     return {
       ok: true,
       partial: normalized.partial,
+      timing,
       result: normalized
     };
   }

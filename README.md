@@ -81,6 +81,9 @@ The popup has three independent configuration cards that save separately:
 
 - **Provider**: `openai_compatible`
 - Model, API Key, Base URL (e.g., `https://api.deepseek.com` for DeepSeek)
+- Named profiles live in Settings → 翻译服务 and are shared by all three LLM services (translation, chapter term extraction, sentence-level extraction): each row picks one profile from the same library, and the two extraction rows have their own enable switch
+- Legacy saves are migrated automatically: an old "follow translation service" setting is pinned to the active profile, and an extraction-only Base URL / Model / Key becomes its own named profile
+- Local or self-hosted OpenAI-compatible services (Ollama `http://127.0.0.1:11434/v1`, custom proxies) need **no** API Key — the key is only required for providers that need one (OpenAI, Qwen, GLM, DeepSeek, Kimi, SiliconFlow, 火山方舟)
 
 ### Runtime
 

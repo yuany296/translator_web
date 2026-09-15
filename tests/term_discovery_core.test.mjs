@@ -153,6 +153,82 @@ test("ignoreCandidates global scope clears every chapter and records ignored sou
   assert.deepEqual(Array.from(result.ignored.sources, item => item.sourceKey).sort(), ["author name", "book title"].sort());
 });
 
+test("discovery drops sources taken from translated text and swaps reversed source/target", () => {
+  const store = core.mergeDiscoveryResult({
+    pageUrl: "https://example.com/chapter/8",
+    targetKey: "image-1",
+    blocks: [
+      { id: "a", originalText: "정다준이 말했다.", translatedText: "郑多俊说道。" },
+      { id: "b", originalText: "김성현이 웃었다.", translatedText: "金成贤笑了。" }
+    ],
+    extractedCandidates: [
+      // 模型从译文行抓词：source 是中文译文 —— 必须丢弃，不能进入待确认区
+      { source: "郑多俊", kind: "person", score: 0.9, suggestedTarget: "郑多俊", evidenceIds: ["a"] },
+      // source/suggestedTarget 填反：交换后按原文收录
+      { source: "金成贤", kind: "person", score: 0.9, suggestedTarget: "김성현", evidenceIds: ["b"] }
+    ]
+  });
+  const candidates = store.chapters[0].candidates;
+
+  assert.deepEqual(Array.from(candidates, (item) => item.source), ["김성현"]);
+  assert.equal(candidates[0].suggestedTarget, "金成贤");
+  assert.equal(candidates[0].suggestedTargets.includes("김성현"), false);
+});
+
+test("textContainsSource tolerates whitespace, case and a trailing josa", () => {
+  assert.equal(core.textContainsSource("정다준이 말했다.", "정다준"), true);
+  assert.equal(core.textContainsSource("정다준이 말했다.", "정다준이"), true);
+  assert.equal(core.textContainsSource("THE DAWN 무대", "the dawn"), true);
+  assert.equal(core.textContainsSource("김성현", "즈"), false);
+  assert.equal(core.textContainsSource("정다준이 말했다.", "郑多俊"), false);
+  assert.equal(core.textContainsSource("다 준 이 말", "다준"), true);
+});
+
+test("discovery stamps the URL-matched library on the chapter and keeps manual choices", () => {
+  const first = core.mergeDiscoveryResult({
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/1",
+    libraryId: "kakao-novel",
+    blocks: [{ id: "a", originalText: "성현이 말했다", translatedText: "成贤说道" }],
+    extractedCandidates: [{ source: "성현", kind: "person", score: 0.9, evidenceIds: ["a"] }]
+  });
+  assert.equal(first.chapters[0].libraryId, "kakao-novel");
+  assert.equal(first.chapters[0].libraryManual, false);
+
+  // 网址重新匹配（例如用户改了绑定）会更新自动归属
+  const rematched = core.mergeDiscoveryResult({
+    store: first,
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/1",
+    libraryId: "other-library",
+    blocks: [{ id: "b", originalText: "왕국이 무너졌다", translatedText: "王国崩塌了" }],
+    extractedCandidates: [{ source: "왕국", kind: "proper_noun", score: 0.8, evidenceIds: ["b"] }]
+  });
+  assert.equal(rematched.chapters[0].libraryId, "other-library");
+
+  // 用户在界面上手动指定过归属后，后续重新匹配不得覆盖
+  const manual = core.normalizePendingStore({
+    chapters: [{ ...rematched.chapters[0], libraryId: "manual-choice", libraryManual: true }]
+  });
+  const kept = core.mergeDiscoveryResult({
+    store: manual,
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/1",
+    libraryId: "auto-library",
+    blocks: [{ id: "c", originalText: "마법을 쓰다", translatedText: "使用魔法" }],
+    extractedCandidates: [{ source: "마법", kind: "proper_noun", score: 0.8, evidenceIds: ["c"] }]
+  });
+  assert.equal(kept.chapters[0].libraryId, "manual-choice");
+  assert.equal(kept.chapters[0].libraryManual, true);
+});
+
+test("chapters without a matched library keep an empty libraryId", () => {
+  const store = core.mergeDiscoveryResult({
+    pageUrl: "https://example.com/chapter/9",
+    blocks: [{ id: "a", originalText: "성현이 말했다", translatedText: "成贤说道" }],
+    extractedCandidates: [{ source: "성현", kind: "person", score: 0.9, evidenceIds: ["a"] }]
+  });
+  assert.equal(store.chapters[0].libraryId, "");
+  assert.equal(store.chapters[0].libraryManual, false);
+});
+
 test("pending storage keeps only the newest 20 chapters and 200 candidates per chapter", () => {
   const chapters = Array.from({ length: 25 }, (_, chapterIndex) => ({
     key: `https://example.com/chapter/${chapterIndex}`,

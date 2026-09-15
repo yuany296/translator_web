@@ -375,6 +375,64 @@ test("row checkboxes drive the batch bar and the select-all header state", async
   assert.equal(storedEntries(page).length, 4, "取消选择不改动数据");
 });
 
+test("select-all immediately ticks every visible row checkbox (no re-render needed)", async () => {
+  const page = await bootWithSeed([
+    makeEntry("a", "성현"),
+    makeEntry("b", "왕국"),
+    makeEntry("c", "마법")
+  ]);
+  page.attachAll();
+
+  // 表头全选：下面每一行的框当场就要打上勾（以前只改了集合与条数，行内框要等下一次重渲染才跟上）
+  page.elements.get("selectAllTerms").checked = true;
+  await page.elements.get("selectAllTerms").dispatch("change");
+  assert.equal(page.elements.get("batchSelectedCount").textContent, "已选 3 条");
+  assert.deepEqual(
+    page.elements.get("termRows").children
+      .map(row => [row.dataset.termId, selectCheckboxOf(row).checked]),
+    [["a", true], ["b", true], ["c", true]],
+    "全选后行内复选框必须立刻都是勾上的"
+  );
+
+  // 取消全选：当场全部取消
+  page.elements.get("selectAllTerms").checked = false;
+  await page.elements.get("selectAllTerms").dispatch("change");
+  assert.deepEqual(
+    page.elements.get("termRows").children.map(row => selectCheckboxOf(row).checked),
+    [false, false, false],
+    "取消全选后行内复选框必须立刻取消"
+  );
+  assert.equal(page.elements.get("batchActionBar").classList.contains("hidden"), true);
+
+  // 搜索没有结果时点全选：不能留着一个勾着的空全选
+  page.elements.get("searchInput").value = "不存在的东西";
+  await page.elements.get("searchInput").dispatch("input");
+  await settle();
+  page.attachAll();
+  assert.equal(page.elements.get("termRows").children.length, 0);
+  page.elements.get("selectAllTerms").checked = true;
+  await page.elements.get("selectAllTerms").dispatch("change");
+  assert.equal(page.elements.get("selectAllTerms").checked, false,
+    "没有可见行时表头全选要复位");
+  assert.equal(page.elements.get("batchSelectedCount").textContent, "已选 0 条");
+});
+
+test("批次全选后直接删除：删掉的就是刚打勾的那些", async () => {
+  const page = await bootWithSeed([
+    makeEntry("a", "성현"),
+    makeEntry("b", "왕국"),
+    makeEntry("c", "마법")
+  ]);
+  page.attachAll();
+  page.setConfirm(() => true);
+  page.elements.get("selectAllTerms").checked = true;
+  await page.elements.get("selectAllTerms").dispatch("change");
+
+  await page.elements.get("batchDeleteBtn").dispatch("click");
+  await settle();
+  assert.deepEqual(storedEntries(page).map(entry => entry.id), [], "全选后删除应清空这一页可见条目");
+});
+
 test("batch move: moves to the target library and reports skipped duplicates and capacity", async () => {
   // 目标库放 498 条占位 + 1 条与 a 完全同键的重复条目 → 容量只剩 1
   const fillers = Array.from({ length: 498 }, (_, index) =>

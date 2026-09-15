@@ -121,16 +121,34 @@ export function installGlossaryBatchActions(runtime) {
     updateActionBar();
   }
 
-  // 表头全选只作用于当前筛选可见的行。
+  /**
+   * 把表头的勾选状态刷到当前可见的行上。
+   * 只改集合不碰行内复选框，用户看到的就是「全选了、条数也对了，但下面一个勾都没有」——
+   * 所以这里必须把每一行的框一起改；不重渲染是为了不丢掉正在编辑的格子。
+   */
+  function applySelectAllToRows(checked) {
+    for (const row of Array.from(runtime.termRows.children)) {
+      const checkbox = row.querySelector("input[data-action='select-term']");
+      if (checkbox) {
+        checkbox.checked = checked;
+      }
+    }
+  }
+
+  // 表头全选只作用于当前筛选可见的行：选中集合、行内复选框、表头状态三处一起改。
   function handleSelectAllChange() {
     const ids = visibleRowIds();
+    const checked = selectAllInput.checked;
     for (const id of ids) {
-      if (selectAllInput.checked) {
+      if (checked) {
         selectedIds.add(id);
       } else {
         selectedIds.delete(id);
       }
     }
+    applySelectAllToRows(checked);
+    // 没有可见行（搜索没结果）时把表头框复位：不然会留着一个勾不出任何东西的空全选。
+    updateSelectAllState();
     updateActionBar();
   }
 

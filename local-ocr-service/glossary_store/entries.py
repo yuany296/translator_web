@@ -28,6 +28,21 @@ class EntriesMixin:
             return ensure(library_id, name)
         return normalize_library_id(library_id) or DEFAULT_LIBRARY_ID
 
+    def _adopt_entry_id(self, conn: sqlite3.Connection, entry_id: str, current_id: str) -> str:
+        """同一身份再次写入时改用客户端带来的 id。
+
+        扩展端按 id 删行，服务端却坚持用自己最初生成的那一个 id，两边就会各拿一套 id：
+        术语库页删的是服务端不存在的行，删完刷新又回来了。id 已被别的行占用时保持原样。
+        """
+        wanted = str(entry_id or "")
+        if not wanted or wanted == current_id:
+            return current_id
+        taken = conn.execute("SELECT 1 FROM glossary_entries WHERE id = ?", (wanted,)).fetchone()
+        if taken:
+            return current_id
+        conn.execute("UPDATE glossary_entries SET id = ? WHERE id = ?", (wanted, current_id))
+        return wanted
+
     def get_entries(
         self, search: str = "", enabled_only: bool = False,
         tgt_lng: str = "", keyword: str = "",
@@ -145,7 +160,7 @@ class EntriesMixin:
                     (src_key, source_lng, lng, normalized_scope, normalized_key, library),
                 ).fetchone()
                 if existing:
-                    eid = existing[0]
+                    eid = self._adopt_entry_id(conn, entry_id, existing[0])
                     conn.execute(
                         "UPDATE glossary_entries SET source=?, target=?, note=?, enabled=?, "
                         "scope_label=?, updated_at=? WHERE id=?",
@@ -209,10 +224,11 @@ class EntriesMixin:
                         note = (entry.get("note") or "").strip()
                         enabled = 0 if entry.get("enabled") is False else 1
                         if existing:
+                            eid = self._adopt_entry_id(conn, str(entry.get("id") or ""), existing[0])
                             conn.execute(
                                 "UPDATE glossary_entries SET source=?, target=?, note=?, enabled=?, "
                                 "scope_label=?, updated_at=? WHERE id=?",
-                                (src, tgt, note, enabled, scope_label, now, existing[0]),
+                                (src, tgt, note, enabled, scope_label, now, eid),
                             )
                             stats["updated"] += 1
                         else:

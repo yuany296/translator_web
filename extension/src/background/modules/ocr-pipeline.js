@@ -174,7 +174,8 @@ export function installOcrPipeline(runtime) {
     const targetLanguage = runtime.normalizeLanguageTag(message && message.targetLanguage, "zh-CN");
     const translationOptions = message && message.translationOptions;
     const glossaryContext = {
-      scopeKey: String(translationOptions && translationOptions.scopeKey || "")
+      scopeKey: String(translationOptions && translationOptions.scopeKey || ""),
+      pageUrl: String(message && message.pageUrl || sender && sender.tab && sender.tab.url || "")
     };
     const force = message && message.force === true;
     const descriptors = mode === "comic" ? runtime.buildComicTranslationDescriptors(
@@ -225,6 +226,7 @@ export function installOcrPipeline(runtime) {
         translationOptions,
         glossary: settings.glossary,
         glossaryFingerprint: runtime.glossaryCore.getFingerprint(settings.glossary, glossaryContext),
+        pageUrl: glossaryContext.pageUrl,
         force,
         mode,
         signal: controller ? controller.signal : null,

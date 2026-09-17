@@ -40,7 +40,7 @@ export function installGlossaryLibraryStore(runtime) {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        id: library.id, name: library.name, enabled: library.enabled, urls: library.urls
+        id: library.id, name: library.name, enabled: library.enabled, urls: library.urls, applyUrls: library.applyUrls || []
       })
     });
     if (resp.status === 404) {
@@ -96,11 +96,19 @@ export function installGlossaryLibraryStore(runtime) {
         urls.push(url);
       }
     }
+    const applyUrls = [];
+    for (const item of Array.isArray(input.applyUrls) ? input.applyUrls : []) {
+      const url = runtime.glossaryCore.normalizeLibraryUrl(item);
+      if (url && !applyUrls.includes(url)) {
+        applyUrls.push(url);
+      }
+    }
     const library = runtime.glossaryCore.normalizeLibrary({
       id: existing ? existing.id : id || `library-${runtime.createTermId().slice(5, 17)}`,
       name,
       enabled: input.enabled !== false,
       urls,
+      applyUrls,
       createdAt: existing ? existing.createdAt : Date.now(),
       updatedAt: Date.now()
     }, current.libraries.length);
@@ -180,11 +188,8 @@ export function installGlossaryLibraryStore(runtime) {
     runtime.activeLibraryId = runtime.glossaryCore.normalizeLibraryId(libraryId);
     runtime.renderLibraryPanel();
     runtime.renderGlossary();
-    if (!runtime.activeLibraryId) {
-      runtime.setStatus(`显示全部 ${runtime.glossary.entries.length} 条术语`, false);
-      return;
-    }
-    runtime.setStatus(`正在查看术语库「${libraryLabel(runtime.activeLibraryId)}」`, false);
+    // 「正在查看…/显示全部…」这类说明按设计稿删掉了：进库不写状态行，只把上一条残留清掉。
+    runtime.setStatus("", false);
   }
   runtime.focusLibrary = focusLibrary;
   async function ensureLibraryByName(name) {
@@ -236,7 +241,7 @@ export function installGlossaryLibraryStore(runtime) {
         continue;
       }
       libraries.push(runtime.glossaryCore.normalizeLibrary({
-        id: item.id, name, enabled: item.enabled !== false, urls: item.urls || [],
+        id: item.id, name, enabled: item.enabled !== false, urls: item.urls || [], applyUrls: item.applyUrls || [],
         createdAt: Date.now(), updatedAt: Date.now()
       }, libraries.length));
     }
@@ -322,14 +327,14 @@ export function installGlossaryLibraryStore(runtime) {
   async function removeDuplicateEntriesFromDefaultLibrary() {
     const duplicates = duplicateEntriesInDefaultLibrary();
     if (!duplicates.length) {
-      return { ok: true, removed: 0 };
+      return { ok: true, removed: 0, failedDeletes: 0 };
     }
     const ids = new Set(duplicates.map(entry => entry.id));
-    await runtime.persistEntries(
+    const result = await runtime.persistEntries(
       runtime.glossary.entries.filter(entry => !ids.has(entry.id)),
       `已从默认术语库删除 ${ids.size} 条与其它库重复的术语`
     );
-    return { ok: true, removed: ids.size };
+    return { ok: true, removed: ids.size, failedDeletes: (result && result.failedDeletes) || 0 };
   }
   runtime.removeDuplicateEntriesFromDefaultLibrary = removeDuplicateEntriesFromDefaultLibrary;
 }

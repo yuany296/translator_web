@@ -8,8 +8,7 @@ export function installBackgroundState(runtime) {
     glossaryLegacy: runtime.glossaryCore.LEGACY_STORAGE_KEY,
     glossaryPending: runtime.termDiscoveryCore.PENDING_STORAGE_KEY,
     glossaryIgnored: runtime.termDiscoveryCore.IGNORED_STORAGE_KEY,
-    glossaryStorage: "mt_glossary_storage",
-    novelMemory: runtime.novelMemoryCore.STORAGE_KEY
+    glossaryStorage: "mt_glossary_storage"
   };
   runtime.STORAGE_KEYS = STORAGE_KEYS;
   const DEFAULT_SETTINGS = {

@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DEFAULT_SRC_LNG = "ko"
 DEFAULT_TGT_LNG = "zh-CN"
 DEFAULT_LIBRARY_ID = "default"
@@ -149,6 +149,7 @@ class GlossaryBase:
                         name       TEXT NOT NULL,
                         enabled    INTEGER NOT NULL DEFAULT 1,
                         urls       TEXT NOT NULL DEFAULT '[]',
+                        apply_urls TEXT NOT NULL DEFAULT '[]',
                         created_at REAL NOT NULL,
                         updated_at REAL NOT NULL
                     );
@@ -193,6 +194,8 @@ class GlossaryBase:
                     self._migrate_v4(conn)
                 if cur_ver < 5:
                     self._migrate_v5(conn)
+                if cur_ver < 6:
+                    self._migrate_v6(conn)
                 # 默认库必须始终存在：新库、旧库迁移、以及被手工删空的情况都要补回。
                 now = time.time()
                 conn.execute(
@@ -271,3 +274,10 @@ class GlossaryBase:
             "ON glossary_entries(source_key, src_lng, tgt_lng, scope_type, scope_key, library_id)"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_library ON glossary_entries(library_id)")
+
+    @staticmethod
+    def _migrate_v6(conn: sqlite3.Connection) -> None:
+        """Add apply_urls to glossary_libraries: empty list means the library applies on every page."""
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(glossary_libraries)").fetchall()]
+        if "apply_urls" not in cols:
+            conn.execute("ALTER TABLE glossary_libraries ADD COLUMN apply_urls TEXT NOT NULL DEFAULT '[]'")

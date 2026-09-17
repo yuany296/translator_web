@@ -4,15 +4,11 @@
  * 这一块就长在「这个库的页面」里（`#librarySettings`），**常显**：进库就能改，没有「编辑资料」那一步，
  * 也没有「保存 / 收起」——改完离开格子（或按回车）就自动存，右上角闪一下「已保存 ✓」。
  * 是否参与翻译**不在这里**：只由列表页卡片的开关决定，免得两处开关打架（见 glossary-library-panel）。
- * 网址归属测试是独立弹窗，见 glossary-library-test；建库/删库见 glossary-library-lifecycle。
+ * 应用网址（applyUrls）的列表 UI 在 glossary-library-apply-urls；网址归属测试弹窗见 glossary-library-test；
+ * 建库/删库见 glossary-library-lifecycle。
  */
-/** 空行的提示示例：换着给几个站，用户一眼看出「粘什么、还能写通配」。 */
-const URL_EXAMPLES = [
-  "https://page.kakao.com/content/69299983/",
-  "https://comic.naver.com/webtoon/list?titleId=123456",
-  "https://www.pixiv.net/artworks/12345678",
-  "*.google.com"
-];
+/** 新行/空行的占位示例：设计稿定稿文案，把通配写法直接示例出来。 */
+const URL_PLACEHOLDER = "支持完整网址、域名和通配符匹配。例如：*.google.com、page.kakao.com/content/69299983/*、https://comic.naver.com/webtoon/list?titleId=123456";
 
 export function installGlossaryLibrarySettings(runtime) {
   const librarySettings = document.getElementById("librarySettings");
@@ -27,12 +23,12 @@ export function installGlossaryLibrarySettings(runtime) {
   const libraryUrlAddBtn = document.getElementById("libraryUrlAddBtn");
   const libraryUrlBulkBtn = document.getElementById("libraryUrlBulkBtn");
   const libraryUrlListBtn = document.getElementById("libraryUrlListBtn");
-  const libraryUrlHint = document.getElementById("libraryUrlHint");
+  const libraryCollectCount = document.getElementById("libraryCollectCount");
   const libraryDedupeBtn = document.getElementById("libraryDedupeBtn");
   const libraryDedupeHint = document.getElementById("libraryDedupeHint");
   Object.assign(runtime, {
     librarySettings, libraryForm, libraryIdInput, libraryNameInput, libraryNameError,
-    librarySavedHint, libraryUrlList, libraryUrlsInput, libraryUrlHint,
+    librarySavedHint, libraryUrlList, libraryUrlsInput, libraryCollectCount,
     libraryDedupeBtn
   });
 
@@ -70,15 +66,36 @@ export function installGlossaryLibrarySettings(runtime) {
   }
   runtime.collectLibraryUrls = collectUrls;
   function updateUrlHint() {
-    const count = collectUrls().length;
-    libraryUrlHint.textContent = count
-      ? `已绑定 ${count} 个网址：保存时去掉查询串、片段与末尾斜杠；这些网址的章节页会自动归入本库。`
-      : "还没绑定网址：该库不会自动接收任何页面察觉到的术语。";
+    const urlCount = collectUrls().length;
+    const applyCount = runtime.collectLibraryApplyUrls ? runtime.collectLibraryApplyUrls().length : 0;
+    if (runtime.libraryCollectCount) {
+      runtime.libraryCollectCount.textContent = `${urlCount} 条`;
+    }
+    if (runtime.libraryApplyCount) {
+      runtime.libraryApplyCount.textContent = `${applyCount} 条`;
+    }
+    const diffHint = document.getElementById("libraryUrlDiffHint");
+    const diffText = document.getElementById("libraryUrlDiffText");
+    // 应用名单为空 = 全站生效，不存在「只收集不生效」；只在名单非空时才比对差集
+    const applied = runtime.collectLibraryApplyUrls?.() || [];
+    const onlyBound = applied.length ? collectUrls().filter(url => !applied.includes(url)) : [];
+    if (diffHint && diffText) {
+      if (onlyBound.length) {
+        diffText.textContent = `有 ${onlyBound.length} 条网址只收集术语、不生效（${onlyBound[0]}）。点「一键加入应用」补齐。`;
+        diffHint.classList.remove("hidden");
+      } else {
+        diffText.textContent = "";
+        diffHint.classList.add("hidden");
+      }
+    }
   }
   runtime.updateUrlHint = updateUrlHint;
-  function createUrlRow(url, index) {
+  function createUrlRow(url, index, applyUrls = []) {
     const row = document.createElement("div");
     row.className = "url-row";
+    if (url && applyUrls.includes(url)) {
+      row.classList.add("applied");
+    }
     row.dataset.index = String(index);
     const input = document.createElement("input");
     input.type = "text";
@@ -86,7 +103,7 @@ export function installGlossaryLibrarySettings(runtime) {
     input.dataset.action = "edit-url";
     input.dataset.index = String(index);
     input.value = url;
-    input.placeholder = URL_EXAMPLES[index % URL_EXAMPLES.length];
+    input.placeholder = URL_PLACEHOLDER;
     input.setAttribute("aria-label", `绑定网址 ${index + 1}`);
     input.addEventListener("change", () => void autoSaveLibrary());
     input.addEventListener("keydown", event => {
@@ -96,23 +113,41 @@ export function installGlossaryLibrarySettings(runtime) {
       event.preventDefault();
       void autoSaveLibrary();
     });
+    row.append(input);
+    if (url) {
+      if (applyUrls.includes(url)) {
+        const applied = document.createElement("span");
+        applied.className = "pill-applied";
+        applied.textContent = "已应用";
+        row.append(applied);
+      } else {
+        const apply = document.createElement("button");
+        apply.type = "button";
+        apply.className = "apply-url-btn";
+        apply.dataset.action = "apply-url";
+        apply.dataset.index = String(index);
+        apply.textContent = "应用";
+        apply.title = "把这条绑定网址加入应用范围";
+        apply.setAttribute("aria-label", `把绑定网址 ${index + 1} 加入应用范围`);
+        apply.addEventListener("click", () => void runtime.applySingleUrl(url));
+        row.append(apply);
+      }
+    }
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "danger";
+    remove.className = "remove-url-btn";
     remove.dataset.action = "remove-url";
-    remove.textContent = "删除";
-    remove.setAttribute("aria-label", `删除绑定网址 ${index + 1}`);
+    remove.textContent = "移除";
+    remove.setAttribute("aria-label", `移除绑定网址 ${index + 1}`);
     remove.addEventListener("click", () => void removeUrlRow(row));
-    row.append(input, remove);
+    row.append(remove);
     return row;
   }
-  function renderUrlRows(urls) {
-    const rows = urls.map(createUrlRow);
+  function renderUrlRows(urls, applyUrls = []) {
+    const rows = urls.map((url, index) => createUrlRow(url, index, applyUrls));
     if (!rows.length) {
-      const empty = document.createElement("p");
-      empty.className = "library-hint";
-      empty.textContent = "还没有绑定网址，点下面「＋ 添加网址」或「批量编辑」粘一整列（例如 page.kakao.com 的作品总览页，或 *.google.com 这样的通配）。";
-      rows.push(empty);
+      // 设计稿：空名单也放一行占位输入行，示例文案直接教写法
+      rows.push(createUrlRow("", 0, applyUrls));
     }
     libraryUrlList.replaceChildren(...rows);
   }
@@ -139,14 +174,14 @@ export function installGlossaryLibrarySettings(runtime) {
         urls.push(url);
       }
     });
-    renderUrlRows(urls);
+    renderUrlRows(urls, runtime.collectLibraryApplyUrls?.() || []);
     await autoSaveLibrary();
   }
   runtime.removeUrlRow = removeUrlRow;
   function addEmptyUrlRow() {
     const urls = collectUrls();
     urls.push("");
-    renderUrlRows(urls);
+    renderUrlRows(urls, runtime.collectLibraryApplyUrls?.() || []);
     const inputs = urlInputs();
     const last = inputs[inputs.length - 1];
     if (last && typeof last.focus === "function") {
@@ -157,7 +192,7 @@ export function installGlossaryLibrarySettings(runtime) {
   async function backToUrlList() {
     const urls = parseUrlLines(libraryUrlsInput.value);
     setUrlMode("list");
-    renderUrlRows(urls);
+    renderUrlRows(urls, runtime.collectLibraryApplyUrls?.() || []);
     await autoSaveLibrary();
   }
   runtime.backToUrlList = backToUrlList;
@@ -173,11 +208,11 @@ export function installGlossaryLibrarySettings(runtime) {
     savedTimer = setTimeout(() => librarySavedHint.classList.remove("on"), 1600);
   }
   runtime.flashLibrarySaved = flashSaved;
-  function snapshotOf(name, urls) {
-    return JSON.stringify({ name, urls });
+  function snapshotOf(name, urls, applyUrls) {
+    return JSON.stringify({ name, urls, applyUrls });
   }
   /**
-   * 自动保存：名称 / 绑定网址改完离开格子就存。
+   * 自动保存：名称 / 绑定网址 / 应用网址改完离开格子就存。
    * 注意 `saveLibrary` 里 `enabled` 的默认值是 true —— 开关已经不在这一页了，必须原样带上当前库的
    * enabled，否则「停用的库」被随便改个名字就会被静默改成启用。
    */
@@ -193,7 +228,8 @@ export function installGlossaryLibrarySettings(runtime) {
       return { ok: false, error: "术语库名称不能为空" };
     }
     const urls = collectUrls();
-    if (snapshotOf(name, urls) === savedSnapshot) {
+    const applyUrls = runtime.collectLibraryApplyUrls ? runtime.collectLibraryApplyUrls() : [];
+    if (snapshotOf(name, urls, applyUrls) === savedSnapshot) {
       showNameError("");
       updateUrlHint();
       return { ok: true, unchanged: true };
@@ -202,7 +238,8 @@ export function installGlossaryLibrarySettings(runtime) {
       id: library.id,
       name,
       enabled: library.enabled !== false,
-      urls
+      urls,
+      applyUrls
     });
     if (result.ok === false) {
       showNameError(result.error);
@@ -210,13 +247,14 @@ export function installGlossaryLibrarySettings(runtime) {
     }
     showNameError("");
     const saved = result.library || library;
-    savedSnapshot = snapshotOf(saved.name, saved.urls);
+    savedSnapshot = snapshotOf(saved.name, saved.urls, saved.applyUrls || []);
     libraryNameInput.value = saved.name;
     if (urlMode === "bulk") {
       libraryUrlsInput.value = saved.urls.join("\n");
     } else {
-      renderUrlRows(saved.urls);
+      renderUrlRows(saved.urls, saved.applyUrls || []);
     }
+    runtime.syncApplyUrlsAfterSave?.(saved.applyUrls || []);
     updateUrlHint();
     flashSaved();
     return result;
@@ -233,9 +271,10 @@ export function installGlossaryLibrarySettings(runtime) {
     libraryUrlList.classList.remove("hidden");
     libraryUrlBulkBtn.classList.remove("hidden");
     libraryUrlListBtn.classList.add("hidden");
-    renderUrlRows(library ? library.urls : []);
+    renderUrlRows(library ? library.urls : [], library ? library.applyUrls || [] : []);
+    runtime.resetApplyUrls?.(library);
     showNameError("");
-    savedSnapshot = library ? snapshotOf(library.name, library.urls) : "";
+    savedSnapshot = library ? snapshotOf(library.name, library.urls, library.applyUrls || []) : "";
     runtime.updateLibraryDeleteButton?.(library);
     renderDedupeControl(library);
     updateUrlHint();
@@ -257,6 +296,12 @@ export function installGlossaryLibrarySettings(runtime) {
     const isDefault = Boolean(library && library.id === runtime.glossaryCore.DEFAULT_LIBRARY_ID);
     const duplicates = isDefault && runtime.duplicateEntriesInDefaultLibrary
       ? runtime.duplicateEntriesInDefaultLibrary() : [];
+    // 整行一起藏：只藏按钮的话，空行还会占出一段空白（设计稿里没有这块）
+    const actionsRow = document.getElementById("libraryDedupeActions");
+    if (actionsRow) {
+      actionsRow.classList.toggle("hidden", !isDefault);
+    }
+    libraryDedupeHint.classList.toggle("hidden", !isDefault);
     libraryDedupeBtn.classList.toggle("hidden", !isDefault);
     libraryDedupeBtn.disabled = duplicates.length === 0;
     libraryDedupeBtn.textContent = duplicates.length
@@ -280,12 +325,17 @@ export function installGlossaryLibrarySettings(runtime) {
       return;
     }
     const result = await runtime.removeDuplicateEntriesFromDefaultLibrary();
-    runtime.setLibraryStatus(
-      result && result.removed
-        ? `已从默认术语库删除 ${result.removed} 条与其它库重复的术语`
-        : "没有需要删除的重复术语",
-      false
-    );
+    const failedDeletes = Number(result && result.failedDeletes) || 0;
+    if (failedDeletes) {
+      runtime.setLibraryStatus(`术语删除失败：${failedDeletes} 条术语未从本地服务删除，刷新后会重新出现`, true);
+    } else {
+      runtime.setLibraryStatus(
+        result && result.removed
+          ? `已从默认术语库删除 ${result.removed} 条与其它库重复的术语`
+          : "没有需要删除的重复术语",
+        false
+      );
+    }
     renderDedupeControl(runtime.currentLibrary ? runtime.currentLibrary() : null);
   }
   runtime.removeDefaultDuplicates = removeDefaultDuplicates;
@@ -310,6 +360,7 @@ export function installGlossaryLibrarySettings(runtime) {
     libraryUrlBulkBtn.addEventListener("click", () => setUrlMode("bulk"));
     libraryUrlListBtn.addEventListener("click", () => void backToUrlList());
     libraryUrlsInput.addEventListener("blur", () => void autoSaveLibrary());
+    runtime.bindLibraryApplyUrlEvents?.();
     libraryDedupeBtn.addEventListener("click", () => void removeDefaultDuplicates());
     runtime.bindLibraryTestEvents?.();
     runtime.bindLibraryLifecycleEvents?.();

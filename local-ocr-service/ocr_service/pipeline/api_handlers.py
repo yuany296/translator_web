@@ -135,8 +135,12 @@ def glossary_delete(entry_id: str) -> dict[str, runtime.Any]:
         db = runtime.get_glossary_db()
         deleted = db.delete_entry(entry_id)
         if not deleted:
+            # 404 必须原样返回：这里吞掉它包成 500 的话，客户端只能报「删除失败」，
+            # 而真实原因是「服务端没有这个 id」（本地与服务端 id 不一致）。
             raise runtime.HTTPException(status_code=404, detail='Entry not found')
         return {'ok': True}
+    except runtime.HTTPException:
+        raise
     except Exception as exc:
         import traceback; traceback.print_exc()
         raise runtime.HTTPException(status_code=500, detail=str(exc))

@@ -26,6 +26,7 @@ export function installTranslationProvider(runtime) {
     translationOptions,
     glossary,
     glossaryFingerprint,
+    pageUrl = "",
     force = false, mode = "comic", signal = null, taskId = ""
   }) {
     const outcome = new Map();
@@ -93,6 +94,7 @@ export function installTranslationProvider(runtime) {
             translationOptions,
             glossary,
             mode,
+            pageUrl,
             signal: batchController.signal
           });
           const rowById = new Map((Array.isArray(rows) ? rows : []).map(row => [String(row && row.id || ""), row]));
@@ -177,17 +179,18 @@ export function installTranslationProvider(runtime) {
     translationOptions,
     glossary,
     mode = "comic",
+    pageUrl = "",
     signal = null
   }) {
     if (runtime.backgroundTestHooks && typeof runtime.backgroundTestHooks.requestCanonicalTranslationBatch === "function") {
-      return runtime.backgroundTestHooks.requestCanonicalTranslationBatch({ items, sourceLanguage, targetLanguage, promptVersion, translationOptions, glossary, mode });
+      return runtime.backgroundTestHooks.requestCanonicalTranslationBatch({ items, sourceLanguage, targetLanguage, promptVersion, translationOptions, glossary, mode, pageUrl });
     }
     const endpoint = runtime.buildOpenAICompatibleEndpoint(baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL);
     const role = mode === "webpage" ? "webpage text translator" : "manga dialogue translator";
     const systemMessage = `You are a ${role}. Translate from ${sourceLanguage || "auto-detected source"} to ${targetLanguage || "zh-CN"}. Return JSON only and preserve every supplied id.`;
     const prompt = mode === "webpage"
-      ? runtime.buildWebpageTranslationPrompt(items, glossary, { sourceLanguage, targetLanguage })
-      : runtime.buildOpenAICompatibleTranslationPrompt(items, glossary, { ...(translationOptions || {}), sourceLanguage, targetLanguage });
+      ? runtime.buildWebpageTranslationPrompt(items, glossary, { sourceLanguage, targetLanguage, pageUrl })
+      : runtime.buildOpenAICompatibleTranslationPrompt(items, glossary, { ...(translationOptions || {}), sourceLanguage, targetLanguage, pageUrl });
     const promptVersionText = promptVersion || (mode === "webpage" ? runtime.WEBPAGE_TRANSLATION_PROMPT_VERSION : runtime.CANONICAL_TRANSLATION_PROMPT_VERSION);
     const body = {
       model: model || runtime.DEFAULT_TRANSLATION_MODEL,
@@ -348,8 +351,6 @@ export function installTranslationProvider(runtime) {
     }));
     const glossaryPrompt = runtime.glossaryCore.buildPrompt(glossary, items, context);
     const nearbyText = String(context && context.nearbyText || "").slice(0, 4000);
-    const memory = context && context.memory && typeof context.memory === "object"
-      ? runtime.stableSerialize(context.memory).slice(0, 8000) : "";
     return [
       `Translate each OCR block into ${languages.describeTargetLanguage(context && context.targetLanguage)} as one complete manga bubble or narration box.`,
       "Each input text may contain multiple OCR lines from the same bubble. Understand them together; do not translate line by line mechanically.",
@@ -359,7 +360,6 @@ export function installTranslationProvider(runtime) {
       "Return JSON only with this schema:",
       '{"translations":[{"id":"t0","translated_text":"..."}]}',
       ...(nearbyText ? [`Nearby novel text for context: ${nearbyText}`] : []),
-      ...(memory ? [`Prior novel memory for terminology and continuity: ${memory}`] : []),
       ...(glossaryPrompt ? [glossaryPrompt] : []),
       "Input:",
       JSON.stringify(rows)

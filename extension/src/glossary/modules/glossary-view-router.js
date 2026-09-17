@@ -1,10 +1,9 @@
 /**
  * 术语库页的「列表页 → 库详情页」导航（对齐沉浸式翻译：先点库名进去，再在那个库里操作）。
  *
- * 三个视图：
- *   list   —— 只回答「有哪些库」：库卡片（开关/条数/待确认数）、新建、小说记忆入口；
- *   detail —— 只回答「这个库的事」：库名 + 条数、库设置、术语表、待确认、导入/导出/清空；
- *   memory —— 小说记忆（入口暂放列表页底部，最终位置见后续决策）。
+ * 两个视图：
+ *   list   —— 只回答「有哪些库」：库卡片（开关/条数/待确认数）、新建；
+ *   detail —— 只回答「这个库的事」：库名、库设置、术语表、待确认、导入/导出/清空；
  *
  * `runtime.activeLibraryId` 仍是「当前库」的唯一真源：详情页显示哪个库、库设置填哪一份、
  * 导入去向、导出与清空的范围都由它决定；空值 = 「全部术语」总览。
@@ -12,17 +11,13 @@
 export function installGlossaryViewRouter(runtime) {
   const VIEW_IDS = Object.freeze({
     list: "libraryListView",
-    detail: "libraryDetailView",
-    memory: "memoryView"
+    detail: "libraryDetailView"
   });
   const detailTitle = document.getElementById("detailTitle");
-  const detailSubtitle = document.getElementById("detailSubtitle");
   const tableContainer = document.getElementById("tableContainer");
   const librarySettings = document.getElementById("librarySettings");
   const backToListBtn = document.getElementById("backToListBtn");
-  const backFromMemoryBtn = document.getElementById("backFromMemoryBtn");
   runtime.detailTitle = detailTitle;
-  runtime.detailSubtitle = detailSubtitle;
   runtime.tableContainer = tableContainer;
   runtime.librarySettings = librarySettings;
   /** 当前详情页对应的库；返回 null 表示「全部术语」总览。 */
@@ -54,21 +49,13 @@ export function installGlossaryViewRouter(runtime) {
   function renderDetailHeader() {
     const library = currentLibrary();
     if (library) {
-      const count = runtime.glossary.entries.filter(entry => entry.libraryId === library.id).length;
       detailTitle.textContent = library.name;
-      // 副标题把「绑定到哪」和「参不参与翻译」都直接写出来——不用点开任何东西就能看到这个库靠什么归集新术语。
-      // 启用状态只是「读出来给人看」：开关只有列表页卡片那一个，详情页不再放第二个开关。
-      const state = library.enabled === false ? "已停用" : "已启用";
-      detailSubtitle.textContent = library.urls.length
-        ? `${count} 条术语 · ${state}（开关在术语库列表页）· 绑定 ${library.urls.length} 个网址：${library.urls[0]}`
-        : `${count} 条术语 · ${state}（开关在术语库列表页）· 未绑定网址（在下面「库资料」里绑定作品总览页，章节页会自动归入）`;
       // 单库视图里「清空」只清这个库，按钮文案必须说实话。
       if (runtime.clearBtn) {
         runtime.clearBtn.textContent = "清空本库";
       }
     } else {
       detailTitle.textContent = "全部术语";
-      detailSubtitle.textContent = `全部 ${runtime.glossary.libraries.length} 个术语库 · ${runtime.glossary.entries.length} 条术语`;
       if (runtime.clearBtn) {
         runtime.clearBtn.textContent = "清空全部";
       }
@@ -128,31 +115,16 @@ export function installGlossaryViewRouter(runtime) {
     runtime.syncSearchInput?.();
     runtime.renderGlossary();
   };
-  // 「小说记忆」是列表页底部的入口，不是详情页的标签页，所以顺带切视图。
+  // 标签切换会重设「新增术语」的显隐，这里按当前是不是具体库再收一次口。
   const switchTab = runtime.switchTab;
   runtime.switchTab = tab => {
     switchTab(tab);
-    if (tab === "memory") {
-      setView("memory");
-      return;
-    }
-    if (runtime.activeView === "memory") {
-      setView("detail");
-      return;
-    }
-    // 标签切换会重设「新增术语」的显隐，这里按当前是不是具体库再收一次口。
     if (runtime.activeView === "detail") {
       renderDetailHeader();
     }
   };
 
   backToListBtn.addEventListener("click", () => setView("list"));
-  backFromMemoryBtn.addEventListener("click", () => setView("list"));
   runtime.activeView = "list";
-  if (runtime.initialView === "memory") {
-    // 设置页的「小说记忆」分区：一进来就是记忆视图，不给「返回术语库」这种死路。
-    runtime.switchTab("memory");
-  } else {
-    setView("list");
-  }
+  setView("list");
 }

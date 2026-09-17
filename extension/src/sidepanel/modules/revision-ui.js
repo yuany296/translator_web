@@ -293,14 +293,20 @@ export function installRevisionPanel() {
       targetInput.value = target;
       confirmBtn.disabled = true;
       try {
+        // 带上本页地址：术语库按网址绑定归属，后台据此把术语放进「本网址的库」。
+        // 只发 source/target 的话后台认不出这一页，一律落到默认术语库。
+        // chapterKey 与候选提取用的是同一个值（章节页地址），手动指定过库的章节才认得出来。
+        const pageUrl = String(snapshot?.chapter?.url || "");
         const response = await sendBackground({
           type: "CONFIRM_TERM_CANDIDATES",
-          entries: [{ source, target, note: noteInput.value.trim() }]
+          entries: [{ source, target, note: noteInput.value.trim(), pageUrl, chapterKey: pageUrl }]
         });
+        const libraryName = (response.libraryNames || []).filter(Boolean).join("、");
+        const where = libraryName ? `术语库「${libraryName}」` : "术语表";
         status.textContent = response.serverSynced === false
-          ? `已加入本地术语表，但未能同步到服务（${response.serverError || "本地服务不可用"}）`
-          : "已加入术语表（已同步服务端）";
-        window.setTimeout(() => { termSectionWrap.hidden = true; }, 1200);
+          ? `已加入${where}，但未能同步到服务（${response.serverError || "本地服务不可用"}）`
+          : `已加入${where}（已同步服务端）`;
+        window.setTimeout(() => { termSectionWrap.hidden = true; }, 2600);
       } catch (error) {
         status.textContent = `加入失败：${error.message}`;
       } finally {

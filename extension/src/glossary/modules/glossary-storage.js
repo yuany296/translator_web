@@ -210,12 +210,16 @@ export function installGlossaryStorage(runtime) {
       runtime.renderPendingState();
       runtime.setStatus(message, false);
       // Sync to server in background
+      let failedDeletes = 0;
       try {
         serverBaseUrl = await resolveServerBaseUrl();
         const nextIds = new Set(next.entries.map(entry => entry.id));
         // 先删掉本地已移除的条目，避免下次从服务端加载时"复活"。
         for (const id of previousIds.filter(id => !nextIds.has(id))) {
-          await runtime.deleteEntryFromServer(id).catch(() => undefined);
+          const deleted = await runtime.deleteEntryFromServer(id).catch(() => ({ ok: false }));
+          if (!deleted || deleted.ok === false) {
+            failedDeletes += 1;
+          }
         }
         const batchEntries = next.entries.map(e => ({
           id: e.id,
@@ -237,20 +241,30 @@ export function installGlossaryStorage(runtime) {
       } catch (_) {
         // Server sync is best-effort
       }
+      // 删除只做在本地是不够的：服务端没删掉，下次 loadGlossaryFromServer 会把它们原样拉回来。
+      // 这种情况必须报出来，不能让界面停在「已删除」上骗人。
+      if (failedDeletes) {
+        setStatus(`术语删除失败：${failedDeletes} 条术语未从本地服务删除，刷新后会重新出现`, true);
+      }
+      return { ok: true, failedDeletes };
     } catch (error) {
       runtime.setStatus(`保存失败：${runtime.getErrorMessage(error)}`, true);
       await runtime.loadGlossary();
+      return { ok: false, failedDeletes: 0 };
     }
   }
   runtime.persistEntries = persistEntries;
+  // 说明行按设计稿删掉了：状态条只在有真反馈（保存/删除/导入成败）时出现，平时整条藏起
   function setStatus(message, isError) {
     runtime.statusText.textContent = message;
     runtime.statusText.dataset.error = isError ? "true" : "false";
+    document.getElementById("statusSummary")?.classList.toggle("hidden", !message);
   }
   runtime.setStatus = setStatus;
   function setPendingStatus(message, isError) {
     runtime.pendingStatusText.textContent = message;
     runtime.pendingStatusText.dataset.error = isError ? "true" : "false";
+    document.getElementById("pendingStatusSummary")?.classList.toggle("hidden", !message);
   }
   runtime.setPendingStatus = setPendingStatus;
   function getErrorMessage(error) {

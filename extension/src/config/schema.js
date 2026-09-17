@@ -61,7 +61,7 @@ export const DEFAULT_SENTENCE_EXTRACTION_CONFIG = Object.freeze({
 
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   enabled: true, showBall: true, captureMode: "direct", renderMode: "overlay",
-  pretranslateMode: "manual", ignoreSimplifiedChinese: false, novelMemoryEnabled: true,
+  pretranslateMode: "manual", ignoreSimplifiedChinese: false,
   overwriteFontScale: 1, overwriteCoverPadding: 1.2,
   debugOverlayMode: "final", overwritePreviewMode: "full", termDiscoveryEnabled: true,
   floatingSide: "right", floatingYRatio: 0.72,
@@ -217,8 +217,6 @@ export function normalizeRuntimeConfig(value = {}) {
     termDiscoveryEnabled: value.termDiscoveryEnabled !== false,
     // 句子级提取开关：关掉后候选卡的「AI 提取」与侧边栏提取按钮不再显示。
     sentenceExtractionEnabled: value.sentenceExtractionEnabled !== false,
-    // 小说记忆总开关：关掉后翻译请求里不再带跨话记忆（长篇读多了能省不少 token）
-    novelMemoryEnabled: value.novelMemoryEnabled !== false,
     floatingSide: value.floatingSide === "left" ? "left" : "right",
     floatingYRatio: numberIn(value.floatingYRatio, 0, 1, DEFAULT_RUNTIME_CONFIG.floatingYRatio),
     // 流式请求每批段落数:整章拆成多个请求,每个请求结果一到就逐段替换,避免整章一次替换。

@@ -29,7 +29,6 @@ export function installNovelWorkflow(runtime) {
     }
     state.chapterKey = chapterKey;
     state.translations.clear();
-    state.memoryDeltas = [];
     state.textDiagnostics = [];
     state.cacheSavedIds.clear();
     state.pendingParagraphs.clear();
@@ -117,26 +116,12 @@ export function installNovelWorkflow(runtime) {
       return { ok: false, offline: true, translated: state.translations.size, error: state.progress.textPhase };
     }
     state.textStatus = "working";
-    state.progress.textPhase = "正在读取本书术语与前文记忆…";
+    state.progress.textPhase = "正在准备术语与上下文…";
     runtime.setNovelTextStatus?.("working", state.progress);
-    let contextResponse = null;
-    try {
-      contextResponse = await runtime.sendRuntimeMessage({
-        type: "GET_NOVEL_MEMORY",
-        scopeKey: chapter.scopeKey,
-        chapterId: chapter.chapterId,
-        chapterOrder: chapter.chapterOrder
-      });
-    } catch {
-      contextResponse = null;
-    }
-    const memoryRevision = Number(contextResponse?.context?.revision || 0);
-    let chapterMemory = contextResponse?.context?.memory || {};
     let errors = [];
     const warnings = new Map();
-    const fingerprint = await runtime.getTranslationConfigFingerprint("novel");
+    const fingerprint = await runtime.getTranslationConfigFingerprint("novel", typeof location !== "undefined" ? location.href : "");
     const stream = await runtime.attemptNovelTranslationStream(chapter, state, pending, fingerprint, {
-      memory: chapterMemory,
       previousTranslation: runtime.buildNovelChunkContext(allItems, pending, state).previousTranslation
     });
     if (stream.cancelled) return { ok: false, cancelled: true };
@@ -147,14 +132,11 @@ export function installNovelWorkflow(runtime) {
       state,
       allItems,
       pending,
-      chapterMemory,
-      memoryRevision,
       force: options.force === true,
       fingerprint
     });
     errors = progressive.errors;
     progressive.warnings.forEach(warning => warnings.set(String(warning.id), warning));
-    chapterMemory = progressive.chapterMemory;
     let missing = allItems.filter(item => !state.translations.has(item.id));
     errors = errors.filter(error => missing.some(item => item.id === String(error.id)));
     const completed = missing.length === 0;
@@ -169,25 +151,6 @@ export function installNovelWorkflow(runtime) {
     state.showTranslation = true;
     runtime.setNovelTranslationVisibility(true);
     runtime.setNovelTextStatus?.(state.textStatus, state.progress);
-    if (completed) {
-      try {
-        await runtime.sendRuntimeMessage({
-          type: "SAVE_NOVEL_MEMORY",
-          scopeKey: chapter.scopeKey,
-          seriesId: chapter.seriesId,
-          seriesTitle: chapter.seriesTitle,
-          chapterId: chapter.chapterId,
-          chapterTitle: chapter.chapterTitle,
-          chapterOrder: chapter.chapterOrder,
-          memoryDeltas: state.memoryDeltas
-        });
-      } catch (error) {
-        await runtime.reportStatus("error", "novel memory save failed", {
-          error: runtime.getErrorMessage(error),
-          chapterId: chapter.chapterId
-        });
-      }
-    }
     return { ok: completed, completed, translated: state.translations.size, errors, warnings: finalWarnings };
   }
 
@@ -198,15 +161,23 @@ export function installNovelWorkflow(runtime) {
     const state = runtime.getNovelState();
     resetForChapter(chapter, state);
     if (state.textStatus === "working") return { ok: true, reused: true };
-    if (options.missingOnly && state.textStatus === "complete") {
-      return { ok: true, completed: true, reused: true };
-    }
-    if (state.textStatus === "complete" && !options.force) {
-      // 已有完整译文:点击在 译文 ↔ 原文 之间切换(原文状态下图片一并还原)。
-      state.showTranslation = !state.showTranslation;
-      runtime.reapplyNovelTranslations?.(surface);
-      runtime.setNovelTranslationVisibility(state.showTranslation);
-      return { ok: true, toggled: true, showTranslation: state.showTranslation };
+    // KakaoPage 是分屏阅读,extractKakaoNovelChapter 拿到的其实是「当前屏」。
+    // 「整章已完成」只代表此前访问过的那几屏译完了,必须按当前屏重算待翻译集合:
+    // 否则翻到新屏时,补翻菜单会被提前返回挡掉,点悬浮球也只会切换译文/原文,
+    // 新翻到的屏永远停在原文。
+    const screenItems = getTranslatableParagraphs(chapter);
+    const screenMissing = screenItems.filter(item => !state.translations.has(item.id));
+    if (!screenMissing.length) {
+      if (options.missingOnly) {
+        return { ok: true, completed: true, reused: true };
+      }
+      if (state.textStatus === "complete" && !options.force) {
+        // 本屏已全部有译文:点击在 译文 ↔ 原文 之间切换(原文状态下图片一并还原)。
+        state.showTranslation = !state.showTranslation;
+        runtime.reapplyNovelTranslations?.(surface);
+        runtime.setNovelTranslationVisibility(state.showTranslation);
+        return { ok: true, toggled: true, showTranslation: state.showTranslation };
+      }
     }
     try {
       const result = await translateNovelText(chapter, { force: options.force === true });
@@ -230,11 +201,49 @@ export function installNovelWorkflow(runtime) {
   }
   runtime.translateNovelChapter = translateNovelChapter;
 
-  function onNovelSurfaceChanged(surface) {
+  /**
+   * 翻屏(同一个 shadow 宿主里换内容)后把本屏缺的段落补上:先用持久缓存补,
+   * 剩下的才走翻译请求。
+   *
+   * 只在用户已经为本章开启过翻译(textStatus 为 complete/partial)时继续,
+   * 单纯翻页路过不会触发任何请求。不补翻的话,后面翻到的屏会一直停在原文,
+   * 悬浮球却仍显示「整章完成」。
+   */
+  async function continueNovelTranslationForCurrentScreen(surface) {
+    const state = runtime.getNovelState();
+    if (state.textStatus !== "complete" && state.textStatus !== "partial") return { skipped: true };
+    if (state.screenContinueTask) return { skipped: true, inFlight: true };
+    const chapter = runtime.extractKakaoNovelChapter(surface);
+    if (!chapter) return { skipped: true };
+    resetForChapter(chapter, state);
+    const items = getTranslatableParagraphs(chapter);
+    if (!items.length) return { skipped: true };
+    state.screenContinueTask = true;
+    try {
+      const cached = await runtime.applyCachedNovelTranslations?.(chapter, state);
+      const missing = items.filter(item => !state.translations.has(item.id));
+      state.progress.textTotal = items.length;
+      state.progress.textDone = items.length - missing.length;
+      if (!missing.length) {
+        if (cached && cached.hit > 0) {
+          runtime.setNovelTextStatus?.("complete", state.progress);
+        }
+        return { ok: true, cachedOnly: true, hit: cached ? cached.hit : 0 };
+      }
+      return await translateNovelText(chapter, { missingOnly: true });
+    } finally {
+      state.screenContinueTask = false;
+    }
+  }
+  runtime.continueNovelTranslationForCurrentScreen = continueNovelTranslationForCurrentScreen;
+
+  function onNovelSurfaceChanged(surface, reason, surfaceChanged) {
     if (!surface) return;
     runtime.reapplyNovelTranslations(surface);
     runtime.reapplyNovelEmbeddedImages?.(surface);
     runtime.resumeNovelImagesIfIdle?.();
+    // 只在内容真的换了(翻屏/换章)时补翻;渲染自身引发的 DOM 变动不算变化。
+    if (surfaceChanged === true) void continueNovelTranslationForCurrentScreen(surface);
   }
   runtime.onNovelSurfaceChanged = onNovelSurfaceChanged;
 }

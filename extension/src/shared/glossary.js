@@ -96,8 +96,16 @@ function resolveLibraryId(value, libraries = null) {
 function normalizeField(value, maxLength) {
   return String(value || "").replace(/\r\n?/g, "\n").trim().slice(0, maxLength);
 }
+/**
+ * 条目 id 必须与本地服务 SQLite 里的主键逐字一致，否则「删除」会打空。
+ * 服务端自己生成的 id 带小数点（`term-<时间戳>-<哈希>` / `batch-<时间戳>-<序号>`），
+ * 旧版这里把 `.` 当非法字符抹掉，于是本地 id 与服务端主键不再相等：
+ * DELETE /glossary/{id} 命中 404（被当成「已删除」忽略），词条留在库里，
+ * 下一次 loadGlossaryFromServer 又把它拉回来 —— 表现为「清理后又重新出现」。
+ * 只做长度与首尾空白处理，其余字符原样保留。
+ */
 function normalizeIdentifier(value) {
-  return String(value || "").trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80);
+  return String(value || "").trim().slice(0, 160);
 }
 function normalizeScopeKey(value) {
   return String(value || "").trim().replace(/[^\w:.-]/gu, "").slice(0, 160);
@@ -112,9 +120,12 @@ function getEnabledEntries(value, context = null) {
   const scopeKey = normalizeScopeKey(context && context.scopeKey);
   const sourceLanguage = String(context && context.sourceLanguage || "");
   const targetLanguage = String(context && context.targetLanguage || "");
+  const pageUrl = String(context && context.pageUrl || "");
   const normalized = normalizeGlossary(value);
   const enabledLibraries = new Set(
-    normalized.libraries.filter(library => library.enabled !== false).map(library => library.id)
+    normalized.libraries.filter(library =>
+      library.enabled !== false && libraryCore.libraryApplyUrlMatches(pageUrl, library.applyUrls)
+    ).map(library => library.id)
   );
   const order = new Map(normalized.libraries.map((library, index) => [library.id, index]));
   const entries = normalized.entries.filter(entry => entry.enabled

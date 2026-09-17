@@ -199,6 +199,21 @@ test("glossary normalization deduplicates source terms ignoring case", () => {
   assert.deepEqual(relevant.map(entry => entry.target), ["哈利·波特"]);
 });
 
+test("server-generated entry ids survive normalization untouched", () => {
+  // 本地服务的自增主键形如 `term-1786377033.0817478-616607...` / `batch-1785924966.8232234-0`。
+  // id 一旦被改写，DELETE /glossary/{id} 就查不到行（404 被当成已删除），
+  // 词条会留在 SQLite 里，下次从服务端加载时「复活」。
+  const serverIds = [
+    "batch-1785924966.8232234-0",
+    "term-1786377152.8348346--6111724119044565624",
+    "term-93b1f0e6-1e9d-4a1f-9f68-33d0e19f0c3a"
+  ];
+  const normalized = glossary.normalizeGlossary({
+    entries: serverIds.map((id, index) => ({ id, source: `용어${index}`, target: `术语${index}` }))
+  });
+  assert.deepEqual(normalized.entries.map(entry => entry.id), serverIds);
+});
+
 test("effective glossary changes produce a different fingerprint", () => {
   const first = { entries: [{ source: "성현", target: "成贤", enabled: true }] };
   const changedTarget = { entries: [{ source: "성현", target: "圣贤", enabled: true }] };
@@ -209,6 +224,37 @@ test("effective glossary changes produce a different fingerprint", () => {
   assert.equal(glossary.buildPrompt(disabled, [{ original_text: "성현" }]), "");
   // 指纹版本随多术语库升级为 g4，旧的 g3 缓存键整体失效重建。
   assert.match(glossary.getFingerprint(first), /^g4-/);
+});
+
+test("apply urls gate a library to matching pages and keep the fingerprint honest", () => {
+  const value = {
+    libraries: [
+      { id: "default", name: "默认术语库", enabled: true, urls: [], applyUrls: [] },
+      { id: "novel", name: "骸骨皇女", enabled: true, urls: [],
+        applyUrls: ["https://page.kakao.com/content/69299983/*"] }
+    ],
+    entries: [
+      { source: "성현", target: "成贤" },
+      { source: "왕국", target: "王国", libraryId: "novel" }
+    ]
+  };
+  const items = [{ original_text: "왕국이 무너졌다" }];
+
+  // 没有页面上下文且指定了应用网址 → 该库不生效（默认库留空，仍然全站生效）。
+  assert.deepEqual(glossary.getRelevantEntries(value, items).map(entry => entry.target), []);
+  // `*` 可匹配 0 个字符：总览页本身也被 `/*` 覆盖。
+  const overview = { pageUrl: "https://page.kakao.com/content/69299983" };
+  assert.deepEqual(glossary.getRelevantEntries(value, items, overview).map(entry => entry.target), ["王国"]);
+  const viewer = { pageUrl: "https://page.kakao.com/content/69299983/viewer/69333586" };
+  assert.deepEqual(glossary.getRelevantEntries(value, items, viewer).map(entry => entry.target), ["王国"]);
+  // 不在应用范围内的页面：只留下全站生效的默认库。
+  const elsewhere = { pageUrl: "https://comic.naver.com/webtoon/list?titleId=1" };
+  assert.deepEqual(glossary.getRelevantEntries(value, items, elsewhere).map(entry => entry.target), []);
+  // 指纹跟着生效范围走：命中页一致、未命中页不同，缓存键不会跨网址串味。
+  assert.equal(glossary.getFingerprint(value, overview), glossary.getFingerprint(value, viewer));
+  assert.notEqual(glossary.getFingerprint(value, elsewhere), glossary.getFingerprint(value, overview));
+  // 没有页面上下文且指定了应用网址 → 该库不生效。
+  assert.deepEqual(glossary.getEnabledEntries(value).map(entry => entry.target), ["成贤"]);
 });
 
 test("extension exposes the management center and removes direct vision providers", () => {

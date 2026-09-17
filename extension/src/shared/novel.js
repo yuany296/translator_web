@@ -1,4 +1,5 @@
 import glossaryCore from "./glossary.js";
+import sharedUtils from "./utils.js";
 
 const CHUNK_TARGET_CHARS = 1400;
 const MAX_PARAGRAPH_CHARS = 12000;
@@ -83,13 +84,20 @@ function validateTranslations(items, rows, glossaryEntries = [], languages = {})
   const expected = new Map((Array.isArray(items) ? items : []).map(item => [String(item.id), item]));
   const accepted = [];
   const glossaryFallbacks = [];
+  const quoteFallbacks = [];
   const errors = [];
   const seen = new Set();
   for (const row of Array.isArray(rows) ? rows : []) {
     const id = String(row && row.id || "").trim();
-    const translatedText = String(row && row.translated_text || "").trim();
-    if (!expected.has(id) || !translatedText || seen.has(id)) continue;
+    if (!expected.has(id) || seen.has(id)) continue;
     const original = String(expected.get(id).original_text || "");
+    // 先做确定性修复再校验:模型整段丢掉对话引号是最常见的形态,
+    // 修得回来的不该再占用一次重试(见 shared/utils.js#restoreDialogueQuotes)。
+    const translatedText = sharedUtils.restoreDialogueQuotes(
+      original,
+      String(row && row.translated_text || "").trim()
+    );
+    if (!translatedText) continue;
     const configuredSource = String(languages.sourceLanguage || "auto");
     const sourceLanguage = configuredSource !== "auto" ? configuredSource
       : /[\uac00-\ud7af]/u.test(original) ? "ko"
@@ -119,6 +127,14 @@ function validateTranslations(items, rows, glossaryEntries = [], languages = {})
       glossaryFallbacks.push({ id, translated_text: translatedText, terms });
       continue;
     }
+    // 整段包裹修不回来(原文不是整段被引号包住,例如 `"어쩌고" 그가 말했다.`)时
+    // 只有模型能修:报错让这一段走逐段重试,重试仍失败就保留译文并出警告 —— 见
+    // novel-translation.js 的 quoteFallbacks 回落,绝不因为格式问题丢掉整段译文。
+    if (sharedUtils.hasDroppedDialogueQuotes(original, translatedText)) {
+      errors.push({ id, code: "dialogue_quote_missing" });
+      quoteFallbacks.push({ id, translated_text: translatedText });
+      continue;
+    }
     seen.add(id);
     accepted.push({ id, translated_text: translatedText });
   }
@@ -128,7 +144,7 @@ function validateTranslations(items, rows, glossaryEntries = [], languages = {})
     }
   }
   const deduped = dedupeAcceptedTranslations(expected, accepted, errors);
-  return { accepted: deduped, glossaryFallbacks, errors };
+  return { accepted: deduped, glossaryFallbacks, quoteFallbacks, errors };
 }
 
 function summarizeTranslationErrors(errors) {
@@ -145,6 +161,7 @@ function summarizeTranslationErrors(errors) {
     missing_translation: "响应缺少 ID/译文",
     duplicate_translation: "与相邻段落译文重复",
     source_language_leak: "返回内容仍以韩文为主",
+    dialogue_quote_missing: "原文的对话引号被丢掉",
     request_failed: "API 请求失败",
     retry_failed: "重试请求失败",
     unknown: "未知错误"
@@ -161,8 +178,14 @@ function summarizeTranslationErrors(errors) {
 function summarizeTranslationWarnings(warnings) {
   const normalized = summarizeTranslationErrors(warnings).errors;
   const count = new Set(normalized.map(warning => warning.id).filter(Boolean)).size;
+  const codes = new Set(normalized.map(warning => warning.code));
+  const reasons = [];
+  if (codes.has("glossary_warning")) reasons.push("未完全采用术语表指定译名");
+  // 引号警告 = 模型把引号丢了、逐段重试也拿不回来，且原文不是整段被引号包住
+  // （那种已在校验前被确定性修复）。这种只有人工确认，但译文必须保留。
+  if (codes.has("dialogue_quote_warning")) reasons.push("原文的对话引号没能保住");
   return {
-    text: count ? `已保留全部译文，其中 ${count} 段未完全采用术语表指定译名。` : "",
+    text: count ? `已保留全部译文，其中 ${count} 段${reasons.join("、") || "需要确认"}。` : "",
     warnings: normalized
   };
 }

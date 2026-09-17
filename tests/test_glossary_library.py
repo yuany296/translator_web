@@ -24,15 +24,31 @@ def test_fresh_database_starts_with_only_the_default_library(tmp_path: Path) -> 
     database = GlossaryDB(str(tmp_path / "fresh.db"))
     libraries = database.list_libraries()
 
-    assert SCHEMA_VERSION == 5
+    assert SCHEMA_VERSION == 6
     assert [library["id"] for library in libraries] == [DEFAULT_LIBRARY_ID]
     assert libraries[0]["name"] == DEFAULT_LIBRARY_NAME
     assert libraries[0]["enabled"] is True
     assert libraries[0]["urls"] == []
+    assert libraries[0]["applyUrls"] == []
     # 没有指定库的旧式写入自动落到默认库
     entry = database.upsert_entry("성현", "成贤")
     assert entry["libraryId"] == DEFAULT_LIBRARY_ID
     assert database.get_entries(library_id=DEFAULT_LIBRARY_ID)[0]["id"] == entry["id"]
+
+
+def test_library_apply_urls_survive_the_server_roundtrip(tmp_path: Path) -> None:
+    """应用网址与绑定网址同一套通配语义，且留空表示全站生效。"""
+    database = GlossaryDB(str(tmp_path / "apply.db"))
+    created = database.upsert_library(
+        "novel-1", "骸骨皇女", True,
+        ["https://page.kakao.com/content/69299983/"],
+        ["*.google.com", "https://page.kakao.com/content/69299983/*"],
+    )
+    assert created["applyUrls"] == ["*.google.com", "https://page.kakao.com/content/69299983/*"]
+
+    updated = database.upsert_library("novel-1", "骸骨皇女", True, [], [])
+    assert updated["applyUrls"] == []
+    assert database.get_library("novel-1")["applyUrls"] == []
 
 
 def test_library_urls_normalize_query_hash_and_trailing_slash() -> None:

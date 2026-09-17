@@ -163,11 +163,22 @@ function normalizeLibrary(value, index = 0) {
       break;
     }
   }
+  const applyUrls = [];
+  for (const item of Array.isArray(value.applyUrls) ? value.applyUrls : []) {
+    const url = normalizeLibraryUrl(item);
+    if (url && !applyUrls.includes(url)) {
+      applyUrls.push(url);
+    }
+    if (applyUrls.length >= MAX_URLS_PER_LIBRARY) {
+      break;
+    }
+  }
   return {
     id: normalizeLibraryId(value.id) || `library-${hashString(name)}`,
     name,
     enabled: value.enabled !== false,
     urls,
+    applyUrls,
     createdAt: Math.max(0, Math.floor(Number(value.createdAt) || 0)),
     updatedAt: Math.max(0, Math.floor(Number(value.updatedAt) || 0))
   };
@@ -175,9 +186,21 @@ function normalizeLibrary(value, index = 0) {
 
 function createDefaultLibrary(now = 0) {
   return {
-    id: DEFAULT_LIBRARY_ID, name: DEFAULT_LIBRARY_NAME, enabled: true, urls: [],
+    id: DEFAULT_LIBRARY_ID, name: DEFAULT_LIBRARY_NAME, enabled: true, urls: [], applyUrls: [],
     createdAt: now, updatedAt: now
   };
+}
+
+/** 应用网址是否命中当前页面。applyUrls 为空表示全站生效。 */
+function libraryApplyUrlMatches(pageUrl, applyUrls) {
+  const patterns = Array.isArray(applyUrls) ? applyUrls : [];
+  if (patterns.length === 0) {
+    return true;
+  }
+  if (!pageUrl) {
+    return false;
+  }
+  return patterns.some(pattern => libraryUrlMatches(pageUrl, pattern));
 }
 
 /** 归一化库列表：按 id 去重、限量，并保证默认库始终存在（缺失时放在最前）。 */
@@ -273,6 +296,7 @@ export default Object.freeze({
   isLibraryUrlPattern,
   libraryUrlMatches,
   libraryUrlPatternRegex,
+  libraryApplyUrlMatches,
   patternSpecificity,
   normalizeLibrary,
   normalizeLibraries,

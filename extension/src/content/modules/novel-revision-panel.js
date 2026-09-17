@@ -77,7 +77,7 @@ export function installNovelRevisionPanel(runtime) {
     });
     const translated = String(response?.translations?.[0]?.translated_text || "").trim();
     if (!response?.ok || !translated) throw new Error(response?.error || "AI 修订未返回译文");
-    const fingerprint = await runtime.getTranslationConfigFingerprint("novel");
+    const fingerprint = await runtime.getTranslationConfigFingerprint("novel", typeof location !== "undefined" ? location.href : "");
     return submitEdit(chapter, item, translated, {
       type: "commit_translation", source: instruction ? "ai_revision" : "retranslate",
       instruction, fingerprint
@@ -162,14 +162,18 @@ export function installNovelRevisionPanel(runtime) {
     if (service.records) {
       state.translationSnapshots = new Map(service.records.map(record => [record.recordKey, record]));
     }
-    const fingerprint = await runtime.getTranslationConfigFingerprint("novel");
+    const fingerprint = await runtime.getTranslationConfigFingerprint("novel", typeof location !== "undefined" ? location.href : "");
     return {
       ok: true, fingerprint,
       service: { ok: service.ok, pendingConflicts: service.pendingConflicts?.length || 0 },
       chapter: {
         seriesId: chapter.seriesId, chapterId: chapter.chapterId,
         scopeKey: chapter.scopeKey, chapterTitle: chapter.chapterTitle,
-        seriesTitle: chapter.seriesTitle, chapterOrder: chapter.chapterOrder
+        seriesTitle: chapter.seriesTitle, chapterOrder: chapter.chapterOrder,
+        // 侧栏加术语时要靠它认「这条术语属于哪个网址」——术语库按网址绑定归属库，
+        // 而 scopeKey 只是 `kakao:<作品id>`，分不出章节页。取值与候选提取
+        // (novel-term-discovery.js 传的 location.href) 同源，两边才认得同一章。
+        url: location.href
       },
       items: snapshotItems(chapter)
     };

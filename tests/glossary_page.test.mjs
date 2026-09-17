@@ -430,7 +430,7 @@ test("deleting a library moves its terms back to the default library", async () 
     .find(row => row.dataset.libraryId === libraryId);
   await page.elements.get("libraryList").dispatch("click", { target: novelRow.querySelector(".library-name") });
   await settle();
-  assert.equal(page.elements.get("countText").textContent, "「骸骨皇女」共 1 条，启用 1 条");
+  assert.equal(page.elements.has("countText"), false, "「共 N 条，启用 N 条」说明行已按设计稿删除");
 
   // 删除入口只在库设置里（列表行不再有编辑/删除按钮）：进入这个库后打开库设置删掉它
   await page.elements.get("libraryDeleteBtn").dispatch("click");
@@ -447,9 +447,44 @@ test("deleting a library moves its terms back to the default library", async () 
     ["全部术语", "默认术语库"]
   );
   // 删除当前正在查看的库后，表格要回到"全部术语"并继续显示被转移的条目
-  assert.equal(page.elements.get("countText").textContent, "「全部术语」共 1 条，启用 1 条");
   assert.equal(page.elements.get("termRows").children.length, 1);
   assert.equal(page.elements.get("termRows").children[0].dataset.libraryId, "default");
+});
+
+test("清理「其它库已有」时服务端没删掉就报术语删除失败，不假装清干净了", async () => {
+  const page = createPage();
+  page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE" ? discoveryState : { ok: true });
+  // 默认库与「骸骨皇女」各有一条同样的术语：按钮可清，但本地服务不可用（fetch 一律抛错）。
+  page.stored.mt_glossary_v2 = {
+    version: 4,
+    revision: 1,
+    updatedAt: Date.now(),
+    libraries: [
+      { id: "default", name: "默认术语库", enabled: true, urls: [] },
+      { id: "novel", name: "骸骨皇女", enabled: true, urls: [] }
+    ],
+    entries: [
+      { id: "t1", source: "성현", target: "晟玄", libraryId: "novel" },
+      { id: "t2", source: "성현", target: "晟玄", libraryId: "default" }
+    ]
+  };
+  await page.boot();
+  page.attachAll();
+  const row = page.elements.get("libraryList").querySelectorAll(".library-row")
+    .find(item => item.dataset.libraryId === "default");
+  await page.elements.get("libraryList").dispatch("click", { target: row.querySelector(".library-name") });
+  await settle();
+  assert.match(page.elements.get("libraryDedupeBtn").textContent, /（1 条）/u);
+
+  await page.elements.get("libraryDedupeBtn").dispatch("click");
+  await settle();
+
+  const libraryStatus = page.elements.get("libraryStatusText");
+  assert.match(libraryStatus.textContent, /术语删除失败/u);
+  assert.match(libraryStatus.textContent, /刷新后会重新出现/u);
+  assert.equal(libraryStatus.dataset.error, "true");
+  assert.match(page.elements.get("statusText").textContent, /术语删除失败/u,
+    "术语表上方的状态栏也不能停在「已从默认术语库删除」");
 });
 
 test("turning a library switch off stops it from capturing new terms", async () => {

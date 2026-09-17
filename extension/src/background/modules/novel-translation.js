@@ -1,6 +1,6 @@
 import llmProviders from "../../shared/llm-providers.js";
 
-const PROMPT_VERSION = "kakao-novel-v2";
+const PROMPT_VERSION = "kakao-novel-v4";
 const CACHE_PREFIX = "mt_cache_v23:novel:";
 const REQUEST_TIMEOUT_MS = 90_000;
 
@@ -27,18 +27,27 @@ export function installNovelTranslation(runtime) {
     }));
   }
 
-  function indexGlossaryFallbacks(validation) {
-    return new Map((validation.glossaryFallbacks || []).map(row => [String(row.id), row]));
+  /**
+   * 校验没通过、但仍应保留译文的回落项：术语没照用(glossary_warning)与
+   * 原文引号被丢掉(dialogue_quote_warning)。两者形状一样、只有警告码不同，
+   * 所以合成一张表；重试后仍失败时按这里的顺序回落（术语优先）。
+   */
+  function indexFallbacks(validation) {
+    const rows = [
+      ...(validation.glossaryFallbacks || []).map(row => ({ ...row, code: "glossary_warning" })),
+      ...(validation.quoteFallbacks || []).map(row => ({ ...row, code: "dialogue_quote_warning" }))
+    ];
+    return new Map(rows.map(row => [String(row.id), row]));
   }
 
-  function acceptGlossaryFallback(fallback, translations, warnings) {
+  function acceptFallback(fallback, translations, warnings) {
     const id = String(fallback && fallback.id || "");
     const translatedText = String(fallback && fallback.translated_text || "").trim();
     if (!id || !translatedText) return false;
     translations.set(id, { id, translated_text: translatedText });
     warnings.set(id, {
       id,
-      code: "glossary_warning",
+      code: String(fallback.code || "glossary_warning"),
       terms: (Array.isArray(fallback.terms) ? fallback.terms : []).map(String)
     });
     return true;
@@ -60,6 +69,17 @@ export function installNovelTranslation(runtime) {
     return result;
   }
 
+  // 对话引号的硬规则。模型最容易在这里偷懒(JSON/NDJSON 模式下把引号当格式丢掉),
+  // 所以规则写死到字符级、并给正反例;这不是"风格建议"，是必须逐字符保持的内容。
+  const QUOTE_RULE = [
+    "Dialogue quotation marks are content, not formatting: reproduce the source's own quote characters exactly",
+    "(“ ” 「 」 『 』 ‘ ’ ｢ ｣ and the ASCII double/single quotes).",
+    "If a source paragraph is wrapped in quotes, the whole translated paragraph must stay wrapped in that same pair.",
+    "If the source contains quoted speech inside a longer paragraph, the translation must contain a matching quoted span in the same place.",
+    "Never drop the quotes, never swap them for another style, and never add quotes the source does not have.",
+    'Example: source `"난 무조건 탈색부터 한다."` -> correct `“我不管，肯定要先漂发。”`, wrong `我不管，肯定要先漂发。`'
+  ].join(" ");
+
   function buildPrompt(items, context, glossary) {
     const rows = items.map(item => ({
       id: item.id,
@@ -68,20 +88,27 @@ export function installNovelTranslation(runtime) {
     const glossaryPrompt = runtime.glossaryCore.buildPrompt(glossary, items, {
       scopeKey: context.scopeKey
     });
+    // 重试时点名"上一次哪几段把引号丢了",比一句泛泛的规则更管用。
+    const quoteRetryIds = (Array.isArray(context.retryErrors) ? context.retryErrors : [])
+      .filter(error => error && error.code === "dialogue_quote_missing")
+      .map(error => String(error.id || "").slice(0, 180)).filter(Boolean);
     return [
       `Prompt version: ${PROMPT_VERSION}`,
       `Translate this web-novel passage from ${context.sourceLanguage || "auto-detected source"} into ${context.targetLanguage || "zh-CN"}.`,
       "Preserve paragraph ids and paragraph boundaries. Keep voice, viewpoint, relationships, honorifics, and suspense consistent.",
       "Translate each input item independently. Never merge two items into one translation; never let one item's translation continue from or repeat another item's translation. Output exactly one translations entry per input id, covering only that id's own text.",
-      "Preserve dialogue quotation marks exactly as in the source. If a source paragraph is wrapped in quotes (e.g. “ ”, 「 」, 『 』), the translated paragraph must keep matching quotes around the same dialogue; never drop or add them.",
+      QUOTE_RULE,
       "Use the previous translation and nearby context only for continuity; never add events absent from the source.",
-      "Return JSON only with translations and memory_delta.",
-      '{"translations":[{"id":"p1","translated_text":"..."}],"memory_delta":{"summary":"","characters":[],"relationships":[],"honorifics":[],"unresolved":[]}}',
+      "Return JSON only with translations.",
+      '{"translations":[{"id":"p1","translated_text":"..."}]}',
       ...(glossaryPrompt ? [glossaryPrompt] : []),
-      `Book memory: ${runtime.stableSerialize(runtime.novelMemoryCore.trimMemoryForPrompt(context.memory))}`,
       `Previous translated block: ${String(context.previousTranslation || "").slice(-5000)}`,
       `Nearby preceding text: ${String(context.beforeText || "").slice(-3000)}`,
       `Nearby following text: ${String(context.afterText || "").slice(0, 3000)}`,
+      ...(quoteRetryIds.length
+        ? [`These ids dropped the source dialogue quotes last time (${quoteRetryIds.join(
+          ", ")}): re-output them with the source's own quote characters around the same dialogue.`]
+        : []),
       ...(Array.isArray(context.retryErrors) && context.retryErrors.length
         ? [`Retry corrections required: ${runtime.stableSerialize(context.retryErrors)}`] : []),
       ...(context.revisionInstruction
@@ -163,20 +190,16 @@ export function installNovelTranslation(runtime) {
     }
   }
 
-  async function loadContext(message, configuration) {
-    const stored = await runtime.storageGet([runtime.novelMemoryCore.STORAGE_KEY]);
-    const memoryStore = runtime.novelMemoryCore.normalizeStore(stored[runtime.novelMemoryCore.STORAGE_KEY]);
-    const memoryContext = runtime.novelMemoryCore.getContext(memoryStore, message.scopeKey, message);
+  async function loadContext(message, configuration, sender = {}) {
     const context = {
       scopeKey: String(message.scopeKey || ""),
-      memory: message.memory || memoryContext.memory,
-      memoryRevision: Number(message.memoryRevision ?? memoryContext.revision) || 0,
       previousTranslation: message.previousTranslation,
       beforeText: message.beforeText,
       afterText: message.afterText,
       revisionInstruction: String(message.revisionInstruction || "").slice(0, 4000),
       sourceLanguage: String(message.sourceLanguage || configuration.translation.sourceLanguage || "auto"),
-      targetLanguage: String(message.targetLanguage || configuration.translation.targetLanguage || "zh-CN")
+      targetLanguage: String(message.targetLanguage || configuration.translation.targetLanguage || "zh-CN"),
+      pageUrl: String(message.pageUrl || sender && sender.tab && sender.tab.url || "")
     };
     const glossary = configuration.glossary;
     const glossaryFingerprint = runtime.glossaryCore.getFingerprint(glossary, context);
@@ -200,10 +223,8 @@ export function installNovelTranslation(runtime) {
     attachValidationErrors(diagnostics, checked.errors);
     const byId = new Map(checked.accepted.map(row => [row.id, row]));
     const warnings = new Map();
-    const initialFallbacks = indexGlossaryFallbacks(checked);
-    let firstMemoryUsed = checked.accepted.length > 0;
+    const initialFallbacks = indexFallbacks(checked);
     let errors = checked.errors;
-    let retryDelta = null;
     // 缺段/坏段必须走逐段补救重试：这是缺译文段落的唯一恢复路径，网络失败整体重试过也不例外。
     if (errors.length) {
       const retryItems = items.filter(item => errors.some(error => error.id === item.id));
@@ -222,22 +243,16 @@ export function installNovelTranslation(runtime) {
           );
           attachValidationErrors(diagnostics, rechecked.errors);
           const accepted = rechecked.accepted.find(row => row.id === item.id);
-          const retryFallback = indexGlossaryFallbacks(rechecked).get(item.id);
+          const retryFallback = indexFallbacks(rechecked).get(item.id);
           if (accepted) {
             byId.set(accepted.id, accepted);
             warnings.delete(accepted.id);
-            retryDelta = runtime.novelMemoryCore.mergeMemory(retryDelta, retry && retry.memory_delta);
-          } else if (acceptGlossaryFallback(retryFallback, byId, warnings)) {
-            retryDelta = runtime.novelMemoryCore.mergeMemory(retryDelta, retry && retry.memory_delta);
-          } else if (acceptGlossaryFallback(initialFallbacks.get(item.id), byId, warnings)) {
-            firstMemoryUsed = true;
-          } else {
+          } else if (!acceptFallback(retryFallback, byId, warnings)
+            && !acceptFallback(initialFallbacks.get(item.id), byId, warnings)) {
             retryErrors.push(...rechecked.errors);
           }
         } catch (error) {
-          if (acceptGlossaryFallback(initialFallbacks.get(item.id), byId, warnings)) {
-            firstMemoryUsed = true;
-          } else {
+          if (!acceptFallback(initialFallbacks.get(item.id), byId, warnings)) {
             retryErrors.push({
               id: item.id,
               code: "retry_failed",
@@ -250,10 +265,6 @@ export function installNovelTranslation(runtime) {
     }
     return {
       translations: [...byId.values()],
-      memoryDelta: runtime.novelMemoryCore.mergeMemory(
-        firstMemoryUsed ? first && first.memory_delta : null,
-        retryDelta
-      ),
       errors,
       warnings: [...warnings.values()],
       diagnostics
@@ -276,7 +287,7 @@ export function installNovelTranslation(runtime) {
         } : row;
       });
       const configuration = await runtime.loadConfiguration();
-      const { context, glossary, glossaryFingerprint } = await loadContext(message, configuration);
+      const { context, glossary, glossaryFingerprint } = await loadContext(message, configuration, sender);
       const cachePayload = {
         prompt: PROMPT_VERSION,
         items,
@@ -286,8 +297,6 @@ export function installNovelTranslation(runtime) {
         targetLanguage: context.targetLanguage,
         scopeKey: context.scopeKey,
         glossaryFingerprint,
-        memoryRevision: context.memoryRevision,
-        memory: context.memory,
         previousTranslation: context.previousTranslation,
         beforeText: context.beforeText,
         afterText: context.afterText,
@@ -324,7 +333,6 @@ export function installNovelTranslation(runtime) {
       }
       const cacheValue = {
         translations: restoreQuotes(result.translations),
-        memory_delta: result.memoryDelta,
         errors: result.errors,
         warnings: result.warnings,
         partial: result.errors.length > 0

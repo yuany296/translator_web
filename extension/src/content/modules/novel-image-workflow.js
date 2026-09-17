@@ -1,11 +1,9 @@
 export function installNovelImageWorkflow(runtime) {
-  function buildOptions(chapter, item, retry, memoryContext, force = false) {
+  function buildOptions(chapter, item, retry, force = false) {
     const context = {
       scopeKey: chapter.scopeKey, seriesId: chapter.seriesId,
       chapterId: chapter.chapterId, chapterOrder: chapter.chapterOrder,
-      nearbyText: item.context.nearbyText,
-      memoryRevision: Number(memoryContext?.revision || 0),
-      memory: memoryContext?.memory || {}
+      nearbyText: item.context.nearbyText
     };
     runtime.getNovelState().imageContexts.set(item.contextId, context);
     return {
@@ -35,20 +33,10 @@ export function installNovelImageWorkflow(runtime) {
     state.imageStatus = "working";
     state.progress.imagePhase = `正在识别正文图片 0/${images.length}…`;
     runtime.setNovelImageStatus?.("working", state.progress);
-    let memoryContext = null;
-    try {
-      const response = await runtime.sendRuntimeMessage({
-        type: "GET_NOVEL_MEMORY", scopeKey: chapter.scopeKey,
-        chapterId: chapter.chapterId, chapterOrder: chapter.chapterOrder
-      });
-      memoryContext = response?.context || null;
-    } catch {
-      memoryContext = null;
-    }
     const tasks = pending.map(item => async () => {
       state.imageJobs.set(item.target, { status: "working" });
       runtime.updateNovelImageResult?.(item, null, "working");
-      const result = await runtime.translateTarget(item.target, buildOptions(chapter, item, retry, memoryContext, force));
+      const result = await runtime.translateTarget(item.target, buildOptions(chapter, item, retry, force));
       const summary = runtime.updateNovelImageResult?.(item, result) || {
         status: result?.ok ? "complete" : "failed", error: result?.error || result?.reason || ""
       };

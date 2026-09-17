@@ -177,7 +177,13 @@ function createPage(options = {}) {
     window: { confirm: () => true },
     confirm: () => true,
     console,
-    fetch: async () => { throw new Error("local service offline"); },
+    // 其余请求保持离线；DELETE 由 deleteFails 决定是否落库（「删除没到服务端」的报错见对应测试）。
+    fetch: async (url, options = {}) => {
+      if (String(options.method || "GET").toUpperCase() === "DELETE" && !options.deleteFails) {
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      throw new Error("local service offline");
+    },
     URL: CapturingURL,
     URLSearchParams,
     Blob,
@@ -242,8 +248,8 @@ function discoveryStateWithPending() {
   };
 }
 
-async function bootedPage({ libraries = TWO_LIBRARIES, entries = [], discovery = null, search = "" } = {}) {
-  const page = createPage(search ? { search } : {});
+async function bootedPage({ libraries = TWO_LIBRARIES, entries = [], discovery = null, search = "", deleteFails = false } = {}) {
+  const page = createPage({ ...(search ? { search } : {}), deleteFails });
   page.stored.mt_glossary_v2 = { version: 4, libraries, entries };
   page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE"
     ? (discovery || { ok: true, enabled: false, pending: { version: 1, chapters: [] }, ignored: { version: 1, sources: [] }, pendingCount: 0, status: { state: "disabled" }, sentenceLlmConfigured: false })
@@ -273,17 +279,13 @@ test("启动停在术语库列表页，点库名才进入这个库", async () =>
   const page = await bootedPage({ entries: [termEntry("t1", "성현", "晟玄", "lib-haigu")] });
   assert.equal(page.visible("libraryListView"), true, "启动应停在列表页");
   assert.equal(page.visible("libraryDetailView"), false, "列表页时详情页应隐藏");
-  assert.equal(page.visible("memoryView"), false);
 
   await openLibrary(page, "lib-haigu");
   assert.equal(page.visible("libraryListView"), false, "进入库后列表页应让位");
   assert.equal(page.visible("libraryDetailView"), true);
   assert.equal(page.elements.get("detailTitle").textContent, "骸骨皇女");
-  assert.match(page.elements.get("detailSubtitle").textContent, /1 条术语/u);
-  assert.match(page.elements.get("detailSubtitle").textContent, /绑定 1 个网址/u,
-    "副标题要直接说清绑定到哪，不用点开任何东西");
-  assert.match(page.elements.get("detailSubtitle").textContent, /已启用（开关在术语库列表页）/u,
-    "详情页只把启用状态读出来，开关只在列表页");
+  // 设计稿定稿：标题行只留「返回 + 库名 + 删除这个库」，条件行（条数/启用/绑定）整行删掉
+  assert.equal(page.elements.has("detailSubtitle"), false, "详情页不再有副标题行");
   assert.equal(page.visible("librarySettings"), true,
     "库资料常显：进库就能改，没有「编辑资料」那一步");
   assert.equal(page.elements.get("libraryNameInput").value, "骸骨皇女", "常显表单填的是当前库");
@@ -355,9 +357,10 @@ test("列表页卡片的开关才是「是否参与翻译」的唯一入口，�
   assert.equal(library.enabled, false, "开关直接改库定义");
   assert.match(page.elements.get("libraryStatusText").textContent, /已停用/u);
 
-  // 进库看：详情页把状态读出来，但不再有第二个开关
+  // 进库看：启用状态只在列表页开关上（详情页副标题已按设计稿删除），且不再有第二个开关
   await openLibrary(page, "lib-haigu");
-  assert.match(page.elements.get("detailSubtitle").textContent, /已停用/u);
+  const listRow = page.elements.get("libraryList").querySelectorAll("[data-library-id=\"lib-haigu\"]")[0];
+  assert.equal(listRow.querySelectorAll(".library-switch")[0].checked, false, "停用状态回到列表页开关上");
   assert.equal(page.elements.has("detailEnabledWrap"), false, "详情页不该有第二个开关");
 });
 
@@ -367,7 +370,7 @@ test("点「全部术语」进入总览：标题、库设置与「术语库」�
   });
   await openLibrary(page, "");
   assert.equal(page.elements.get("detailTitle").textContent, "全部术语");
-  assert.match(page.elements.get("detailSubtitle").textContent, /2 条术语/u);
+  assert.equal(page.elements.has("detailSubtitle"), false, "总览页同样没有副标题行");
   assert.equal(page.elements.get("librarySettings").classList.contains("hidden"), true,
     "总览没有「这一个库」可设置");
   assert.equal(page.elements.get("tableContainer").classList.contains("single-library"), false);
@@ -405,8 +408,9 @@ test("列表卡片上没有编辑/删除按钮：编辑一个库只有库设置�
   assert.ok(row);
   assert.equal(row.querySelectorAll("button[data-action=\"edit-library\"]").length, 0, "列表行不应再有「编辑」");
   assert.equal(row.querySelectorAll("button[data-action=\"delete-library\"]").length, 0, "列表行不应再有「删除」");
-  assert.equal(row.querySelectorAll(".library-subtitle").length, 1, "卡片要有一行说明（绑定网址等）");
-  assert.equal(row.querySelectorAll(".library-count")[0].textContent, "0 条");
+  // 设计稿定稿：卡片 = 开关 + 库名 + 条数，说明行已删
+  assert.equal(row.querySelectorAll(".library-subtitle").length, 0, "卡片不再带说明行");
+  assert.equal(row.querySelectorAll(".library-count")[0].textContent, "0 条术语");
 });
 
 test("库资料里改名：离开格子自动保存，标题跟着变", async () => {
@@ -461,6 +465,9 @@ test("改名撞车：行内红字报错，输入内容保留", async () => {
 test("绑定网址一条条加/删，都是改完就存", async () => {
   const page = await bootedPage({ entries: [termEntry("t1", "성현", "晟玄", "lib-haigu")] });
   await openLibrary(page, "lib-haigu");
+  // 应用名单为空 = 全站生效：哪怕绑定网址没进名单，也不算「只收集不生效」
+  assert.equal(page.elements.get("libraryUrlDiffHint").classList.contains("hidden"), true,
+    "应用名单为空时不该出现「只收集不生效」的黄条");
 
   await page.elements.get("libraryUrlAddBtn").dispatch("click");
   const inputs = page.elements.get("libraryUrlList").querySelectorAll("input[data-action='edit-url']");
@@ -473,6 +480,8 @@ test("绑定网址一条条加/删，都是改完就存", async () => {
     ["https://page.kakao.com/content/111", "https://page.kakao.com/content/999"],
     "新网址规范化后存下来"
   );
+  assert.equal(page.elements.get("libraryUrlDiffHint").classList.contains("hidden"), true,
+    "加了绑定网址但应用名单仍为空：黄条依旧不出现");
 
   const removeBtn = page.elements.get("libraryUrlList")
     .querySelectorAll("button[data-action='remove-url']")[0];
@@ -549,25 +558,6 @@ test("浏览器里 children 是 HTMLCollection（没有 .map）时，点进库�
   assert.equal(page.elements.get("detailTitle").textContent, "骸骨皇女");
 });
 
-test("小说记忆的入口搬到了设置页：术语库页不再有记忆入口，分区直接嵌 ?view=memory", async () => {
-  const glossaryHtml = fs.readFileSync(path.join(root, "extension", "public", "glossary.html"), "utf8");
-  const settingsHtml = fs.readFileSync(path.join(root, "extension", "public", "settings.html"), "utf8");
-  const controller = fs.readFileSync(path.join(root, "extension", "src", "settings", "controller.js"), "utf8");
-  assert.doesNotMatch(glossaryHtml, /id="memoryTabBtn"/u, "术语库页不该再有小说记忆入口");
-  assert.match(settingsHtml, /data-route="memory"/u, "设置页要有小说记忆分区按钮");
-  assert.match(settingsHtml, /data-src="glossary\.html\?embedded=1&view=memory"/u, "分区内容指向记忆视图");
-  assert.match(controller, /memory: \["小说记忆"/u, "设置页要认识这个路由");
-});
-
-test("?view=memory 时直接落在小说记忆视图，且藏掉页面标题与返回按钮", async () => {
-  const page = await bootedPage({ search: "?embedded=1&view=memory" });
-  assert.equal(page.visible("memoryView"), true, "一进来就是记忆视图");
-  assert.equal(page.visible("libraryListView"), false);
-  assert.equal(page.visible("libraryDetailView"), false);
-  assert.equal(page.document.documentElement.classList.contains("embed-memory"), true,
-    "要加上 embed-memory 标记，让 CSS 藏掉标题与返回");
-});
-
 test("导出 CSV 不再带库名列，单库导出只含这个库", async () => {
   const page = await bootedPage({
     entries: [termEntry("t1", "성현", "晟玄", "lib-haigu"), termEntry("t2", "왕국", "王国", "default")]
@@ -610,6 +600,7 @@ test("默认术语库可以一键清掉「其它库已有」的重复术语", as
     ["성현@lib-haigu", "왕국@default"],
     "只删默认库里重复的那一条"
   );
+  assert.match(page.elements.get("libraryStatusText").textContent, /已从默认术语库删除 1 条/u);
 });
 
 test("非默认库里没有这个清理按钮", async () => {
@@ -679,7 +670,7 @@ test("搜索词按库各记各的：换库不串，切回来还在", async () =>
   const search = page.elements.get("searchInput");
   search.value = "성현";
   await search.dispatch("input");
-  assert.match(page.elements.get("countText").textContent, /「骸骨皇女」共 1 条，匹配 1 条/u);
+  assert.equal(page.elements.get("termRows").children.length, 1, "搜索后只剩匹配的那条");
   assert.match(search.placeholder, /在「骸骨皇女」中搜索/u, "搜索框要写清在哪个库里搜");
 
   // 换到另一个库：框里不该还留着上一个库的词，否则这个库看着像空的
@@ -692,7 +683,7 @@ test("搜索词按库各记各的：换库不串，切回来还在", async () =>
 
   search.value = "王国";
   await search.dispatch("input");
-  assert.match(page.elements.get("countText").textContent, /「默认术语库」共 1 条，匹配 1 条/u);
+  assert.equal(page.elements.get("termRows").children.length, 1, "这个库里匹配「王国」的只有一条");
 
   // 切回去：上个库自己的词还在
   await page.elements.get("backToListBtn").dispatch("click");

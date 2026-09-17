@@ -141,7 +141,7 @@ export function installWebpageTranslate(runtime) {
 
   async function saveWebpageSegmentRecords(session, segments, translations, options = {}) {
     const state = getWebpageState();
-    const fingerprint = options.fingerprint || await runtime.getTranslationConfigFingerprint("webpage");
+    const fingerprint = options.fingerprint || await runtime.getTranslationConfigFingerprint("webpage", typeof location !== "undefined" ? location.href : "");
     const candidates = segments.filter(segment => translations.has(segment.sourceText)
       && !state.savedKeys.has(segment.segmentKey));
     if (!candidates.length) return { ok: true, saved: 0 };

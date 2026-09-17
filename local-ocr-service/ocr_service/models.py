@@ -69,6 +69,7 @@ class GlossaryLibraryPayload(BaseModel):
     name: str = ""
     enabled: bool = True
     urls: list[str] = Field(default_factory=list, max_length=20)
+    applyUrls: list[str] = Field(default_factory=list, max_length=20)
 
 
 class GlossaryBatchPayload(BaseModel):

@@ -92,7 +92,7 @@ export function installWebpageScheduler(runtime) {
     const results = { enqueued: 0, cached: 0, applied: 0, skipped: 0 };
     if (!session || !Array.isArray(entries) || !entries.length) return results;
     const targetLanguage = runtime.getTargetLanguage?.() || "zh-CN";
-    const fingerprint = await runtime.getTranslationConfigFingerprint("webpage");
+    const fingerprint = await runtime.getTranslationConfigFingerprint("webpage", typeof location !== "undefined" ? location.href : "");
     const recordMap = await runtime.getWebpageEntryRecords?.(entries) || new Map();
     for (const entry of entries) {
       if (isEntryBound(entry)) {

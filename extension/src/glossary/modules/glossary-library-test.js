@@ -37,6 +37,7 @@ export function installGlossaryLibraryTest(runtime) {
   runtime.resetLibraryTest = resetLibraryTest;
   function updateLibraryTest() {
     const urls = runtime.collectLibraryUrls ? runtime.collectLibraryUrls() : [];
+    const applyUrls = runtime.collectLibraryApplyUrls ? runtime.collectLibraryApplyUrls() : [];
     const pageUrl = String(libraryTestInput.value || "").trim();
     if (!pageUrl) {
       libraryTestResult.textContent = urls.length
@@ -46,10 +47,16 @@ export function installGlossaryLibraryTest(runtime) {
       return;
     }
     const normalizedPage = runtime.glossaryCore.normalizeLibraryUrl(pageUrl);
-    const hit = urls.find(url => runtime.glossaryCore.libraryUrlMatches(pageUrl, url));
-    if (hit) {
-      libraryTestResult.textContent = `✓ 会命中：这条网址会归入本库（匹配 ${hit}）${urls.length > 1 ? `，本库共 ${urls.length} 个绑定` : ""}`;
+    const boundHit = urls.find(url => runtime.glossaryCore.libraryUrlMatches(pageUrl, url));
+    const applyHit = applyUrls.length === 0 || applyUrls.some(url => runtime.glossaryCore.libraryUrlMatches(pageUrl, url));
+    if (boundHit && applyHit) {
+      libraryTestResult.textContent = `✓ 会命中：这条网址会归入本库（匹配 ${boundHit}），且术语会生效${applyUrls.length ? `（匹配 ${applyUrls.find(url => runtime.glossaryCore.libraryUrlMatches(pageUrl, url))}）` : ""}`;
       libraryTestResult.dataset.match = "hit";
+      return;
+    }
+    if (boundHit && !applyHit) {
+      libraryTestResult.textContent = `↷ 只归集：新术语会进入本库（匹配 ${boundHit}），但当前应用范围不匹配，术语不会生效。`;
+      libraryTestResult.dataset.match = "warn";
       return;
     }
     libraryTestResult.textContent = `✗ 不命中：${normalizedPage || pageUrl} 不属于当前绑定的任何网址（可点“缩短一级目录”）`;

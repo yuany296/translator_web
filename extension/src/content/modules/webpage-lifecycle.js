@@ -13,7 +13,7 @@ export function installWebpageLifecycle(runtime) {
     try {
       const entries = runtime.enrichWebpageEntries(runtime.collectWebpageTextNodes(), pageKey);
       const records = await runtime.getTranslationCacheRecords(entries.map(entry => entry.id));
-      const fingerprint = await runtime.getTranslationConfigFingerprint("webpage");
+      const fingerprint = await runtime.getTranslationConfigFingerprint("webpage", typeof location !== "undefined" ? location.href : "");
       let hit = 0;
       entries.forEach(entry => {
         if (runtime.classifyTranslationCacheMatch(records.get(entry.id), fingerprint) !== "missing") hit += 1;

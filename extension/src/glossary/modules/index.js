@@ -10,9 +10,9 @@ import { installGlossaryMoveNewLibrary } from "./glossary-move-new-library.js";
 import { installGlossaryLibraryStore } from "./glossary-library-store.js";
 import { installGlossaryLibraryPanel } from "./glossary-library-panel.js";
 import { installGlossaryLibrarySettings } from "./glossary-library-settings.js";
+import { installGlossaryLibraryApplyUrls } from "./glossary-library-apply-urls.js";
 import { installGlossaryLibraryTest } from "./glossary-library-test.js";
 import { installGlossaryLibraryLifecycle } from "./glossary-library-lifecycle.js";
-import { installNovelMemoryEditor } from "./novel-memory-editor.js";
 import { installGlossaryImportTarget } from "./glossary-import-target.js";
 import { installGlossaryViewRouter } from "./glossary-view-router.js";
 
@@ -28,9 +28,9 @@ export const glossaryInstallers = Object.freeze([
   installGlossaryLibraryStore,
   installGlossaryLibraryPanel,
   installGlossaryLibrarySettings,
+  installGlossaryLibraryApplyUrls,
   installGlossaryLibraryTest,
   installGlossaryLibraryLifecycle,
-  installNovelMemoryEditor,
   installGlossaryImportTarget,
   installGlossaryViewRouter
 ]);
@@ -47,9 +47,9 @@ export const glossaryPhases = Object.freeze({
     installGlossaryLibraryStore,
     installGlossaryLibraryPanel,
     installGlossaryLibrarySettings,
+    installGlossaryLibraryApplyUrls,
     installGlossaryLibraryTest,
     installGlossaryLibraryLifecycle,
-    installNovelMemoryEditor,
     installGlossaryImportTarget,
     installGlossaryViewRouter
   ]),

@@ -14,7 +14,6 @@ const ROUTES = Object.freeze({
   reading: ["阅读与显示", "阅读与显示", "调整预翻译、渲染和页面辅助行为。"],
   glossary: ["术语库", "术语库", "管理正式术语、待确认候选与各库的导入导出。"],
   translations: ["译文库", "译文库", "检索、导入和维护 SQLite 正式译文。"],
-  memory: ["小说记忆", "小说记忆", "按作品保存的翻译记忆：看过的章节会累积人名、称呼与剧情状态。"],
   maintenance: ["维护与诊断", "维护与诊断", "检查本地服务并管理可安全清理的临时缓存。"]
 });
 
@@ -73,8 +72,7 @@ function fill(configuration) {
   ].forEach(([id, v]) => { byId(id).value = v; });
   [
     ["ocrDebug", ocr.localPaddle.debug], ["novelImageMergeLines", ocr.tuning.novelImageMergeLines], ["visionEnabled", ocr.visionRepair.enabled],
-    ["showBall", runtime.showBall], ["ignoreSimplifiedChinese", runtime.ignoreSimplifiedChinese],
-    ["novelMemoryEnabled", runtime.novelMemoryEnabled]
+    ["showBall", runtime.showBall], ["ignoreSimplifiedChinese", runtime.ignoreSimplifiedChinese]
   ].forEach(([id, v]) => { byId(id).checked = v === true; });
   [
     ["pretranslateMode", runtime.pretranslateMode], ["captureMode", runtime.captureMode], ["renderMode", runtime.renderMode], ["floatingSide", runtime.floatingSide],
@@ -143,7 +141,6 @@ async function saveReading() {
     ...configuration.runtime,
     pretranslateMode: value("pretranslateMode"), captureMode: value("captureMode"), renderMode: value("renderMode"),
     showBall: checked("showBall"), ignoreSimplifiedChinese: checked("ignoreSimplifiedChinese"),
-    novelMemoryEnabled: checked("novelMemoryEnabled"),
     floatingSide: value("floatingSide"), overwriteFontScale: numberValue("overwriteFontScale"), overwriteCoverPadding: numberValue("overwriteCoverPadding"),
     novelStreamBatchSize: numberValue("novelStreamBatchSize"), debugOverlayMode: value("debugOverlayMode"), overwritePreviewMode: value("overwritePreviewMode")
   });

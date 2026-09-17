@@ -79,8 +79,10 @@ runtime.glossary_import = glossary_import
                 rows = src.execute(f"SELECT {', '.join(select_cols)} FROM glossary_entries").fetchall()
                 library_rows = []
                 if "glossary_libraries" in tables:
+                    lib_cols = {r[1] for r in src.execute("PRAGMA table_info(glossary_libraries)").fetchall()}
+                    lib_select = "id, name, enabled, urls" + (", apply_urls" if "apply_urls" in lib_cols else "")
                     library_rows = src.execute(
-                        "SELECT id, name, enabled, urls FROM glossary_libraries").fetchall()
+                        f"SELECT {lib_select} FROM glossary_libraries").fetchall()
                 entries = []
                 for row in rows:
                     entry = {"source": row[0] or "", "target": row[1] or ""}

@@ -15,14 +15,6 @@ export function installGlossaryTermsView(runtime) {
         runtime.glossaryCore.getLibraryName(runtime.glossary, entry.libraryId)]
         .some(value => String(value || "").toLocaleLowerCase().includes(query));
     });
-    const enabledCount = scoped.filter(entry => entry.enabled).length;
-    const libraryName = runtime.glossaryCore.getLibraryName(runtime.glossary, runtime.activeLibraryId);
-    const scopeLabel = runtime.activeLibraryId
-      ? `「${libraryName}」共 ${scoped.length} 条`
-      : `「全部术语」共 ${scoped.length} 条`;
-    runtime.countText.textContent = query
-      ? `${scopeLabel}，匹配 ${filtered.length} 条，启用 ${enabledCount} 条`
-      : `${scopeLabel}，启用 ${enabledCount} 条`;
     runtime.termRows.replaceChildren(...filtered.map(runtime.createTermRow));
     runtime.emptyState.textContent = scoped.length === 0
       ? (runtime.activeLibraryId ? "这个术语库还没有术语，点击“新增术语”开始建立词库。" : "暂无术语，点击“新增术语”开始建立词库。")
@@ -52,13 +44,6 @@ export function installGlossaryTermsView(runtime) {
     if (runtime.createTermSelectCell) {
       row.append(runtime.createTermSelectCell(entry));
     }
-    const enabledCell = document.createElement("td");
-    const enabledToggle = document.createElement("input");
-    enabledToggle.type = "checkbox";
-    enabledToggle.checked = entry.enabled;
-    enabledToggle.dataset.action = "toggle";
-    enabledToggle.setAttribute("aria-label", `启用 ${entry.source}`);
-    enabledCell.append(enabledToggle);
     const libraryCell = document.createElement("td");
     libraryCell.className = "col-library";
     const library = runtime.glossaryCore.getLibrary(runtime.glossary, entry.libraryId);
@@ -86,10 +71,10 @@ export function installGlossaryTermsView(runtime) {
     const actionsCell = document.createElement("td");
     const actions = document.createElement("div");
     actions.className = "row-actions";
-    // 编辑不再走弹窗、也不再需要按钮：原文/译文/备注三格直接改，启用是行首的开关。
+    // 编辑不再走弹窗、也不再需要按钮：原文/译文/备注三格直接改。
     actions.append(runtime.createActionButton("删除", "delete", "danger"));
     actionsCell.append(actions);
-    row.append(enabledCell, libraryCell, sourceCell, targetCell, noteCell, actionsCell);
+    row.append(libraryCell, sourceCell, targetCell, noteCell, actionsCell);
     return row;
   }
   runtime.createTermRow = createTermRow;
@@ -368,8 +353,6 @@ export function installGlossaryTermsView(runtime) {
     }
   }
   runtime.importGlossaryFile = importGlossaryFile;
-  const countText = document.getElementById("countText");
-  runtime.countText = countText;
   const termRows = document.getElementById("termRows");
   runtime.termRows = termRows;
   const emptyState = document.getElementById("emptyState");

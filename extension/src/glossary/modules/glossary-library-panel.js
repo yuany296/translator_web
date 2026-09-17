@@ -43,19 +43,6 @@ export function installGlossaryLibraryPanel(runtime) {
     return counts;
   }
   runtime.pendingCountsByLibrary = pendingCountsByLibrary;
-  /** 卡片第二行：这个库绑定到哪、新术语会进哪，一眼能看懂。 */
-  function librarySubtitle(library, isAll) {
-    if (isAll) {
-      return "所有术语库的合并视图";
-    }
-    if (library.id === runtime.glossaryCore.DEFAULT_LIBRARY_ID) {
-      return "未绑定网址：没匹配到任何库的新术语都进这里";
-    }
-    return library.urls.length
-      ? `已绑定 ${library.urls.length} 个网址：${library.urls[0]}`
-      : "未绑定网址（点进去可绑定作品总览页，章节页会自动归入）";
-  }
-  runtime.librarySubtitle = librarySubtitle;
   function createLibraryRow(library, count, isAll, pendingCount = 0) {
     const row = document.createElement("div");
     row.className = "library-row";
@@ -78,14 +65,12 @@ export function installGlossaryLibraryPanel(runtime) {
     nameButton.dataset.action = "focus-library";
     nameButton.textContent = library.name;
     nameButton.title = isAll ? "显示全部术语" : "点进去管理这个术语库";
-    const subtitle = document.createElement("div");
-    subtitle.className = "library-subtitle";
-    subtitle.textContent = librarySubtitle(library, isAll);
-    body.append(nameButton, subtitle);
+    // 设计稿：条数在库名下方（卡片主体两行），待确认胶囊才在行尾
     const countText = document.createElement("span");
     countText.className = "library-count";
-    countText.textContent = `${count} 条`;
-    row.append(swatch, body, countText);
+    countText.textContent = `${count} 条术语`;
+    body.append(nameButton, countText);
+    row.append(swatch, body);
     if (pendingCount > 0) {
       const pending = document.createElement("span");
       pending.className = "library-pending";

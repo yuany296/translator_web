@@ -97,8 +97,7 @@ test("novel glossary warnings preserve valid Chinese after one retry and survive
     requestNovelChunk() {
       calls += 1;
       return {
-        translations: [{ id: "p-warning", translated_text: `成贤第${calls}次回答。` }],
-        memory_delta: { summary: calls === 1 ? "第一次记忆" : "第二次记忆" }
+        translations: [{ id: "p-warning", translated_text: `成贤第${calls}次回答。` }]
       };
     }
   });
@@ -112,7 +111,6 @@ test("novel glossary warnings preserve valid Chinese after one retry and survive
   assert.equal(warned.errors.length, 0);
   assert.equal(warned.translations[0].translated_text, "成贤第2次回答。");
   assert.equal(warned.warnings[0].code, "glossary_warning");
-  assert.equal(warned.memory_delta.summary, "第二次记忆");
   assert.doesNotMatch(JSON.stringify(warned.diagnostics), /成贤第/u);
   const cached = await context.__backgroundTest.handleTranslateNovelChunk(request);
   assert.equal(cached.cached, true);
@@ -125,8 +123,7 @@ test("novel glossary warnings preserve valid Chinese after one retry and survive
       fallbackCalls += 1;
       if (fallbackCalls > 1) throw new Error("retry unavailable");
       return {
-        translations: [{ id: "p-fallback", translated_text: "成贤先回答了。" }],
-        memory_delta: { summary: "首次有效记忆" }
+        translations: [{ id: "p-fallback", translated_text: "成贤先回答了。" }]
       };
     }
   });
@@ -139,7 +136,6 @@ test("novel glossary warnings preserve valid Chinese after one retry and survive
   assert.equal(fallback.errors.length, 0);
   assert.equal(fallback.translations[0].translated_text, "成贤先回答了。");
   assert.equal(fallback.warnings[0].code, "glossary_warning");
-  assert.equal(fallback.memory_delta.summary, "首次有效记忆");
   assert.equal(fallback.diagnostics.at(-1).status, "request_failed");
   context.__backgroundTest.setBackgroundTestHooks(null);
 });
@@ -505,12 +501,9 @@ test("novel image translation prompt carries nearby text, memory, and scoped glo
     ]
   }, {
     scopeKey: "kakao:1",
-    nearbyText: "그는 다시 문을 열었다.",
-    memory: { summary: "晟玄此前见过这扇门。" },
-    memoryRevision: 4
+    nearbyText: "그는 다시 문을 열었다."
   });
   assert.match(prompt, /그는 다시 문을 열었다/u);
-  assert.match(prompt, /晟玄此前见过这扇门/u);
   assert.match(prompt, /"target":"晟玄"/u);
   assert.doesNotMatch(prompt, /"target":"成贤"/u);
 });

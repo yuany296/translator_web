@@ -168,7 +168,7 @@ async function settle(ticks = 8) {
   }
 }
 
-function createPage() {
+function createPage({ deleteFails = false } = {}) {
   const elements = new Map();
   const documentListeners = new Map();
   const stored = {};
@@ -225,7 +225,12 @@ function createPage() {
     window: { confirm: (...args) => confirmHandler(...args) },
     confirm: (...args) => confirmHandler(...args),
     console,
-    fetch: async () => {
+    // 除删除外的请求保持离线（用来验证本地副本兜底）；DELETE 由 deleteFails 决定是否落库，
+    // 「删除没到服务端」时界面必须报「术语删除失败」，见对应测试。
+    fetch: async (url, options = {}) => {
+      if (String(options.method || "GET").toUpperCase() === "DELETE" && !deleteFails) {
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
       throw new Error("local service offline");
     },
     URL,
@@ -302,8 +307,8 @@ function buildSeed(entries) {
   };
 }
 
-function bootWithSeed(entries) {
-  const page = createPage();
+function bootWithSeed(entries, options) {
+  const page = createPage(options);
   page.setMessageHandler(message =>
     message.type === "GET_TERM_DISCOVERY_STATE"
       ? { ok: true, enabled: false, pending: { version: 1, chapters: [] }, ignored: { version: 1, sources: [] }, pendingCount: 0, status: { state: "online", engine: "heuristic" }, sentenceLlmConfigured: false }
@@ -575,6 +580,23 @@ test("batch delete: deletes after confirm and keeps data when cancelled", async 
   assert.deepEqual(storedEntries(page).map(entry => entry.id), ["c"]);
   assert.match(page.elements.get("statusText").textContent, /已删除 2 条术语/u);
   assert.equal(page.elements.get("batchActionBar").classList.contains("hidden"), true);
+});
+
+test("batch delete that never reaches the local service reports 术语删除失败", async () => {
+  const page = await bootWithSeed([
+    makeEntry("a", "성현"),
+    makeEntry("b", "왕국")
+  ], { deleteFails: true });
+
+  await selectRows(page, ["a"]);
+  await page.elements.get("batchDeleteBtn").dispatch("click");
+  await settle();
+
+  const statusText = page.elements.get("statusText");
+  assert.match(statusText.textContent, /术语删除失败/u);
+  assert.match(statusText.textContent, /刷新后会重新出现/u);
+  assert.equal(statusText.dataset.error, "true", "删除失败要按错误显示，不能被「已删除」盖掉");
+  assert.deepEqual(storedEntries(page).map(entry => entry.id), ["b"], "本地仍然删掉了，只是服务端没删成");
 });
 
 test("select-all only covers visible rows, selection survives filtering, and tab switch clears it", async () => {

@@ -26,10 +26,35 @@ export function installNovelRenderer(runtime) {
   }
   runtime.injectNovelStyles = injectNovelStyles;
 
+  /**
+   * 解析段落 id。形如 "52#3@ab12cd34ef56":
+   *   pid=52(原始 data-p-id)、ordinal=3(同 id 节点中的序号)、
+   *   sourceHash=ab12cd34ef56(该段落源文的哈希)。
+   * 旧格式 "52#3" / "52" 仍可解析,sourceHash 为空表示不做内容校验。
+   */
+  function splitParagraphId(id) {
+    const raw = String(id || "");
+    const at = raw.lastIndexOf("@");
+    const body = at > 0 ? raw.slice(0, at) : raw;
+    const sourceHash = at > 0 ? raw.slice(at + 1) : "";
+    const [pid, ordinalText] = body.split("#");
+    return { pid, ordinal: Number(ordinalText) || 0, sourceHash };
+  }
+  runtime.splitNovelParagraphId = splitParagraphId;
+
+  /**
+   * 段落节点当前源文的哈希。必须与 extractKakaoNovelChapter 用同一套
+   * 归一化与哈希,否则合法译文会被误判为错配。
+   */
+  function computeParagraphSourceHash(node) {
+    const text = runtime.getOriginalNovelParagraphText?.(node) ?? String(node?.textContent || "");
+    return String(runtime.computeTranslationCacheHash(runtime.normalizeTranslationCacheText(text)) || "");
+  }
+  runtime.computeNovelParagraphSourceHash = computeParagraphSourceHash;
+
   function findParagraphNode(surface, id) {
-    // 唯一 id 形如 "52#3":取原始 data-p-id 和同 id 节点中的序号。
-    const [pid, ordinalText] = String(id || "").split("#");
-    const ordinal = Number(ordinalText) || 0;
+    // 用 id 里的原始 data-p-id 和同 id 序号在当前屏上定位节点。
+    const { pid, ordinal } = splitParagraphId(id);
     const escaped = globalThis.CSS?.escape ? CSS.escape(pid) : String(pid).replace(/["\\]/gu, "\\$&");
     const matches = surface?.root?.querySelectorAll?.(`[data-p-id="${escaped}"]`) || [];
     return [...matches].filter(node => /^(?:H[1-6]|P|DIV)$/u.test(String(node.tagName || "")))[ordinal] || null;
@@ -149,7 +174,17 @@ export function installNovelRenderer(runtime) {
     if (!surface) return;
     const state = runtime.getNovelState();
     state.translations.forEach((text, id) => {
-      renderNovelTranslation(findParagraphNode(surface, id), text, state.showTranslation);
+      const node = findParagraphNode(surface, id);
+      if (!node) return;
+      // 段落 id 自带源文哈希。当前屏上同号段落的源文与译文所属源文对不上,
+      // 说明这份译文属于另一屏(EPUB 翻页后 data-p-id 会从 0 重新编号)。
+      // 直接套用会把作品开头的句子画到版权页上,必须拒收并清掉错配残影。
+      const expected = splitParagraphId(id).sourceHash;
+      if (expected && computeParagraphSourceHash(node) !== expected) {
+        restoreNovelNode(node);
+        return;
+      }
+      renderNovelTranslation(node, text, state.showTranslation);
     });
   }
   runtime.reapplyNovelTranslations = reapplyNovelTranslations;

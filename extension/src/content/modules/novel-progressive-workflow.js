@@ -53,8 +53,6 @@ export function installNovelProgressiveWorkflow(runtime) {
     state,
     allItems,
     pending,
-    chapterMemory,
-    memoryRevision,
     force = false,
     fingerprint
   }) {
@@ -99,8 +97,6 @@ export function installNovelProgressiveWorkflow(runtime) {
           chapterId: chapter.chapterId,
           chapterTitle: chapter.chapterTitle,
           chapterOrder: chapter.chapterOrder,
-          memoryRevision,
-          memory: chapterMemory,
           force,
           taskId: state.taskId,
           sourceLanguage: runtime.getConfiguredSourceLanguage?.() || "auto",
@@ -121,15 +117,11 @@ export function installNovelProgressiveWorkflow(runtime) {
       }
       (response.warnings || []).forEach(warning => warnings.set(String(warning.id), warning));
       errors.push(...(response.errors || []));
-      // 响应到达即推进上下文边界:译文与记忆先并入,再放行下一 chunk,
+      // 响应到达即推进上下文边界:译文先并入,再放行下一 chunk,
       // 让它的 LLM 请求与本次 commit/渲染重叠执行;上下文仍按 chunk 顺序可见。
       for (const row of response.translations || []) {
         const text = String(row && row.translated_text || "").trim();
         if (text) state.translations.set(String(row.id), text);
-      }
-      if (response.memory_delta) {
-        state.memoryDeltas.push(response.memory_delta);
-        chapterMemory = runtime.novelMemoryCore.mergeMemory(chapterMemory, response.memory_delta);
       }
       respondedChunkCount = Math.max(respondedChunkCount, index + 1);
       pumpProgressiveChunks();
@@ -167,8 +159,6 @@ export function installNovelProgressiveWorkflow(runtime) {
             chapterId: chapter.chapterId,
             chapterTitle: chapter.chapterTitle,
             chapterOrder: chapter.chapterOrder,
-            memoryRevision,
-            memory: chapterMemory,
             force,
             taskId: state.taskId,
             sourceLanguage: runtime.getConfiguredSourceLanguage?.() || "auto",
@@ -195,12 +185,11 @@ export function installNovelProgressiveWorkflow(runtime) {
         return {
           id: item.id,
           ok: true,
-          memoryDelta: response.memory_delta || null,
           errors: response.errors || []
         };
       });
       const repairResults = await runtime.runWithConcurrency(repairs, REPAIR_CONCURRENCY);
-      // 结果按 missing 原顺序返回,memory_delta 依序归并,章节记忆保持确定性。
+      // 结果按 missing 原顺序返回,错误归并保持确定性。
       for (const result of repairResults) {
         if (!result || result.ok === false) {
           repairErrors.push({
@@ -209,15 +198,11 @@ export function installNovelProgressiveWorkflow(runtime) {
           });
           continue;
         }
-        if (result.memoryDelta) {
-          state.memoryDeltas.push(result.memoryDelta);
-          chapterMemory = runtime.novelMemoryCore.mergeMemory(chapterMemory, result.memoryDelta);
-        }
         repairErrors.push(...(result.errors || []));
       }
       errors.push(...repairErrors);
     }
-    return { errors, warnings: [...warnings.values()], chapterMemory };
+    return { errors, warnings: [...warnings.values()] };
   }
   runtime.runNovelProgressiveTranslation = runNovelProgressiveTranslation;
 }

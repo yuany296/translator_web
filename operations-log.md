@@ -1,5 +1,81 @@
 # Operations Log
 
+## 2026-09-16 — 修复「对话引号被丢掉」:流式链路既没有提示词规则、也没有兜底修复
+
+- 用户反馈:`“난 무조건 탈색부터 한다.”` 被翻成 `我不管，肯定要先漂发。`(引号没了),并要求「限制一下提示词和加上代码检测，除了双引号还有单引号也忽略了」,同时说「我之前好像让AI处理过这个问题」。
+- 真机取证(`.local-data/translations.db`,只读直查):该条 `record_key=1f3416cc` 有两个版本 —— v1(流式写入)= `我不管，肯定要先漂发。`,v2(小批/补翻链路重写)= `“我不管，肯定要先漂发。”`。**同一段两条链路结果不同 ⇒ 不是"没修",是有一条链路没接上。**
+- 根因(上次修了一半):`restoreDialogueQuotes` 这个确定性兜底是 2026-09-15(90c2d8a)加的,只接进了**小批链路**(`novel-translation.js#handleTranslateNovelChunk` 的 `restoreQuotes`)与两条读缓存/读正式库的路径(`novel-cache.js`、`novel-workflow.js`)。**多数段落实际走的流式链路完全没有接**:`background/modules/translation-stream.js` 只是把 Python 服务的事件原样转发+存快照,`content/modules/novel-stream-workflow.js` 直接渲染事件里的译文;而服务端提示词(`local-ocr-service/ocr_service/pipeline/translation_stream.py#_prompt`)里**根本没有引号规则**。两处都缺 ⇒ 流式翻出来的段落引号必丢,小批链路一接手就又"好了"。
+- 规模(历史译文统计,`active_version` 口径):**novel 191 条 + webpage 4 条**「原文整段被引号包住、译文一个引号都没有」(全部可确定性修复);另有 32 条「引号与叙述混排」的只能靠模型修。样例:`“내가 배려해주지 않아도, 걔넨 알아서 잘할 거야.”` -> `就算我不去关照，他们也会自己做得很好。`
+- 修复 1(`extension/src/shared/utils.js`):引号对表补齐 **单引号**与更多风格 —— `“ ”`、`„ “`、`‘ ’`、`‚ ‘`、`「 」`、`『 』`、`｢ ｣`、`« »`、`‹ ›`、ASCII `"`/`'`、`＂`、`’ ’`、`＇`;新增 `containsDialogueQuote()` 与 `hasDroppedDialogueQuotes()`(后者=「原文有引号、译文一个都没有」,单引号同样覆盖)。
+- 修复 2(`shared/novel.js#validateTranslations`):**校验前先做确定性修复**。原文整段被引号包住的当场补回、不占用重试;修不回来的(引号与叙述混排)报 `dialogue_quote_missing` 并给出 `quoteFallbacks` 可保留译文。这就是用户要的"代码检测"。
+- 修复 3(`background/modules/novel-translation.js`):回落机制从「只认术语」推广为通用 —— `indexFallbacks()` 合并 `glossaryFallbacks`(→`glossary_warning`)与 `quoteFallbacks`(→`dialogue_quote_warning`),`acceptFallback()` 按 `code` 出警告。**重试仍拿不回引号时保留译文 + 出警告,绝不因为格式问题把整段变成未翻译**;`summarizeTranslationWarnings()` 的文案按存在的警告码拼接(纯术语场景文案与原来逐字一致)。
+- 修复 4(提示词,两处都要改):
+  - `novel-translation.js#buildPrompt`:引号规则从一句扩成 `QUOTE_RULE`(逐字符、正反例),并在重试时点名「上次哪几个 id 丢了引号」;`PROMPT_VERSION` **v2 → v3**(它在缓存键里,不 bump 旧缓存会掩盖新行为)。
+  - `local-ocr-service/.../translation_stream.py`:新增 `DIALOGUE_QUOTE_RULE` 常量并进 `_prompt` —— **服务端提示词此前完全没有引号规则**。
+- 修复 5(流式事件兜底,`background/modules/translation-stream.js#relayStream`):按 `paragraphKey → originalText` 对每条 `paragraph` 事件做 `restoreDialogueQuotes`,**并同步改写要落库的快照译文**(`event.record.activeVersion.translatedText`)—— 否则写进正式译文库的仍是没引号那版。修复幂等,服务端将来自己也修也不会双重包裹。
+- 为什么不在 Python 侧也修译文:本项目既有设计是「**库存模型原样,读取时确定性修复**」(`novel-workflow.js`/`novel-cache.js` 读正式库时都会修复)。在服务端再实现一份等于把同一规则写两遍(参照 2026-09-15 绑定网址通配符那次两边必须同步的教训),故只补提示词。
+- 测试:新增 `tests/novel_quote_guard.test.mjs`(7 例:校验层先修后校验/混排报错并给回落、原文无引号或译文自带引号都不报、警告汇总文案、小批链路用户实测那条、小批链路混排重试失败保留译文+警告、**流式链路事件与落库快照都被修好**);`tests/novel_dialogue_quotes.test.mjs` 3 例(新增单引号/`｢｣`/`«»`/`„“`/全角引号与幂等、`hasDroppedDialogueQuotes`)。写测试两个坑:vm 沙箱里返回的数组与本机不同 realm,`deepStrictEqual(arr, [])` 会报「same structure but not reference-equal」,要用 `arr.length`;跑后台测试前**必须先 `node scripts/build-extension.mjs`**(测试读 `dist/test/background.iife.js`)。
+- 验证:全量 Node 回归 **1137/1137 通过**;`eslint extension/src` 0 错误;行数门禁过;`node scripts/build-extension.mjs` 成功;`pylint`(conda env `manga-translator`,3.3.9)**10.00/10**;`pytest tests -q` **103 passed 1 skipped**(与基线一致)。bump 提示词版本使 `tests/novel_translation_chunk.test.mjs` 的版本断言同步改为 v3。
+- 待用户操作:①`chrome://extensions` 重新加载 + 刷新阅读页;②**本地 OCR 服务要重启**(`start_local_ocr_gpu.bat`)才会用上新的服务端提示词 —— 不重启也没关系,扩展侧的事件兜底已经能保证显示与落库都带引号。
+- 未提交:改动仅在工作区(`shared/utils.js`、`shared/novel.js`、`background/modules/{novel-translation,translation-stream,translation-utils}.js`、`local-ocr-service/ocr_service/pipeline/translation_stream.py`、`tests/novel_dialogue_quotes.test.mjs`、`tests/novel_quote_guard.test.mjs`、`tests/novel_translation_chunk.test.mjs`),commit 需用户确认。
+- 遗留(待用户定):历史译文库那 195 条已存成没引号的记录,**不会自动改写**(读取时代码会就地修好再显示,所以界面是正常的);如需把库里也改成带引号,可以加一个一次性的批量修复入口。
+
+## 2026-09-16 — 修复「翻译过的小说不再生成记忆」:写记忆只挂在「这次真的调了模型」这条路径上
+
+- 用户反馈:「小说记忆这个功能是不是不要比较好。它出了问题。翻译过的小说好像不会生成记忆了」。
+- 根因(`content/modules/novel-workflow.js#translateNovelText`):写记忆(`SAVE_NOVEL_MEMORY`)原先**只挂在「这一屏刚由 AI 翻完且整屏完成」这一条路径**上。重读一本已经翻过的书时,段落全部命中 SQLite 正式译文库(`ensureTranslationServiceOnline` 直接回记录)⇒ 不产生任何模型请求 ⇒ 走「`!pending.length` ⇒ 提前返回」⇒ **永不写记忆**。所以首次读新章能生成记忆、回头重读旧章一条都不生成 —— 与用户描述完全一致。
+- 复现(修复前,4 段全命中译文库的最小桩):`SAVE_NOVEL_MEMORY` 0 次、`TRANSLATE_NOVEL_CHUNK` 0 次,而返回仍是 `completed: true`;对照组(首次翻译)写 1 次。**「完成了但不落库」是没有报错的静默丢状态。**
+- 修复 1:抽出 `saveNovelMemory(chapter, state)`,「整屏完成」与「整屏全部命中译文」两个分支都调用(后者加 `allItems.length` 守卫,空屏不凭空建记录);「本地服务离线」「任务被取消」两个分支仍然不写(这次确实没学到新东西)。
+- 修复 2(顺带):保存成功后清空 `state.memoryDeltas`。快照存的是「本话新增」的增量,同一话翻下一屏时会把**已存过的增量再叠一遍**(摘要层层重复、越积越长) —— 原先每次保存都重发全部累计增量,是本次改动之外的既有缺陷。
+- 修复 3(顺带):保存改为检查响应体 `ok === false` 并报错。`sendRuntimeMessage` 对「后台返回 ok:false」是 **resolve 而非 reject**,原来的 `try/catch` 抓不到 ⇒ 存失败(例如缺 key/chapterId)完全静默;现在会 `REPORT_STATUS` 且**不清空增量**,等下次重试。
+- 测试:`tests/novel_memory_save.test.mjs`(新增 4 例:首次翻译要写、全命中文库也要写、下一屏只带本屏新增量、存失败要报错且保留增量)。`tests/novel_chunk_pipeline.test.mjs` 两处断言从「看 `state.memoryDeltas` 残留」改为「看保存出去的消息」—— 因为增量现在保存后即清空,残留不再是契约。写这个测试的两个坑:`shared/novel.js#buildChunks` 的 `limit = Math.max(400, targetChars)`(传小值没用,想让一段一块必须把段落写到 450 字以上);桩里 `buildNovelCacheRecordId` 要按 `chapterId:paragraphKey` 生成可对的 key,否则「全部命中」模拟不出来。
+- 验证:全量 Node 回归 **1128/1128 通过**(基线 1124 + 新增 4);`node node_modules/eslint/bin/eslint.js extension/src` 0 错误;行数门禁通过;`node scripts/build-extension.mjs` 构建成功。
+- 未提交:改动仅在工作区(`extension/src/content/modules/novel-workflow.js`、`tests/novel_memory_save.test.mjs`、`tests/novel_chunk_pipeline.test.mjs`),commit 需用户确认。
+- 待用户操作:`dist/` 为 gitignore 产物,需在 `chrome://extensions` 点「重新加载」并刷新阅读页(设置页「小说记忆」分区是独立 iframe,也要关掉重开)。
+- 附带结论(回答用户「是不是不要比较好」):**不建议删**。真正吃 token 的是「记忆被塞进提示词」,而它已经有独立开关(`设置 → 阅读与显示 → 使用小说记忆`),关掉即等于停用且可随时恢复;删掉反而要同时拆掉提示词注入、记忆面板、存储 schema、后台三组消息与一批测试。本次是「一个 `return` 的位置」问题,不是设计问题。
+
+## 2026-09-15 — 修复「侧栏加术语一律进默认术语库」:请求里没带页面地址,归属解析无从下手
+
+- 用户反馈:「在管理当前章节译文界面所添加的词汇,应该把它加到所属网页的归属术语库里吧。现在全都在默认术语库里」。
+- 现场取证(`.local-data/glossary.db`):最新一条 `23:32 이율 => 伊律` 的 `library_id` 是 `default`;而同一时段经**术语库页**加的 `23:30 씨발 => 卧槽` 落在 `library-12ea4c07-cc8`(韩语日常词汇)。即「术语库页那条路是对的,侧栏这条路是错的」,不是显示问题,是**真的存错了库**。
+- 当前阅读页 `https://page.kakao.com/content/69863606/viewer/69863609/`(我杀死的本命出道 第2话),而库 `我和我杀死的最爱一起出道`(`library-8f246e3e-7c5`)正绑定 `https://page.kakao.com/content/69863606/*` —— 本该命中却落进了默认库。
+- 根因:`sidepanel/modules/revision-ui.js` 的「加入术语表」只发了 `{source, target, note}`,既没有页面地址也没有 `chapterKey`。后台 `resolveEntryLibraryId` 只认两档输入 —— `entry.libraryId`(显式指定)与 `chapterLibraryId`(由候选提取在 pending 里留下的章节记录),两者都是空就回落到默认库。术语库页之所以正确,是因为候选卡片的库选择框会把 `libraryId` 一起发出去。
+- 为什么不能只靠 `chapterLibraryId`:侧栏这一章往往从未跑过候选提取,pending 里根本没有它的记录 —— 网址绑定是这种情况下唯一的归属线索。这也与术语库页 `effectiveLibraryId` 的既有优先级(手动指定 > 网址匹配 > 默认)不一致,本次统一。
+- 修复 1(`background/modules/term-discovery-messages.js`):`resolveEntryLibraryId` 增加第四档 —— 前三档都不成立时用 `matchLibraryByUrl(libraries, pageUrl)` 按网址取库(只看已启用的库,与候选提取判定同源),再兜底默认库;`handleConfirmTermCandidates` 归一化并透传每个条目的 `pageUrl`,本地写入与服务端同步两处调用点同步更新;响应新增 `libraryNames`,让调用方能说出「加进了哪个库」。
+- 修复 2(`content/modules/novel-revision-panel.js`):章节快照新增 `url: location.href`。`scopeKey` 是 `kakao:<作品id>`,分不出章节页,不能替代;取值与候选提取(`novel-term-discovery.js` 传的 `location.href`)同源,两边才认得同一章。
+- 修复 3(`sidepanel/modules/revision-ui.js`):「加入术语表」带上 `pageUrl` 与 `chapterKey`(同一值),状态行改为 `已加入术语库「<库名>」`,让去向可见;提示语变长,自动收起由 1.2s 放宽到 2.6s。
+- 真机数据端到端验证(用 `glossary.db` 里真实的 13 个库与真实阅读页网址,跑新构建的 `dist/test/background.iife.js`):`content/69863606/viewer/69863609/` → 命中 `https://page.kakao.com/content/69863606/*`,落库「我和我杀死的最爱一起出道」;对照一个未绑定任何库的页面 → 正确回落「默认术语库」,回退行为未变。
+- 验证:新增 5 项回归到 `tests/glossary_library_routing.test.mjs`(侧栏只带网址 → 落在网址绑定的库、无绑定 → 默认库、条目自带 `libraryId` 压过网址匹配、网址绑定的库被停用 → 默认库、章节已有库 → 不被网址匹配覆盖)。定向 11/11、全量 Node 回归 **1124/1124 通过**;`eslint extension/src` 0 错误;行数门禁通过;`scripts/build-extension.mjs` 构建成功。
+- 待用户操作:`dist/` 为 gitignore 产物,需在 `chrome://extensions` 点「重新加载」并刷新阅读页(侧栏是独立页面,也要关掉重开)。
+
+## 2026-09-15 — 修复「翻到后面的屏永远停在原文」:分屏阅读下补翻链路整条是死的
+
+- 用户追问「版权页插件怎么不翻译啊」,实机复核确认这是**独立的第二个 Bug**,与上一条的串页问题无关:上一页修复后版权页不再被写错译文,但它自己**从头到尾没被翻译过**,一直停在韩文原文。
+- 现场(Chrome 实机):末页版权页 14 个段落 `translatedCount = 0`、无任何 `mt-novel-*` 包裹;而悬浮球写着「**小说翻译，当前显示中文，点击恢复原文**」,进度面板写着「小说翻译完成 正文 205/205」——扩展确信整章已译完。
+- 取证:`analyzeNovelCacheStatus` 的 `cacheCheckedKey` 只有 `scopeKey:chapterId`,而覆盖率只在**当前挂载的那一屏**上算过。首屏判定一次后该 key 就锁死,后面翻到的屏再也不会重算 ⇒ 悬浮球永远显示首屏的结论。
+- 根因 1(触发缺失):`reconcileKakaoNovelReader` 用 `state.surface.root !== surface.root` 判断「换屏」,但 KakaoPage 翻页**复用同一个 shadow 宿主**,只有宿主内内容换掉 ⇒ 该判断恒为 false;`onNovelSurfaceChanged` 的第三个参数同理恒为 false,而它只做 `reapplyNovelTranslations`(重画已有译文),**从不发起翻译**。于是新翻到的屏既不会被补翻,也没人会发现它是空的。
+- 根因 2(入口被挡):`translateNovelChapter` 里 `if (options.missingOnly && state.textStatus === "complete") return reused` 与 `if (state.textStatus === "complete" && !force) return 切换显示` 都排在「按当前屏重算待翻译集合」**之前**。分屏阅读下 `textStatus === "complete"` 只代表此前访问过的那几屏译完了,却把后面所有屏的补翻和手动点击一起挡掉 —— 连菜单里的「补翻」也救不回来。
+- 修复 1(`novel-reader.js`):新增 `novelSurfaceSignature(surface)` = 屏内各段落的 `data-p-id` + 源文哈希。签名只用原文,渲染插入的 `mt-novel-source` 译文包裹不改变它,不会自激。`reconcileKakaoNovelReader` 每次更新 `state.surfaceSignature`;`scheduleNovelReconcile` 据此算出 `surfaceChanged = rootChanged || 签名变化` 并透传给 `onNovelSurfaceChanged`。
+- 修复 2(`novel-workflow.js`):新增 `continueNovelTranslationForCurrentScreen(surface)` —— 只在用户已为本章开启过翻译(`textStatus` 为 `complete`/`partial`)时继续;幂等(`screenContinueTask` 防重入);先用持久缓存补,剩下的才发翻译请求。`onNovelSurfaceChanged` 仅在 `surfaceChanged === true` 时调用它。
+- 修复 3(`novel-workflow.js`):`translateNovelChapter` 把「按当前屏重算待翻译集合」提到两个提前返回**之前**。只有本屏确实无缺段时才保留原语义(missingOnly ⇒ reused;普通点击 ⇒ 译文↔原文切换)。空段落表的旧行为不变。
+- 修复 4(`novel-cache.js`):`cacheCheckedKey` 加入屏签名,覆盖率按屏重算,悬浮球不再拿首屏的结论去描述后面的屏。
+- 验证:新增 `tests/novel_screen_continue.test.mjs`(10 项:同宿主换内容被识别为换屏、渲染包裹不改变签名、空屏签名、缺段时点击不切换而是翻译、补翻不再被提前挡掉、全有译文时仍按原语义返回/切换、`surfaceChanged` 门控、未开启翻译时零请求)。全量 Node 回归 **1119/1119 通过**;`eslint extension/src` 0 错误;`scripts/build-extension.mjs` 构建成功。
+- 用户可见变化:翻到新的一屏时会自动补翻(带缓存优先,不重复请求),悬浮球在该屏的真实缓存覆盖率上重新判定。
+
+## 2026-09-15 — 修复「小说译文串页」:EPUB 分页后同号段落认领上一页译文
+
+- 现场(Chrome 实机,KakaoPage `내가 죽인 최애와 데뷔합니다` 第 1 话):末页版权页(`지은이 │ 유쓰` / `펴낸이 │ 김주형` / `마케팅 │ 한재혁` / `전자우편 │ jplusmedia@…` / 免责声明)被画上**作品开头**的句子——`第一话`、`有人说过。如果觉得憋屈，就自己亲自上场。`、`所以——`、`[IMPACT《Boom-Shot!》MV]`。悬浮球同时显示「小说翻译，缓存已有完整译文」，即扩展认为本章已译完。
+- 取证 1:正文在 `[data-testid='viewer-container']` 下的**影子根**内,段落节点带 `mt-novel-source` / `mt-novel-translation` 包裹。逐段导出后,翻译与原文**按序号一一错位对应**(`📄 pid 0 → 第一话`、`pid 3 → 有人说…`、`pid 5 → 是啊…`、`pid 7 → 说我自己来唱…`、`pid 9 → 所以——`、`pid 13 → [IMPACT《Boom-Shot!》MV]`)。
+- 取证 2:`.local-data/translations.db`(20572 条记录)中,版权页原文 `지은이` / `jplusmedia` / `마케팅` / `제이플미디어` / `한재혁` **均为 0 条命中**——这段原文从未被翻译过,所以不是模型错译,也不是缓存内容写错。而 `[임팩터 "Boom-Shot!" M/V] → [IMPACT《Boom-Shot!》MV]` 是作品开头的既有记录。
+- 取证 3:末页 14 个段落的 `data-p-id` 是 `0..13`。**KakaoPage 的 `data-p-id` 只在单个 EPUB 文档(一屏)内唯一,翻页后从 0 重新编号**;而 `extractKakaoNovelChapter` 生成的段落身份只有 `pid`(`pid#同 id 序号`),于是在同一章的每一屏里 `0`、`3`、`5`… 反复出现。翻页后 `reapplyNovelTranslations` 把 `state.translations`(键为上一屏的段落 id)原样重刷到新一屏 → 同号段落认领上一屏译文。
+- 根因定位:`content/modules/novel-reader.js` 的段落身份缺少「屏内/内容」维度;`content/modules/novel-renderer.js` 的 `reapplyNovelTranslations` 信任 id→节点映射,不做任何内容校验。持久缓存(`buildNovelRecordId` 已含 `sourceHash`)是内容寻址的、正确的,问题只在内存的渲染层。
+- 修复 1(身份内容化):`extractKakaoNovelChapter` 生成 `pid#序号@源文哈希前12位`。同号但不同内容的段落从此不可能撞号;`pid`/`domAnchor` 保留原始 `data-p-id`,定位与恢复逻辑不变。
+- 修复 2(栅栏):`novel-renderer.js` 新增 `splitNovelParagraphId`(兼容旧格式 `pid` / `pid#序号`)与 `computeNovelParagraphSourceHash`(复用 `getOriginalNovelParagraphText` + `normalizeSourceText` + `computeSourceHash`,与提取端同源)。`reapplyNovelTranslations` 在渲染前比对节点当前源文哈希,不一致则**拒收并 `restoreNovelNode` 清掉错配残影**。
+- 副作用修复:版权页的段落此前因 id 撞号被误判为「已翻译」,现已正确计入待翻译,悬浮球的「缓存已有完整译文」误导徽标消失。
+- 现场验证(Chrome 实机,未重载扩展前的真机数据):对末页 14 个真实段落按新方案重算,`newId` 全部互异(`0@795136c8`、`3@c2da865a`、`5@f3fe8cb9`、`7@95200a8a`、`9@811c9dc5`、`13@be7fff13`),且**逐行 `stable: true`**(渲染后经 `.mt-novel-source` 回读的哈希与提取时一致)⇒ 合法译文不会被误判为错配。
+- 验证:新增 `tests/novel_paragraph_identity.test.mjs`(4 项:跨屏同号段落身份互异、错配拒收且版权页原文不变、错配残影被清理、`splitNovelParagraphId` 兼容旧格式)。全量 Node 回归 **1109/1109 通过**;`eslint extension/src` 0 错误;`scripts/build-extension.mjs` 构建成功。
+- 待用户操作:`dist/` 为 gitignore 产物,需在 `chrome://extensions` 点「重新加载」并刷新阅读页复核(content script 不会因刷新页面而更新)。
+
 ## 2026-09-10 — 修复「插件无法翻译」:免密钥服务商被密钥门槛拦住
 
 - 现场定位:用户激活的翻译档案是**无密钥本地 Ollama**(`provider: ollama`, `apiKey: ""`, `baseUrl: http://127.0.0.1:11434/v1`, `model: translategemma:12b`)。当前 Kakao 阅读页 45 个网页翻译段失败,其中 44 个失败节点 `title` 正是 `Translation API Key is missing. Please configure it in popup.`;悬浮球只显示笼统的「网页翻译失败」。`.local-data/translations.db` 中最后一次**新**网页译文提交为 8/12(此后全是缓存命中),与「新请求全部被拒」一致。本地 OCR 服务(8765)`/health`、`/translations/health` 正常,`ocrGeometryVersion` 与扩展一致,不是 OCR 或本地服务问题。

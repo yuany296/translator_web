@@ -124,36 +124,60 @@ function normalizeComparableText(value) {
 }
 
 /**
- * LLM 翻译时常把对话引号当作"可省略的格式"丢掉(尤其 JSON 模式下),
- * 而流水线里没有任何环节会主动删引号。此函数做确定性兜底:若原文是
- * 被成对引号包裹的对话,且译文里一个引号字符都没有,就把同一对引号
- * 加回译文。已有引号(任意风格)的译文保持原样,避免双重包裹。
+ * LLM 翻译时常把对话引号当作"可省略的格式"丢掉(尤其 JSON 模式与流式 NDJSON),
+ * 而流水线里没有任何环节会主动删引号。此函数做确定性兜底:若原文整段被某一对
+ * 引号包住,且译文里一个引号字符都没有,就把同一对引号加回译文。
+ * 已有引号(任意风格)的译文保持原样,避免双重包裹。
+ *
+ * 顺序有意义:第一个「首字符+尾字符」都命中的对子胜出,所以更罕见的写法放前面。
+ * 单引号必须排在双引号之前判断——ASCII 的 ' 与 " 会互相干扰时以成对语义为准。
  */
 const DIALOGUE_QUOTE_PAIRS = Object.freeze([
   ["\u201c", "\u201d"], // “ ”
+  ["\u201e", "\u201c"], // „ “(德语式低开高收)
+  ["\u2018", "\u2019"], // ‘ ’
+  ["\u201a", "\u2018"], // ‚ ‘
   ["\u300c", "\u300d"], // 「 」
   ["\u300e", "\u300f"], // 『 』
+  ["\uff62", "\uff63"], // ｢ ｣(半角角括号,日式 EPUB 常见)
   ["\u00ab", "\u00bb"], // « »
-  ["\u2018", "\u2019"], // ‘ ’(只参与检测,不参与包裹)
+  ["\u2039", "\u203a"], // ‹ ›
   ["\"", "\""],
-  ["'", "'"]
+  ["\uff02", "\uff02"], // ＂
+  ["'", "'"],
+  ["\u2019", "\u2019"], // ’ ’(模型偶尔两边都用收尾单引号)
+  ["\uff07", "\uff07"] // ＇
 ]);
+
+/** 所有可能出现在对话引号位置的字符(检测用)。 */
+const DIALOGUE_QUOTE_CHARS = Object.freeze([...new Set(DIALOGUE_QUOTE_PAIRS.flat())]);
+
+/** 文本里是否出现任意对话引号字符。 */
+export function containsDialogueQuote(text) {
+  const value = String(text || "");
+  return DIALOGUE_QUOTE_CHARS.some(char => value.includes(char));
+}
 
 export function restoreDialogueQuotes(originalText, translatedText) {
   const source = String(originalText || "").trim();
   const translated = String(translatedText || "");
   if (!source || !translated.trim()) return translated;
   // 译文里只要出现任意引号字符就认为引号语义仍在,不再包裹。
-  const anyQuoteChar = new Set(DIALOGUE_QUOTE_PAIRS.flat());
-  for (const char of translated) {
-    if (anyQuoteChar.has(char)) return translated;
-  }
+  if (containsDialogueQuote(translated)) return translated;
   for (const [open, close] of DIALOGUE_QUOTE_PAIRS) {
     if (source.length >= 2 && source.startsWith(open) && source.endsWith(close)) {
       return `${open}${translated.trim()}${close}`;
     }
   }
   return translated;
+}
+
+/**
+ * 原文有引号、译文却一个都没有,且整段包裹也修不回来(原文不是整段被引号包住,
+ * 例如 `"어쩌고" 그가 말했다.`)——这种只有模型能修,交给校验层报错重试。
+ */
+export function hasDroppedDialogueQuotes(originalText, translatedText) {
+  return containsDialogueQuote(originalText) && !containsDialogueQuote(translatedText);
 }
 
 // ── 几何 ──
@@ -228,7 +252,10 @@ export default Object.freeze({
   normalizeText,
   normalizeComparableText,
   DIALOGUE_QUOTE_PAIRS,
+  DIALOGUE_QUOTE_CHARS,
+  containsDialogueQuote,
   restoreDialogueQuotes,
+  hasDroppedDialogueQuotes,
   normalizeRectLike,
   storageGet,
   storageSet,

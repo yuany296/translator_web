@@ -113,9 +113,9 @@ export function installTranslationCacheClient(runtime) {
   }
   runtime.touchTranslationCacheMemory = touchMemoryCache;
 
-  async function getTranslationConfigFingerprint(mode = "novel") {
+  async function getTranslationConfigFingerprint(mode = "novel", pageUrl = "") {
     try {
-      const response = await runtime.sendRuntimeMessage({ type: "GET_TRANSLATION_CONFIG_FINGERPRINT", mode });
+      const response = await runtime.sendRuntimeMessage({ type: "GET_TRANSLATION_CONFIG_FINGERPRINT", mode, pageUrl });
       return String(response?.fingerprint || "");
     } catch {
       return "";

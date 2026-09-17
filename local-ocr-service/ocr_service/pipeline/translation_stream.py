@@ -15,6 +15,20 @@ from term_extractor import _is_local_url
 MAX_MODEL_LINE = 256 * 1024
 HEARTBEAT_SECONDS = 15.0
 
+# 对话引号是内容不是格式。流式 NDJSON 下模型最容易把引号当格式吞掉，
+# 一旦丢了，扩展侧只能按"原文整段被引号包住"这一种情形做确定性兜底，
+# 更复杂的（引号 + 叙述混排）就救不回来，所以提示词里必须写死这条规则。
+DIALOGUE_QUOTE_RULE = (
+    "Dialogue quotation marks are content, not formatting: reproduce the source's own quote "
+    "characters exactly (“ ” 「 」 『 』 ‘ ’ and the ASCII double/single quotes). "
+    "If a source paragraph is wrapped in quotes, the whole translated paragraph must stay "
+    "wrapped in that same pair; if quoted speech sits inside a longer paragraph, keep a "
+    "matching quoted span in the same place. Never drop the quotes, never swap them for "
+    "another style, and never add quotes the source does not have. "
+    'Example: source `"난 무조건 탈색부터 한다."` -> correct `“我不管，肯定要先漂发。”`, '
+    "wrong `我不管，肯定要先漂发。`"
+)
+
 
 def _event(value: dict[str, Any]) -> bytes:
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -43,6 +57,7 @@ def _prompt(payload: runtime.TranslationStreamPayload) -> str:
         'Schema: {"paragraphKey":"the supplied key","translation":"translated text"}',
         "Do not output Markdown fences, arrays, explanations, blank translations, or duplicate keys.",
         "Preserve meaning, names, tone, paragraph boundaries, and every supplied paragraphKey.",
+        DIALOGUE_QUOTE_RULE,
         f"Continuity context: {context}" if context else "",
         f"Required glossary: {json.dumps(terms, ensure_ascii=False)}" if terms else "",
         f"Input paragraphs: {json.dumps(rows, ensure_ascii=False)}",

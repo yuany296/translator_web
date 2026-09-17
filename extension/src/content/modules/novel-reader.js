@@ -6,7 +6,6 @@ export function installNovelReader(runtime) {
         rootObserver: null,
         reconcileTimer: 0,
         translations: new Map(),
-        memoryDeltas: [],
         textDiagnostics: [],
         lastTextErrors: [],
         imageJobs: new Map(),
@@ -86,6 +85,27 @@ export function installNovelReader(runtime) {
   }
   runtime.getOriginalNovelParagraphText = getOriginalParagraphText;
 
+  /**
+   * 当前屏的内容签名(段落的 data-p-id + 源文哈希)。
+   *
+   * KakaoPage 是分屏阅读:翻页时复用同一个 shadow 宿主,只有宿主里的内容换掉,
+   * 所以 `root` 是否变化判断不出翻屏。签名只用原文,渲染插入的译文包裹不会
+   * 改变它,因此不会自激触发重译。
+   */
+  function novelSurfaceSignature(surface) {
+    const root = surface && surface.root;
+    if (!root || typeof root.querySelectorAll !== "function") return "";
+    return [...root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphNode).map(node => {
+      const text = getOriginalParagraphText(node);
+      const normalized = runtime.normalizeTranslationCacheText
+        ? runtime.normalizeTranslationCacheText(text) : String(text || "");
+      const hash = runtime.computeTranslationCacheHash
+        ? runtime.computeTranslationCacheHash(normalized) : normalized;
+      return `${node.getAttribute("data-p-id")}\u0001${hash}`;
+    }).join("\u0002");
+  }
+  runtime.novelSurfaceSignature = novelSurfaceSignature;
+
   function orderParagraphs(nodes) {
     const ordered = nodes.map((node, index) => ({
       node,
@@ -125,9 +145,13 @@ export function installNovelReader(runtime) {
       // KakaoPage 的 data-p-id 不是唯一标识:对话块内嵌套节点共享同一个
       // data-p-id。给同 id 的节点追加序号生成唯一 id,避免翻译结果互相
       // 覆盖、进度计数把嵌套副本重复计入;domAnchor 保留原始 id 供恢复。
+      // 且 data-p-id 只在单个 EPUB 文档(一屏)内唯一,翻页后从 0 重新编号;
+      // 若段落身份只用「pid#同 id 序号」,新一屏的同号段落就会认领上一屏的
+      // 译文(表现为末页版权信息被画上作品开头的句子)。把源文哈希并入 id,
+      // 使段落身份与持久缓存一样按内容寻址,页面切换后不再串号。
       const pidOrdinal = pidOrdinals.get(id) || 0;
       pidOrdinals.set(id, pidOrdinal + 1);
-      const paragraphId = pidOrdinal > 0 ? `${id}#${pidOrdinal}` : id;
+      const paragraphId = `${pidOrdinal > 0 ? `${id}#${pidOrdinal}` : id}@${String(normalizedSourceHash).slice(0, 12)}`;
       const paragraphKey = runtime.computeTranslationCacheHash(
         `${locationInfo.chapterId}\u0000${normalizedSourceHash}\u0000${occurrenceIndex}`
       );
@@ -227,6 +251,9 @@ export function installNovelReader(runtime) {
     }
     state.surface = surface;
     runtime.injectNovelStyles?.(surface.root);
+    // 翻屏(同一个宿主换内容)也算 surface 变化,否则新翻到的屏既不会被补翻,
+    // 也不会重算缓存覆盖,后面几屏会一直停在原文。
+    state.surfaceSignature = novelSurfaceSignature(surface);
     if (!state.rootObserver || rootChanged) {
       state.rootObserver?.disconnect();
       state.rootObserver = new MutationObserver(() => scheduleNovelReconcile("shadow-mutation"));
@@ -246,7 +273,6 @@ export function installNovelReader(runtime) {
   function resetNovelNavigationState(state) {
     state.chapterKey = "";
     state.translations.clear();
-    state.memoryDeltas = [];
     state.imageJobs.clear();
     state.imageContexts.clear();
     runtime.clearNovelImagePanel?.(true);
@@ -268,9 +294,12 @@ export function installNovelReader(runtime) {
     if (state.reconcileTimer || runtime.state.invalidated) return;
     state.reconcileTimer = window.setTimeout(() => {
       state.reconcileTimer = 0;
-      const before = state.surface && state.surface.root;
+      const beforeRoot = state.surface && state.surface.root;
+      const beforeSignature = state.surfaceSignature;
       const surface = reconcileKakaoNovelReader();
-      runtime.onNovelSurfaceChanged?.(surface, reason, before !== (surface && surface.root));
+      const rootChanged = beforeRoot !== (surface && surface.root);
+      const surfaceChanged = !!surface && (rootChanged || beforeSignature !== state.surfaceSignature);
+      runtime.onNovelSurfaceChanged?.(surface, reason, surfaceChanged);
     }, 80);
   }
   runtime.scheduleNovelReconcile = scheduleNovelReconcile;

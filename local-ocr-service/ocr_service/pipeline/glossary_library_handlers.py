@@ -1,6 +1,6 @@
 """术语库定义的 REST 接口：列表 / 新建或更新 / 删除。
 
-条目本身的增删改仍在 `/glossary` 上；这里只维护库的名称、启用开关与绑定网址。
+条目本身的增删改仍在 `/glossary` 上；这里只维护库的名称、启用开关、绑定网址与应用网址。
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ def glossary_library_upsert(payload: runtime.GlossaryLibraryPayload) -> dict[str
             name=name,
             enabled=getattr(payload, 'enabled', True) is not False,
             urls=getattr(payload, 'urls', []) or [],
+            apply_urls=getattr(payload, 'applyUrls', []) or [],
         )
         return {'ok': True, 'library': library, 'libraries': db.list_libraries()}
     except runtime.HTTPException:

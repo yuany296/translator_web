@@ -14,12 +14,12 @@ from .common import (
     normalize_library_urls,
 )
 
-LIBRARY_COLUMNS = "id, name, enabled, urls, created_at, updated_at"
+LIBRARY_COLUMNS = "id, name, enabled, urls, apply_urls, created_at, updated_at"
 MAX_LIBRARIES = 50
 
 
 class LibrariesMixin:
-    """术语库定义（名称、启用开关、绑定网址）。条目通过 library_id 归组。"""
+    """术语库定义（名称、启用开关、绑定网址、应用网址）。条目通过 library_id 归组。"""
 
     def list_libraries(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -49,11 +49,12 @@ class LibrariesMixin:
                 conn.close()
 
     def upsert_library(self, library_id: str = "", name: str = "",
-                       enabled: bool = True, urls=None) -> dict[str, Any]:
+                       enabled: bool = True, urls=None, apply_urls=None) -> dict[str, Any]:
         """新建或更新术语库；`library_id` 留空时按名称生成稳定标识。"""
         lid = normalize_library_id(library_id)
         library_name = normalize_library_name(name)
         library_urls = normalize_library_urls(urls)
+        library_apply_urls = normalize_library_urls(apply_urls)
         now = time.time()
         with self._lock:
             conn = sqlite3.connect(self._path, check_same_thread=False)
@@ -64,17 +65,20 @@ class LibrariesMixin:
                 if existing:
                     lid = existing[0]
                     conn.execute(
-                        "UPDATE glossary_libraries SET name = ?, enabled = ?, urls = ?, updated_at = ? "
+                        "UPDATE glossary_libraries SET name = ?, enabled = ?, urls = ?, apply_urls = ?, updated_at = ? "
                         "WHERE id = ?",
-                        (library_name, 1 if enabled else 0, json.dumps(library_urls, ensure_ascii=False), now, lid),
+                        (library_name, 1 if enabled else 0,
+                         json.dumps(library_urls, ensure_ascii=False),
+                         json.dumps(library_apply_urls, ensure_ascii=False), now, lid),
                     )
                 else:
                     lid = lid or self._new_library_id(conn, library_name, now)
                     conn.execute(
-                        "INSERT INTO glossary_libraries (id, name, enabled, urls, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO glossary_libraries (id, name, enabled, urls, apply_urls, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (lid, library_name, 1 if enabled else 0,
-                         json.dumps(library_urls, ensure_ascii=False), now, now),
+                         json.dumps(library_urls, ensure_ascii=False),
+                         json.dumps(library_apply_urls, ensure_ascii=False), now, now),
                     )
                 conn.commit()
                 row = conn.execute(
@@ -119,7 +123,7 @@ class LibrariesMixin:
                 conn.close()
 
     def import_libraries(self, rows: list[tuple[Any, ...]]) -> int:
-        """导入上传数据库里的 glossary_libraries 行：(id, name, enabled, urls)。"""
+        """导入上传数据库里的 glossary_libraries 行：(id, name, enabled, urls[, apply_urls])。"""
         count = 0
         for row in rows or []:
             if len(row) < 2:
@@ -128,7 +132,8 @@ class LibrariesMixin:
             if not lid or lid == DEFAULT_LIBRARY_ID:
                 continue
             self.upsert_library(lid, str(row[1] or ""), bool(row[2]) if len(row) > 2 else True,
-                                row[3] if len(row) > 3 else [])
+                                row[3] if len(row) > 3 else [],
+                                row[4] if len(row) > 4 else [])
             count += 1
         return count
 
@@ -149,6 +154,7 @@ class LibrariesMixin:
             "name": row[1],
             "enabled": bool(row[2]),
             "urls": normalize_library_urls(row[3]),
-            "createdAt": row[4],
-            "updatedAt": row[5],
+            "applyUrls": normalize_library_urls(row[4]),
+            "createdAt": row[5],
+            "updatedAt": row[6],
         }

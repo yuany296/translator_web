@@ -17,14 +17,6 @@ export function installMessages(runtime) {
         return runtime.handleExtractTermsFromSentence(message);
       case "GET_LLM_MODELS":
         return runtime.handleGetLlmModels(message);
-      case "GET_NOVEL_MEMORY":
-        return runtime.handleGetNovelMemory(message);
-      case "SAVE_NOVEL_MEMORY":
-        return runtime.handleSaveNovelMemory(message);
-      case "CLEAR_NOVEL_MEMORY":
-        return runtime.handleClearNovelMemory(message);
-      case "DELETE_NOVEL_MEMORY_CHAPTER":
-        return runtime.handleDeleteNovelMemoryChapter(message);
       case "GET_CACHE_STATS":
         return runtime.handleGetCacheStats();
       case "CLEAR_CACHE":
@@ -42,7 +34,7 @@ export function installMessages(runtime) {
       case "CLEAR_TRANSLATION_CACHE_MODE":
         return runtime.handleTranslationCacheMessage(message);
       case "GET_TRANSLATION_CONFIG_FINGERPRINT":
-        return runtime.getTranslationConfigFingerprint(message && message.mode).then(fingerprint => ({ ok: true, fingerprint }));
+        return runtime.getTranslationConfigFingerprint(message && message.mode, message && message.pageUrl).then(fingerprint => ({ ok: true, fingerprint }));
       case "CANCEL_TRANSLATION_TASK":
         return runtime.handleCancelTranslationTask(message);
       case "GET_WEBPAGE_TAB_STATE":

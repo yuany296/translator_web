@@ -8,7 +8,12 @@ export function installTranslationStream(runtime) {
     const baseUrl = runtime.sanitizeLocalOcrBaseUrl(configuration.ocr.localPaddle.baseUrl);
     const sourceLanguage = String(request.sourceLanguage || configuration.translation.sourceLanguage || "auto");
     const targetLanguage = String(request.targetLanguage || configuration.translation.targetLanguage || "zh-CN");
-    const glossaryContext = { scopeKey: String(request.scopeKey || ""), sourceLanguage, targetLanguage };
+    const glossaryContext = {
+      scopeKey: String(request.scopeKey || ""),
+      sourceLanguage,
+      targetLanguage,
+      pageUrl: String(request.pageUrl || "")
+    };
     const glossary = runtime.glossaryCore.getRelevantEntries(
       configuration.glossary,
       (request.items || []).map(item => ({ original_text: item.originalText })),
@@ -42,6 +47,24 @@ export function installTranslationStream(runtime) {
     const parser = createNdjsonParser();
     const decoder = new TextDecoder();
     const seen = new Set();
+    // 流式路径的提示词在本地服务侧（translation_stream.py），它只管逐段 JSON，
+    // 不做任何格式兜底；模型把对话引号当格式丢掉时，事件里就是没引号的译文。
+    // 这里按原文引号对做确定性修复，同时改写快照里的译文 —— 否则存进正式译文库的
+    // 也是没引号的那一版（用户实测：`"난 무조건 탈색부터 한다."` -> `我不管，肯定要先漂发。`）。
+    const originalByParagraph = new Map((request.items || []).map(item => [
+      String(item && item.paragraphKey || ""),
+      String(item && item.originalText || "")
+    ]));
+    const repairQuotes = event => {
+      const original = originalByParagraph.get(String(event.paragraphKey || ""));
+      if (!original) return;
+      const current = String(event.translation || "");
+      const repaired = runtime.restoreDialogueQuotes(original, current);
+      if (repaired === current) return;
+      event.translation = repaired;
+      const active = event.record && event.record.activeVersion;
+      if (active && typeof active === "object") active.translatedText = repaired;
+    };
     const body = await openTranslationStream(request, controller.signal);
     const reader = body.getReader();
     try {
@@ -57,6 +80,7 @@ export function installTranslationStream(runtime) {
             const identity = `${taskId}:${String(event.paragraphKey || "")}`;
             if (seen.has(identity)) continue;
             seen.add(identity);
+            repairQuotes(event);
             if (event.record) await runtime.saveTranslationServiceSnapshots([event.record]);
           }
           port.postMessage(event);

@@ -165,7 +165,15 @@ export function installTermDiscoveryMessages(runtime) {
     });
   }
   runtime.handleSetTermDiscoveryEnabled = handleSetTermDiscoveryEnabled;
-  function resolveEntryLibraryId(libraries, requested, chapterLibraryId) {
+  /**
+   * 一条术语最终进哪个库：显式指定 > 该章节手动指定过的库 > 该章节网址绑定的库 > 默认库。
+   *
+   * 网址这一档不是锦上添花，而是必须的：术语库页靠候选提取在 pending 里建了章节记录，
+   * 才有的 `chapterLibraryId`；从「管理当前章节译文」侧栏直接加术语时这一章可能从未
+   * 跑过候选提取，pending 里没有它，只看前两档就一律落进默认库 —— 用户绑了网址的库
+   * 却收不到本页新词。优先级与术语库页的 `effectiveLibraryId` 保持一致。
+   */
+  function resolveEntryLibraryId(libraries, requested, chapterLibraryId, pageUrl) {
     const candidates = [requested, chapterLibraryId];
     for (const candidate of candidates) {
       const id = runtime.glossaryCore.normalizeLibraryId(candidate);
@@ -173,7 +181,9 @@ export function installTermDiscoveryMessages(runtime) {
         return id;
       }
     }
-    return runtime.glossaryCore.DEFAULT_LIBRARY_ID;
+    // matchLibraryByUrl 只认已启用的库，与候选提取时的判定同源。
+    const matched = runtime.glossaryCore.matchLibraryByUrl(libraries, pageUrl);
+    return matched ? matched.libraryId : runtime.glossaryCore.DEFAULT_LIBRARY_ID;
   }
   runtime.resolveEntryLibraryId = resolveEntryLibraryId;
   async function handleConfirmTermCandidates(message) {
@@ -186,6 +196,7 @@ export function installTermDiscoveryMessages(runtime) {
         target: String(entry && entry.target || "").trim().slice(0, runtime.glossaryCore.MAX_TARGET_LENGTH),
         note: String(entry && entry.note || "").trim().slice(0, runtime.glossaryCore.MAX_NOTE_LENGTH),
         chapterKey: String(entry && entry.chapterKey || "").trim(),
+        pageUrl: String(entry && entry.pageUrl || "").trim(),
         libraryId: runtime.glossaryCore.normalizeLibraryId(entry && entry.libraryId)
       })).filter(entry => entry.source && entry.target);
       if (requestedEntries.length === 0) {
@@ -219,10 +230,17 @@ export function installTermDiscoveryMessages(runtime) {
           configuration.translation.sourceLanguage, requested.source
         );
         const sourceLanguage = resolvedSource === "auto" ? "ko" : resolvedSource;
-        const libraryId = resolveEntryLibraryId(libraries, requested.libraryId, libraryByChapter.get(requested.chapterKey));
+        const libraryId = resolveEntryLibraryId(libraries, requested.libraryId, libraryByChapter.get(requested.chapterKey), requested.pageUrl);
         const sourceKey = `${libraryId}\u0000${sourceLanguage}>${targetLanguage}:${runtime.termDiscoveryCore.getSourceKey(requested.source)}`;
+        const existingIndex = indexBySource.has(sourceKey) ? indexBySource.get(sourceKey) : -1;
+        const existingEntry = existingIndex >= 0 ? entries[existingIndex] : null;
+        // 已有条目必须保住原来的 id：服务端按 id 删行，每次确认都换一个新 id 的话，
+        // 术语库页删的就是服务端不存在的行（旧版服务端还把 404 包成 500），删完刷新又复活。
+        const entryId = existingEntry
+          ? existingEntry.id
+          : `term-auto-${runtime.hashString(`${libraryId}\u0000${requested.source}\u0000${Date.now()}\u0000${confirmedSources.length}`)}`;
         const entry = runtime.glossaryCore.normalizeGlossaryEntry({
-          id: `term-auto-${runtime.hashString(`${libraryId}\u0000${requested.source}\u0000${Date.now()}\u0000${confirmedSources.length}`)}`,
+          id: entryId,
           source: requested.source,
           target: requested.target,
           sourceLanguage,
@@ -234,11 +252,8 @@ export function installTermDiscoveryMessages(runtime) {
         if (!entry) {
           continue;
         }
-        if (indexBySource.has(sourceKey)) {
-          entries[indexBySource.get(sourceKey)] = {
-            ...entries[indexBySource.get(sourceKey)],
-            ...entry
-          };
+        if (existingEntry) {
+          entries[existingIndex] = { ...existingEntry, ...entry };
         } else if (entries.length < runtime.glossaryCore.MAX_TOTAL_ENTRIES
           && entries.filter(item => item.libraryId === libraryId).length < runtime.glossaryCore.MAX_ENTRIES_PER_LIBRARY) {
           indexBySource.set(sourceKey, entries.length);
@@ -279,7 +294,7 @@ export function installTermDiscoveryMessages(runtime) {
       if (serverUrl) {
         for (const requested of requestedEntries) {
           const resolvedSource = runtime.languages.resolveSourceLanguage(configuration.translation.sourceLanguage, requested.source);
-          const libraryId = resolveEntryLibraryId(libraries, requested.libraryId, libraryByChapter.get(requested.chapterKey));
+          const libraryId = resolveEntryLibraryId(libraries, requested.libraryId, libraryByChapter.get(requested.chapterKey), requested.pageUrl);
           const storedEntry = nextGlossary.entries.find(item =>
             item.libraryId === libraryId && item.source === requested.source && item.target === requested.target);
           try {
@@ -311,6 +326,8 @@ export function installTermDiscoveryMessages(runtime) {
         ok: true,
         added: confirmedSources.length,
         libraryIds: [...confirmedLibraries],
+        // 调用方（侧栏）要把「加进哪个库」说出来 —— 这是本次修复的可见证据。
+        libraryNames: [...confirmedLibraries].map(id => runtime.glossaryCore.getLibraryName(libraries, id)),
         serverSynced,
         serverError,
         pendingCount: runtime.termDiscoveryCore.getPendingCount(nextPending)

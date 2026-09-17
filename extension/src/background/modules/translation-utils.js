@@ -167,6 +167,7 @@ export function installTranslationUtils(runtime) {
   // 对话引号兜底(shared/utils.js 实现,background 与 content 共用)
   runtime.DIALOGUE_QUOTE_PAIRS = sharedUtils.DIALOGUE_QUOTE_PAIRS;
   runtime.restoreDialogueQuotes = sharedUtils.restoreDialogueQuotes;
+  runtime.hasDroppedDialogueQuotes = sharedUtils.hasDroppedDialogueQuotes;
   function shouldRetryWithJpeg(reason) {
     const text = String(reason || "").toLowerCase();
     return /image format is not supported|unsupported image format|invalid image|invalid image_url/.test(text);

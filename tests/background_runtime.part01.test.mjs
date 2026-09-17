@@ -203,17 +203,13 @@ test("novel chunk retries only rejected paragraphs and enforces the book glossar
           translations: [
             { id: "p1", translated_text: "晟玄来了。" },
             { id: "p2", translated_text: "成贤离开了。" }
-          ],
-          memory_delta: { summary: "人物登场" }
+          ]
         };
       }
       if (items[0].id === "p3") {
         return { translations: [{ id: "p3", translated_text: "这是普通的一天。" }] };
       }
-      return {
-        translations: [{ id: "p2", translated_text: "晟玄离开了。" }],
-        memory_delta: { unresolved: ["去向"] }
-      };
+      return { translations: [{ id: "p2", translated_text: "晟玄离开了。" }] };
     }
   });
   const response = await context.__backgroundTest.handleTranslateNovelChunk({
@@ -276,8 +272,7 @@ test("novel chunk restores dialogue quotes on fresh and cached responses", async
         translations: [
           { id: "p1", translated_text: "但是，要吐的话就痛快吐出来，知道了吗？" },
           { id: "p2", translated_text: "“这本来就是对的。”" }
-        ],
-        memory_delta: {}
+        ]
       };
     }
   });
@@ -307,24 +302,6 @@ test("novel chunk restores dialogue quotes on fresh and cached responses", async
   assert.equal(cached.translations[0].translated_text, "“但是，要吐的话就痛快吐出来，知道了吗？”");
   assert.equal(cached.translations[1].translated_text, "“这本来就是对的。”");
   context.__backgroundTest.setBackgroundTestHooks(null);
-});
-test("novel memory commits a complete checkpoint and excludes later chapters on back-read", async () => {
-  installMemoryStorage({});
-  const background = context.__backgroundTest;
-  await background.handleSaveNovelMemory({
-    scopeKey: "kakao:1", chapterId: "c1", chapterOrder: 1,
-    memoryDeltas: [{ summary: "第一章" }]
-  });
-  await background.handleSaveNovelMemory({
-    scopeKey: "kakao:1", chapterId: "c3", chapterOrder: 3,
-    memoryDeltas: [{ summary: "第三章" }]
-  });
-  const response = await background.handleGetNovelMemory({
-    scopeKey: "kakao:1", chapterId: "c2", chapterOrder: 2
-  });
-  assert.equal(response.ok, true);
-  assert.match(response.context.memory.summary, /第一章/u);
-  assert.doesNotMatch(response.context.memory.summary, /第三章/u);
 });
 test("offline term discovery cools down without surfacing a translation failure", async () => {
   const stored = {

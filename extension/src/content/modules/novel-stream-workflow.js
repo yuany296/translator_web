@@ -16,7 +16,7 @@ export function installNovelStreamWorkflow(runtime) {
   // 服务端 /translations/stream 单次请求有 200 段上限(超出返回 422 too_long);
   // 默认按 50 段分批发送(设置项 novelStreamBatchSize 可调),每个请求结果一到就
   // 逐段替换,避免整章打包成一次请求导致结果集中到达、整章一次替换。
-  // 各批次共享同一份前文记忆与 previousTranslation,相互独立,因此同时并发
+  // 各批次共享同一份前文译文与 previousTranslation,相互独立,因此同时并发
   // 3 条流式请求,把整章串行等待模型生成的时间压到接近三分之一。
   const DEFAULT_STREAM_ITEMS_PER_REQUEST = 50;
   const MAX_STREAM_ITEMS_PER_REQUEST = 150;
@@ -40,8 +40,9 @@ export function installNovelStreamWorkflow(runtime) {
       sourceLanguage: runtime.getConfiguredSourceLanguage?.() || "auto",
       targetLanguage: runtime.getTargetLanguage?.() || "zh-CN",
       configFingerprint: fingerprint,
+      pageUrl: typeof location !== "undefined" ? location.href : "",
       context: {
-        chapterTitle: chapter.chapterTitle, memory: context.memory || {},
+        chapterTitle: chapter.chapterTitle,
         previousTranslation: context.previousTranslation || ""
       }
     };

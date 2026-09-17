@@ -63,6 +63,8 @@ export function installGlossaryEditor(runtime) {
         runtime.setPendingStatus(`读取失败：${runtime.getErrorMessage(error)}`, true);
       });
     }
+    // 切换 tab 时通知批量操作模块（批量操作只在正式术语 tab 有效）。
+    runtime.handleGlossaryTabSwitch?.(runtime.activeTab);
   }
   runtime.switchTab = switchTab;
   async function loadTermDiscoveryState(probe = false) {
@@ -98,12 +100,7 @@ export function installGlossaryEditor(runtime) {
   function renderPendingScope() {
     const chapters = scopedPendingChapters();
     const pendingCount = chapters.reduce((total, chapter) => total + chapter.candidates.length, 0);
-    const activeId = runtime.glossaryCore.normalizeLibraryId(runtime.activeLibraryId);
-    const scopeLabel = activeId
-      ? `本库（${runtime.glossaryCore.getLibraryName(runtime.glossary, activeId)}）`
-      : "全部";
     runtime.pendingTabBtn.textContent = `待确认（${pendingCount}）`;
-    runtime.pendingCountText.textContent = `${scopeLabel}最近 ${chapters.length} 话，共 ${pendingCount} 条待确认术语`;
     runtime.confirmFilledBtn.disabled = pendingCount === 0;
     runtime.ignoreAllBtn.textContent = pendingCount ? `永久忽略全部（${pendingCount}）` : "永久忽略全部";
     runtime.ignoreAllBtn.disabled = pendingCount === 0;
@@ -346,8 +343,6 @@ export function installGlossaryEditor(runtime) {
   runtime.resetProcessedBtn = resetProcessedBtn;
   const extractorStatus = document.getElementById("extractorStatus");
   runtime.extractorStatus = extractorStatus;
-  const pendingCountText = document.getElementById("pendingCountText");
-  runtime.pendingCountText = pendingCountText;
   const pendingChapters = document.getElementById("pendingChapters");
   runtime.pendingChapters = pendingChapters;
   const pendingEmptyState = document.getElementById("pendingEmptyState");

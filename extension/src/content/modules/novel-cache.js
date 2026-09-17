@@ -38,7 +38,7 @@ export function installNovelCache(runtime) {
       chapter.seriesId, chapter.chapterId, item.original_text, item.paragraphKey
     ));
     const records = await runtime.getTranslationCacheRecords(ids);
-    const fingerprint = await runtime.getTranslationConfigFingerprint("novel");
+    const fingerprint = await runtime.getTranslationConfigFingerprint("novel", typeof location !== "undefined" ? location.href : "");
     let hit = 0;
     let stale = 0;
     items.forEach((item, index) => {
@@ -67,7 +67,7 @@ export function installNovelCache(runtime) {
       return translated && String(translated).trim();
     });
     if (!translatedItems.length) return { ok: true, saved: 0 };
-    const fingerprint = await runtime.getTranslationConfigFingerprint("novel");
+    const fingerprint = await runtime.getTranslationConfigFingerprint("novel", typeof location !== "undefined" ? location.href : "");
     const entries = translatedItems.map(item => {
       const normalized = runtime.normalizeTranslationCacheText(item.original_text);
       const sourceHash = runtime.computeTranslationCacheHash(normalized);
@@ -132,7 +132,10 @@ export function installNovelCache(runtime) {
     }
     const chapter = runtime.extractKakaoNovelChapter(surface);
     if (!chapter) return { total: 0, hit: 0 };
-    const key = `${chapter.scopeKey}:${chapter.chapterId}`;
+    // 缓存覆盖必须按「屏」判定:KakaoPage 是分屏阅读,一章被拆成多屏,
+    // 首屏命中完整缓存不代表后面几屏也有。此前只用章节 key,首屏判定一次后
+    // 就不再重算,翻到没译过的屏仍显示「缓存已有完整译文」。
+    const key = `${chapter.scopeKey}:${chapter.chapterId}:${runtime.novelSurfaceSignature?.(surface) || ""}`;
     if (state.cacheCheckedKey === key) return { total: 0, hit: 0, skipped: true };
     const targetLanguage = runtime.getTargetLanguage?.() || "zh-CN";
     const items = chapter.paragraphs.filter(item => {
@@ -143,7 +146,7 @@ export function installNovelCache(runtime) {
       chapter.seriesId, chapter.chapterId, item.original_text, item.paragraphKey
     ));
     const records = await runtime.getTranslationCacheRecords(ids);
-    const fingerprint = await runtime.getTranslationConfigFingerprint("novel");
+    const fingerprint = await runtime.getTranslationConfigFingerprint("novel", typeof location !== "undefined" ? location.href : "");
     let hit = 0;
     let stale = 0;
     ids.forEach(id => {

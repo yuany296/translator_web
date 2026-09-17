@@ -10,7 +10,7 @@ import cacheCore from "../../shared/translation-cache.js";
 export function installTranslationConfig(runtime) {
   runtime.buildTranslationConfigFingerprint = cacheCore.buildTranslationConfigFingerprint;
 
-  async function getTranslationConfigFingerprint(mode = "novel") {
+  async function getTranslationConfigFingerprint(mode = "novel", pageUrl = "") {
     const normalizedMode = mode === "webpage" ? "webpage" : mode === "comic" ? "comic" : "novel";
     const promptVersion = normalizedMode === "webpage"
       ? runtime.WEBPAGE_TRANSLATION_PROMPT_VERSION
@@ -25,7 +25,7 @@ export function installTranslationConfig(runtime) {
         sourceLanguage: settings.sourceLanguage || "auto",
         targetLanguage: settings.targetLanguage || "zh-CN",
         promptVersion,
-        glossaryVersion: runtime.glossaryCore.getFingerprint(settings.glossary, { scopeKey: "" })
+        glossaryVersion: runtime.glossaryCore.getFingerprint(settings.glossary, { scopeKey: "", pageUrl })
       });
     } catch (error) {
       console.warn("[MangaTranslator] config fingerprint unavailable", runtime.getErrorMessage(error));

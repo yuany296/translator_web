@@ -191,3 +191,123 @@ test("term discovery state exposes library definitions to the panel", async () =
   assert.equal(state.libraries[1].name, "骸骨皇女");
   assert.equal(OVERVIEW_URL.startsWith(state.libraries[1].urls[0]), true);
 });
+
+// 「管理当前章节译文」侧栏加术语：这一章通常从未跑过候选提取，
+// pending 里没有它，只能靠请求里带的页面地址认归属库。
+const UNBOUND_URL = "https://page.kakao.com/content/11111111/viewer/22222222/";
+
+test("adding a term from the chapter manager lands in the library bound to the page URL", async () => {
+  const stored = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:1" } }
+  });
+
+  const confirmed = await background.handleConfirmTermCandidates({
+    entries: [{ source: "이율", target: "伊律", pageUrl: CHAPTER_URL, chapterKey: CHAPTER_URL }]
+  });
+
+  assert.equal(confirmed.ok, true, JSON.stringify(plain(confirmed)));
+  assert.deepEqual(plain(confirmed.libraryIds), ["kakao-novel"]);
+  assert.deepEqual(plain(confirmed.libraryNames), ["骸骨皇女"]);
+  const entry = stored.mt_glossary_v2.entries[0];
+  assert.equal(entry.libraryId, "kakao-novel");
+  assert.equal(entry.target, "伊律");
+});
+
+test("a page with no bound library still falls back to the default library", async () => {
+  const stored = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:1" } }
+  });
+
+  const confirmed = await background.handleConfirmTermCandidates({
+    entries: [{ source: "이율", target: "伊律", pageUrl: UNBOUND_URL, chapterKey: UNBOUND_URL }]
+  });
+
+  assert.equal(confirmed.ok, true);
+  assert.deepEqual(plain(confirmed.libraryIds), ["default"]);
+  assert.equal(stored.mt_glossary_v2.entries[0].libraryId, "default");
+});
+
+test("an entry that names its own library beats the page URL match", async () => {
+  const stored = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:1" } }
+  });
+
+  const confirmed = await background.handleConfirmTermCandidates({
+    entries: [{ source: "이율", target: "伊律", pageUrl: CHAPTER_URL, libraryId: "default" }]
+  });
+
+  assert.equal(confirmed.ok, true);
+  assert.deepEqual(plain(confirmed.libraryIds), ["default"]);
+  assert.equal(stored.mt_glossary_v2.entries[0].libraryId, "default");
+});
+
+test("a disabled library bound to the page URL does not capture the term", async () => {
+  const glossary = novelGlossary();
+  glossary.libraries[1].enabled = false;
+  const stored = installStorage({
+    mt_glossary_v2: glossary,
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:1" } }
+  });
+
+  const confirmed = await background.handleConfirmTermCandidates({
+    entries: [{ source: "이율", target: "伊律", pageUrl: CHAPTER_URL }]
+  });
+
+  assert.equal(confirmed.ok, true);
+  assert.deepEqual(plain(confirmed.libraryIds), ["default"]);
+  assert.equal(stored.mt_glossary_v2.entries[0].libraryId, "default");
+});
+
+test("a chapter that already has a library keeps it over the page URL match", async () => {
+  const stored = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:1" } },
+    mt_glossary_pending_v1: {
+      chapters: [{
+        key: CHAPTER_URL, url: CHAPTER_URL, title: "第 12 话", libraryId: "default",
+        libraryManual: true, candidates: []
+      }]
+    }
+  });
+
+  const confirmed = await background.handleConfirmTermCandidates({
+    entries: [{ source: "이율", target: "伊律", pageUrl: CHAPTER_URL, chapterKey: CHAPTER_URL }]
+  });
+
+  assert.equal(confirmed.ok, true);
+  assert.deepEqual(plain(confirmed.libraryIds), ["default"]);
+  assert.equal(stored.mt_glossary_v2.entries[0].libraryId, "default");
+});
+
+// 术语库页按 id 删行：再次确认同一条术语时必须沿用它原来的 id，
+// 否则本地 id 与服务端各走一套，删除会打到服务端不存在的行上，刷新后术语又回来了。
+test("re-confirming an existing term keeps its entry id", async () => {
+  const glossary = novelGlossary();
+  glossary.entries = [{
+    id: "term-keep-me", source: "성현", target: "成贤",
+    sourceLanguage: "ko", targetLanguage: "zh-CN", enabled: true,
+    scope: "global", scopeKey: "", scopeLabel: "", libraryId: "kakao-novel"
+  }];
+  const stored = installStorage({
+    mt_glossary_v2: glossary,
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:1" } },
+    mt_glossary_pending_v1: {
+      chapters: [{
+        key: CHAPTER_URL, url: CHAPTER_URL, title: "第 12 话", libraryId: "kakao-novel",
+        candidates: [{ source: "성현", kind: "person", score: 0.9 }]
+      }]
+    }
+  });
+
+  const confirmed = await background.handleConfirmTermCandidates({
+    entries: [{ chapterKey: CHAPTER_URL, candidateSource: "성현", source: "성현", target: "成贤" }]
+  });
+
+  assert.equal(confirmed.ok, true, JSON.stringify(plain(confirmed)));
+  assert.deepEqual(plain(confirmed.libraryIds), ["kakao-novel"]);
+  assert.equal(stored.mt_glossary_v2.entries.length, 1);
+  assert.equal(stored.mt_glossary_v2.entries[0].id, "term-keep-me");
+});

@@ -49,7 +49,6 @@ function makeHarness(options = {}) {
     taskId: "",
     chapterKey: "",
     translations: new Map(),
-    memoryDeltas: [],
     textDiagnostics: [],
     cacheSavedIds: new Set(),
     pendingParagraphs: new Set(),
@@ -87,9 +86,6 @@ function makeHarness(options = {}) {
     novelCore: {
       buildChunks: items => novel.buildChunks(items, 60)
     },
-    novelMemoryCore: {
-      mergeMemory: (base, delta) => ({ ...(base || {}), ...(delta || {}) })
-    },
     createTranslationOperation: (type, recordKey, payload) => ({ type, recordKey, payload }),
     commitTranslationOperation: async operation => {
       const entry = { itemId: operation.payload.segmentKey, at: Date.now(), endAt: 0 };
@@ -109,16 +105,13 @@ function makeHarness(options = {}) {
     translateNovelImages: async () => {},
     scheduleNovelTermDiscovery: () => {},
     sendRuntimeMessage: async message => {
-      if (message.type === "GET_NOVEL_MEMORY") return { ok: true, context: { revision: 0, memory: {} } };
       if (message.type === "CANCEL_TRANSLATION_TASK") return { ok: true, cancelled: 0 };
-      if (message.type === "SAVE_NOVEL_MEMORY") return { ok: true };
       if (message.type !== "TRANSLATE_NOVEL_CHUNK") throw new Error(`unexpected message ${message.type}`);
       const single = message.items.length === 1;
       requests.push({
         at: Date.now(),
         single,
         itemIds: message.items.map(item => item.id),
-        memory: message.memory,
         previousTranslation: message.previousTranslation
       });
       if (single) {
@@ -143,8 +136,7 @@ function makeHarness(options = {}) {
         ok: true,
         translations: rows,
         errors: [],
-        warnings: [],
-        memory_delta: { from: message.items[0].id }
+        warnings: []
       };
     }
   };
@@ -181,13 +173,6 @@ test("progressive chunks run as a window-2 pipeline with ordered context", async
     const previousChunkLastId = expectedChunks[index - 1].at(-1).id;
     assert.match(chunkRequests[index].previousTranslation, new RegExp(`T\\(${previousChunkLastId}\\)`));
   }
-  // memory_delta 依序并入:chunk i 的请求带 chunk i-1 的记忆。
-  assert.deepEqual(chunkRequests[1].memory, { from: expectedChunks[0][0].id });
-  assert.deepEqual(chunkRequests[2].memory, { from: expectedChunks[1][0].id });
-  assert.deepEqual(
-    harness.state.memoryDeltas.map(delta => delta.from),
-    expectedChunks.map(chunk => chunk[0].id)
-  );
 });
 
 test("the next chunk request overlaps the previous chunk commit phase", async () => {
@@ -229,10 +214,6 @@ test("a failed chunk stops the pipeline and lets the repair loop finish the chap
   assert.equal(chunkRequests.length, 1, "no further chunk requests after the first failure");
   assert.equal(repairRequests.length, 60, "every paragraph is repaired individually");
   assert.equal(harness.counters().maxRepairs, 3);
-  assert.deepEqual(
-    harness.state.memoryDeltas.map(delta => delta.from),
-    harness.chapter.paragraphs.map(item => item.id)
-  );
 });
 
 test("a commit failure aborts the chapter instead of silently dropping translations", async () => {

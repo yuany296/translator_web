@@ -66,7 +66,6 @@ function makeWorkflowToggleHarness() {
     showTranslation: true,
     translations: new Map([["p1", "译文"]]),
     taskId: "",
-    memoryDeltas: [],
     textDiagnostics: [],
     cacheSavedIds: new Set(),
     pendingParagraphs: new Set(),

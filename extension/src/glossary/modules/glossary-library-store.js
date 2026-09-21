@@ -295,11 +295,12 @@ export function installGlossaryLibraryStore(runtime) {
   }
   runtime.syncLibrariesToServer = syncLibrariesToServer;
   async function assignChapterLibrary(chapterKey, libraryId) {
-    const response = await runtime.sendRuntimeMessage({
+    // 与候选确认同一条后台通道：不设超时的话，后台忙起来这里也会一直静默。
+    const response = await runtime.withPendingTimeout(runtime.sendRuntimeMessage({
       type: "SET_PENDING_CHAPTER_LIBRARY",
       chapterKey,
       libraryId
-    });
+    }));
     if (!response || !response.ok) {
       throw new Error(response && response.error || "设置章节术语库失败");
     }

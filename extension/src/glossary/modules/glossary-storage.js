@@ -264,7 +264,10 @@ export function installGlossaryStorage(runtime) {
   function setPendingStatus(message, isError) {
     runtime.pendingStatusText.textContent = message;
     runtime.pendingStatusText.dataset.error = isError ? "true" : "false";
-    document.getElementById("pendingStatusSummary")?.classList.toggle("hidden", !message);
+    const summary = document.getElementById("pendingStatusSummary");
+    summary?.classList.toggle("hidden", !message);
+    // 候选卡可能滚在下面：报错时把那行提示带进视野，别让它停在屏幕外当成「没反应」。
+    if (message && isError) summary?.scrollIntoView?.({ block: "nearest" });
   }
   runtime.setPendingStatus = setPendingStatus;
   function getErrorMessage(error) {

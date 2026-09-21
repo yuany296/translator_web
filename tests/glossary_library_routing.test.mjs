@@ -311,3 +311,177 @@ test("re-confirming an existing term keeps its entry id", async () => {
   assert.equal(stored.mt_glossary_v2.entries.length, 1);
   assert.equal(stored.mt_glossary_v2.entries[0].id, "term-keep-me");
 });
+
+// 术语没收集到时，界面必须说得出是哪一步：成功几条 / 跳过原因 / 失败原因。
+// （提取器的健康探测会把状态翻回「在线」，所以失败原因要单独记账，不能被盖掉。）
+test("每次自动提取的结果都会记账", async () => {
+  const first = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:8765" } },
+    mt_glossary_pending_v1: { chapters: [] }
+  });
+  stubExtractor([{ source: "성현", kind: "person", score: 0.9, evidenceIds: ["b1"] }]);
+  background.markTermExtractorOnline();
+  const request = {
+    type: "DISCOVER_TERMS",
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/ledger-case/",
+    pageTitle: "第 12 话",
+    targetKey: "image-ledger",
+    blocks
+  };
+  await background.handleDiscoverTerms(request);
+  assert.equal(first.mt_term_discovery_last_v1.outcome, "added");
+  assert.equal(first.mt_term_discovery_last_v1.added, 1);
+  assert.equal(first.mt_term_discovery_last_v1.returned, 1);
+
+  // 同样的段落再提取一次：会说「已经提取过」，而不是假装什么都没发生
+  await background.handleDiscoverTerms(request);
+  assert.equal(first.mt_term_discovery_last_v1.outcome, "skipped");
+  assert.equal(first.mt_term_discovery_last_v1.reason, "already_processed");
+
+  // 提取器本身报错：原因要落盘（页面上显示「在线」也不该盖掉它）
+  const second = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:8765" } },
+    mt_glossary_pending_v1: { chapters: [] }
+  });
+  background.markTermExtractorOnline();
+  background.requestTermExtractorJson = async () => {
+    throw new Error("401 Unauthorized");
+  };
+  const failed = await background.handleDiscoverTerms({
+    type: "DISCOVER_TERMS",
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/ledger-fail/",
+    targetKey: "image-ledger-fail",
+    blocks
+  });
+  assert.equal(failed.reason, "offline");
+  assert.equal(second.mt_term_discovery_last_v1.outcome, "failed");
+  assert.match(String(second.mt_term_discovery_last_v1.error), /401 Unauthorized/);
+});
+
+// 提取预算按分段数放大：服务端每 3000 字符一次 LLM 调用、串行跑。
+// 固定 600 秒时，大章节「还在正常跑」就被判超时、结果整份丢掉 + 冷却 5 分钟。
+test("提取超时预算随章节长度放大，且有上下限", () => {
+  const short = background.termExtractionTimeoutMs([
+    { originalText: "성현이 말했다", translatedText: "成贤说道" }
+  ]);
+  assert.equal(short, background.TERM_EXTRACTOR_MIN_LLM_TIMEOUT_MS, "短章节不该等满 10 分钟");
+
+  const medium = background.termExtractionTimeoutMs([
+    { originalText: "가".repeat(9000), translatedText: "啊".repeat(9000) }
+  ]);
+  assert.equal(medium, 6 * background.TERM_EXTRACTOR_CHUNK_BUDGET_MS, "18000 字 = 6 段");
+
+  const huge = background.termExtractionTimeoutMs([
+    { originalText: "가".repeat(120000), translatedText: "啊".repeat(120000) }
+  ]);
+  assert.equal(huge, background.TERM_EXTRACTOR_MAX_TIMEOUT_MS, "再长也有上限");
+});
+
+test("提取超时只罚一分钟冷却，并单独记账", async () => {
+  const stored = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:8765" } },
+    mt_glossary_pending_v1: { chapters: [] }
+  });
+  background.markTermExtractorOnline();
+  background.requestTermExtractorJson = async () => {
+    const timeout = new Error("术语提取请求超时");
+    timeout.timeout = true;
+    throw timeout;
+  };
+  const response = await background.handleDiscoverTerms({
+    type: "DISCOVER_TERMS",
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/timeout-case/",
+    targetKey: "image-timeout",
+    blocks
+  });
+  // 内容脚本只认 offline/cooldown/throttled 才会自动重试
+  assert.equal(response.reason, "offline");
+  assert.equal(stored.mt_term_discovery_last_v1.outcome, "failed");
+  assert.equal(stored.mt_term_discovery_last_v1.reason, "timeout");
+  assert.match(String(stored.mt_term_discovery_last_v1.error), /超时/);
+  const remaining = background.getTermExtractorStatusSnapshot().cooldownUntil - Date.now();
+  assert.ok(remaining > 0, "超时后要短暂退避一下");
+  assert.ok(remaining <= background.TERM_EXTRACTOR_TIMEOUT_COOLDOWN_MS + 1000,
+    "超时只罚一分钟，不能罚满 5 分钟，否则后面几章的收集一起被罚掉");
+});
+
+test("提取还在跑就先记账：页面能显示「正在提取」而不是一片空白", async () => {
+  const stored = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:8765" } },
+    mt_glossary_pending_v1: { chapters: [] }
+  });
+  background.markTermExtractorOnline();
+  let release = () => {};
+  const gate = new Promise(resolve => { release = resolve; });
+  background.requestTermExtractorJson = () => gate;
+  const running = background.handleDiscoverTerms({
+    type: "DISCOVER_TERMS",
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/running-case/",
+    targetKey: "image-running",
+    blocks
+  });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(stored.mt_term_discovery_last_v1.outcome, "running");
+  assert.ok(stored.mt_term_discovery_last_v1.startedAt > 0);
+  assert.ok(stored.mt_term_discovery_last_v1.budgetMs > 0, "页面上要能说清本次预算");
+
+  release({ ok: true, engine: "heuristic", candidates: [{ source: "성현", kind: "person", score: 0.9, evidenceIds: ["b1"] }] });
+  const done = await running;
+  assert.equal(done.added, 1);
+  assert.equal(stored.mt_term_discovery_last_v1.outcome, "added");
+  assert.equal(stored.mt_term_discovery_last_v1.added, 1);
+});
+
+// 事故回归：整章术语提取挂在 LLM 上游（超时上限 10 分钟）时，用户点「确认加入」/
+// 「本话忽略」曾经一起卡死——它们和提取请求排在后台同一条串行队列里，
+// 页面端又没有超时，看起来就是「按钮点不动」，重载扩展才恢复。
+test("a stalled term extraction no longer blocks confirming a candidate", async () => {
+  const stored = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    // 端口 1：确认流程里的服务端同步会立刻失败，别打到真实的本地服务。
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:1" } },
+    mt_glossary_pending_v1: {
+      chapters: [{
+        key: CHAPTER_URL, url: CHAPTER_URL, title: "第 12 话", libraryId: "kakao-novel",
+        candidates: [{ source: "성현", kind: "person", score: 0.9 }]
+      }]
+    }
+  });
+  background.markTermExtractorOnline();
+  const originalExtractor = background.requestTermExtractorJson;
+  let releaseExtraction = () => {};
+  const stalledExtraction = new Promise(resolve => { releaseExtraction = resolve; });
+  background.requestTermExtractorJson = () => stalledExtraction;
+  const stalled = background.handleDiscoverTerms({
+    type: "DISCOVER_TERMS",
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/blocked-case/",
+    targetKey: "image-blocked",
+    blocks: [{ id: "b-blocked", originalText: "성현이 말했다", translatedText: "成贤说道" }]
+  });
+
+  const confirmed = await Promise.race([
+    background.handleConfirmTermCandidates({
+      entries: [{ chapterKey: CHAPTER_URL, candidateSource: "성현", source: "성현", target: "成贤" }]
+    }),
+    new Promise(resolve => setTimeout(() => resolve("blocked"), 500))
+  ]);
+
+  assert.notEqual(confirmed, "blocked", "确认不该排在整章术语提取后面");
+  assert.equal(confirmed.ok, true, JSON.stringify(plain(confirmed)));
+  assert.equal(stored.mt_glossary_v2.entries[0].target, "成贤");
+
+  // 放行提取：结果晚到也不能把用户刚确认的术语重新塞回待确认。
+  releaseExtraction({
+    ok: true, engine: "heuristic",
+    candidates: [{ source: "성현", kind: "person", score: 0.9, evidenceIds: ["b-blocked"] }]
+  });
+  await stalled;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  background.requestTermExtractorJson = originalExtractor;
+  assert.equal(stored.mt_glossary_pending_v1.chapters.every(chapter => chapter.candidates.length === 0), true);
+  assert.equal(stored.mt_glossary_v2.entries.length, 1, "术语没有因为提取回写而重复");
+});

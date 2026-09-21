@@ -183,6 +183,8 @@ export function installGlossaryLibraryPanel(runtime) {
     }
     const chapterKey = select.dataset.chapterKey;
     const chosen = select.value;
+    // 先给反馈：后台忙的时候（比如正跑整章术语提取）不能让下拉看起来没反应。
+    runtime.setPendingStatus("正在保存章节归属…", false);
     try {
       await runtime.assignChapterLibrary(chapterKey, chosen);
       const chapter = runtime.pendingStore.chapters.find(item => item.key === chapterKey);

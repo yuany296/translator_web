@@ -188,7 +188,7 @@ async function createLibraryThroughUi(page, name, urls = []) {
   return page.stored.mt_glossary_v2.libraries.find(library => library.name === name);
 }
 
-function createPage() {
+function createPage(options = {}) {
   const elements = new Map();
   const documentListeners = new Map();
   const stored = {};
@@ -222,7 +222,11 @@ function createPage() {
     runtime: {
       lastError: null,
       getURL: value => `chrome-extension://test/${value}`,
-      sendMessage: (message, callback) => callback(messageHandler(message))
+      sendMessage: (message, callback) => {
+        const result = messageHandler(message);
+        // 返回 undefined 表示「后台不回话」：回调永不触发，用来复现页面端的静默等待。
+        if (result !== undefined) callback(result);
+      }
     },
     storage: {
       local: {
@@ -241,6 +245,8 @@ function createPage() {
   const context = vm.createContext({
     chrome,
     document,
+    // 页面端「后台多久不回话就算超时」的测试钩子：默认 20 秒，用例里收短。
+    __MT_PENDING_ACTION_TIMEOUT_MS: options.pendingActionTimeoutMs,
     window: { confirm: () => true },
     confirm: () => true,
     console,
@@ -520,4 +526,89 @@ test("turning a library switch off stops it from capturing new terms", async () 
   assert.ok(hint, "总览下应看得到这一章的候选控件");
   assert.match(hint.textContent, /网址未匹配绑定/u);
   assert.doesNotMatch(hint.textContent, /骸骨皇女/u);
+});
+
+// 事故回归：后台串行队列被整章术语提取占着时，页面端曾经一直静默等下去，
+// 「确认加入」看上去完全没反应（没有提示、没有变化）。现在要先给「正在…」，
+// 超时后明确说清是后台没回话。
+test("a pending action gives feedback right away and times out loudly", async () => {
+  const page = createPage({ pendingActionTimeoutMs: 30 });
+  page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE" ? discoveryState : undefined);
+  await page.boot();
+
+  await page.elements.get("pendingTabBtn").dispatch("click");
+  await settle();
+  page.attachAll();
+
+  const card = page.elements.get("pendingChapters").querySelectorAll(".candidate-card")[0];
+  assert.ok(card, "待确认列表里应该有一张候选卡");
+  card.querySelector(".candidate-target").value = "成贤";
+  card.querySelector(".candidate-target").dataset.userEdited = "true";
+  const confirmBtn = card.querySelector("button[data-action='confirm']");
+  const clicking = card.dispatch("click", { target: confirmBtn });
+
+  // 后台还没回话，提示就应该已经在了
+  await settle(1);
+  assert.match(page.elements.get("pendingStatusText").textContent, /正在加入/u);
+  assert.equal(page.elements.get("pendingStatusSummary").classList.contains("hidden"), false);
+
+  await clicking;
+  await settle();
+  assert.match(page.elements.get("pendingStatusText").textContent, /后台没有响应/u);
+  assert.match(page.elements.get("pendingStatusText").textContent, /稍后重试/u);
+  assert.equal(page.elements.get("pendingStatusText").dataset.error, "true");
+});
+
+// 术语没收集到时，那句「术语提取器：在线」是没用的：页面必须把最近一次失败的原因说出来。
+test("待确认页会说清最近一次自动提取怎么了", async () => {
+  const page = createPage();
+  page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE"
+    ? {
+      ...discoveryState,
+      status: { state: "online", engine: "ollama" },
+      lastDiscovery: { at: Date.now(), outcome: "failed", reason: "offline", error: "401 Unauthorized" }
+    }
+    : { ok: true });
+  await page.boot();
+  await page.elements.get("pendingTabBtn").dispatch("click");
+  await settle();
+
+  const status = page.elements.get("extractorStatus");
+  assert.match(status.textContent, /在线/u);
+  assert.match(status.textContent, /上次提取失败/u);
+  assert.match(status.textContent, /401 Unauthorized/u);
+  assert.match(status.title, /401 Unauthorized/u);
+});
+
+test("提取到的东西全被去重时，页面说的是「都不是新候选」而不是没反应", async () => {
+  const page = createPage();
+  page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE"
+    ? {
+      ...discoveryState,
+      lastDiscovery: { at: Date.now(), outcome: "added", reason: "no_new_candidates", returned: 4, added: 0 }
+    }
+    : { ok: true });
+  await page.boot();
+  await page.elements.get("pendingTabBtn").dispatch("click");
+  await settle();
+
+  const status = page.elements.get("extractorStatus");
+  assert.match(status.textContent, /返回 4 条，都不是新候选/u);
+});
+
+test("提取卡住时页面显示「正在提取（已 N 分钟）」，一眼分辨是卡住而不是没触发", async () => {
+  const page = createPage();
+  page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE"
+    ? {
+      ...discoveryState,
+      lastDiscovery: { outcome: "running", startedAt: Date.now() - 3 * 60 * 1000, budgetMs: 450000 }
+    }
+    : { ok: true });
+  await page.boot();
+  await page.elements.get("pendingTabBtn").dispatch("click");
+  await settle();
+
+  const status = page.elements.get("extractorStatus");
+  assert.match(status.textContent, /正在提取（已 3 分钟/u);
+  assert.match(status.textContent, /预算最多约 8 分钟/u);
 });

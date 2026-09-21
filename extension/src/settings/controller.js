@@ -1,6 +1,8 @@
 import { probeLocalServiceDocumentAccess } from "./local-service-access.js";
 import { installVendorUi } from "./vendor-ui.js";
 import { installServiceSelection } from "./service-selection.js";
+import { describeNovelSpeed } from "../shared/novel-speed.js";
+import { WEBPAGE_SPEED_PRESETS, describeWebpageSpeed, isWebpageFastMode } from "../shared/webpage-speed.js";
 
 const byId = (id) => document.getElementById(id);
 const value = (id) => byId(id).value.trim();
@@ -75,12 +77,57 @@ function fill(configuration) {
     ["showBall", runtime.showBall], ["ignoreSimplifiedChinese", runtime.ignoreSimplifiedChinese]
   ].forEach(([id, v]) => { byId(id).checked = v === true; });
   [
-    ["pretranslateMode", runtime.pretranslateMode], ["captureMode", runtime.captureMode], ["renderMode", runtime.renderMode], ["floatingSide", runtime.floatingSide],
+    ["pretranslateMode", runtime.pretranslateMode], ["pretranslateAheadCount", runtime.pretranslateAheadCount], ["captureMode", runtime.captureMode], ["renderMode", runtime.renderMode], ["floatingSide", runtime.floatingSide],
     ["overwriteFontScale", runtime.overwriteFontScale], ["overwriteCoverPadding", runtime.overwriteCoverPadding], ["novelStreamBatchSize", runtime.novelStreamBatchSize],
+    ["novelStreamConcurrency", runtime.novelStreamConcurrency], ["novelChunkChars", runtime.novelChunkChars],
+    ["novelRepairConcurrency", runtime.novelRepairConcurrency],
+    ["webpageConcurrency", runtime.webpageConcurrency], ["webpageBatchItems", runtime.webpageBatchItems],
+    ["webpageBatchChars", runtime.webpageBatchChars],
     ["debugOverlayMode", runtime.debugOverlayMode], ["overwritePreviewMode", runtime.overwritePreviewMode]
   ].forEach(([id, v]) => { byId(id).value = v; });
+  // 勾选状态按刚回填的三个输入框推出来（isWebpageFastMode 认的是 concurrency/batchItems/batchChars）
+  syncWebpageFastMode();
+  updateNovelSpeedHint();
+  updateWebpageSpeedHint();
   showOcrProvider();
   updateOcrHint();
+}
+
+/** 「当前会怎么跑」：让用户不用试就知道并发 × 每批段数是一轮的上限。 */
+function updateNovelSpeedHint() {
+  byId("novelSpeedHint").textContent = describeNovelSpeed({
+    streamConcurrency: numberValue("novelStreamConcurrency"),
+    streamBatchSize: numberValue("novelStreamBatchSize"),
+    chunkChars: numberValue("novelChunkChars"),
+    repairConcurrency: numberValue("novelRepairConcurrency")
+  });
+}
+
+/** 网页翻译速度卡：三格与「快速模式」勾选互相照镜子，提示行实时算出一批大概多大。 */
+function readWebpageSpeedInputs() {
+  return {
+    concurrency: numberValue("webpageConcurrency"),
+    batchItems: numberValue("webpageBatchItems"),
+    batchChars: numberValue("webpageBatchChars")
+  };
+}
+
+function updateWebpageSpeedHint() {
+  byId("webpageSpeedHint").textContent = describeWebpageSpeed(readWebpageSpeedInputs());
+}
+
+/** 一键填档：只改输入框，落盘仍由「保存阅读设置」负责（与小说卡同一套模型）。 */
+function applyWebpageSpeedPreset(fast) {
+  const preset = fast ? WEBPAGE_SPEED_PRESETS.fast : WEBPAGE_SPEED_PRESETS.normal;
+  byId("webpageConcurrency").value = String(preset.concurrency);
+  byId("webpageBatchItems").value = String(preset.batchItems);
+  byId("webpageBatchChars").value = String(preset.batchChars);
+  updateWebpageSpeedHint();
+}
+
+/** 用户手改任意一格，勾选状态要跟着掉，否则「快速模式」会说谎。 */
+function syncWebpageFastMode() {
+  byId("webpageFastMode").checked = isWebpageFastMode(readWebpageSpeedInputs());
 }
 
 let configuration = null;
@@ -139,11 +186,16 @@ async function saveReading() {
   setStatus("readingStatus", "保存中…");
   await saveSection("runtime", {
     ...configuration.runtime,
-    pretranslateMode: value("pretranslateMode"), captureMode: value("captureMode"), renderMode: value("renderMode"),
+    pretranslateMode: value("pretranslateMode"), pretranslateAheadCount: numberValue("pretranslateAheadCount"), captureMode: value("captureMode"), renderMode: value("renderMode"),
     showBall: checked("showBall"), ignoreSimplifiedChinese: checked("ignoreSimplifiedChinese"),
     floatingSide: value("floatingSide"), overwriteFontScale: numberValue("overwriteFontScale"), overwriteCoverPadding: numberValue("overwriteCoverPadding"),
-    novelStreamBatchSize: numberValue("novelStreamBatchSize"), debugOverlayMode: value("debugOverlayMode"), overwritePreviewMode: value("overwritePreviewMode")
+    novelStreamBatchSize: numberValue("novelStreamBatchSize"), debugOverlayMode: value("debugOverlayMode"), overwritePreviewMode: value("overwritePreviewMode"),
+    novelStreamConcurrency: numberValue("novelStreamConcurrency"), novelChunkChars: numberValue("novelChunkChars"),
+    novelRepairConcurrency: numberValue("novelRepairConcurrency"),
+    webpageConcurrency: numberValue("webpageConcurrency"), webpageBatchItems: numberValue("webpageBatchItems"),
+    webpageBatchChars: numberValue("webpageBatchChars")
   });
+  fill(configuration);
   setStatus("readingStatus", "已保存");
 }
 
@@ -221,6 +273,17 @@ document.querySelectorAll("[data-route]").forEach(node => node.addEventListener(
 window.addEventListener("hashchange", () => activateRoute(location.hash.slice(1)));
 byId("ocrProvider").addEventListener("change", showOcrProvider);
 byId("sourceLanguage").addEventListener("change", updateOcrHint);
+// 速度参数是改完下一次翻译才生效，所以输入时就实时算出「一轮能翻多少段」，不用等保存
+["novelStreamConcurrency", "novelStreamBatchSize", "novelChunkChars", "novelRepairConcurrency"]
+  .forEach(id => byId(id).addEventListener("input", updateNovelSpeedHint));
+// 网页翻译速度同理：边输边算「一批多大」，手改任意一格就让「快速模式」勾选跟着掉
+["webpageConcurrency", "webpageBatchItems", "webpageBatchChars"].forEach(id => {
+  byId(id).addEventListener("input", () => {
+    updateWebpageSpeedHint();
+    syncWebpageFastMode();
+  });
+});
+byId("webpageFastMode").addEventListener("change", () => applyWebpageSpeedPreset(byId("webpageFastMode").checked));
 byId("saveGeneralBtn").addEventListener("click", () => void run(saveGeneral, "generalStatus"));
 byId("saveOcrBtn").addEventListener("click", () => void run(saveOcr, "ocrStatus"));
 byId("testOcrBtn").addEventListener("click", () => void run(() => testConnection("ocr"), "ocrStatus"));

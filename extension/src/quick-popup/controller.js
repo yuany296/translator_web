@@ -25,25 +25,12 @@ function displayMode() {
   return document.querySelector("input[name='displayMode']:checked")?.value || "translated";
 }
 
-const FAST_MODE = Object.freeze({ concurrency: 5, batchItems: 32, batchChars: 3200 });
-const NORMAL_MODE = Object.freeze({ concurrency: 3, batchItems: 24, batchChars: 1600 });
-
-function isFastMode(runtime) {
-  return runtime.webpageConcurrency === FAST_MODE.concurrency
-    && runtime.webpageBatchItems === FAST_MODE.batchItems
-    && runtime.webpageBatchChars === FAST_MODE.batchChars;
-}
-
 function fill(configuration) {
   const { ocr, translation, runtime } = configuration;
   byId("runtimeEnabled").checked = runtime.enabled;
   byId("sourceLanguage").value = translation.sourceLanguage;
   byId("targetLanguage").value = translation.targetLanguage;
   document.querySelector(`input[name='displayMode'][value='${runtime.displayMode}']`).checked = true;
-  byId("webpageFastMode").checked = isFastMode(runtime);
-  byId("webpageConcurrency").value = String(runtime.webpageConcurrency);
-  byId("webpageBatchItems").value = String(runtime.webpageBatchItems);
-  byId("webpageBatchChars").value = String(runtime.webpageBatchChars);
   byId("ocrDebug").checked = ocr.localPaddle.debug === true;
 }
 
@@ -91,10 +78,7 @@ function saveRuntime() {
   return queueSave("runtime", {
     ...configuration.runtime,
     enabled: byId("runtimeEnabled").checked,
-    displayMode: displayMode(),
-    webpageConcurrency: Number(byId("webpageConcurrency").value),
-    webpageBatchItems: Number(byId("webpageBatchItems").value),
-    webpageBatchChars: Number(byId("webpageBatchChars").value)
+    displayMode: displayMode()
   });
 }
 
@@ -152,24 +136,6 @@ byId("sourceLanguage").addEventListener("change", () => void saveLanguages());
 byId("targetLanguage").addEventListener("change", () => void saveLanguages());
 document.querySelectorAll("input[name='displayMode']").forEach(node => {
   node.addEventListener("change", () => void saveRuntime());
-});
-byId("webpageFastMode").addEventListener("change", () => {
-  const fast = byId("webpageFastMode").checked;
-  const mode = fast ? FAST_MODE : NORMAL_MODE;
-  byId("webpageConcurrency").value = String(mode.concurrency);
-  byId("webpageBatchItems").value = String(mode.batchItems);
-  byId("webpageBatchChars").value = String(mode.batchChars);
-  void saveRuntime();
-});
-["webpageConcurrency", "webpageBatchItems", "webpageBatchChars"].forEach(id => {
-  byId(id).addEventListener("change", () => {
-    byId("webpageFastMode").checked = isFastMode({
-      webpageConcurrency: Number(byId("webpageConcurrency").value),
-      webpageBatchItems: Number(byId("webpageBatchItems").value),
-      webpageBatchChars: Number(byId("webpageBatchChars").value)
-    });
-    void saveRuntime();
-  });
 });
 byId("ocrDebug").addEventListener("change", () => void saveOcr());
 byId("translateBtn").addEventListener("click", () => void translateVisible().catch(error => setStatus(error.message, true)));

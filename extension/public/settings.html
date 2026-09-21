@@ -167,13 +167,24 @@
     <section class="settings-panel hidden" data-panel="reading">
       <article class="setting-card">
         <div class="card-title"><div><h2>翻译策略</h2><p>设置阅读过程中默认如何发起任务。</p></div></div>
-        <div class="form-grid three"><label>预翻译模式<select id="pretranslateMode"><option value="manual">手动翻译</option><option value="ahead">领先预翻译（后续 6 张）</option><option value="continuous">连续到章节末尾</option></select></label><label>取图方式<select id="captureMode"><option value="direct">直接读取</option><option value="screenshot">可视区截图</option></select></label><label>漫画渲染<select id="renderMode"><option value="overlay">DOM 覆盖</option><option value="embedded">嵌入图片</option></select></label></div>
+        <div class="form-grid three"><label>预翻译模式<select id="pretranslateMode"><option value="manual">手动翻译</option><option value="ahead">领先预翻译（后续 6 张）</option><option value="continuous">连续到章节末尾</option></select></label><label>领先张数<input id="pretranslateAheadCount" type="number" min="1" max="12" step="1" /><small>领先预翻译一次预取几张，越大越不容易在滚动时追不上（也更费额度）</small></label><label>取图方式<select id="captureMode"><option value="direct">直接读取</option><option value="screenshot">可视区截图</option></select></label><label>漫画渲染<select id="renderMode"><option value="overlay">DOM 覆盖</option><option value="embedded">嵌入图片</option></select></label></div>
       </article>
       <article class="setting-card">
         <div class="card-title"><div><h2>阅读辅助</h2><p>管理悬浮入口、术语发现和文本处理。</p></div></div>
         <div class="toggle-list"><label><span><b>显示悬浮按钮</b><small>在页面右侧显示漫画、小说和网页操作入口</small></span><input id="showBall" type="checkbox" /></label><label><span><b>忽略简体中文内容</b><small>扫描网页时跳过确认是简体中文的文本</small></span><input id="ignoreSimplifiedChinese" type="checkbox" /></label></div>
         <div class="form-grid three"><label>悬浮侧边<select id="floatingSide"><option value="right">右侧</option><option value="left">左侧</option></select></label><label>译文缩放<input id="overwriteFontScale" type="number" min="0.5" max="2.5" step="0.05" /></label><label>覆盖范围<input id="overwriteCoverPadding" type="number" min="0" max="1.2" step="0.05" /></label></div>
         <div class="form-grid three"><label>小说流式分段<input id="novelStreamBatchSize" type="number" min="5" max="150" step="5" /><small>每个流式请求翻译的段落数，越小结果分批到达越频繁</small></label></div>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>小说翻译速度</h2><p>小说正文先走流式（可并发），流式不可用时回退到渐进小批；调大这些值更快，但也更容易撞服务商限流。</p></div></div>
+        <div class="form-grid three"><label>流式并发<input id="novelStreamConcurrency" type="number" min="1" max="8" step="1" /><small>同时并发的流式请求数，一轮最多翻「并发 × 每批段数」段</small></label><label>渐进每块字数<input id="novelChunkChars" type="number" min="400" max="4000" step="100" /><small>回退通道按这个字数切块；块之间严格按顺序等，块越大轮数越少</small></label><label>补翻并发<input id="novelRepairConcurrency" type="number" min="1" max="8" step="1" /><small>漏译逐段补齐的并发数，各段互不影响</small></label></div>
+        <span id="novelSpeedHint" class="inline-status"></span>
+      </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>网页翻译速度</h2><p>网页正文翻译的分批与并发。越靠近当前视口的文字越优先 —— 视口内批次只用上限的 1/4、近屏用 1/2，有视口内容待翻时后台批次只占 1 条并发；调大更快，也更容易撞服务商限流。</p></div></div>
+        <div class="form-grid three"><label>并发批数<input id="webpageConcurrency" type="number" min="1" max="8" step="1" /><small>同时进行的网页翻译请求数（1–8）。有视口内容待翻时后台只占 1 条；纯后台长页才允许占满。</small></label><label>每批段数<input id="webpageBatchItems" type="number" min="4" max="96" step="1" /><small>一个请求最多合并多少段网页文字（4–96）。视口内按 1/4、近屏按 1/2 缩小；段数越多请求越少，但单次返回更慢。</small></label><label>每批字符数<input id="webpageBatchChars" type="number" min="400" max="8000" step="100" /><small>一批文字的字符上限（400–8000）；与「每批段数」谁先到就切批，单个超长文本节点自己单独成一批。</small></label></div>
+        <div class="toggle-list"><label><span><b>快速模式</b><small>一键用更快的一档：并发 5 · 每批 32 段 · 3200 字（常规档是并发 3 · 每批 24 段 · 1600 字）。改完点下面的「保存阅读设置」，下一次翻译生效。</small></span><input id="webpageFastMode" type="checkbox" /></label></div>
+        <span id="webpageSpeedHint" class="inline-status"></span>
       </article>
       <article class="setting-card">
         <div class="card-title"><div><h2>调试显示</h2><p>普通使用建议保持默认。</p></div></div>

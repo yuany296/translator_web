@@ -252,6 +252,7 @@ export function installCanonicalRender(runtime, scope) {
     run: scope.run,
     runCached: scope.runCached,
     refresh: scope.refreshCanonicalState,
+    renderSettled: scope.renderSettledTranslations,
     processAdjacentPairs: scope.processAdjacentPairs,
     processSeamPair: scope.processSeamPair,
     onAdjacentTargetAvailable: scope.onAdjacentTargetAvailable,

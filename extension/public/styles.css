@@ -570,30 +570,28 @@
 .mt-webpage-progress-panel strong { display: block; margin-bottom: 4px; color: #f8fafc; }
 .mt-webpage-progress-panel.mt-partial { border-color: rgba(251, 191, 36, 0.55); }
 .mt-webpage-progress-panel.mt-complete { border-color: rgba(74, 222, 128, 0.52); }
+/* 双语对照译文：始终插在原文之后（块级另起一行 / 行内紧跟原文），不再用 hover 提示 */
 .mt-webpage-bilingual-translation {
-  display: block;
-  margin: 0.35em 0 0.65em;
-  padding-left: 0.7em;
-  border-left: 2px solid rgba(99, 102, 241, 0.58);
   color: inherit;
-  opacity: 0.9;
+  opacity: 0.92;
   white-space: pre-wrap;
+  border-left: 2px solid rgba(99, 102, 241, 0.58);
+  padding-left: 0.45em;
+  margin-left: 0.35em;
 }
-.mt-webpage-translation-tooltip {
-  position: fixed;
-  z-index: 2147483646;
-  width: max-content;
-  max-width: min(320px, calc(100vw - 16px));
-  padding: 8px 10px;
-  border-radius: 9px;
-  color: #f8fafc;
-  background: rgba(15, 23, 42, 0.97);
-  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.42);
-  font: 500 13px/1.45 system-ui, sans-serif;
-  white-space: pre-wrap;
-  pointer-events: none;
+.mt-webpage-bilingual-translation.mt-webpage-bilingual-block {
+  display: block;
+  margin: 0.35em 0 0.6em;
+  padding-left: 0.7em;
 }
-.mt-webpage-translation-tooltip[hidden] { display: none; }
+.mt-webpage-bilingual-translation.mt-webpage-bilingual-inline { display: inline; }
+.mt-webpage-progress-reason {
+  margin-top: 4px;
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 /* ============ 逐节点 loading 图标（网页翻译） ============ */
 .mt-webpage-node-loading {
   position: relative;

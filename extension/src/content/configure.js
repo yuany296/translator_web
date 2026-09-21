@@ -79,6 +79,7 @@ export function prepareContentRuntime(runtime) {
     runtime.state.captureMode = config.captureMode;
     runtime.state.renderMode = config.renderMode;
     runtime.state.pretranslateMode = config.pretranslateMode;
+    runtime.state.pretranslateAheadCount = config.pretranslateAheadCount;
     // 手动模式只接受点击翻译；即使此前页面处于自动翻译状态，加载后也不恢复。
     if (config.pretranslateMode === "manual") {
       runtime.state.autoTranslatePageEnabled = false;
@@ -86,9 +87,16 @@ export function prepareContentRuntime(runtime) {
     runtime.state.floatingSide = config.floatingSide;
     runtime.state.floatingYRatio = config.floatingYRatio;
     runtime.state.novelStreamBatchSize = config.novelStreamBatchSize;
+    runtime.state.novelStreamConcurrency = config.novelStreamConcurrency;
+    runtime.state.novelChunkChars = config.novelChunkChars;
+    runtime.state.novelRepairConcurrency = config.novelRepairConcurrency;
     runtime.state.webpageBatchItems = config.webpageBatchItems;
     runtime.state.webpageBatchChars = config.webpageBatchChars;
     runtime.state.webpageConcurrency = config.webpageConcurrency;
+    // 触边 canonical 的等待策略（默认等邻页 seam 合并后再翻译）。
+    runtime.edgeTranslateWithoutWaiting = config.edgeTranslateWithoutWaiting === true;
+    // 漫画流式渲染（默认关闭：整批返回后一次上屏）。
+    runtime.comicStreamingEnabled = config.comicStreamingEnabled === true;
     runtime.state.displayMode = config.displayMode;
     runtime.state.webpageDisplayMode = config.displayMode;
     runtime.state.novelDisplayMode = config.displayMode;
@@ -163,6 +171,9 @@ export function prepareContentRuntime(runtime) {
       floatingYRatio: config.floatingYRatio, displayMode: config.displayMode,
       coverPadding: config.overwriteCoverPadding,
       novelStreamBatchSize: config.novelStreamBatchSize,
+      novelStreamConcurrency: config.novelStreamConcurrency,
+      novelChunkChars: config.novelChunkChars,
+      novelRepairConcurrency: config.novelRepairConcurrency,
       webpageBatchItems: config.webpageBatchItems,
       webpageBatchChars: config.webpageBatchChars,
       webpageConcurrency: config.webpageConcurrency,

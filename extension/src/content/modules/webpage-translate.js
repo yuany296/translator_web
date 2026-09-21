@@ -5,7 +5,7 @@ import {
 import {
   createWebpageNodeStateStore, shouldApplyTranslation, shouldRestoreNode, isNodeModifiedByPage
 } from "./webpage-node-state.js";
-import { applyWebpageTranslation, cleanupWebpageEntry, updateWebpageProgress } from "./webpage-renderer.js";
+import { applyWebpageTranslation, cleanupWebpageEntry, updateWebpageProgress, applyPartialWebpageTranslations } from "./webpage-renderer.js";
 
 export function installWebpageTranslate(runtime) {
   function getWebpageState() {
@@ -251,6 +251,8 @@ export function installWebpageTranslate(runtime) {
     return applied;
   }
   runtime.applyWebpageEntriesToSession = applyWebpageEntriesToSession;
+  // 流式增量：模型每写完一行就提前落地一行（实现见 webpage-renderer）
+  runtime.applyWebpagePartialTranslations = message => applyPartialWebpageTranslations(runtime, getWebpageState(), message);
 
   // ---------- controller entry ----------
 
@@ -360,10 +362,8 @@ export function installWebpageTranslate(runtime) {
       }
     }
     void runtime.setWebpageTabVisibility("source").then(updated => {
-      if (updated) {
-        state.controller = updated;
-        runtime.updateFloatingBallState?.();
-      }
+      if (updated) state.controller = updated;
+      runtime.updateFloatingBallState?.();
     }).catch(() => {});
     runtime.updateFloatingBallState?.();
     return { ok: true, restored };

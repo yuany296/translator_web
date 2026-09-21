@@ -141,6 +141,16 @@ export function installReaderInit(runtime) {
         });
         return false;
       }
+      if (message.type === "WEBPAGE_TRANSLATION_PARTIAL") {
+        // 流式增量：不占用响应通道，先把已经拿到的行渲染出来
+        runtime.applyWebpagePartialTranslations?.(message);
+        return false;
+      }
+      if (message.type === "COMIC_TRANSLATION_PARTIAL") {
+        // 漫画流式增量：结算已完成的行并去抖渲染（开关见 comicStreamingEnabled）
+        runtime.applyComicPartialTranslations?.(message);
+        return false;
+      }
       if (message.type === "PING_CONTENT_SCRIPT") {
         sendResponse({
           ok: true,

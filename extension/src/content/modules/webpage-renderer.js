@@ -1,5 +1,6 @@
 const BLOCK_TAGS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE", "LI", "TD", "TH"]);
 const INTERACTIVE_SELECTOR = "a,button,label,input,select,textarea,[role='button'],[role='link'],[role='menuitem'],[role='tab'],nav,menu";
+const MAX_FAILURE_REASON = 160;
 
 function safeBilingualContainer(entry) {
   const parent = entry?.node?.parentElement;
@@ -10,39 +11,38 @@ function safeBilingualContainer(entry) {
   return childText.length === 1 && childText[0] === entry.node ? parent : null;
 }
 
-function ensureTooltip(state) {
-  if (state.tooltip?.isConnected) return state.tooltip;
-  const tooltip = document.createElement("div");
-  tooltip.className = "mt-webpage-translation-tooltip";
-  tooltip.dataset.mangaTranslatorOverlay = "true";
-  tooltip.hidden = true;
-  document.documentElement.appendChild(tooltip);
-  state.tooltip = tooltip;
-  return tooltip;
-}
-
-function attachTooltip(state, target, translatedText) {
-  const tooltip = ensureTooltip(state);
-  const show = () => {
-    if (!target.isConnected) return;
-    const rect = target.getBoundingClientRect();
-    tooltip.textContent = translatedText;
-    tooltip.style.left = `${Math.max(8, Math.min(window.innerWidth - 328, rect.left))}px`;
-    tooltip.style.top = `${Math.min(window.innerHeight - 60, rect.bottom + 8)}px`;
-    tooltip.hidden = false;
-  };
-  const hide = () => { tooltip.hidden = true; };
-  target.addEventListener("mouseenter", show);
-  target.addEventListener("mouseleave", hide);
-  target.addEventListener("focusin", show);
-  target.addEventListener("focusout", hide);
-  return () => {
-    target.removeEventListener("mouseenter", show);
-    target.removeEventListener("mouseleave", hide);
-    target.removeEventListener("focusin", show);
-    target.removeEventListener("focusout", hide);
-    hide();
-  };
+/**
+ * 双语模式的渲染：译文元素始终插在**原文字节点之后**。
+ * 之前对「不在安全块级容器里」的段落（真实网页里的大多数：div/span/按钮/链接内的
+ * 文字）退化成 hover 提示，用户不把鼠标移上去就看不到任何译文。现在两种情况都
+ * 直接把译文写在原文后面，只是排版不同：
+ *   - 段落是「只含这一段文字的块级元素」（p、h1-h6、li、td…）→ 块级排版，另起一行；
+ *   - 其余（内联上下文）→ 行内排版，紧跟原文同一行。
+ * 重复渲染幂等：同一节点同一条译文不会插第二份（菜单「重新显示译文」会重放期间）。
+ */
+function insertBilingualTranslation(state, entry, translatedText, info) {
+  const container = safeBilingualContainer(entry);
+  const parent = container || entry.node.parentElement;
+  if (!parent) return null;
+  const previous = state.nodeStore.get(entry.node);
+  if (previous?.insertedNode?.isConnected) {
+    if (previous.insertedNode.textContent === translatedText) {
+      state.nodeStore.set(entry.node, { ...info, renderKind: previous.renderKind, insertedNode: previous.insertedNode });
+      return previous.insertedNode;
+    }
+    previous.insertedNode.remove();
+  }
+  const element = document.createElement("span");
+  element.className = container
+    ? "mt-webpage-bilingual-translation mt-webpage-bilingual-block"
+    : "mt-webpage-bilingual-translation mt-webpage-bilingual-inline";
+  element.dataset.mangaTranslatorOverlay = "true";
+  element.textContent = translatedText;
+  parent.insertBefore(element, entry.node.nextSibling);
+  state.nodeStore.set(entry.node, {
+    ...info, renderKind: container ? "block" : "inline", insertedNode: element
+  });
+  return element;
 }
 
 export function applyWebpageTranslation(runtime, state, entry, translatedText, meta) {
@@ -58,21 +58,7 @@ export function applyWebpageTranslation(runtime, state, entry, translatedText, m
     state.nodeStore.set(entry.node, { ...common, renderKind: "replace" });
     return true;
   }
-  const container = safeBilingualContainer(entry);
-  if (container) {
-    const translation = document.createElement("div");
-    translation.className = "mt-webpage-bilingual-translation";
-    translation.dataset.mangaTranslatorOverlay = "true";
-    translation.textContent = common.translatedText;
-    container.insertAdjacentElement("afterend", translation);
-    state.nodeStore.set(entry.node, { ...common, renderKind: "block", insertedNode: translation });
-    return true;
-  }
-  const target = entry.node.parentElement;
-  if (!target) return false;
-  const detach = attachTooltip(state, target, common.translatedText);
-  state.nodeStore.set(entry.node, { ...common, renderKind: "tooltip", detach });
-  return true;
+  return Boolean(insertBilingualTranslation(state, entry, common.translatedText, common));
 }
 
 export function cleanupWebpageEntry(node, entry, shouldRestore) {
@@ -80,12 +66,53 @@ export function cleanupWebpageEntry(node, entry, shouldRestore) {
   if (entry.renderKind === "replace") {
     if (!shouldRestore(node, entry)) return false;
     node.nodeValue = entry.originalText;
-  } else if (entry.renderKind === "block") {
+  } else if (entry.renderKind === "block" || entry.renderKind === "inline") {
     entry.insertedNode?.remove?.();
-  } else if (entry.renderKind === "tooltip") {
-    entry.detach?.();
   }
   return true;
+}
+
+/**
+ * 流式增量译文：模型每写完一行就先落地一行，不必等整批返回（慢模型整批要 20~30s）。
+ * 只认当前任务的推送；重复推送同一行会被「已 done」跳过。最终结果仍会经
+ * settleBatch 覆盖一次，所以这里即使解析偏了也会被最终译文修正。
+ */
+export function applyPartialWebpageTranslations(runtime, state, message = {}) {
+  const session = state.session;
+  if (!session) return 0;
+  const taskId = String(message.taskId || "");
+  if (taskId && state.taskId && taskId !== state.taskId) return 0;
+  const entries = [];
+  const translations = new Map();
+  for (const row of Array.isArray(message.rows) ? message.rows : []) {
+    const text = String(row && row.sourceText || "");
+    const translated = String(row && row.translatedText || "");
+    if (!text || !translated) continue;
+    for (const segment of session.segments.values()) {
+      if (segment.sourceText !== text || segment.status.translation === "done") continue;
+      entries.push({
+        node: segment.node, text, id: segment.segmentKey,
+        sourceHash: segment.sourceHash, pageKey: session.pageKey
+      });
+      translations.set(text, translated);
+    }
+  }
+  if (!entries.length) return 0;
+  return runtime.applyWebpageEntriesToSession(session, state.generation, entries, translations);
+}
+
+/**
+ * 首个失败原因：红 ↻ 图标的 title 只有悬停才看得到，把真实原因同时写进进度面板
+ * 与控制台，用户不必猜「为什么总是失败」。
+ */
+function firstFailureReason(session) {
+  if (!session) return "";
+  for (const segment of session.segments.values()) {
+    if (segment.status.translation !== "failed") continue;
+    const reason = String(segment.errors?.[0]?.error || "").trim();
+    if (reason) return reason.slice(0, MAX_FAILURE_REASON);
+  }
+  return "";
 }
 
 /**
@@ -135,6 +162,22 @@ export function updateWebpageProgress(runtime, state) {
   if (blocked) parts.push("30 秒后自动重试");
   line.textContent = parts.length ? parts.join(" · ") : "正在扫描当前页面…";
   panel.append(header, line);
+  const reason = failed && !blocked ? firstFailureReason(session) : "";
+  if (reason) {
+    const detail = document.createElement("div");
+    detail.className = "mt-webpage-progress-reason";
+    detail.textContent = `失败原因：${reason}`;
+    panel.appendChild(detail);
+    if (state.failureReasonLogged !== reason) {
+      state.failureReasonLogged = reason;
+      // 供用户/开发者取证：面板上只放一条，控制台留完整原因
+      try {
+        console.warn("[MangaTranslator] 网页翻译失败：", reason);
+      } catch {
+        // 无控制台环境（测试桩）忽略
+      }
+    }
+  }
   if (!busy && !blocked && !failed) {
     clearTimeout(state.progressHideTimer);
     state.progressHideTimer = setTimeout(() => { panel.hidden = true; }, 4500);

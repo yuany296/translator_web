@@ -45,7 +45,7 @@ export function installCanonicalTranslate(runtime, scope) {
     if (!guardAllows()) return {
       aborted: true
     };
-    const eligible = reconciliation.canonicals.filter(canonical => canonical.status !== "filtered" && !scope.canonicalWaitsForEdge(canonical));
+    const eligible = reconciliation.canonicals.filter(canonical => canonical.status !== "filtered" && (runtime.edgeTranslateWithoutWaiting === true || !scope.canonicalWaitsForEdge(canonical)));
     scope.trace("translate", null, {
       reason,
       count: eligible.length
@@ -53,6 +53,9 @@ export function installCanonicalTranslate(runtime, scope) {
     for (const pageId of focusPageIds) scope.store.setCanonicalPagePhase(pageId, runtime.CanonicalPhase.TRANSLATING);
     let translated;
     try {
+      // 边缘 canonical 默认仍等邻页 seam：跨页句子只翻译一次、上下文完整。
+      // 打开 runtime.edgeTranslateWithoutWaiting 后不再白等（首屏更快，
+      // 代价是 seam 之后确实合并的句子会多一次翻译，见 edgeWaitingCanonicalIds）。
       translated = await scope.translateCanonicals(eligible, reason, guardAllows, runId);
       scope.timingPhase(runId, "translate");
     } catch (error) {
@@ -92,10 +95,11 @@ export function installCanonicalTranslate(runtime, scope) {
       reason
     });
     for (const pageId of focusPageIds) scope.store.setCanonicalPagePhase(pageId, runtime.CanonicalPhase.PROJECTING);
-    const ordinaryFallbackProjections = scope.buildCanonicalProjections(scope.store);
+    const edgeWaitingIds = runtime.edgeTranslateWithoutWaiting === true ? edgeWaitingCanonicalIds() : null;
+    const ordinaryFallbackProjections = scope.buildCanonicalProjections(scope.store, new Set(), edgeWaitingIds);
     const projectionPlan = runtime.resolveSeamProjectionPlan(runtime.buildSeamRenderSurfaceIndex(scope.store, {
       isPageAvailable: scope.isPageAvailable
-    }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds));
+    }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds, edgeWaitingIds));
     scope.store.setProjections(projectionPlan.projections);
     await scope.refreshRequiredCleanedArtifacts(projectionPlan.projections, projectionPlan.seamSurfaceIndex);
     scope.timingPhase(runId, "cleanArtifacts");
@@ -129,7 +133,8 @@ export function installCanonicalTranslate(runtime, scope) {
       for (const pageId of observation.pageIds) {
         const record = scope.store.getPageHandle(pageId);
         if (!record || runtime.getObservationEdgeSides(observation, record).length === 0) continue;
-        const pairPending = scope.relevantAdjacentRelations(record).some(relation => {
+        const relevant = scope.relevantAdjacentRelations(record);
+        const pairPending = relevant.some(relation => {
           const neighbor = scope.store.getPageHandleForTarget(relation.target);
           if (!neighbor || !scope.isReadyPageRecord(neighbor)) return false;
           const pair = relation.side === "previous" ? [neighbor, record] : [record, neighbor];
@@ -138,18 +143,63 @@ export function installCanonicalTranslate(runtime, scope) {
         });
         if (pairPending) return true;
         const wait = scope.store.getEdgeWait(pageId);
-        if (wait && !wait.timedOut) return true;
+        if (!wait || wait.timedOut) continue;
+        if (runtime.edgeTranslateWithoutWaiting !== true) return true;
+        // 实验开关打开时：只有「邻页已经在跑」才值得短暂等待合并结果；
+        // 邻页毫无进度（例如分页阅读器根本不会读下一页）时立刻翻译，不再白等到超时。
+        const neighborInFlight = relevant.some(relation => {
+          const neighbor = scope.store.getPageHandleForTarget(relation.target);
+          return !!neighbor && !scope.isReadyPageRecord(neighbor);
+        });
+        if (neighborInFlight) return true;
       }
     }
     return false;
   }
   scope.canonicalWaitsForEdge = canonicalWaitsForEdge;
+  function edgeWaitingCanonicalIds() {
+    // 仍在等邻页 seam 的 canonical：译文已经拿到，但跨页合并可能改写它，
+    // 所以投影先标 provisional，页面状态保持"未完成"，等 seam 终结后刷新。
+    const snapshot = typeof scope.store.getCanonicalSnapshot === "function" ? scope.store.getCanonicalSnapshot() : [];
+    const ids = new Set();
+    for (const canonical of Array.isArray(snapshot) ? snapshot : []) {
+      if (!canonical || canonical.status === "filtered") continue;
+      if (scope.canonicalWaitsForEdge(canonical)) ids.add(String(canonical.id || ""));
+    }
+    return ids;
+  }
+  scope.edgeWaitingCanonicalIds = edgeWaitingCanonicalIds;
   function recordTranslationTiming(runId, timing) {
     if (!timing || typeof timing !== "object") return;
     scope.timingAdd(runId, "translateLlm", timing.translateMs);
     scope.timingAdd(runId, "translateOfficial", timing.officialLoadMs);
   }
   scope.recordTranslationTiming = recordTranslationTiming;
+  /**
+   * 只渲染「已经结算的译文」，不发起翻译。
+   *
+   * 漫画流式翻译（COMIC_TRANSLATION_PARTIAL）每拿到一批行就调这里提前上屏；
+   * 走完整 refreshCanonicalState 会被 waitForPendingTranslations 卡到整批结束，
+   * 那样流式就没有意义了。清理图等 artifact 留给整批结束后的正式 refresh。
+   */
+  async function renderSettledTranslations(reason = "partial-translation", guardAllows = () => true) {
+    if (guardAllows() === false) return false;
+    const edgeWaitingIds = runtime.edgeTranslateWithoutWaiting === true ? edgeWaitingCanonicalIds() : null;
+    const fallbackProjections = scope.buildCanonicalProjections(scope.store, new Set(), edgeWaitingIds);
+    const projectionPlan = runtime.resolveSeamProjectionPlan(runtime.buildSeamRenderSurfaceIndex(scope.store, {
+      isPageAvailable: scope.isPageAvailable
+    }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds, edgeWaitingIds));
+    scope.store.setProjections(projectionPlan.projections);
+    const seamSurfaceIndex = runtime.buildSeamRenderSurfaceIndex(scope.store, {
+      isPageAvailable: scope.isPageAvailable
+    });
+    await scope.renderAllCanonicalPages(reason, guardAllows, {
+      seamSurfaceIndex,
+      fallbackProjectionsByPage: fallbackProjections
+    });
+    return true;
+  }
+  scope.renderSettledTranslations = renderSettledTranslations;
   async function translateCanonicals(canonicals, reason, guardAllows = () => true, runId = "") {
     const candidates = canonicals.map(canonical => ({
       id: canonical.id,
@@ -175,7 +225,9 @@ export function installCanonicalTranslate(runtime, scope) {
       response = await scope.requestCanonicalTranslations(items, {
         sourceLanguage: scope.adapters.sourceLanguage || "auto",
         targetLanguage: scope.adapters.targetLanguage || runtime.KAKAO_CANONICAL_TARGET_LANGUAGE,
-        reason
+        reason,
+        // 作为流式增量消息的 taskId：后台每写完一行就能推回本页提前渲染。
+        taskId: runId
       });
       scope.recordTranslationTiming(runId, response && response.timing);
       if (!response || response.ok === false) {
@@ -257,12 +309,14 @@ export function installCanonicalTranslate(runtime, scope) {
     return mayRender;
   }
   scope.translateCanonicals = translateCanonicals;
-  function buildCanonicalProjections(activeStore, handledCanonicalIds = new Set()) {
+  function buildCanonicalProjections(activeStore, handledCanonicalIds = new Set(), edgeWaitingIds = null) {
     const reconciler = runtime.getCanonicalReconciler();
     const pages = activeStore.getPageHandles().map(runtime.canonicalPageDescriptor);
     const previousProjections = activeStore.getAllProjections();
     const translations = new Map();
     const handledIds = handledCanonicalIds instanceof Set ? handledCanonicalIds : new Set(Array.from(handledCanonicalIds || [], String));
+    // 仍在等 seam 的 canonical：译文先渲染，但标成 provisional，页面状态保持未完成。
+    const waitingIds = edgeWaitingIds instanceof Set ? edgeWaitingIds : new Set();
     const currentCanonicals = activeStore.getCanonicalSnapshot().filter(canonical => !handledIds.has(String(canonical && canonical.id || "")));
     const canonicals = currentCanonicals.filter(canonical => {
       const translation = activeStore.getTranslation(canonical.id, canonical.revision);
@@ -319,7 +373,15 @@ export function installCanonicalTranslate(runtime, scope) {
       isPageAvailable: scope.isPageAvailable
     });
     for (const [pageId, items] of grouped) {
-      grouped.set(pageId, items.filter(projection => !handledIds.has(String(projection && projection.canonicalId || "")) && !handledIds.has(String(projection && projection.pendingCanonicalId || ""))));
+      const filtered = items.filter(projection => !handledIds.has(String(projection && projection.canonicalId || "")) && !handledIds.has(String(projection && projection.pendingCanonicalId || "")));
+      grouped.set(pageId, waitingIds.size === 0 ? filtered : filtered.map(projection => {
+        if (!waitingIds.has(String(projection && projection.canonicalId || ""))) return projection;
+        return Object.freeze({
+          ...projection,
+          provisional: true,
+          edgePending: true
+        });
+      }));
     }
     return grouped;
   }

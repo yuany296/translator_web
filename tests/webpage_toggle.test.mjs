@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import { installWebpageTranslate } from "../extension/src/content/modules/webpage-translate.js";
+import { createSegment } from "../extension/src/content/modules/webpage-session.js";
 
 function makeTextNode(currentValue, connected = true) {
   return {
@@ -97,6 +98,31 @@ test("showWebpageTranslations leaves nodes already showing the translation untou
   assert.equal(result.shown, 0);
   assert.equal(node.nodeValue, "译文");
   assert.equal(harness.state.showTranslation, false);
+});
+
+test("流式增量译文先落地：过期任务丢弃、同一行不重复渲染", () => {
+  const harness = makeToggleHarness();
+  harness.state.showTranslation = true;
+  harness.state.taskId = "task-1";
+  const node = makeTextNode("원문");
+  const session = {
+    pageKey: harness.state.pageKey, generation: harness.state.generation,
+    segments: new Map(), bindings: new Map()
+  };
+  const segment = createSegment({ segmentKey: "s1", node, text: "원문", sourceHash: "h" }, 0);
+  session.segments.set("s1", segment);
+  harness.state.session = session;
+  assert.equal(harness.runtime.applyWebpagePartialTranslations({
+    taskId: "task-2", rows: [{ sourceText: "원문", translatedText: "过期译文" }]
+  }), 0, "过期任务的增量必须丢弃");
+  assert.equal(harness.runtime.applyWebpagePartialTranslations({
+    taskId: "task-1", rows: [{ sourceText: "원문", translatedText: "译文" }]
+  }), 1);
+  assert.equal(node.nodeValue, "译文");
+  assert.equal(segment.status.translation, "done");
+  assert.equal(harness.runtime.applyWebpagePartialTranslations({
+    taskId: "task-1", rows: [{ sourceText: "원문", translatedText: "译文" }]
+  }), 0, "同一行重复推送不再渲染");
 });
 
 test("webpage click toggles on the local display intent and ball state derives from it", () => {

@@ -51,7 +51,9 @@ export function installReaderApi(runtime) {
     get sourceLanguage() {
       return runtime.getConfiguredSourceLanguage?.() || runtime.KAKAO_CANONICAL_SOURCE_LANGUAGE;
     },
-    edgeWaitTimeoutMs: 8000
+    // 边缘 canonical 只在「邻页已 ready、seam 正在跑」时才短暂等待；
+    // 这个超时只是兜底，原先 8000ms 会让首屏白等满 8 秒。
+    edgeWaitTimeoutMs: 3000
   }) : null;
   runtime.kakaoCanonicalPipeline = kakaoCanonicalPipeline;
   const kakaoPipeline = runtime.kakaoCanonicalPipeline;

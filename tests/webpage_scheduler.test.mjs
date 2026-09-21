@@ -126,6 +126,23 @@ test("P0 viewport entries form the first API batch, capped at 8 items", async ()
   await waitUntil(() => runtime.calls.batches.flat().length >= 10);
 });
 
+test("超过批次字符上限的长文本节点仍单独成批，调度器不空转", async () => {
+  const runtime = makeRuntime();
+  const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
+  runtime.getWebpageState().session = session;
+  const longNode = makeNode("long", 100);
+  const longText = "가".repeat(1200); // P0 批次字符上限是 600
+  longNode.nodeValue = longText;
+  const entry = makeEntry(longNode, "long");
+  assert.equal(entry.text.length > 600, true);
+  await runtime.enqueueWebpageSegments(session, [entry], "viewport", 1);
+  await waitUntil(() => runtime.calls.batches.length >= 1);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  runtime.stopWebpageScheduler();
+  assert.deepEqual(runtime.calls.batches, [[longText]], "长段单独成批，不会被空批卡住");
+  assert.equal(runtime.isWebpageQueueBusy(), false, "队列排空（修复前这里会永远为真）");
+});
+
 test("background scan discoveries enter the queue immediately (P2)", async () => {
   const runtime = makeRuntime();
   const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
@@ -505,6 +522,12 @@ test("requeueWebpageSegments resets failed and done segments for retranslation",
   const runtime = makeRuntime();
   const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
   runtime.getWebpageState().session = session;
+  const forceFlags = [];
+  runtime.translateWebpageBatchWithRetry = async (keys, batchOptions = {}) => {
+    runtime.calls.batches.push(keys);
+    forceFlags.push(batchOptions.force === true);
+    return { ok: true, partial: false, translations: new Map(keys.map((key, index) => [key, `译文-${index}`])), errors: [] };
+  };
   const failed = makeSegment(session, "f1");
   failed.status.translation = "failed";
   failed.errors = [{ error: "翻译失败" }];
@@ -518,10 +541,13 @@ test("requeueWebpageSegments resets failed and done segments for retranslation",
   assert.equal(["pending", "inflight"].includes(failed.status.translation), true, "failed 段重新入队并开始翻译");
   assert.equal(done.status.translation, "done", "done 段不受重试失败影响");
   await waitUntil(() => runtime.calls.batches.flat().includes("原文"));
-  // 全部重新翻译：done 也回 pending 并重新请求
-  runtime.requeueWebpageSegments(["done", "failed"]);
+  assert.equal(forceFlags[0], false, "失败重试仍走翻译缓存");
+  // 全部重新翻译：done 也回 pending 并绕过缓存重新请求
+  runtime.requeueWebpageSegments(["done", "failed"], { force: true });
   assert.equal(["pending", "inflight"].includes(done.status.translation), true, "done 段回到待翻译状态");
   await waitUntil(() => done.status.translation === "done" && done.translatedText !== "旧译文");
+  assert.equal(forceFlags[forceFlags.length - 1], true, "「绕过缓存」重译必须把 force 传给翻译请求");
+  assert.equal(done.force, false, "结算后清掉强制标记，后续重试恢复走缓存");
 });
 
 test("failed segments re-enqueue on rescan (force-update retries them)", async () => {

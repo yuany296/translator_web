@@ -4,40 +4,15 @@ export function installOcrPipeline(runtime) {
   async function handleOcrDataUrl(message) {
     const startedAt = Date.now();
     const dataUrl = String(message && message.dataUrl || "").trim();
-    if (!runtime.isDataUrl(dataUrl)) {
-      return {
-        ok: false,
-        error: "Invalid or empty image data URL"
-      };
-    }
+    if (!runtime.isDataUrl(dataUrl)) return { ok: false, error: "Invalid or empty image data URL" };
     const sourceType = runtime.normalizeObservationSourceType(message && message.sourceType);
     const pageIds = runtime.normalizeObservationPageIds(message && message.pageIds);
-    if (pageIds.length === 0) {
-      return {
-        ok: false,
-        error: "OCR_DATA_URL requires at least one stable pageId"
-      };
-    }
-    if (sourceType === "page" && pageIds.length !== 1) {
-      return {
-        ok: false,
-        error: "Page OCR must reference exactly one pageId"
-      };
-    }
-    if (sourceType === "seam" && pageIds.length < 2) {
-      return {
-        ok: false,
-        error: "Seam OCR must reference both adjacent pageIds"
-      };
-    }
+    if (pageIds.length === 0) return { ok: false, error: "OCR_DATA_URL requires at least one stable pageId" };
+    if (sourceType === "page" && pageIds.length !== 1) return { ok: false, error: "Page OCR must reference exactly one pageId" };
+    if (sourceType === "seam" && pageIds.length < 2) return { ok: false, error: "Seam OCR must reference both adjacent pageIds" };
     const settings = await runtime.loadSettings();
     const validationError = runtime.validateOcrOnlySettings(settings);
-    if (validationError) {
-      return {
-        ok: false,
-        error: validationError
-      };
-    }
+    if (validationError) return { ok: false, error: validationError };
     const imageDigest = await runtime.digestDataUrlSha256(dataUrl);
     const imageRevisionByPage = runtime.normalizeImageRevisionByPage(pageIds, message && (message.imageRevisionByPage || message.imageRevision), imageDigest);
     if (sourceType === "page") {
@@ -210,6 +185,24 @@ export function installOcrPipeline(runtime) {
       requestItems.forEach(item => outcome.set(runtime.canonicalTranslationItemKey(item), { error }));
     }
     const taskId = String(message && message.taskId || "");
+    // 流式增量：模型每写完一行就把该行推回标签页提前渲染（慢模型整批要 20~30s）。
+    // 漫画同样支持，但只在 canonical 管线带 taskId 请求时才推（见 canonical-translate 的 renderSettled）。
+    const sourceTextById = new Map(rawItems.map(item => [String(item && item.id || ""), String(item && item.original_text || "")]));
+    const partialType = mode === "webpage" ? "WEBPAGE_TRANSLATION_PARTIAL" : "COMIC_TRANSLATION_PARTIAL";
+    const canPushPartial = (mode === "webpage" || mode === "comic" && !!taskId) && !!(sender && sender.tab && sender.tab.id)
+      && typeof chrome !== "undefined" && !!chrome?.tabs?.sendMessage;
+    const pushPartialRows = canPushPartial ? rows => {
+      const payload = rows.map(row => ({
+        sourceText: sourceTextById.get(String(row.id)) || "", translatedText: String(row.translatedText || "")
+      })).filter(row => row.sourceText && row.translatedText);
+      try {
+        if (payload.length) void chrome.tabs.sendMessage(sender.tab.id, {
+          type: partialType, taskId, rows: payload
+        })?.catch?.(() => {});
+      } catch {
+        // 标签页已关闭：只丢这次提前渲染，整批结果仍会正常返回
+      }
+    } : null;
     const controller = taskId ? new AbortController() : null;
     if (controller) runtime.registerTaskAbort(taskId, controller, sender && sender.tab && sender.tab.id);
     try {
@@ -230,15 +223,22 @@ export function installOcrPipeline(runtime) {
         force,
         mode,
         signal: controller ? controller.signal : null,
-        taskId
+        taskId,
+        onRow: pushPartialRows
       }) : new Map();
       const translateMs = Date.now() - translateStartedAt;
       requested.forEach((value, key) => outcome.set(key, value));
-      const configFingerprint = mode === "comic"
-        ? await runtime.getTranslationConfigFingerprint("comic") : "";
-      const pendingRecordKeys = mode === "comic" && serviceOnline && !bypassOfficialLibrary
-        ? await runtime.commitOfficialComicTranslations(descriptors, outcome, configFingerprint)
-        : new Set();
+      // 官方译文库提交（配置指纹往返 + HTTP + IndexedDB 写）不挡首屏：译文先返回给渲染，
+      // 提交失败会走 handleTranslateTextBlocks 里的 pending 队列，下次同步再补。
+      if (mode === "comic" && serviceOnline && !bypassOfficialLibrary) {
+        void (async () => {
+          const configFingerprint = await runtime.getTranslationConfigFingerprint("comic");
+          await runtime.commitOfficialComicTranslations(descriptors, outcome, configFingerprint);
+        })().catch(error => {
+          console.warn("[MangaTranslator] official comic translation commit failed:", runtime.getErrorMessage(error));
+        });
+      }
+      const pendingRecordKeys = new Set();
       const translations = [];
       const errors = [];
       items.forEach(item => {

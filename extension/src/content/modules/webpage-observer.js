@@ -3,8 +3,8 @@
  * text nodes only. Each affected node is handed to the viewport scheduler
  * directly (dynamic far content = P3) — it never re-triggers a whole-page
  * `translateWebpage({onlyNew: true})`. Extension-owned mutations (progress
- * panel, bilingual nodes, tooltips, overlays) are ignored so the observer
- * never loops on its own rendering.
+ * panel, bilingual nodes, overlays) are ignored so the observer never loops on
+ * its own rendering.
  */
 import scanner from "./webpage-scanner.js";
 
@@ -13,7 +13,7 @@ const MAX_MUTATED_ENTRIES = 400;
 const EXTENSION_MUTATION_SELECTOR = [
   "[data-manga-translator]", "[data-manga-translator-overlay]",
   "[data-mt-webpage-bilingual]", ".mt-webpage-bilingual-translation",
-  ".mt-webpage-progress-panel", ".mt-webpage-translation-tooltip"
+  ".mt-webpage-progress-panel"
 ].join(", ");
 
 export function isExtensionWebpageMutation(node) {

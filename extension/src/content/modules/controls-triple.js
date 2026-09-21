@@ -361,6 +361,13 @@ export function installControlsTriple(runtime) {
     return items.map(item => ({ ...item, onSelect: () => handleComicMenuAction(item.id) }));
   }
 
+  /** 重新入队并反馈条数。requeueWebpageSegments 是同步函数（返回条数），
+   * 不能直接当 Promise 用——旧写法 .then 会抛 TypeError，菜单点了没反应。 */
+  async function retryWebpageSegments(statuses, message, options = {}) {
+    const requeued = Number(await runtime.requeueWebpageSegments?.(statuses, options)) || 0;
+    runtime.showFloatingBallFeedback(message(requeued), "info");
+  }
+
   function handleWebpageMenuAction(id) {
     switch (id) {
       case "translate-page":
@@ -377,13 +384,9 @@ export function installControlsTriple(runtime) {
           runtime.showFloatingBallFeedback("已停止网页持续翻译，已显示译文保留", "info");
         });
       case "retry-failed":
-        return void runtime.requeueWebpageSegments?.(["failed"]).then(requeued => {
-          runtime.showFloatingBallFeedback(`已重新翻译 ${requeued || 0} 个失败段落`, "info");
-        });
+        return void retryWebpageSegments(["failed"], count => `已重新翻译 ${count} 个失败段落`);
       case "retranslate-all":
-        return void runtime.requeueWebpageSegments?.(["done", "failed"]).then(requeued => {
-          runtime.showFloatingBallFeedback(`已重新翻译 ${requeued || 0} 个段落（绕过缓存）`, "info");
-        });
+        return void retryWebpageSegments(["done", "failed"], count => `已重新翻译 ${count} 个段落（绕过缓存）`, { force: true });
       default:
         return;
     }

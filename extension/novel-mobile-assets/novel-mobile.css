@@ -1,0 +1,199 @@
+/* ==========================================================================
+   小说移动版专用样式（KakaoPage 小说翻译，Chromium 手机浏览器，视口约 360–500px）
+   加载方式：由该构建在这三个页面原有样式之后注入，
+   故同优先级下本文件的规则生效；只有“贴合手机视口”这类底线用 !important 兜底。
+   覆盖页面：settings.html（settings.css）、glossary.html（含 ?embedded=1 内嵌）、
+   quick-popup.html（quick-popup.css）。纯视觉覆盖，不改动任何元素结构。
+   ========================================================================== */
+
+/* ---------- 0. 三页共用 ---------- */
+
+/* 三个页面都在 body 上写死了桌面宽度（760px / 720px / 372px）：
+   放开最小宽度、限制最大宽度在视口内，保证手机上没有整页横向滚动。
+   （术语表的横向滚动由 #tableContainer 自己承担，见第 2 节。） */
+body {
+  min-width: 0 !important;
+  max-width: 100%;
+  margin: 0 auto;
+  overflow-x: hidden;
+}
+
+/* 触摸目标：按钮、下拉与文本输入至少 40px 高 */
+button,
+select,
+input[type="text"],
+input[type="password"],
+input[type="url"],
+input[type="number"],
+input[type="search"] {
+  min-height: 40px;
+}
+
+/* 复选框放大到 20px（自绘的术语库开关单独处理，排除在外） */
+input[type="checkbox"]:not(.library-switch) {
+  width: 20px;
+  height: 20px;
+}
+
+/* 各类按钮行 / 标签行窄屏一律允许换行，不再横向溢出 */
+.tabs, .toolbar, .batch-bar, .batch-actions, .panel-actions, .dialog-actions,
+.inline-actions, .settings-actions, .channel-actions, .detail-actions,
+.pending-actions, .chapter-library, .ignored-row, .library-detail-header,
+.url-row, .vendor-actions, .diagnostic-actions, .pair-row {
+  flex-wrap: wrap;
+}
+
+/* 确认弹窗/编辑弹窗在窄屏统一为“接近全宽 + 内部滚动”，按钮铺满一行好点 */
+dialog {
+  width: min(100vw - 24px, 520px);
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.dialog-content { padding: 16px; }
+.dialog-actions button { flex: 1 1 auto; }
+
+/* ---------- 1. 设置页外壳（settings.html） ---------- */
+@media (max-width: 720px) {
+  /* 桌面两栏 → 单栏；左栏变成顶部横向可滑的导航条 */
+  body { grid-template-columns: minmax(0, 1fr); }
+
+  .sidebar {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .brand { flex: 0 0 auto; margin: 0 6px 0 0; gap: 8px; }
+  .brand-mark { width: 30px; height: 30px; border-radius: 9px; font-size: 14px; }
+  .brand b { font-size: 12px; }
+  .brand small { display: none; }      /* 副标题在窄条里省掉 */
+  nav { flex: 0 0 auto; flex-direction: row; gap: 6px; }
+  nav button { width: auto; flex: 0 0 auto; white-space: nowrap; padding: 8px 12px; }
+  .nav-label { display: none; }        /* 分组标签横排没有意义 */
+  .sidebar-foot { display: none; }     /* 底部“保存在本机”整块隐藏 */
+
+  /* 工作区占满宽度，收紧留白 */
+  .workspace { padding: 14px 12px 30px; }
+  .workspace-header { min-height: 0; gap: 8px; margin-bottom: 12px; }
+  .workspace-header h1 { font-size: 19px; }
+  .workspace-header > div > p:last-child { font-size: 11px; }
+  .setting-card { padding: 14px; border-radius: 12px; }
+  .card-title { gap: 10px; margin-bottom: 12px; }
+
+  /* 多列表单 / 选项卡 / 诊断区一律单列 */
+  .form-grid.two,
+  .form-grid.three,
+  .form-grid.four,
+  .choice-cards,
+  .diagnostic-grid { grid-template-columns: minmax(0, 1fr); }
+
+  .toggle-list label { gap: 12px; }
+
+  /* 命名配置弹窗：窄屏铺开，表格不再撑破弹窗 */
+  #vendorManagerDialog { width: calc(100vw - 24px); }
+  .vendor-dialog { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; }
+  .vendor-manager-table { table-layout: fixed; }
+  .vendor-manager-table th,
+  .vendor-manager-table td { padding: 7px 5px; overflow-wrap: anywhere; }
+
+  /* 内嵌术语库 iframe：手机工具栏会吃掉一截高度，用 dvh 顶住 */
+  .library-panel {
+    height: calc(100vh - 190px);       /* 不支持 dvh 时的回退 */
+    height: calc(100dvh - 190px);      /* 工具栏收起/展开时高度跟着变 */
+    min-height: 340px;
+    border-radius: 12px;
+  }
+}
+
+/* ---------- 2. 术语库页（glossary.html，含 .embedded 内嵌模式） ---------- */
+main { width: auto; max-width: 100%; margin: 14px 10px 28px; }
+.embedded main { padding: 12px 10px; }
+
+/* 术语表：外层横向滚动，表格给最小宽度，列不被压扁 */
+#tableContainer {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+#tableContainer table { min-width: 720px; }
+#tableContainer th,
+#tableContainer td { padding: 10px 8px; }
+
+/* 横滑时把“当前第一列”吸在左边：
+   批量模式是勾选列；多库视图是「术语库」；单库视图（前两列被隐藏）是「原文术语」 */
+#tableContainer th.col-select,
+#tableContainer td.col-select,
+#tableContainer:not(.batch-mode) th.col-library,
+#tableContainer:not(.batch-mode) td.col-library,
+#tableContainer.single-library:not(.batch-mode) th:nth-child(3),
+#tableContainer.single-library:not(.batch-mode) td:nth-child(3) {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #ffffff;
+}
+/* 吸边的表头格保持表头底色 */
+#tableContainer thead th.col-select,
+#tableContainer:not(.batch-mode) thead th.col-library,
+#tableContainer.single-library:not(.batch-mode) thead th:nth-child(3) {
+  background: #f8fafc;
+}
+
+@media (max-width: 560px) {
+  .panel { border-radius: 12px; }
+  .toolbar { gap: 8px; padding: 10px; }
+  .search { flex: 1 1 100%; min-width: 0; }
+  .summary { gap: 8px; padding: 8px 10px; font-size: 12px; }
+  .batch-bar { gap: 8px; margin: 8px 10px 0; padding: 8px 10px; }
+  .batch-actions { flex: 1 1 100%; }
+  .pending-list { padding: 0 10px 16px; }
+  .ignored-panel { margin: 0 10px 16px; }
+  .library-list-view { padding: 14px 12px; }
+  .detail-heading h2 { font-size: 19px; }
+  .chapter-heading-left .chapter-url { max-width: 100%; }
+  .chapter-library select { max-width: 100%; flex: 1 1 auto; }
+  #emptyState { padding: 32px 12px; }
+  .tab-button { min-height: 44px; padding: 10px 14px; }
+
+  /* 网址行：输入框独占一行，胶囊和按钮换行排开 */
+  .url-row { padding: 6px 8px; }
+  .url-row-input,
+  .url-row-placeholder { flex: 1 1 100%; min-height: 32px; }
+
+  /* 自绘的术语库开关放大一点，手指点得中 */
+  .library-switch { width: 44px; height: 24px; }
+  .library-switch::after { top: 3px; left: 3px; width: 18px; height: 18px; }
+  .library-switch:checked::after { transform: translateX(20px); }
+}
+
+/* ---------- 3. 快捷面板（quick-popup.html） ---------- */
+.popup-header { gap: 10px; padding: 14px; }
+.popup-header h1 { font-size: 18px; }
+.card { padding: 12px; border-radius: 12px; }
+.segmented span { padding: 12px 8px; }        /* 分段按钮加高到约 40px */
+.translate-button { padding: 12px 14px; }
+.status { font-size: 11px; }
+footer { gap: 10px; padding: 10px 12px; }
+
+/* 页内没有样式的按钮，补成整行大按钮 */
+.manage-button {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid #cfe0f2;
+  border-radius: 11px;
+  color: #14507e;
+  background: #f5faff;
+  text-align: left;
+}
+
+@media (max-width: 380px) {
+  .language-grid,
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}

@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "小说翻译器 · KakaoPage（手机版）",
+  "short_name": "小说翻译器",
+  "version": "1.1.0",
+  "description": "在手机上翻译 KakaoPage 小说：抓取正文、直连 AI 翻译、本地译文缓存与术语库，不需要本地服务。",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": ["storage", "tabs", "unlimitedStorage"],
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/floating-actions/*", "assets/route-bridge.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "小说翻译器 · KakaoPage",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    },
+    "default_popup": "quick-popup.html"
+  },
+  "options_ui": {
+    "page": "settings.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.kakao.com/*",
+        "https://kakaopage.com/*",
+        "https://*.kakaopage.com/*",
+        "https://*.kakaocdn.net/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "minimum_chrome_version": "114"
+}

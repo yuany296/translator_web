@@ -29,6 +29,18 @@ DIALOGUE_QUOTE_RULE = (
     "wrong `我不管，肯定要先漂发。`"
 )
 
+# 术语「判了没有」必须可核对（与小批链路 novel-translation.js#buildPrompt 同一套规则）。
+# 字符串命中经常不是那个意思（봄=春天/人名、줄=排队/人名），所以「命中就必须逐字用」会把
+# 句子改坏；但完全不校验，模型又可以默默不用注入的术语 —— 用户看到的就是「术语有时候
+# 不生效」。这里把裁决权留给模型，只要求它逐条交代：用上，或写明这次语境不是它。
+GLOSSARY_ACCOUNTING_RULE = (
+    "For every glossary row that occurs in an item, account for it in that line's `terms` object: "
+    "put its source in `terms.used` when the translation contains that row's target string verbatim, "
+    'or list it in `terms.skipped` as {"source":"…","reason":"…"} when this occurrence really means '
+    "something else (an ordinary noun, an idiom, a different person, or part of a longer word). "
+    "Never leave a matching row unaccounted for, and never claim `used` when the target string is absent."
+)
+
 
 def _event(value: dict[str, Any]) -> bytes:
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -43,23 +55,57 @@ def _endpoint(base_url: Any) -> str:
     return f"{normalized}/chat/completions"
 
 
+def _glossary_lines(payload: runtime.TranslationStreamPayload) -> list[str]:
+    """术语段必须与小批链路(extension/src/shared/glossary.js#buildPrompt)同一条规则。
+
+    以前这里只有一句 `Required glossary: [...]`,既没有「逐字照用/最长优先」的硬规则,
+    也丢掉了条目备注(角色性别、年龄、身份、语气)—— 同一批术语在流式链路和小批链路
+    上效果并不一致,用户看到的就是「术语有时候不正确」。
+    """
+    terms = []
+    for item in payload.glossary:
+        source = str(item.get("source") or "")
+        target = str(item.get("target") or "")
+        if not source or not target:
+            continue
+        note = str(item.get("note") or "")
+        terms.append({"source": source, "target": target, **({"note": note} if note else {})})
+    if not terms:
+        return []
+    return [
+        "Mandatory terminology glossary:",
+        "When the source text contains a listed source term, the translated text must contain "
+        "its target string verbatim.",
+        "Never replace a glossary target with a synonym, alternate spelling, transliteration, "
+        "or your own rendering of the term.",
+        "Apply the longest matching source term first. The glossary overrides general translation "
+        "preferences.",
+        "Entry notes describe the character (gender, age, role, speech style). Use notes to choose "
+        "pronouns and voice for that character, even in sentences that refer to them only by a pronoun.",
+        json.dumps(terms, ensure_ascii=False),
+    ]
+
+
 def _prompt(payload: runtime.TranslationStreamPayload) -> str:
     rows = [{"paragraphKey": str(item.get("paragraphKey") or ""),
              "text": str(item.get("originalText") or "")} for item in payload.items]
-    terms = [{"source": str(item.get("source") or ""),
-              "target": str(item.get("target") or "")} for item in payload.glossary]
     context = json.dumps(payload.context, ensure_ascii=False)[:12_000]
+    glossary_lines = _glossary_lines(payload)
     return "\n".join([
         f"Translate this web novel from {payload.sourceLanguage} to {payload.targetLanguage}.",
         "Output exactly one compact JSON object per line as soon as that paragraph is complete.",
         "Emit exactly one JSON line per input paragraphKey; each translation must cover only its own paragraph; "
         "never merge two paragraphs into one line and never repeat a neighboring paragraph's translation.",
-        'Schema: {"paragraphKey":"the supplied key","translation":"translated text"}',
+        # 带术语时每行多一个 terms 字段:漏用术语必须能查出来(见 GLOSSARY_ACCOUNTING_RULE)。
+        ('Schema: {"paragraphKey":"the supplied key","translation":"translated text",'
+         '"terms":{"used":["…"],"skipped":[{"source":"…","reason":"…"}]}}') if glossary_lines
+        else 'Schema: {"paragraphKey":"the supplied key","translation":"translated text"}',
         "Do not output Markdown fences, arrays, explanations, blank translations, or duplicate keys.",
         "Preserve meaning, names, tone, paragraph boundaries, and every supplied paragraphKey.",
         DIALOGUE_QUOTE_RULE,
+        GLOSSARY_ACCOUNTING_RULE if glossary_lines else "",
         f"Continuity context: {context}" if context else "",
-        f"Required glossary: {json.dumps(terms, ensure_ascii=False)}" if terms else "",
+        *glossary_lines,
         f"Input paragraphs: {json.dumps(rows, ensure_ascii=False)}",
     ])
 
@@ -158,7 +204,8 @@ def _parse_line(line: str) -> dict[str, Any] | None:
     return value
 
 
-def _commit_paragraph(payload, item, translated: str, sequence: int) -> dict[str, Any]:
+def _commit_paragraph(payload, item, translated: str, sequence: int,
+                      terms: Any = None) -> dict[str, Any]:
     operation = {
         "operationId": f"stream:{payload.taskId}:{item['paragraphKey']}",
         "type": "commit_translation", "recordKey": item["recordKey"],
@@ -168,13 +215,19 @@ def _commit_paragraph(payload, item, translated: str, sequence: int) -> dict[str
     result = runtime.get_translation_store().apply_operation(operation)
     record = result["record"]
     active = record.get("activeVersion") or {}
-    return {
+    event = {
         "type": "paragraph", "taskId": payload.taskId, "sequence": sequence,
         "paragraphKey": item["paragraphKey"], "translation": translated,
         "recordId": record["recordId"], "versionId": active.get("versionId", ""),
         "recordRevision": record["recordRevision"], "changeSeq": result["changeSeq"],
         "record": record,
     }
+    # 术语交代按原样转发给扩展侧核对；模型整行没给 terms 时**不带这个字段**，
+    # 扩展侧据此知道「这条响应没按新 schema 回」，退回旧的字符串硬校验，
+    # 而不是把所有命中的术语都判成「没交代」而后整章重试。
+    if isinstance(terms, dict):
+        event["terms"] = terms
+    return event
 
 
 async def _stream_events(payload: runtime.TranslationStreamPayload) -> AsyncIterator[bytes]:
@@ -202,7 +255,8 @@ async def _stream_events(payload: runtime.TranslationStreamPayload) -> AsyncIter
                     translated = str(row.get("translation") or "").strip()
                     if key not in items or key in emitted or not translated:
                         continue
-                    event = _commit_paragraph(payload, items[key], translated, completed + 1)
+                    event = _commit_paragraph(payload, items[key], translated, completed + 1,
+                                              row.get("terms"))
                     emitted.add(key)
                     completed += 1
                     yield _event(event)
@@ -218,7 +272,8 @@ async def _stream_events(payload: runtime.TranslationStreamPayload) -> AsyncIter
                 key = str(row.get("paragraphKey") or "") if row else ""
                 translated = str(row.get("translation") or "").strip() if row else ""
                 if key in items and key not in emitted and translated:
-                    yield _event(_commit_paragraph(payload, items[key], translated, completed + 1))
+                    yield _event(_commit_paragraph(payload, items[key], translated, completed + 1,
+                                                   row.get("terms") if row else None))
                     emitted.add(key)
                     completed += 1
             except (ValueError, TypeError, json.JSONDecodeError) as exc:

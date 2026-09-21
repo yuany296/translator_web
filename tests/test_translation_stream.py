@@ -42,6 +42,55 @@ def test_stream_prompt_forbids_merging_neighbor_paragraphs():
     assert '"paragraphKey": "p2"' in prompt
 
 
+def test_stream_prompt_carries_mandatory_glossary_rules_and_character_notes():
+    """术语段必须与小批链路同一套硬规则,并带上角色备注。
+
+    以前这里只有一句 `Required glossary: [...]`:没有「逐字照用/最长优先」的规则,
+    也丢掉了条目备注(性别/年龄/身份/语气)。同一批术语在流式链路和小批链路上效果
+    不一致,用户看到的就是「术语有时候不正确」。
+    """
+    from types import SimpleNamespace
+
+    from ocr_service.pipeline import translation_stream
+
+    payload = SimpleNamespace(
+        items=[{"paragraphKey": "p1", "originalText": "레오나르도가 말했다."}],
+        glossary=[
+            {"source": "레오나르도", "target": "莱昂纳多", "note": "남성, 20대 기사"},
+            {"source": "", "target": "空 source 必须丢掉"},
+        ],
+        context={}, sourceLanguage="ko", targetLanguage="zh-CN",
+    )
+    prompt = translation_stream._prompt(payload)
+    assert "Mandatory terminology glossary:" in prompt
+    assert "must contain its target string verbatim" in prompt
+    assert "Never replace a glossary target with a synonym" in prompt
+    assert "Apply the longest matching source term first" in prompt
+    assert "Use notes to choose pronouns and voice" in prompt
+    assert ('"source": "레오나르도", "target": "莱昂纳多", "note": "남성, 20대 기사"') in prompt
+    assert "空 source 必须丢掉" not in prompt
+    # 术语交代（used / skipped+理由）必须写进提示词，否则漏用术语查不出来
+    assert "account for it in that line's `terms` object" in prompt
+    assert "Never leave a matching row unaccounted for" in prompt
+    assert '"terms":{"used":["…"],"skipped":[{"source":"…","reason":"…"}]}' in prompt
+
+
+def test_stream_prompt_omits_the_glossary_block_when_there_are_no_terms():
+    from types import SimpleNamespace
+
+    from ocr_service.pipeline import translation_stream
+
+    payload = SimpleNamespace(
+        items=[{"paragraphKey": "p1", "originalText": "첫째"}],
+        glossary=[], context={}, sourceLanguage="auto", targetLanguage="zh-CN",
+    )
+    prompt = translation_stream._prompt(payload)
+    assert "Mandatory terminology glossary:" not in prompt
+    assert "glossary" not in prompt
+    assert "terms" not in prompt, "没有术语时不夹带术语交代的 schema"
+    assert 'Schema: {"paragraphKey":"the supplied key","translation":"translated text"}' in prompt
+
+
 def test_stream_heartbeat_does_not_cancel_a_slow_upstream_chunk():
     from ocr_service.pipeline import translation_stream
 

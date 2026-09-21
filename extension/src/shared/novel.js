@@ -1,7 +1,11 @@
 import glossaryCore from "./glossary.js";
+import termRepair from "./term-repair.js";
 import sharedUtils from "./utils.js";
+import { NOVEL_SPEED_DEFAULTS } from "./novel-speed.js";
 
-const CHUNK_TARGET_CHARS = 1400;
+// 切块字数默认值来自 shared/novel-speed.js：桌面设置页可以改（novelChunkChars），
+// 这里只保留「没人传参时用多少」的兜底，两处不会再各写一个数字。
+const CHUNK_TARGET_CHARS = NOVEL_SPEED_DEFAULTS.chunkChars;
 const MAX_PARAGRAPH_CHARS = 12000;
 
 function parseKakaoNovelLocation(url, title = "") {
@@ -80,14 +84,44 @@ function dedupeAcceptedTranslations(expected, accepted, errors) {
   return kept;
 }
 
+/**
+ * 模型对术语的交代：`used` 是「这些行照用了」，`skipped` 是「这次语境不是它 + 理由」。
+ *
+ * 为什么要有这一层：字符串命中（glossary.js#matchesSourceTerm）经常不是那个意思
+ * （봄 = 春天 / 人名，줄 = 排队 / 人名），所以硬校验「命中就必须逐字用」会把句子改坏 ——
+ * 手机版当年为此去掉了术语校验。但去掉校验之后模型可以**默默不用**注入的术语，
+ * 于是表现为「术语有时候就是不生效」。现在裁决权仍然在模型手里，只是它必须交代:
+ * 命中的每一条要么用上、要么写一条带理由的 skipped；两者都没有 = 静默漏用。
+ *
+ * 模型没按新 schema 回（旧缓存响应、老模型）时返回 null，调用方退回旧的字符串硬校验。
+ */
+function normalizeTermAccounting(row) {
+  const terms = row && row.terms;
+  if (!terms || typeof terms !== "object" || Array.isArray(terms)) return null;
+  const used = (Array.isArray(terms.used) ? terms.used : [])
+    .map(value => String(value || "")).filter(Boolean);
+  const skipped = (Array.isArray(terms.skipped) ? terms.skipped : [])
+    .map(entry => ({
+      source: String(entry && (entry.source ?? entry.term) || ""),
+      reason: String(entry && (entry.reason ?? entry.why) || "").trim()
+    }))
+    .filter(entry => entry.source && entry.reason);
+  return { used, skipped };
+}
+
 function validateTranslations(items, rows, glossaryEntries = [], languages = {}) {
   const expected = new Map((Array.isArray(items) ? items : []).map(item => [String(item.id), item]));
+  // 「译文里照抄了术语原文拼写」是字符串事实不是判断,先就地换成译名再校验:
+  // 否则韩文残留判定会先把整段丢掉、再花一次模型请求重试(见 shared/term-repair.js)。
+  const repairedRows = (Array.isArray(glossaryEntries) && glossaryEntries.length)
+    ? termRepair.repairTermLeftovers(items, rows, glossaryEntries)
+    : rows;
   const accepted = [];
   const glossaryFallbacks = [];
   const quoteFallbacks = [];
   const errors = [];
   const seen = new Set();
-  for (const row of Array.isArray(rows) ? rows : []) {
+  for (const row of Array.isArray(repairedRows) ? repairedRows : []) {
     const id = String(row && row.id || "").trim();
     if (!expected.has(id) || seen.has(id)) continue;
     const original = String(expected.get(id).original_text || "");
@@ -118,13 +152,29 @@ function validateTranslations(items, rows, glossaryEntries = [], languages = {})
       continue;
     }
     const translatedFolded = translatedText.toLocaleLowerCase();
-    const violated = glossaryEntries.filter(term =>
-      glossaryCore.matchesSourceTerm(original, term.source) && !translatedFolded.includes(term.target.toLocaleLowerCase())
-    );
-    if (violated.length) {
-      const terms = violated.map(term => term.source);
-      errors.push({ id, code: "glossary_violation", terms });
-      glossaryFallbacks.push({ id, translated_text: translatedText, terms });
+    const accounting = normalizeTermAccounting(row);
+    const matched = glossaryEntries.filter(term => glossaryCore.matchesSourceTerm(original, term.source));
+    const violated = [];
+    const unaccounted = [];
+    for (const term of matched) {
+      if (translatedFolded.includes(term.target.toLocaleLowerCase())) continue;
+      if (!accounting) {
+        // 旧响应:退回字符串硬校验(命中却没用 = 违规),重试时会点名要求补交代。
+        violated.push(term.source);
+        continue;
+      }
+      // 说了「用了」但译文里没有 → 确定性违规;说了「这次不是它」→ 尊重模型判断。
+      if (accounting.used.includes(term.source)) {
+        violated.push(term.source);
+        continue;
+      }
+      if (accounting.skipped.some(entry => entry.source === term.source)) continue;
+      unaccounted.push(term.source);
+    }
+    if (violated.length || unaccounted.length) {
+      if (violated.length) errors.push({ id, code: "glossary_violation", terms: violated });
+      if (unaccounted.length) errors.push({ id, code: "glossary_unaccounted", terms: unaccounted });
+      glossaryFallbacks.push({ id, translated_text: translatedText, terms: [...violated, ...unaccounted] });
       continue;
     }
     // 整段包裹修不回来(原文不是整段被引号包住,例如 `"어쩌고" 그가 말했다.`)时
@@ -158,6 +208,7 @@ function summarizeTranslationErrors(errors) {
   }));
   const labels = {
     glossary_violation: "术语不一致",
+    glossary_unaccounted: "术语既没用也没交代",
     missing_translation: "响应缺少 ID/译文",
     duplicate_translation: "与相邻段落译文重复",
     source_language_leak: "返回内容仍以韩文为主",
@@ -196,6 +247,8 @@ export default Object.freeze({
   normalizeParagraph,
   buildChunks,
   validateTranslations,
+  // 流式链路要在转发前就地修掉「译文里照抄术语原文拼写」的段落（见 translation-stream.js）。
+  repairTermLeftovers: termRepair.repairTermLeftovers,
   summarizeTranslationErrors,
   summarizeTranslationWarnings
 });

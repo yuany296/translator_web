@@ -98,7 +98,9 @@ test("novel chunk retry recovers a merged missing segment even after the request
   // 提示词版本必须随提示词语义变更 bump，旧缓存才不会掩盖新提示词行为。
   // v3 = 把对话引号规则写死到字符级并给正反例（v2 = 防合并规则）。
   // v4 = 删除跨话小说记忆，模型只返回 translations。
-  assert.equal(context.__backgroundTest.NOVEL_TRANSLATION_PROMPT_VERSION, "kakao-novel-v4");
+  // v5 = 术语前言改为传入完整上下文（pageUrl + 语言对）：此前只传 scopeKey，
+  //      应用网址非空的术语库会被整库丢掉（见 novel_glossary_prompt_context）。
+  assert.equal(context.__backgroundTest.NOVEL_TRANSLATION_PROMPT_VERSION, "kakao-novel-v5");
   assert.equal(response.partial, false);
   assert.equal(response.errors.length, 0);
   // vm 跨 realm 数组原型不同，不能直接 deepEqual：用 join 比较顺序。

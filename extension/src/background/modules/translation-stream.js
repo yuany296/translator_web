@@ -2,6 +2,43 @@ import { createNdjsonParser } from "../../shared/ndjson.js";
 
 export const TRANSLATION_STREAM_PORT = "mt-translation-stream-v1";
 
+/**
+ * 流式链路的术语校验。
+ *
+ * 小批链路(novel-translation.js)会逐段核对术语、违反就带纠正意见重试,流式链路
+ * 此前只把术语发进提示词就完事:模型漏用/自己发挥时事件照样落库、照样渲染,用户
+ * 看到的就是「术语有时候不正确」—— 而且库里是不是全站生效完全不影响这一点。
+ * 这里复用同一套校验(novelCore.validateTranslations,内部按 matchesSourceTerm
+ * 判断该段是否真的命中术语),把漏用术语的段落挡在渲染之外:该事件不转发,内容侧
+ * 于是仍视其为未翻译,随后由渐进小批链路按术语重译 —— 那条链路自带重试与
+ * 「术语违规保留译文 + 警告」回落,不会把整段译文弄丢。
+ */
+export function buildStreamGlossaryGuard(runtime, glossary, languages = {}) {
+  const entries = Array.isArray(glossary) ? glossary : [];
+  if (!entries.length || typeof runtime.novelCore?.validateTranslations !== "function") return null;
+  return (originalText, translatedText, terms = null) => {
+    const checked = runtime.novelCore.validateTranslations(
+      [{ id: "stream-guard", original_text: String(originalText || "") }],
+      [{
+        id: "stream-guard",
+        translated_text: String(translatedText || ""),
+        // 模型自己交代的术语账（used / skipped+理由）。没给就交给校验器退回字符串硬校验。
+        ...(terms && typeof terms === "object" ? { terms } : {})
+      }],
+      entries,
+      {
+        sourceLanguage: String(languages.sourceLanguage || "auto"),
+        targetLanguage: String(languages.targetLanguage || "zh-CN")
+      }
+    );
+    // glossary_violation:命中却没用(或声称用了却没有) —— 确定性违规。
+    // glossary_unaccounted:既没用也没交代 —— 静默漏用(用户说的「术语有时候不生效」)。
+    // 两者都交给小批链路重译;模型写明「这次语境不是它」的条目在这里就已经被放行了。
+    return (checked.errors || []).filter(error =>
+      ["glossary_violation", "glossary_unaccounted"].includes(error.code));
+  };
+}
+
 export function installTranslationStream(runtime) {
   async function openTranslationStream(request, signal) {
     const configuration = await runtime.loadConfiguration();
@@ -14,11 +51,17 @@ export function installTranslationStream(runtime) {
       targetLanguage,
       pageUrl: String(request.pageUrl || "")
     };
+    // note 是角色备注(性别/年龄/身份/语气),小批链路一直带着它;流式链路此前只发
+    // source/target,于是同一批术语在两条链路上给出的效果并不一致。
     const glossary = runtime.glossaryCore.getRelevantEntries(
       configuration.glossary,
       (request.items || []).map(item => ({ original_text: item.originalText })),
       glossaryContext
-    ).map(item => ({ source: item.source, target: item.target }));
+    ).map(item => ({
+      source: item.source,
+      target: item.target,
+      ...(item.note ? { note: item.note } : {})
+    }));
     const body = {
       ...request, sourceLanguage, targetLanguage, glossary,
       upstream: {
@@ -39,7 +82,11 @@ export function installTranslationStream(runtime) {
     if (!String(response.headers.get("content-type") || "").includes("application/x-ndjson")) {
       throw new Error("本地服务不支持 NDJSON 流式翻译");
     }
-    return response.body;
+    return {
+      body: response.body,
+      glossary,
+      guard: buildStreamGlossaryGuard(runtime, glossary, { sourceLanguage, targetLanguage })
+    };
   }
 
   async function relayStream(port, request, controller) {
@@ -65,8 +112,24 @@ export function installTranslationStream(runtime) {
       const active = event.record && event.record.activeVersion;
       if (active && typeof active === "object") active.translatedText = repaired;
     };
-    const body = await openTranslationStream(request, controller.signal);
-    const reader = body.getReader();
+    // 译文里照抄了术语的原文拼写 = 这一段就是没翻:就地换成术语库里的译名（确定性修复，
+    // 不打模型）。必须在校验之前做,否则韩文残留判定会先把整段丢掉再逐段重试。
+    const repairTerms = event => {
+      const original = originalByParagraph.get(String(event.paragraphKey || ""));
+      if (!original || !Array.isArray(opened.glossary) || !opened.glossary.length) return;
+      const repaired = runtime.novelCore.repairTermLeftovers?.(
+        [{ id: "stream-repair", original_text: original }],
+        [{ id: "stream-repair", translated_text: String(event.translation || "") }],
+        opened.glossary
+      );
+      const text = String(repaired && repaired[0] && repaired[0].translated_text || "");
+      if (!text || text === event.translation) return;
+      event.translation = text;
+      const active = event.record && event.record.activeVersion;
+      if (active && typeof active === "object") active.translatedText = text;
+    };
+    const opened = await openTranslationStream(request, controller.signal);
+    const reader = opened.body.getReader();
     try {
       while (!controller.signal.aborted) {
         const { value, done } = await reader.read();
@@ -81,6 +144,21 @@ export function installTranslationStream(runtime) {
             if (seen.has(identity)) continue;
             seen.add(identity);
             repairQuotes(event);
+            repairTerms(event);
+            const original = originalByParagraph.get(String(event.paragraphKey || ""));
+            const violations = opened.guard && original
+              ? opened.guard(original, String(event.translation || ""), event.terms)
+              : [];
+            if (violations.length) {
+              // 术语没照用:不转发、也不写进译文库缓存镜像,交给渐进小批链路
+              // 按术语重译(它会重试,失败也只会保留译文并出警告)。
+              port.postMessage({
+                type: "glossary_rejected", taskId,
+                paragraphKey: String(event.paragraphKey || ""),
+                terms: violations.flatMap(violation => violation.terms || [])
+              });
+              continue;
+            }
             if (event.record) await runtime.saveTranslationServiceSnapshots([event.record]);
           }
           port.postMessage(event);

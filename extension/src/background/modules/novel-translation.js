@@ -1,8 +1,21 @@
 import llmProviders from "../../shared/llm-providers.js";
 
-const PROMPT_VERSION = "kakao-novel-v4";
+const PROMPT_VERSION = "kakao-novel-v5";
 const CACHE_PREFIX = "mt_cache_v23:novel:";
 const REQUEST_TIMEOUT_MS = 90_000;
+// system 提示词固定以 "You are a web-novel literary translator…" 开头：手机版覆盖层靠这句话
+// 识别「这条请求是小说翻译」，然后再补自己的规则，所以开头这句的措辞不能改。
+//
+// 目标语言的**字形**必须写清：user 提示词里只有 `into zh-CN` 这样的代码，
+// 模型偶尔会把它当成「中文（不限字形）」而输出繁体（韩文小说尤其常见）。
+const SYSTEM_PROMPT = [
+  "You are a web-novel literary translator and continuity editor. Return strict JSON only.",
+  "Write the whole translation in the requested target language.",
+  "If the target is zh-CN, use Simplified Chinese characters and Mainland vocabulary only (简体中文) —",
+  "never Traditional characters (繁體字), and never Taiwan/Hong Kong wording.",
+  "If the target is zh-TW, use Traditional characters only (繁體中文) — never Simplified characters (简体字).",
+  "Do not mix the two scripts inside one paragraph."
+].join(" ");
 
 export function installNovelTranslation(runtime) {
   runtime.NOVEL_TRANSLATION_PROMPT_VERSION = PROMPT_VERSION;
@@ -80,18 +93,50 @@ export function installNovelTranslation(runtime) {
     'Example: source `"난 무조건 탈색부터 한다."` -> correct `“我不管，肯定要先漂发。”`, wrong `我不管，肯定要先漂发。`'
   ].join(" ");
 
+  // 术语「判了没有」必须可核对。
+  // 字符串命中经常不是那个意思(봄=春天/人名、줄=排队/人名),所以「命中就必须逐字用」
+  // 的硬校验会把句子改坏 —— 手机版当年为此去掉了术语校验。但去掉之后模型可以**默默
+  // 不用**注入的术语,于是表现为「术语有时候就是不生效」。现在裁决权仍然留给模型,
+  // 只是要求它逐条交代:命中的每条术语要么用上,要么写一条带理由的 skipped。
+  // 两者都没有 = glossary_unaccounted,那一段会被点名重试;重试仍不交代才回落保留译文。
+  const GLOSSARY_ACCOUNTING_RULE = [
+    "For every glossary row that occurs in an item, account for it in that item's `terms` object:",
+    "put its source in `terms.used` when the translation contains that row's target string verbatim,",
+    'or list it in `terms.skipped` as {"source":"…","reason":"…"} when this occurrence really means',
+    "something else (an ordinary noun, an idiom, a different person, or part of a longer word).",
+    "Never leave a matching row unaccounted for, and never claim `used` when the target string is absent."
+  ].join(" ");
+  const GLOSSARY_ACCOUNTING_SCHEMA = '{"translations":[{"id":"p1","translated_text":"...",'
+    + '"terms":{"used":["…"],"skipped":[{"source":"…","reason":"…"}]}}]}';
+
   function buildPrompt(items, context, glossary) {
     const rows = items.map(item => ({
       id: item.id,
       text: item.original_text
     }));
+    // 术语前言必须拿到**完整**上下文（pageUrl + 语言对），不能只给 scopeKey：
+    // shared/glossary.js#getEnabledEntries 用 pageUrl 判定每个库的生效范围
+    // （libraryApplyUrlMatches：应用网址为空 = 全站生效；非空则要求本页命中），
+    // 而 pageUrl 缺失时 non-empty applyUrls 一律算「不生效」—— 于是凡是点过
+    // 「一键加入应用」的术语库，其术语会**整库被丢掉**，模型只能自己发挥译名，
+    // 而校验器/统计那一侧用的是完整上下文，于是表现为「术语明明注入了却没用」。
     const glossaryPrompt = runtime.glossaryCore.buildPrompt(glossary, items, {
-      scopeKey: context.scopeKey
+      scopeKey: context.scopeKey,
+      pageUrl: context.pageUrl,
+      sourceLanguage: context.sourceLanguage,
+      targetLanguage: context.targetLanguage
     });
     // 重试时点名"上一次哪几段把引号丢了",比一句泛泛的规则更管用。
     const quoteRetryIds = (Array.isArray(context.retryErrors) ? context.retryErrors : [])
       .filter(error => error && error.code === "dialogue_quote_missing")
       .map(error => String(error.id || "").slice(0, 180)).filter(Boolean);
+    // 术语没交代 / 说了用却没用的那几条:重试时点名,并提示要带上 `terms` 交代。
+    const retryErrorList = Array.isArray(context.retryErrors) ? context.retryErrors : [];
+    const glossaryRetryTerms = [...new Set(retryErrorList
+      .filter(error => error && ["glossary_unaccounted", "glossary_violation"].includes(error.code))
+      .flatMap(error => (Array.isArray(error.terms) ? error.terms : []))
+      .map(term => String(term).slice(0, 120))
+      .filter(Boolean))];
     return [
       `Prompt version: ${PROMPT_VERSION}`,
       `Translate this web-novel passage from ${context.sourceLanguage || "auto-detected source"} into ${context.targetLanguage || "zh-CN"}.`,
@@ -100,7 +145,9 @@ export function installNovelTranslation(runtime) {
       QUOTE_RULE,
       "Use the previous translation and nearby context only for continuity; never add events absent from the source.",
       "Return JSON only with translations.",
-      '{"translations":[{"id":"p1","translated_text":"..."}]}',
+      ...(glossaryPrompt
+        ? [GLOSSARY_ACCOUNTING_RULE, GLOSSARY_ACCOUNTING_SCHEMA]
+        : ['{"translations":[{"id":"p1","translated_text":"..."}]}']),
       ...(glossaryPrompt ? [glossaryPrompt] : []),
       `Previous translated block: ${String(context.previousTranslation || "").slice(-5000)}`,
       `Nearby preceding text: ${String(context.beforeText || "").slice(-3000)}`,
@@ -108,6 +155,11 @@ export function installNovelTranslation(runtime) {
       ...(quoteRetryIds.length
         ? [`These ids dropped the source dialogue quotes last time (${quoteRetryIds.join(
           ", ")}): re-output them with the source's own quote characters around the same dialogue.`]
+        : []),
+      ...(glossaryRetryTerms.length
+        ? [`Glossary rows you left unaccounted for (${glossaryRetryTerms.join(", ")}): re-output those items `
+          + "with each row's target string verbatim, or explain in terms.skipped why this occurrence "
+          + "is not that entity. `terms` must cover every supplied row that occurs in the item."]
         : []),
       ...(Array.isArray(context.retryErrors) && context.retryErrors.length
         ? [`Retry corrections required: ${runtime.stableSerialize(context.retryErrors)}`] : []),
@@ -154,7 +206,7 @@ export function installNovelTranslation(runtime) {
       temperature: 0,
       messages: [{
         role: "system",
-        content: "You are a web-novel literary translator and continuity editor. Return strict JSON only."
+        content: SYSTEM_PROMPT
       }, {
         role: "user",
         content: buildPrompt(items, context, glossary)

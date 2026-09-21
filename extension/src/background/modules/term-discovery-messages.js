@@ -1,10 +1,6 @@
 import { resolveExtractionConfig } from "../../config/store.js";
 
 export function installTermDiscoveryMessages(runtime) {
-  /** 术语提取的有效配置：配置库选定条目（旧存档仍按「跟随翻译服务」解析）。 */
-  function termLlmConfig(configuration) {
-    return resolveExtractionConfig(configuration, "termExtraction");
-  }
   function sentenceLlmConfig(configuration) {
     return resolveExtractionConfig(configuration, "sentenceExtraction");
   }
@@ -13,98 +9,12 @@ export function installTermDiscoveryMessages(runtime) {
     if (configuration.runtime.sentenceExtractionEnabled === false) return false;
     return Boolean(sentenceLlmConfig(configuration).baseUrl);
   }
+  /**
+   * 整章术语提取：链路拆成「排队准备 → 提取（单独队列）→ 排队合并」，
+   * 慢的 LLM 请求不再占用用户操作共用的那条队列（详见 term-discovery-extract.js）。
+   */
   async function handleDiscoverTerms(message) {
-    return runtime.enqueueTermDiscoveryMutation(async () => {
-      const configuration = await runtime.loadConfiguration();
-      const stored = await runtime.storageGet([runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored]);
-      if (configuration.runtime.termDiscoveryEnabled === false) return { ok: true, skipped: true, reason: "disabled" };
-      const pageUrl = String(message.pageUrl || "").trim();
-      const targetKey = String(message.targetKey || "").trim();
-      // 网址归库：命中已启用术语库的页面，候选自动进入该库（未命中则为空，界面按默认库处理）。
-      const matched = runtime.glossaryCore.matchLibraryByUrl(configuration.glossary.libraries, pageUrl);
-      const libraryId = matched ? matched.libraryId : "";
-      // 自动忽略来源（小说名等）先于冷却/去重早退写入，保证提取器离线时也生效。
-      const { store, ignored } = await runtime.applyAutoIgnoreSources(stored, message.autoIgnoreSources, pageUrl);
-      const blocks = runtime.termDiscoveryCore.getUnprocessedBlocks(store, pageUrl, message.blocks, targetKey);
-      if (blocks.length === 0) return { ok: true, skipped: true, reason: "already_processed" };
-      if (runtime.isTermExtractorCoolingDown()) {
-        return { ok: true, skipped: true, reason: "cooldown", status: runtime.getTermExtractorStatusSnapshot() };
-      }
-      // 漫画连续翻页时同一章节 30 秒内只提取一次。
-      const now = Date.now();
-      const lastByPage = runtime.termExtractorLastExtractByPage || new Map();
-      if (now - (lastByPage.get(pageUrl) || 0) < runtime.TERM_EXTRACTOR_THROTTLE_MS) return { ok: true, skipped: true, reason: "throttled" };
-      lastByPage.set(pageUrl, now);
-      if (lastByPage.size > 100) lastByPage.delete(lastByPage.keys().next().value);
-      runtime.termExtractorLastExtractByPage = lastByPage;
-      const baseUrl = runtime.sanitizeLocalOcrBaseUrl(configuration.ocr.localPaddle.baseUrl);
-      const termLlm = termLlmConfig(configuration);
-      const upstream = {
-        baseUrl: String(termLlm.baseUrl || "").trim(),
-        model: String(termLlm.model || "").trim(),
-        apiKey: String(termLlm.apiKey || "").trim()
-      };
-      const llmMode = Boolean(upstream.baseUrl);
-      try {
-        const payload = await runtime.requestTermExtractorJson(`${baseUrl}/terms/extract`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            mode: "balanced",
-            blocks: blocks.map(block => ({
-              id: block.id,
-              text: block.originalText,
-              translatedText: block.translatedText
-            })),
-            user_terms: [...configuration.glossary.entries.map(entry => entry.source), ...store.chapters.flatMap(chapter => chapter.candidates).filter(candidate => candidate.kind === "person").map(candidate => candidate.source)].slice(0, 200),
-            upstream,
-            target_language: String(configuration.translation.targetLanguage || "zh-CN")
-          })
-        }, llmMode ? runtime.TERM_EXTRACTOR_LLM_TIMEOUT_MS : runtime.TERM_EXTRACTOR_TIMEOUT_MS);
-        runtime.markTermExtractorOnline(payload && payload.engine);
-        const nextPending = runtime.termDiscoveryCore.mergeDiscoveryResult({
-          store,
-          ignored,
-          glossary: configuration.glossary,
-          pageUrl,
-          pageTitle: message.pageTitle,
-          targetKey,
-          libraryId,
-          blocks,
-          extractedCandidates: payload && payload.candidates
-        });
-        await runtime.storageSet({
-          [runtime.STORAGE_KEYS.glossaryPending]: nextPending
-        });
-        // 服务端同步待确认候选
-        try {
-          const serverUrl = await runtime.isGlossaryServerMode();
-          if (serverUrl && payload && payload.candidates) {
-            for (const candidate of payload.candidates) {
-              await runtime.callGlossaryApi(serverUrl, "/glossary/pending", {
-                method: "POST",
-                body: JSON.stringify({
-                  source: candidate.source,
-                  kind: candidate.kind || "proper_noun",
-                  score: candidate.score || 0,
-                  evidence_ids: candidate.evidenceIds || [],
-                  chapter_key: pageUrl,
-                  library_id: libraryId
-                })
-              }).catch(() => {});
-            }
-          }
-        } catch (_) {}
-        const added = runtime.termDiscoveryCore.getPendingCount(nextPending) - runtime.termDiscoveryCore.getPendingCount(store);
-        return { ok: true, added, libraryId, pendingCount: runtime.termDiscoveryCore.getPendingCount(nextPending), status: runtime.getTermExtractorStatusSnapshot() };
-      } catch (error) {
-        runtime.markTermExtractorOffline(error);
-        console.warn("[MangaTranslator] 术语提取器暂时不可用：", runtime.getErrorMessage(error));
-        return { ok: true, skipped: true, reason: "offline", status: runtime.getTermExtractorStatusSnapshot() };
-      }
-    });
+    return runtime.runTermDiscovery(message);
   }
   runtime.handleDiscoverTerms = handleDiscoverTerms;
   async function handleGetTermDiscoveryStatus(message = {}) {
@@ -114,7 +24,7 @@ export function installTermDiscoveryMessages(runtime) {
     ]);
     const enabled = configuration.runtime.termDiscoveryEnabled !== false;
     if (enabled && message.probe === true) {
-      await runtime.probeTermExtractor(configuration.ocr.localPaddle.baseUrl, termLlmConfig(configuration));
+      await runtime.probeTermExtractor(configuration.ocr.localPaddle.baseUrl, runtime.termLlmConfig(configuration));
     }
     return {
       ok: true,
@@ -131,11 +41,15 @@ export function installTermDiscoveryMessages(runtime) {
   async function handleGetTermDiscoveryState(message = {}) {
     const [configuration, stored] = await Promise.all([
       runtime.loadConfiguration(),
-      runtime.storageGet([runtime.STORAGE_KEYS.glossaryPending, runtime.STORAGE_KEYS.glossaryIgnored])
+      runtime.storageGet([
+        runtime.STORAGE_KEYS.glossaryPending,
+        runtime.STORAGE_KEYS.glossaryIgnored,
+        runtime.STORAGE_KEYS.termDiscoveryLast
+      ])
     ]);
     const enabled = configuration.runtime.termDiscoveryEnabled !== false;
     if (enabled && message.probe === true) {
-      await runtime.probeTermExtractor(configuration.ocr.localPaddle.baseUrl, termLlmConfig(configuration));
+      await runtime.probeTermExtractor(configuration.ocr.localPaddle.baseUrl, runtime.termLlmConfig(configuration));
     }
     const pending = runtime.termDiscoveryCore.normalizePendingStore(stored[runtime.STORAGE_KEYS.glossaryPending]);
     return {
@@ -144,6 +58,7 @@ export function installTermDiscoveryMessages(runtime) {
       pending,
       libraries: configuration.glossary.libraries,
       ignored: runtime.termDiscoveryCore.normalizeIgnoredStore(stored[runtime.STORAGE_KEYS.glossaryIgnored]),
+      lastDiscovery: stored[runtime.STORAGE_KEYS.termDiscoveryLast] || null,
       pendingCount: runtime.termDiscoveryCore.getPendingCount(pending),
       status: enabled ? runtime.getTermExtractorStatusSnapshot() : {
         ...runtime.getTermExtractorStatusSnapshot(),

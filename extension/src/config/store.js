@@ -39,7 +39,15 @@ export function resolveExtractionConfig(configuration, sectionName) {
   const vendors = configuration && configuration.llmVendors && configuration.llmVendors.vendors || {};
   const entry = section.vendor ? vendors[section.vendor] : null;
   if (entry) {
-    return overlayVendorEntry(section, entry);
+    const resolved = overlayVendorEntry(section, entry);
+    // 选中的配置没填 model：继承翻译服务的 model，而不是让它一路落到本地 Ollama 的
+    // 默认名（qwen2.5:7b）—— 那个名字打云端接口必然失败，而翻译自己有默认模型，
+    // 表现就是「翻译正常、术语一条都收不到」。
+    if (!String(resolved.model || "").trim()) {
+      return { ...resolved, model: String(configuration && configuration.translation
+        && configuration.translation.model || "").trim() };
+    }
+    return resolved;
   }
   if (section.followTranslation === false || !isTranslationConfigured(configuration)) {
     return section;

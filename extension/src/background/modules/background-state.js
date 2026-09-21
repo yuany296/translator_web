@@ -8,7 +8,9 @@ export function installBackgroundState(runtime) {
     glossaryLegacy: runtime.glossaryCore.LEGACY_STORAGE_KEY,
     glossaryPending: runtime.termDiscoveryCore.PENDING_STORAGE_KEY,
     glossaryIgnored: runtime.termDiscoveryCore.IGNORED_STORAGE_KEY,
-    glossaryStorage: "mt_glossary_storage"
+    glossaryStorage: "mt_glossary_storage",
+    // 最近一次整章术语提取的结果（成功/跳过/失败+原因）：术语没收集到时，界面要能说出为什么。
+    termDiscoveryLast: "mt_term_discovery_last_v1"
   };
   runtime.STORAGE_KEYS = STORAGE_KEYS;
   const DEFAULT_SETTINGS = {
@@ -133,6 +135,20 @@ export function installBackgroundState(runtime) {
   // LLM 提取按 3000 字符分段串行调用，整章（几十段）可能需数分钟。
   const TERM_EXTRACTOR_LLM_TIMEOUT_MS = 600 * 1000;
   runtime.TERM_EXTRACTOR_LLM_TIMEOUT_MS = TERM_EXTRACTOR_LLM_TIMEOUT_MS;
+  // 但固定 600 秒两头都不合适：段数多的大章节还在正常跑就被判超时，结果被丢掉、
+  // 再吃 5 分钟冷却 —— 用户看到的就是「翻了两章，一条术语都没收集到」。
+  // 预算改成按分段数放大（服务端 LLM_MAX_CHUNK_CHARS = 3000，串行跑）。
+  const TERM_EXTRACTOR_CHUNK_CHARS = 3000;
+  runtime.TERM_EXTRACTOR_CHUNK_CHARS = TERM_EXTRACTOR_CHUNK_CHARS;
+  const TERM_EXTRACTOR_CHUNK_BUDGET_MS = 90 * 1000;
+  runtime.TERM_EXTRACTOR_CHUNK_BUDGET_MS = TERM_EXTRACTOR_CHUNK_BUDGET_MS;
+  const TERM_EXTRACTOR_MIN_LLM_TIMEOUT_MS = 120 * 1000;
+  runtime.TERM_EXTRACTOR_MIN_LLM_TIMEOUT_MS = TERM_EXTRACTOR_MIN_LLM_TIMEOUT_MS;
+  const TERM_EXTRACTOR_MAX_TIMEOUT_MS = 1200 * 1000;
+  runtime.TERM_EXTRACTOR_MAX_TIMEOUT_MS = TERM_EXTRACTOR_MAX_TIMEOUT_MS;
+  // 超时只罚一分钟：它是「这次太慢」，不是「提取器坏了」，别把后面几章一起罚 5 分钟。
+  const TERM_EXTRACTOR_TIMEOUT_COOLDOWN_MS = 60 * 1000;
+  runtime.TERM_EXTRACTOR_TIMEOUT_COOLDOWN_MS = TERM_EXTRACTOR_TIMEOUT_COOLDOWN_MS;
   const TERM_EXTRACTOR_COOLDOWN_MS = 5 * 60 * 1000;
   runtime.TERM_EXTRACTOR_COOLDOWN_MS = TERM_EXTRACTOR_COOLDOWN_MS;
   const TERM_EXTRACTOR_HEALTH_CACHE_MS = 30 * 1000;
@@ -233,6 +249,10 @@ export function installBackgroundState(runtime) {
   runtime.baiduLastOcrRequestAt = baiduLastOcrRequestAt;
   let termDiscoveryMutationQueue = Promise.resolve();
   runtime.termDiscoveryMutationQueue = termDiscoveryMutationQueue;
+  // 整章术语提取的 HTTP 请求单独排一条队列：它慢（LLM 上游最长 10 分钟），
+  // 不能占住上面那条用户操作共用的队列，否则术语库页的「确认加入」会一直等不到回话。
+  let termDiscoveryExtractionQueue = Promise.resolve();
+  runtime.termDiscoveryExtractionQueue = termDiscoveryExtractionQueue;
   let termExtractorRuntime = {
     state: "unknown",
     engine: "",

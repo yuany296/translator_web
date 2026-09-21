@@ -110,6 +110,10 @@ export function installGlossaryEditor(runtime) {
     runtime.renderLibraryPanel();
   }
   runtime.renderPendingScope = renderPendingScope;
+  /**
+   * 最近一次自动提取怎么了。术语没收集到时，「提取器在线」这句是没用的——
+   * 必须说清是失败（带原因）、被跳过，还是提取到的东西全被去重掉了。
+   */
   function renderPendingState(response = {}) {
     // 先记录句子级 AI 提取服务是否可用，候选卡渲染时才不会漏掉“AI 提取”按钮。
     runtime.sentenceLlmConfigured = response.sentenceLlmConfigured === true;
@@ -127,6 +131,14 @@ export function installGlossaryEditor(runtime) {
       runtime.extractorStatus.textContent = `术语提取器：${modeLabel}离线（不影响翻译）`;
     } else {
       runtime.extractorStatus.textContent = "术语提取器：等待本地服务";
+    }
+    // 健康探测成功会把状态翻回「在线」，所以失败原因单独挂出来，不被「在线」盖掉。
+    const lastText = runtime.describeLastDiscovery?.(response.lastDiscovery) || "";
+    if (lastText) {
+      runtime.extractorStatus.textContent = `${runtime.extractorStatus.textContent} · ${lastText}`;
+      runtime.extractorStatus.title = lastText;
+    } else {
+      runtime.extractorStatus.removeAttribute?.("title");
     }
   }
   runtime.renderPendingState = renderPendingState;

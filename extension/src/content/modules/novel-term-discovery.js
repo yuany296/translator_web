@@ -2,7 +2,9 @@ import novelTermDiscovery from "../../shared/novel-term-discovery.js";
 
 const RETRY_DELAY_MS = 30000;
 const MAX_RETRY_ATTEMPTS = 40;
-const RETRY_REASONS = new Set(["offline", "cooldown", "throttled"]);
+// "partial" = 提取跑了一部分（分段超时/失败）：缺的那些段落没被标记已处理，
+// 重发时只会带上它们（见 shared/term-discovery.js#getUnprocessedBlocks）。
+const RETRY_REASONS = new Set(["offline", "cooldown", "throttled", "partial"]);
 
 export function installNovelTermDiscovery(runtime) {
   function scheduleNovelTermDiscovery(chapter, attempt = 0) {

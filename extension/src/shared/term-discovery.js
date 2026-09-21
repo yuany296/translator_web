@@ -16,6 +16,10 @@ function textContainsSource(text, source) {
 /**
  * 把一次提取结果并入待确认仓库。`libraryId` 是本次页面网址匹配到的术语库
  * （未匹配时为空），只在新建章节或用户尚未手动指定归属时写入章节。
+ *
+ * `processedBlockIds` 决定「哪些段落算已经提取过」：默认是本次送出的全部块。
+ * 手机版会传入「真的跑出结果的那些分段覆盖的块」—— 分段超时/失败时若照旧把整屏
+ * 标记成已处理，落在失败分段里的术语就再也不会被重新提取（用户看到的就是「漏术语」）。
  */
 function mergeDiscoveryResult({
   store: storeValue,
@@ -25,6 +29,7 @@ function mergeDiscoveryResult({
   pageTitle,
   targetKey,
   blocks: blocksValue,
+  processedBlockIds: processedBlockIdsValue,
   extractedCandidates,
   libraryId: libraryIdValue,
   now = Date.now()
@@ -119,7 +124,10 @@ function mergeDiscoveryResult({
     candidate.suggestedTarget = candidate.suggestedTargets.length === 1 ? candidate.suggestedTargets[0] : "";
     candidate.ambiguous = candidate.suggestedTargets.length > 1;
   }
-  chapter.processedEvidenceIds = keys.uniqueStrings([...chapter.processedEvidenceIds, ...blocks.map(block => block.id)], pendingCore.MAX_PROCESSED_IDS_PER_CHAPTER);
+  chapter.processedEvidenceIds = keys.uniqueStrings([
+    ...chapter.processedEvidenceIds,
+    ...(Array.isArray(processedBlockIdsValue) ? processedBlockIdsValue.map(String) : blocks.map(block => block.id))
+  ], pendingCore.MAX_PROCESSED_IDS_PER_CHAPTER);
   chapter.candidates = chapter.candidates.filter(candidate => !glossaryKeys.has(candidate.sourceKey)).sort((left, right) => right.score - left.score || right.updatedAt - left.updatedAt).slice(0, pendingCore.MAX_CANDIDATES_PER_CHAPTER);
   store.updatedAt = now;
   store.chapters = store.chapters.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, pendingCore.MAX_CHAPTERS);

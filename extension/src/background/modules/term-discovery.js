@@ -229,16 +229,33 @@ export function installTermDiscovery(runtime) {
     };
   }
   runtime.markTermExtractorOnline = markTermExtractorOnline;
-  function markTermExtractorOffline(error, engine = "", now = Date.now()) {
+  function markTermExtractorOffline(error, engine = "", now = Date.now(), cooldownMs = runtime.TERM_EXTRACTOR_COOLDOWN_MS) {
     runtime.termExtractorRuntime = {
       state: "offline",
       engine: String(engine || "").slice(0, 40),
       error: runtime.getErrorMessage(error) || "术语提取器离线",
       checkedAt: now,
-      cooldownUntil: now + runtime.TERM_EXTRACTOR_COOLDOWN_MS
+      cooldownUntil: now + Math.max(0, Number(cooldownMs) || 0)
     };
   }
   runtime.markTermExtractorOffline = markTermExtractorOffline;
+  /**
+   * 这次提取请求该给多少预算。
+   *
+   * 服务端把整章拼成正文（原文 + 译文行）按 3000 字符切段，逐段串行调用 LLM，
+   * 所以耗时基本与段数成正比。固定 600 秒时，段数多的大章节「还在正常跑」就被
+   * 扩展判成超时、结果整份丢掉，再叠一次冷却 —— 表现就是没有收集到术语。
+   */
+  function termExtractionTimeoutMs(blocks) {
+    const chars = (Array.isArray(blocks) ? blocks : []).reduce((total, block) => total
+      + String(block && block.originalText || "").length
+      + String(block && block.translatedText || "").length, 0);
+    const chunks = Math.max(1, Math.ceil(chars / runtime.TERM_EXTRACTOR_CHUNK_CHARS));
+    const budget = chunks * runtime.TERM_EXTRACTOR_CHUNK_BUDGET_MS;
+    return Math.min(runtime.TERM_EXTRACTOR_MAX_TIMEOUT_MS,
+      Math.max(runtime.TERM_EXTRACTOR_MIN_LLM_TIMEOUT_MS, budget));
+  }
+  runtime.termExtractionTimeoutMs = termExtractionTimeoutMs;
   async function probeTermExtractor(baseUrlValue, termExtraction = null) {
     const now = Date.now();
     if (runtime.termExtractorRuntime.checkedAt > 0 && now - runtime.termExtractorRuntime.checkedAt < runtime.TERM_EXTRACTOR_HEALTH_CACHE_MS) {
@@ -279,7 +296,10 @@ export function installTermDiscovery(runtime) {
       return payload;
     } catch (error) {
       if (error && error.name === "AbortError") {
-        throw new Error("术语提取请求超时");
+        const timeout = new Error("术语提取请求超时");
+        // 打标记：调用方要区分「这次太慢」和「提取器坏了」，前者不该吃 5 分钟冷却。
+        timeout.timeout = true;
+        throw timeout;
       }
       throw error;
     } finally {

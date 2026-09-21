@@ -118,7 +118,11 @@ export function installPlatformStorage(runtime) {
       return await Promise.race([request, timeout]);
     } catch (error) {
       if (timedOut) {
-        throw new Error(timeoutMessage);
+        const timeoutError = new Error(timeoutMessage);
+        // 与 requestTermExtractorJson 同一约定：调用方要区分「这次太慢」和「服务坏了」，
+        // 前者不该吃满冷却（术语提取超时只罚 60 秒）。
+        timeoutError.timeout = true;
+        throw timeoutError;
       }
       throw error;
     } finally {

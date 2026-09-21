@@ -13,6 +13,8 @@ const steps = [
     "local-ocr-service/glossary_store", "local-ocr-service/translation_store",
     "local-ocr-service/ocr_service",
     "local-ocr-service/term_extractor.py",
+    "local-ocr-service/term_extract_heuristic.py",
+    "local-ocr-service/term_text_utils.py",
   ]],
   ["扩展构建", node, ["scripts/build-extension.mjs"]],
   ["扩展产物完整性（manifest 引用齐全）", node, ["scripts/check-extension-dist.mjs"]],

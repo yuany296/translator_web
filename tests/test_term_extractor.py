@@ -17,6 +17,7 @@ from term_extractor import (  # noqa: E402
     extract_candidate_sentences,
     extract_term_candidates,
     extract_term_candidates_llm,
+    extract_term_candidates_llm_with_stats,
     get_term_extractor_status,
 )
 
@@ -126,6 +127,75 @@ def test_llm_extraction_drops_hallucinated_and_invalid_kinds(monkeypatch: pytest
         "",
     )
     assert [item["source"] for item in result] == ["김성현"]
+
+
+def test_llm_extraction_keeps_unknown_kinds_as_proper_noun_with_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """自造 kind（character / 系统道具）不再整条丢掉 —— 那正是「术语老漏」的来源。
+
+    以前 `kind not in VALID_KINDS: continue`：云模型写「人名」「character」这类取值时，
+    条目光是被静默丢弃，用户什么也看不到。现在归一成 proper_noun 保留并计数。
+    """
+    from term_extractor import extract_term_candidates_llm_with_stats
+
+    class CustomKindClient(FakeClient):
+        def _answer_content(self, body: dict[str, Any]) -> str:
+            return json.dumps([
+                {"source": "정다준", "kind": "character", "note": "", "suggestedTarget": ""},
+                {"source": "하이파이브", "kind": "系统道具", "note": "", "suggestedTarget": ""},
+                {"source": "없는사람", "kind": "character", "note": "", "suggestedTarget": ""},
+                {"source": "출연했다", "kind": "动词", "note": "", "suggestedTarget": ""},
+            ], ensure_ascii=False)
+
+    monkeypatch.setattr("httpx.Client", CustomKindClient)
+    candidates, stats = extract_term_candidates_llm_with_stats(
+        [{"id": "b1", "text": "정다준과 하이파이브가 출연했다."}],
+        "http://127.0.0.1:11434/v1",
+        "qwen2.5:7b",
+        "",
+    )
+    assert {item["source"] for item in candidates} == {"정다준", "하이파이브"}
+    assert {item["kind"] for item in candidates} == {"proper_noun"}
+    assert stats["unknownKind"] == 3  # 含原文里没有的那条
+    assert stats["notInSource"] == 1
+    assert stats["invalidKind"] == 1
+
+
+def test_llm_extraction_accepts_chinese_field_names_and_kinds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """中文提示词下模型常把字段名/kind 写成中文：归一化后必须能收到，不能整条丢。"""
+    from term_extractor import extract_term_candidates_llm_with_stats
+
+    class ChineseFieldsClient(FakeClient):
+        def _answer_content(self, body: dict[str, Any]) -> str:
+            return json.dumps([
+                {"原文": "정다준", "类型": "人名", "译名": "郑多俊", "备注": "主角"},
+            ], ensure_ascii=False)
+
+    monkeypatch.setattr("httpx.Client", ChineseFieldsClient)
+    candidates, stats = extract_term_candidates_llm_with_stats(
+        [{"id": "b1", "text": "정다준이 말했다."}],
+        "http://127.0.0.1:11434/v1",
+        "qwen2.5:7b",
+        "",
+    )
+    assert [(item["source"], item["kind"], item["suggestedTarget"]) for item in candidates] == [
+        ("정다준", "person", "郑多俊")
+    ]
+    assert stats == {}
+
+
+def test_llm_extraction_without_model_fails_clearly_for_remote_endpoint() -> None:
+    """模型为空时不再静默退到 qwen2.5:7b：云端地址直接报错说清原因。
+
+    以前会拿一个本地 Ollama 的模型名去打云端接口 —— 提取必然失败，而翻译照常，
+    用户看到的是「翻译没事、术语一条都收不到」。
+    """
+    with pytest.raises(RuntimeError, match="未配置术语提取模型"):
+        extract_term_candidates_llm(
+            [{"id": "b1", "text": "정다준이 말했다."}],
+            "https://api.example.com/v1",
+            "",
+            "k",
+        )
 
 
 def test_llm_extraction_chunks_long_text(monkeypatch: pytest.MonkeyPatch) -> None:

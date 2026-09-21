@@ -3,12 +3,20 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections import Counter
 from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+
+from term_extract_heuristic import extract_candidate_sentences
+from term_text_utils import (
+    MAX_SOURCE_LENGTH,
+    contains_hangul,
+    in_source_text as _in_source_text,
+    normalize_candidate,
+    normalize_text,
+)
 
 LLM_READ_TIMEOUT = 300.0
 LLM_CONNECT_TIMEOUT = 10.0
@@ -16,35 +24,36 @@ LLM_CONNECT_TIMEOUT = 10.0
 LLM_MAX_CHUNK_CHARS = 3000
 LLM_CHUNK_OVERLAP = 200
 VALID_KINDS = {"person", "location", "organization", "title", "group", "latin_name", "latin_title"}
-MAX_SOURCE_LENGTH = 120
+# 字段名与 kind 取值的容错表 —— 必须与手机版
+# extension/src/novel-mobile/term-extract-prompt.js 的 FIELD_ALIASES / KIND_ALIASES /
+# INVALID_KIND_ALIASES 逐键一致（tests/term_extractor_parity.test.mjs 会比对两边）。
+FIELD_ALIASES = {
+    "source": ("source", "term", "name", "原文", "术语", "原文术语"),
+    "kind": ("kind", "type", "类型", "类别"),
+    "note": ("note", "备注", "说明", "description"),
+    "target": ("suggestedTarget", "suggested_target", "target", "translation", "译名", "译文", "中文译名"),
+}
+KIND_ALIASES = {
+    "person": "person", "人名": "person", "人物": "person", "角色": "person", "姓名": "person",
+    "location": "location", "地名": "location", "地点": "location", "place": "location",
+    "organization": "organization", "org": "organization", "机构": "organization",
+    "机构名": "organization", "组织": "organization", "组织名": "organization",
+    "title": "title", "作品名": "title", "书名": "title", "标题": "title", "work": "title",
+    "group": "group", "团体": "group", "团体名": "group", "组合": "group", "队伍": "group",
+    "latin_name": "latin_name", "英文名": "latin_name", "拉丁名": "latin_name", "英文人名": "latin_name",
+    "latin_title": "latin_title", "英文作品名": "latin_title", "英文标题": "latin_title",
+    "proper_noun": "proper_noun", "专有名词": "proper_noun", "固有名词": "proper_noun",
+}
+# 明确不是术语的词性：这些必须丢，否则「말했다」这种也会被当成术语塞进候选。
+INVALID_KIND_ALIASES = {
+    "verb", "noun", "common_noun", "common_noun_phrase", "adjective", "adverb", "particle",
+    "pronoun", "phrase", "动词", "名词", "普通名词", "形容词", "副词", "助词", "代词", "短语",
+}
+# 本地 Ollama 的兜底模型名：只在 base_url 指向本机时才有意义（见 _resolve_model）。
+OLLAMA_DEFAULT_MODEL = "qwen2.5:7b"
+
 MAX_NOTE_LENGTH = 240
 MAX_TARGET_LENGTH = 120
-SENTENCE_ONLY_SCORE = 0.35
-COMMON_KOREAN_SURNAMES = set(
-    "김이박최정강조윤장임한오서신권황안송전홍유고문양손배백허남심노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예봉사부가복"
-)
-COMPOUND_KOREAN_SURNAMES = {"남궁", "독고", "동방", "망절", "사공", "서문", "선우", "제갈", "황보"}
-LATIN_STOP_TERMS = {"AD", "CEO", "CFO", "CTO", "DJ", "DR", "ETC", "MR", "MRS", "NO", "OK", "PD", "SNS", "TV", "VS", "YES"}
-LATIN_PHRASE_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9&'.-]*)(?:[ \t]+[A-Z][A-Z0-9&'.-]*){0,4}(?![A-Za-z0-9])")
-KOREAN_PARTICLES = ("이", "가", "은", "는", "을", "를", "의", "에", "에서", "에게", "한테", "께", "으로", "로", "와", "과", "도", "만", "부터", "까지", "마다", "보다", "처럼", "이나", "나", "이라도", "라도", "밖에", "조차", "마저", "커녕", "이고", "이며", "이랑", "랑", "이라고", "라고", "이면", "면", "이다", "이었다", "였다", "이야", "야", "아")
-KATAKANA_SEQ_RE = re.compile(r"(?<![ァ-ヺー])([ァ-ヺー]{2,6})(?![ァ-ヺー])")
-BRACKETED_RE = re.compile(r"[【『][^【】『』\n]{2,40}[】』]")
-CJK_REPEAT_RE = re.compile(r"[가-힣ぁ-ゖァ-ヺ一-鿿]+")
-LATIN_WORD_RE = re.compile(r"[A-Za-z]{4,}")
-MODEL_PLACEHOLDER_RE = re.compile(r"[\[（(【<]\s*image\s*#?\s*\d+\s*[\]）)】>]", re.IGNORECASE)
-KOREAN_JOSA_RE = re.compile(r"[은는이가을를의에와]$")
-
-
-def _in_source_text(text: str, term: str) -> bool:
-    """term 是否逐字出现在原文中；忽略空白差异并容忍一个结尾韩语助词。"""
-    haystack = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or ""))).casefold()
-    needle = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(term or ""))).casefold()
-    if not needle or not haystack:
-        return False
-    if needle in haystack:
-        return True
-    stripped = KOREAN_JOSA_RE.sub("", needle)
-    return len(stripped) >= 2 and stripped in haystack
 
 
 def _is_local_url(url: str) -> bool:
@@ -74,6 +83,50 @@ def get_term_extractor_status(
         return {"available": False, "engine": "ollama", "error": f"LLM 服务不可达：{exc}"}
 
 
+def _pick_field(value: dict[str, Any], aliases: tuple[str, ...]) -> str:
+    """从多个可能的字段名里取第一个非空字符串值（与手机版 pickField 一致）。"""
+    for key in aliases:
+        raw = value.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    return ""
+
+
+def _normalize_kind(raw: Any) -> str | None:
+    """把模型给的 kind 归一成白名单值。
+
+    返回 "" = 明确不是术语（动词/普通名词…，必须丢）；
+    返回 None = 完全不认识 —— 归一成 proper_noun（宁可多留一条让用户自己忽略，
+    也不要像以前那样静默丢掉，用户看到的就是「术语老漏」）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    key = text.lower()
+    if key in VALID_KINDS:
+        return key
+    if key in KIND_ALIASES:
+        return KIND_ALIASES[key]
+    if key in INVALID_KIND_ALIASES:
+        return ""
+    return None
+
+
+def _resolve_model(base_url: str, model: Any) -> str:
+    """整章提取用哪个模型。
+
+    以前模型为空时一律退到 `qwen2.5:7b` —— 那个名字只对本地 Ollama 有意义；配置里没填
+    model 时，云端接口会拿一个不存在的模型名去请求，提取静默失败，而翻译照常
+    （翻译自己有默认模型）。所以：本机地址才用 Ollama 兜底，其余情况直接报错说清原因。
+    """
+    name = str(model or "").strip()
+    if name:
+        return name
+    if _is_local_url(base_url):
+        return OLLAMA_DEFAULT_MODEL
+    raise RuntimeError("未配置术语提取模型：请在设置页「翻译服务」里为整章术语提取选择带 model 的配置")
+
+
 def _endpoint(base_url: Any) -> str:
     normalized = str(base_url or "").strip().rstrip("/")
     normalized = normalized.removesuffix("/chat/completions").removesuffix("/responses")
@@ -82,9 +135,15 @@ def _endpoint(base_url: Any) -> str:
     return f"{normalized}/chat/completions"
 
 
-def _llm_extract_chunk(chunk: str, base_url: str, model: str, api_key: str,
-                       target_language: str, source_text: str = "") -> list[dict[str, Any]]:
-    prompt = "\n".join([
+def _chunk_prompt(chunk: str, target_language: str) -> str:
+    """单段提取提示词 —— 必须与手机版 buildChunkPrompt 逐行一致。
+
+    tests/term_extractor_parity.test.mjs 会拿两边比文本：桌面走本地服务的这份，手机走
+    novel-mobile/term-extract-prompt.js 那份，任何一边改规则都必须同步另一边，
+    否则同一个模型在两个端上会给出不同质量的候选（用户实测「手机漏术语」时最先
+    被怀疑的就是这里）。
+    """
+    return "\n".join([
         "你是网络小说/漫画术语提取助手。从下面的源语言文本中提取所有专有名词与人名：",
         "- 人名（含姓氏的完整写法）、地名、机构名、作品名、团体名、英文/外来专名；不要提取普通名词、动词、助词或描述性短语",
         "- 文本可能是韩语、日语、英语、中文或其他语言，按文本实际语言提取；同一实体有多种写法时使用最完整写法",
@@ -92,11 +151,20 @@ def _llm_extract_chunk(chunk: str, base_url: str, model: str, api_key: str,
         f"- 目标语言为 {target_language}",
         "输出 JSON 数组，每项格式：",
         '{"source": "原文术语", "kind": "person|location|organization|title|group|latin_name|latin_title", "note": "目标语言简短说明，无把握则留空", "suggestedTarget": "建议的目标语言译文；有参考译文时不得留空"}',
+        "字段名必须是这四个英文名：source、kind、note、suggestedTarget，不要用中文或其它拼写。",
+        "kind 只能填这七个英文单词之一：person、location、organization、title、group、latin_name、latin_title（人名用 person），不要填中文。",
+        "suggestedTarget 必须给出目标语言译法：人名按目标语言常见音译写；有「译文：」参考译文的，必须与参考译文里的写法一致。不要留空，也不要把原文照抄一遍。",
         "只输出 JSON 数组本身，不要 Markdown 代码块、不要多余解释。",
         f"源文本：\n{chunk}",
     ])
+
+
+def _llm_extract_chunk(chunk: str, base_url: str, model: str, api_key: str,
+                       target_language: str, source_text: str = "",
+                       stats: dict[str, int] | None = None) -> list[dict[str, Any]]:
+    prompt = _chunk_prompt(chunk, target_language)
     body = {
-        "model": str(model or "").strip() or "qwen2.5:7b",
+        "model": _resolve_model(base_url, model),
         "temperature": 0,
         "stream": False,
         "messages": [
@@ -128,7 +196,7 @@ def _llm_extract_chunk(chunk: str, base_url: str, model: str, api_key: str,
         content = str(message.get("content") or "")
         if content:
             break
-    return _validate_llm_output(content, source_text or chunk)
+    return _validate_llm_output(content, source_text or chunk, stats)
 
 
 def _extract_json_array(content: str) -> list[Any] | None:
@@ -150,32 +218,54 @@ def _extract_json_array(content: str) -> list[Any] | None:
     return value if isinstance(value, list) else None
 
 
-def _validate_llm_output(content: str, source_text: str) -> list[dict[str, Any]]:
+def _validate_llm_output(content: str, source_text: str,
+                         stats: dict[str, int] | None = None) -> list[dict[str, Any]]:
     """Parse the model answer; drop hallucinated or out-of-schema entries.
 
     source 必须出现在原文里（source_text 不含「译文：」行——模型偶尔会从译文行抓词填
     source，否则待确认区会出现"原文术语=中文译文"）；source/suggestedTarget 填反时交换。
+
+    字段名与 kind 先过容错表（与手机版同一份，见 FIELD_ALIASES / KIND_ALIASES）：
+    云模型经常把 kind 写成「人名」、把译名写成 target，严格版本会把这些整条丢掉 ——
+    用户看到的就是「术语老漏」。完全不认识的 kind 归一成 proper_noun 保留，
+    只有明确是动词/普通名词这类词性才丢。丢弃数量记进 `stats`，随接口回给扩展侧展示。
     """
+    def bump(key: str) -> None:
+        if isinstance(stats, dict):
+            stats[key] = int(stats.get(key, 0)) + 1
+
     values = _extract_json_array(content)
     if not values:
+        bump("noJson")
         return []
     seen: set[str] = set()
     candidates: list[dict[str, Any]] = []
     for value in values:
         if not isinstance(value, dict):
+            bump("schema")
             continue
-        source = unicodedata.normalize("NFKC", str(value.get("source") or "")).strip()
-        kind = str(value.get("kind") or "").strip().lower()
-        note = str(value.get("note") or "").strip()
-        target = str(value.get("suggestedTarget") or "").strip()
-        if not source or len(source) > MAX_SOURCE_LENGTH or kind not in VALID_KINDS:
+        source = unicodedata.normalize("NFKC", _pick_field(value, FIELD_ALIASES["source"])).strip()
+        raw_kind = _pick_field(value, FIELD_ALIASES["kind"])
+        kind = _normalize_kind(raw_kind)
+        note = _pick_field(value, FIELD_ALIASES["note"]).strip()
+        target = _pick_field(value, FIELD_ALIASES["target"]).strip()
+        if not source or len(source) > MAX_SOURCE_LENGTH:
+            bump("schema")
             continue
+        if kind == "":
+            bump("invalidKind")
+            continue
+        if kind is None:
+            bump("unknownKind")
+            kind = "proper_noun"
         if not _in_source_text(source_text, source) and target and _in_source_text(source_text, target):
             source, target = target, source
         if not _in_source_text(source_text, source):
+            bump("notInSource")
             continue
         key = source.casefold()
         if key in seen:
+            bump("duplicate")
             continue
         seen.add(key)
         candidates.append({
@@ -189,7 +279,8 @@ def _validate_llm_output(content: str, source_text: str) -> list[dict[str, Any]]
 
 
 def _kind_score(kind: str) -> float:
-    scores = {"person": 0.94, "title": 0.9, "group": 0.9, "organization": 0.88, "location": 0.88, "latin_name": 0.82, "latin_title": 0.9}
+    scores = {"person": 0.94, "title": 0.9, "group": 0.9, "organization": 0.88, "location": 0.88,
+              "latin_name": 0.82, "latin_title": 0.9, "proper_noun": 0.85}
     return scores.get(kind, 0.85)
 
 
@@ -215,20 +306,40 @@ def extract_term_candidates_llm(
     target_language: str = "zh-CN",
 ) -> list[dict[str, Any]]:
     """Extract proper nouns with an LLM over the whole chapter; 原文/译文 pairs let the model fill suggestedTarget."""
+    candidates, _stats = extract_term_candidates_llm_with_stats(
+        blocks, base_url, model, api_key, target_language
+    )
+    return candidates
+
+
+def extract_term_candidates_llm_with_stats(
+    blocks: Iterable[dict[str, Any]],
+    base_url: str,
+    model: str,
+    api_key: str,
+    target_language: str = "zh-CN",
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """同上，另外把「丢弃了多少条、为什么丢」带出来给扩展侧展示。
+
+    用户反馈「术语比电脑少/老漏」时，最常见的两个原因是：模型把 kind 写成中文被整条丢掉、
+    以及 source 没在（采样到的）原文里出现。以前这两种都静默，界面上看不出任何原因。
+    """
+    stats: dict[str, int] = {}
     prepared = [
         {"id": str(block.get("id") or "").strip(), "text": normalize_text(block.get("text")), "translatedText": normalize_text(block.get("translatedText"))}
         for block in blocks
         if str(block.get("id") or "").strip() and normalize_text(block.get("text"))
     ]
     if not prepared:
-        return []
+        return [], stats
     full_text = "\n".join(f"{block['text']}\n译文：{block['translatedText']}" if block["translatedText"] else block["text"] for block in prepared)
     original_text = "\n".join(block["text"] for block in prepared)  # 校验基准只含原文：译文行绝不能作为 source 来源
     if not full_text.strip():
-        return []
+        return [], stats
     merged: dict[str, dict[str, Any]] = {}
     for chunk in _split_chunks(full_text):
-        for candidate in _llm_extract_chunk(chunk, base_url, model, api_key, target_language, source_text=original_text):
+        for candidate in _llm_extract_chunk(chunk, base_url, model, api_key, target_language,
+                                            source_text=original_text, stats=stats):
             key = candidate["source"].casefold()
             current = merged.get(key)
             if current is None:
@@ -240,134 +351,8 @@ def extract_term_candidates_llm(
                 current["score"] = max(current["score"], candidate["score"])
     for candidate in merged.values():
         candidate["evidenceIds"] = [block["id"] for block in prepared if _in_source_text(block["text"], candidate["source"])]
-    return sorted(merged.values(), key=lambda item: (-float(item["score"]), -len(str(item["source"])), str(item["source"])))
+    return sorted(merged.values(), key=lambda item: (-float(item["score"]), -len(str(item["source"])), str(item["source"]))), stats
 
-
-def extract_candidate_sentences(blocks: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Zero-dependency fallback: high-confidence channels pre-fill terms, repeated phrases stay sentence-only."""
-    prepared = [
-        {"id": str(block.get("id") or "").strip(), "text": normalize_text(block.get("text"))}
-        for block in blocks
-        if str(block.get("id") or "").strip() and normalize_text(block.get("text"))
-    ]
-    if not prepared:
-        return []
-    merged: dict[str, dict[str, Any]] = {}
-    phrase_counts = _repeated_phrase_counts(prepared)
-
-    def add(source: str, kind: str, score: float, evidence_id: str, sentence_only: bool = False) -> None:
-        if not source or len(source) > MAX_SOURCE_LENGTH:
-            return
-        key = source.casefold()
-        current = merged.get(key)
-        if current is None:
-            current = {"source": source, "kind": kind, "score": score, "note": "", "suggestedTarget": "",
-                       "evidenceIds": [], "sentenceOnly": sentence_only}
-            merged[key] = current
-        if evidence_id and evidence_id not in current["evidenceIds"]:
-            current["evidenceIds"].append(evidence_id)
-        if not current["sentenceOnly"] and sentence_only:
-            current["sentenceOnly"] = True
-        current["score"] = max(current["score"], score)
-
-    for block in prepared:
-        text = block["text"]
-        evidence_id = block["id"]
-        for word in _scan_korean_names(text):
-            add(word, "person", 0.94, evidence_id)
-        for match in KATAKANA_SEQ_RE.finditer(text):
-            # 连续片假名通常是日语人名或外来专名。
-            add(match.group(1), "latin_name", 0.82, evidence_id)
-        for match in LATIN_PHRASE_RE.finditer(text):
-            source = normalize_candidate(match.group(0))
-            words = source.split()
-            if not words:
-                continue
-            if len(words) == 1:
-                word = words[0].upper()
-                if len(word) < 3 or word in LATIN_STOP_TERMS:
-                    continue
-                add(source, "latin_name", 0.82, evidence_id)
-            else:
-                if all(word.upper() in LATIN_STOP_TERMS or word.upper() == "THE" for word in words):
-                    continue
-                add(source, "latin_title", 0.9, evidence_id)
-        for match in BRACKETED_RE.finditer(text):
-            add(normalize_candidate(match.group(0)[1:-1]), "title", 0.86, evidence_id)
-    for phrase in phrase_counts:
-        if phrase.casefold() in merged:
-            continue
-        # 丢弃被更长候选完整包含的碎片短语（如 "하이파이" ⊂ "하이파이브"）。
-        if any(phrase in other["source"].replace(" ", "") and len(other["source"]) > len(phrase) for other in merged.values()):
-            continue
-        matching = [
-            block["id"] for block in prepared
-            if phrase in re.sub(r"\s+", "", block["text"])
-        ]
-        add(phrase, "proper_noun", SENTENCE_ONLY_SCORE, "", sentence_only=True)
-        merged[phrase.casefold()]["evidenceIds"] = matching
-    # 外来词截断抑制：人名被非人名候选完整包含则丢弃（如 "하이파" ⊂ "하이파이브"）；
-    # 人名简称（"성현" ⊂ "김성현"）不受影响，彼此时 kind 都是 person。
-    for key in list(merged.keys()):
-        item = merged[key]
-        if item["kind"] != "person":
-            continue
-        if any(item["source"] in other["source"].replace(" ", "") and other["source"] != item["source"] for other in merged.values() if other is not item):
-            del merged[key]
-    return sorted(
-        merged.values(),
-        key=lambda item: (-float(item["score"]), -len(str(item["source"])), str(item["source"])),
-    )
-
-
-def _scan_korean_names(text: str) -> list[str]:
-    """3-4 syllable Korean names inside Hangul runs, tolerating a following particle."""
-    names: list[str] = []
-    for run in re.finditer(r"[가-힣]+", text):
-        chunk = run.group(0)
-        for size in (4, 3):
-            head = chunk[:size]
-            if not _is_name_shape(head):
-                continue
-            rest = chunk[size:]
-            if not rest or any(rest.startswith(particle) for particle in KOREAN_PARTICLES):
-                names.append(head)
-                break
-    return names
-
-
-def _is_name_shape(value: str) -> bool:
-    return (len(value) == 3 and value[:1] in COMMON_KOREAN_SURNAMES) or (len(value) == 4 and value[:2] in COMPOUND_KOREAN_SURNAMES)
-
-
-def _repeated_phrase_counts(prepared: list[dict[str, Any]]) -> list[str]:
-    """Repeated terms: CJK/kana n-grams or 4+ letter Latin words seen in ≥2 blocks."""
-    counts: Counter[str] = Counter()
-    block_keys: dict[str, set[str]] = {}
-    for block in prepared:
-        compact = re.sub(r"\s+", "", block["text"])
-        if not compact:
-            continue
-        phrases: set[str] = set()
-        for size in (5, 4, 3, 2):
-            for index in range(0, max(1, len(compact) - size + 1)):
-                phrase = compact[index : index + size]
-                if not phrase or not CJK_REPEAT_RE.fullmatch(phrase) or _is_name_shape(phrase):
-                    continue
-                phrases.add(phrase)
-        for match in LATIN_WORD_RE.finditer(block["text"]):
-            word = match.group(0)
-            if word.upper() not in LATIN_STOP_TERMS:
-                phrases.add(word)
-        block_keys[block["id"]] = phrases
-        for phrase in phrases:
-            counts[phrase] += 1
-    result: list[str] = []
-    for phrase, count in counts.items():
-        if count < 2 or sum(1 for phrases in block_keys.values() if phrase in phrases) < 2:
-            continue
-        result.append(phrase)
-    return sorted(result, key=lambda item: (-counts[item], -len(item)))
 
 
 def extract_term_candidates(
@@ -376,24 +361,20 @@ def extract_term_candidates(
     target_language: str = "zh-CN",
 ) -> list[dict[str, Any]]:
     """Dispatch: LLM extraction when an upstream is configured, else heuristic."""
+    candidates, _stats = extract_term_candidates_with_stats(blocks, upstream, target_language)
+    return candidates
+
+
+def extract_term_candidates_with_stats(
+    blocks: Iterable[dict[str, Any]],
+    upstream: dict[str, Any] | None = None,
+    target_language: str = "zh-CN",
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """同上，另外带回「丢弃统计」（只有 LLM 分支有；启发式分支没有可丢的东西）。"""
     base_url = str((upstream or {}).get("baseUrl") or "").strip()
     if base_url:
-        return extract_term_candidates_llm(
+        return extract_term_candidates_llm_with_stats(
             blocks, base_url, str((upstream or {}).get("model") or ""),
             str((upstream or {}).get("apiKey") or ""), target_language,
         )
-    return extract_candidate_sentences(blocks)
-
-
-def normalize_text(value: Any) -> str:
-    text = unicodedata.normalize("NFKC", str(value or ""))
-    text = MODEL_PLACEHOLDER_RE.sub(" ", text)
-    return re.sub(r"[ \t]+", " ", text.replace("\r", "\n")).strip()
-
-
-def normalize_candidate(value: Any) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(value or ""))).strip(" \t\r\n.,!?;:，。！？；：()（）[]【】\"'“”‘’")
-
-
-def contains_hangul(value: str) -> bool:
-    return bool(re.search(r"[가-힣]", value))
+    return extract_candidate_sentences(blocks), {}

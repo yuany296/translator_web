@@ -121,7 +121,8 @@ def recognize_candidate_rows(rows: list[dict[str, runtime.Any]], languages: list
     images = [row['image'] for row in rows]
     for current_lang in languages:
         client = runtime.get_text_recognition_client(current_lang)
-        results = runtime.as_list(client.predict(images, batch_size=min(16, len(images))))
+        with runtime.predict_guard('rec'):
+            results = runtime.as_list(client.predict(images, batch_size=min(16, len(images))))
         for index, result in enumerate(results[:len(rows)]):
             mapping = runtime.result_to_mapping(result) or {}
             text = runtime.scalar_result_value(mapping.get('rec_text'), '')
@@ -199,27 +200,33 @@ def _run_slice_ocr_pipeline(
     seam_rows: list[int] | None=None,
 ) -> dict[str, runtime.Any]:
     """合并主/宽松检测框，透视裁剪后批量识别所有唯一候选。"""
-    image_width, image_height = runtime.get_image_size(image_bytes)
-    primary_detections = runtime._run_detection_only(image_bytes, lang, params)
+    with runtime.ocr_request_timings_scope('imageSize'):
+        image_width, image_height = runtime.get_image_size(image_bytes)
+    with runtime.ocr_request_timings_scope('detectPrimary'):
+        primary_detections = runtime._run_detection_only(image_bytes, lang, params)
     recovery_params = {**params, 'text_det_thresh': min(float(params['text_det_thresh']), 0.2), 'text_det_box_thresh': min(float(params['text_det_box_thresh']), 0.42)}
     recovery_detections: list[dict[str, runtime.Any]] = []
-    try:
-        recovery_detections = runtime._run_detection_only(image_bytes, lang, recovery_params)
-    except Exception as exc:
-        print(f'[slice-ocr] relaxed detection failed, using primary detections: {exc}', flush=True)
+    if runtime.should_run_recovery_detection(primary_detections):
+        try:
+            with runtime.ocr_request_timings_scope('detectRecovery'):
+                recovery_detections = runtime._run_detection_only(image_bytes, lang, recovery_params)
+        except Exception as exc:
+            print(f'[slice-ocr] relaxed detection failed, using primary detections: {exc}', flush=True)
     detections, recovery_added = runtime.merge_detection_passes(primary_detections, recovery_detections)
-    normalized_seam_rows = runtime.normalize_seam_rows(seam_rows, image_height)
-    seam_recovery_bytes = runtime.build_seam_recovery_image_bytes(
-        image_bytes,
-        normalized_seam_rows,
-    )
+    with runtime.ocr_request_timings_scope('seamImage'):
+        normalized_seam_rows = runtime.normalize_seam_rows(seam_rows, image_height)
+        seam_recovery_bytes = runtime.build_seam_recovery_image_bytes(
+            image_bytes,
+            normalized_seam_rows,
+        )
     seam_recovery_added = 0
     if seam_recovery_bytes:
-        seam_detections = runtime._run_detection_only(
-            seam_recovery_bytes,
-            lang,
-            recovery_params,
-        )
+        with runtime.ocr_request_timings_scope('detectSeam'):
+            seam_detections = runtime._run_detection_only(
+                seam_recovery_bytes,
+                lang,
+                recovery_params,
+            )
         seam_detections = [
             detection for detection in seam_detections
             if runtime.detection_touches_seam(detection, normalized_seam_rows)
@@ -230,57 +237,68 @@ def _run_slice_ocr_pipeline(
         )
     enhanced_added = 0
     if mode == 'enhanced':
-        source_image = runtime.Image.open(runtime.io.BytesIO(image_bytes)).convert('RGB')
-        enhanced_image = runtime.build_enhanced_grayscale_image(source_image, False)
-        enhanced_buffer = runtime.io.BytesIO()
-        enhanced_image.save(enhanced_buffer, format='PNG')
-        enhanced_detections = runtime._run_detection_only(enhanced_buffer.getvalue(), lang, recovery_params)
-        detections, enhanced_added = runtime.merge_detection_passes(detections, enhanced_detections)
+        with runtime.ocr_request_timings_scope('detectEnhanced'):
+            source_image = runtime.Image.open(runtime.io.BytesIO(image_bytes)).convert('RGB')
+            enhanced_image = runtime.build_enhanced_grayscale_image(source_image, False)
+            enhanced_buffer = runtime.io.BytesIO()
+            enhanced_image.save(enhanced_buffer, format='PNG')
+            enhanced_detections = runtime._run_detection_only(enhanced_buffer.getvalue(), lang, recovery_params)
+            detections, enhanced_added = runtime.merge_detection_passes(detections, enhanced_detections)
     candidate_rows: list[dict[str, runtime.Any]] = []
     detected_regions: list[dict[str, runtime.Any]] = []
     failed_detections = 0
-    for det_index, det in enumerate(detections):
-        region_id = f"region-{det_index:04d}-" + '-'.join(f"{point[0]:.1f},{point[1]:.1f}" for point in det['polygon'])
-        crop_result = runtime._deskew_crop_region(image_bytes, det['polygon'], region_id)
-        if crop_result is None:
-            failed_detections += 1
-            continue
-        deskewed_bytes = crop_result['imageBytes']
-        detected_region = {**crop_result['detectedRegion'], 'detectionScore': float(det.get('det_score') or 0.0)}
-        detected_regions.append(detected_region)
-        crop = runtime.decode_cv_image(deskewed_bytes)
-        height, width = crop.shape[:2]
-        orientations = [(90, runtime.cv2.rotate(crop, runtime.cv2.ROTATE_90_CLOCKWISE)), (-90, runtime.cv2.rotate(crop, runtime.cv2.ROTATE_90_COUNTERCLOCKWISE))] if runtime.is_confident_vertical_crop(width, height) else [(0, crop)]
-        for orientation, candidate in orientations:
-            candidate_rows.append({'detection_index': det_index, 'region_id': region_id, 'orientation': orientation, 'variant': 'original', 'image': candidate})
-        if seam_recovery_bytes and runtime.detection_touches_seam(det, normalized_seam_rows):
-            repaired_crop = runtime._deskew_crop_region(
-                seam_recovery_bytes,
-                det['polygon'],
-                region_id,
-            )
-            if repaired_crop is not None:
-                repaired_image = runtime.decode_cv_image(repaired_crop['imageBytes'])
-                candidate_rows.append({
-                    'detection_index': det_index,
-                    'region_id': region_id,
-                    'orientation': 0,
-                    'variant': 'seam_recovery',
-                    'image': repaired_image,
-                })
-        if debug:
-            debug_dir = runtime.service_debug_dir('slice_crops')
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            (debug_dir / f'slice-{runtime.safe_debug_stem(debug_id)}-{det_index:03d}.png').write_bytes(deskewed_bytes)
+    with runtime.ocr_request_timings_scope('crops'):
+        for det_index, det in enumerate(detections):
+            region_id = f"region-{det_index:04d}-" + '-'.join(f"{point[0]:.1f},{point[1]:.1f}" for point in det['polygon'])
+            crop_result = runtime._deskew_crop_region(image_bytes, det['polygon'], region_id)
+            if crop_result is None:
+                failed_detections += 1
+                continue
+            deskewed_bytes = crop_result['imageBytes']
+            detected_region = {**crop_result['detectedRegion'], 'detectionScore': float(det.get('det_score') or 0.0)}
+            detected_regions.append(detected_region)
+            crop = runtime.decode_cv_image(deskewed_bytes)
+            height, width = crop.shape[:2]
+            orientations = [(90, runtime.cv2.rotate(crop, runtime.cv2.ROTATE_90_CLOCKWISE)), (-90, runtime.cv2.rotate(crop, runtime.cv2.ROTATE_90_COUNTERCLOCKWISE))] if runtime.is_confident_vertical_crop(width, height) else [(0, crop)]
+            for orientation, candidate in orientations:
+                candidate_rows.append({'detection_index': det_index, 'region_id': region_id, 'orientation': orientation, 'variant': 'original', 'image': candidate})
+            if seam_recovery_bytes and runtime.detection_touches_seam(det, normalized_seam_rows):
+                repaired_crop = runtime._deskew_crop_region(
+                    seam_recovery_bytes,
+                    det['polygon'],
+                    region_id,
+                )
+                if repaired_crop is not None:
+                    repaired_image = runtime.decode_cv_image(repaired_crop['imageBytes'])
+                    candidate_rows.append({
+                        'detection_index': det_index,
+                        'region_id': region_id,
+                        'orientation': 0,
+                        'variant': 'seam_recovery',
+                        'image': repaired_image,
+                    })
+            if debug:
+                debug_dir = runtime.service_debug_dir('slice_crops')
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                (debug_dir / f'slice-{runtime.safe_debug_stem(debug_id)}-{det_index:03d}.png').write_bytes(deskewed_bytes)
     if failed_detections > 0:
         raise RuntimeError(f'perspective crop failed for {failed_detections} detection(s)')
     languages = ['japan', 'korean'] if lang == 'auto' else [lang]
-    recognized = runtime.recognize_candidate_rows(candidate_rows, languages)
+    with runtime.ocr_request_timings_scope('recognize'):
+        recognized = runtime.recognize_candidate_rows(candidate_rows, languages[:1])
+    if len(languages) > 1:
+        # 默认（second_language_on_demand=False）整页补跑第二语言，与改造前一致；
+        # 打开 LOCAL_OCR_AUTO_LANG_SECOND_PASS=0 时只补可疑 crop（整页都弱则仍补整页）。
+        second_rows = runtime.select_rows_needing_second_language(recognized, candidate_rows, languages[0]) if runtime.second_language_on_demand() else candidate_rows
+        if second_rows:
+            with runtime.ocr_request_timings_scope('recognizeSecondLang'):
+                recognized.extend(runtime.recognize_candidate_rows(second_rows, languages[1:]))
     primary_best = {det_index: runtime.select_best_recognition([row for row in recognized if row['detection_index'] == det_index], detections[det_index]) for det_index in range(len(detections))}
     primary_best = {index: row for index, row in primary_best.items() if row}
     weak_indexes = {detection_index for detection_index, row in primary_best.items() if row['orientation'] == 0 and (row['score'] < 0.72 or runtime.count_target_script_chars(row['text'], row['lang']) == 0)}
     retry_rows = [{**row, 'orientation': 180, 'image': runtime.cv2.rotate(row['image'], runtime.cv2.ROTATE_180)} for row in candidate_rows if row['detection_index'] in weak_indexes and row['orientation'] == 0]
-    recognized.extend(runtime.recognize_candidate_rows(retry_rows, languages))
+    with runtime.ocr_request_timings_scope('recognizeRetry'):
+        recognized.extend(runtime.recognize_candidate_rows(retry_rows, languages))
     best_by_detection = {det_index: runtime.select_best_recognition([row for row in recognized if row['detection_index'] == det_index], detections[det_index]) for det_index in range(len(detections))}
     best_by_detection = {index: row for index, row in best_by_detection.items() if row}
     raw_items: list[dict[str, runtime.Any]] = []
@@ -297,7 +315,8 @@ def _run_slice_ocr_pipeline(
         region_id = str(row.get('region_id') or detected_regions[det_index]['regionId'])
         recognized_items.append({'region_id': region_id, 'member_region_ids': [region_id], 'text': text, 'score': float(row['score']), 'box': det['box'], 'polygon': det['polygon'], 'det_score': float(det.get('det_score') or 0.0), 'rotation_deg': float(det.get('rotation_deg') or 0.0), 'orientation_applied': int(row['orientation']), 'lang': row['lang'], 'variant': str(row.get('variant') or f'perspective_{mode}')})
     normalized = runtime.sort_items(runtime.dedupe_items(recognized_items))
-    regions = runtime.annotate_visual_regions(image_bytes, normalized)
+    with runtime.ocr_request_timings_scope('appearance'):
+        regions = runtime.annotate_visual_regions(image_bytes, normalized)
     recognized_regions = [{'regionId': item['region_id'], 'text': item['text'], 'confidence': item['score'], 'language': item['lang'], 'appliedOrientation': item['orientation_applied']} for item in normalized]
     semantic_blocks = [{'id': f"block-{index:04d}", 'memberRegionIds': item['member_region_ids'], 'originalText': item['text'], 'readingOrder': index} for index, item in enumerate(normalized)]
     return {'items': normalized, 'rawItems': raw_items, 'boxes': runtime.response_boxes(normalized), 'regions': regions, 'detectedRegions': detected_regions, 'recognizedRegions': recognized_regions, 'semanticBlocks': semantic_blocks, 'geometryReliability': 'detected', 'imageWidth': image_width, 'imageHeight': image_height, 'deskew': True, 'detections': len(detections), 'recognized': len(normalized), 'counts': {'paddle_raw_items': len(recognized), 'filtered_items': len(recognized_items), 'merged_blocks': len(normalized), 'variants': 1 + int(mode == 'enhanced') + int(bool(seam_recovery_bytes)), 'langs': len(languages), 'primary_detections': len(primary_detections), 'recovery_detections': len(recovery_detections), 'recovery_added': recovery_added, 'enhanced_added': enhanced_added, 'seam_recovery_added': seam_recovery_added}}
@@ -322,11 +341,15 @@ def run_fast_perspective_ocr(
         mode,
         seam_rows,
     )
-    if debug or runtime.os.environ.get('LOCAL_OCR_DEBUG_ALWAYS', '1') != '0':
-        debug_stem = runtime.safe_debug_stem(debug_id or f'{int(runtime.time.time() * 1000)}')
-        debug_paths = {'input': runtime.save_debug_input(image_bytes, debug_id), 'plugin_input': runtime.save_service_plugin_input(image_bytes, debug_stem), 'vis': runtime.save_service_vis(image_bytes, result['items'], debug_stem)}
-        result['debug'] = debug_paths
-        debug_paths['result_json'] = runtime.save_service_result_json(result, debug_stem)
+    if debug or runtime.debug_artifacts_always_enabled():
+        with runtime.ocr_request_timings_scope('debugArtifacts'):
+            debug_stem = runtime.safe_debug_stem(debug_id or f'{int(runtime.time.time() * 1000)}')
+            # 同一张原图以前会写两份整页 PNG（debug-ocr/input-*.png 与 debug/plugin_input/*.png），
+            # 这里只写一份，两个键指向同一文件以保持既有键名。
+            plugin_input = runtime.save_service_plugin_input(image_bytes, debug_stem)
+            debug_paths = {'input': plugin_input, 'plugin_input': plugin_input, 'vis': runtime.save_service_vis(image_bytes, result['items'], debug_stem)}
+            result['debug'] = debug_paths
+            debug_paths['result_json'] = runtime.save_service_result_json(result, debug_stem)
     else:
         result['debug'] = {}
     return result

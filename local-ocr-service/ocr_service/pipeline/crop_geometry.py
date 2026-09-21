@@ -138,7 +138,8 @@ def _run_detection_only(image_bytes: bytes, lang: str, params: dict[str, float])
     """使用 Paddle 独立检测模型返回原图四边形，不执行文字识别。"""
     client = runtime.get_text_detection_client(params)
     image = runtime.decode_cv_image(image_bytes)
-    raw = client.predict(image, batch_size=1)
+    with runtime.predict_guard('det'):
+        raw = client.predict(image, batch_size=1)
     items: list[dict[str, runtime.Any]] = []
     for page in runtime.as_list(raw):
         mapping = runtime.result_to_mapping(page) or {}

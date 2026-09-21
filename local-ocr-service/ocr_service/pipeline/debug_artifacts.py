@@ -17,6 +17,18 @@ def safe_debug_stem(debug_id: str) -> str:
 
 runtime.safe_debug_stem = safe_debug_stem
 
+def debug_artifacts_always_enabled() -> bool:
+    """debug 产物默认关闭。
+
+    每张整页图会写 3 份 PNG（input / plugin_input / vis）加一份 result JSON；实测单页
+    1MB 截图约 0.3s/次编码，即每页 0.6~0.9s 的固定开销，而且这些写入发生在 OCR 推理锁内。
+    需要排查识别效果时用 `LOCAL_OCR_DEBUG_ALWAYS=1` 或请求体 `debug: true`（设置页的
+    "本地 OCR 调试"开关）显式打开。
+    """
+    return bool(runtime.env_bool('LOCAL_OCR_DEBUG_ALWAYS', False))
+
+runtime.debug_artifacts_always_enabled = debug_artifacts_always_enabled
+
 def save_debug_input(image_bytes: bytes, debug_id: str) -> str:
     runtime.DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     path = runtime.DEBUG_DIR / f'input-{runtime.safe_debug_stem(debug_id)}.png'
@@ -142,10 +154,24 @@ def save_service_latest_debug_index(debug_paths: dict[str, runtime.Any], stem: s
 
 runtime.save_service_latest_debug_index = save_service_latest_debug_index
 
+def debug_vis_format() -> str:
+    """可视化产物格式：默认 jpeg（单页 1MB 截图 PNG 编码约 0.3s，jpeg 只要几十毫秒）。
+
+    需要无损对比识别框时用 `LOCAL_OCR_DEBUG_VIS_FORMAT=png`。
+    """
+    raw = str(runtime.os.environ.get('LOCAL_OCR_DEBUG_VIS_FORMAT', 'jpeg') or '').strip().lower()
+    return 'png' if raw == 'png' else 'jpeg'
+
+runtime.debug_vis_format = debug_vis_format
+
 def save_service_vis(image_bytes: bytes, items: list[dict[str, runtime.Any]], stem: str) -> str:
+    canvas = runtime.draw_debug_boxes(runtime.Image.open(runtime.io.BytesIO(image_bytes)).convert('RGB'), items)
+    if debug_vis_format() == 'jpeg':
+        path = runtime.service_debug_dir('vis') / f'{stem}.jpg'
+        canvas.convert('RGB').save(path, format='JPEG', quality=82)
+        return str(path)
     path = runtime.service_debug_dir('vis') / f'{stem}.png'
-    image = runtime.Image.open(runtime.io.BytesIO(image_bytes)).convert('RGB')
-    runtime.draw_debug_boxes(image, items).save(path)
+    canvas.save(path)
     return str(path)
 
 runtime.save_service_vis = save_service_vis

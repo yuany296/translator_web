@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import asyncio  # noqa: F401 - 通过 runtime.asyncio 供 pipeline 模块使用 to_thread
 import base64
 import io
 import json
@@ -33,7 +33,11 @@ if os.environ.get("LOCAL_OCR_DISABLE_MODELSCOPE", "1") != "0":
 
 from fastapi import HTTPException, Request
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
-from term_extractor import extract_term_candidates, get_term_extractor_status
+from term_extractor import (
+    extract_term_candidates,
+    extract_term_candidates_with_stats,
+    get_term_extractor_status,
+)
 from glossary_db import GlossaryDB
 from translation_store import TranslationStore
 
@@ -63,6 +67,14 @@ except ImportError:  # pragma: no cover
 
 from .runtime import runtime
 
+def predict_concurrency_from_env() -> int:
+    """Paddle 推理并发上限：默认 1（与改造前一致，单卡最安全）。"""
+    raw = os.environ.get("LOCAL_OCR_PREDICT_CONCURRENCY", "1")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1
+
 DATA_ROOT = Path(__file__).resolve().parents[2] / ".local-data"
 values = {
     **{name: value for name, value in globals().items() if not name.startswith("__")},
@@ -79,6 +91,8 @@ values = {
     "VERTICAL_ORIENTATION_TIE_MARGIN": 0.08,
     "VERTICAL_CROP_MIN_ASPECT_RATIO": 1.4,
     "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v5",
+    # /ocr/timings 保留的最近请求数（分阶段 p50/p95）。
+    "OCR_TIMINGS_WINDOW": 200,
     "DEBUG_DIR": DATA_ROOT / "debug-ocr",
     "SERVICE_DEBUG_ROOT": DATA_ROOT / "debug",
     "CV2_AVAILABLE": CV2_AVAILABLE,
@@ -86,7 +100,13 @@ values = {
     "_text_detection_clients": {},
     "_text_recognition_clients": {},
     "_ocr_client_lock": threading.Lock(),
-    "_ocr_runtime_lock": asyncio.Lock(),
+    # 推理槽位：只序列化 Paddle 的 predict，其余工作（解码/裁剪/外观分析/写盘）可并行。
+    # det 与 rec 是不同模型实例，各自一把槽位，让 A 页识别与 B 页检测重叠。
+    "OCR_PREDICT_CONCURRENCY": predict_concurrency_from_env(),
+    "_ocr_predict_semaphore": threading.Semaphore(predict_concurrency_from_env()),
+    "_ocr_det_semaphore": threading.Semaphore(predict_concurrency_from_env()),
+    "_ocr_rec_semaphore": threading.Semaphore(predict_concurrency_from_env()),
+    "ocr_warmup_state": None,
     "GLOSSARY_DB_PATH": os.environ.get("GLOSSARY_DB_PATH", str(DATA_ROOT / "glossary.db")),
     "TRANSLATION_DB_PATH": os.environ.get("TRANSLATION_DB_PATH", str(DATA_ROOT / "translations.db")),
     "EXTENSION_ORIGIN_PATTERN": r"^chrome-extension://[a-p]{32}$",

@@ -80,9 +80,10 @@ runtime.should_use_korean_v3_fallback = should_use_korean_v3_fallback
 
 def predict_with_client(client: runtime.Any, image_path: str, params: dict[str, float]) -> runtime.Any:
     predict_kwargs = {'use_doc_orientation_classify': False, 'use_doc_unwarping': False, 'use_textline_orientation': False, 'text_det_thresh': params['text_det_thresh'], 'text_det_box_thresh': params['text_det_box_thresh'], 'text_det_unclip_ratio': params['text_det_unclip_ratio'], 'text_rec_score_thresh': params['text_rec_score_thresh']}
-    if hasattr(client, 'predict'):
-        return client.predict(image_path, **predict_kwargs)
-    return client.ocr(image_path, cls=False)
+    with runtime.predict_guard():
+        if hasattr(client, 'predict'):
+            return client.predict(image_path, **predict_kwargs)
+        return client.ocr(image_path, cls=False)
 
 runtime.predict_with_client = predict_with_client
 
@@ -120,3 +121,55 @@ def is_cuda_available() -> bool:
         return False
 
 runtime.is_cuda_available = is_cuda_available
+
+def warmup_languages() -> list[str]:
+    """启动预热的识别语言，默认与 lang=auto 实际会跑的两条一致。"""
+    raw = str(runtime.os.environ.get('LOCAL_OCR_WARMUP_LANGS', 'japan,korean') or '')
+    langs = [item.strip() for item in raw.split(',') if item.strip()]
+    valid = [lang for lang in langs if lang in runtime.SUPPORTED_LANGS]
+    return valid or ['japan', 'korean']
+
+runtime.warmup_languages = warmup_languages
+
+def warm_up_ocr_models() -> dict[str, runtime.Any]:
+    """后台预热检测与识别模型。
+
+    模型是懒加载的：服务起来后第一个真实请求要等 10s 左右（实测首请求 detectPrimary 10.1s、
+    单请求 totalMs p95 16.9s）。这里用一张小图把 det 与各识别模型先加载好，把这段成本
+    从「用户翻到第一页」挪到「服务启动」。
+    注意：检测客户端按阈值缓存，这里用扩展的默认阈值（0.3/0.6/1.2）预热，
+    设置里改过阈值时仍会重新加载。
+    """
+    if runtime.PADDLE_IMPORT_ERROR is not None or not runtime.CV2_AVAILABLE:
+        state = {'ok': False, 'reason': 'paddle or cv2 unavailable'}
+        runtime.ocr_warmup_state = state
+        return state
+    if runtime.env_bool('LOCAL_OCR_DISABLE_WARMUP', False):
+        state = {'ok': False, 'reason': 'warmup disabled by LOCAL_OCR_DISABLE_WARMUP'}
+        runtime.ocr_warmup_state = state
+        print(f'[local-ocr] warmup {state}', flush=True)
+        return state
+    started = runtime.time.perf_counter()
+    try:
+        image = runtime.np.full((96, 96, 3), 255, dtype=runtime.np.uint8)
+        encoded, buffer = runtime.cv2.imencode('.png', image)
+        if not encoded:
+            raise RuntimeError('warmup image encode failed')
+        params = {
+            'text_det_thresh': runtime.DEFAULT_TEXT_DET_THRESH,
+            'text_det_box_thresh': runtime.DEFAULT_TEXT_DET_BOX_THRESH,
+            'text_det_unclip_ratio': runtime.DEFAULT_TEXT_DET_UNCLIP_RATIO,
+            'text_rec_score_thresh': 0.0,
+        }
+        runtime._run_detection_only(buffer.tobytes(), 'japan', params)
+        row = {'detection_index': 0, 'region_id': 'warmup', 'orientation': 0, 'variant': 'warmup', 'image': image}
+        for lang in warmup_languages():
+            runtime.recognize_candidate_rows([dict(row)], [lang])
+        state = {'ok': True, 'ms': round((runtime.time.perf_counter() - started) * 1000.0, 1), 'langs': warmup_languages()}
+    except Exception as exc:  # noqa: BLE001 - 预热失败只能记日志，不能影响服务启动
+        state = {'ok': False, 'error': str(exc)}
+    runtime.ocr_warmup_state = state
+    print(f'[local-ocr] warmup {state}', flush=True)
+    return state
+
+runtime.warm_up_ocr_models = warm_up_ocr_models

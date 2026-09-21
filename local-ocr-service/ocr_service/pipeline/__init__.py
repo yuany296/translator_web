@@ -1,6 +1,9 @@
 """按依赖顺序装配 OCR 服务领域模块。"""
 
+from . import request_timings
+from . import slice_policy
 from . import api_handlers
+from . import predict_guard
 from . import glossary_library_handlers
 from . import glossary_import_handlers
 from . import orchestrator

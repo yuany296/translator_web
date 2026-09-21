@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,7 +10,15 @@ from . import models as _models
 from . import pipeline as _pipeline
 from .runtime import runtime
 
-app = FastAPI(title="Manga Translator Local OCR")
+
+@asynccontextmanager
+async def _lifespan(_app):
+    # 后台线程预热模型：不阻塞端口监听，但把 10s 级的模型加载从首个真实请求挪到启动阶段。
+    runtime.threading.Thread(target=runtime.warm_up_ocr_models, name='ocr-warmup', daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Manga Translator Local OCR", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=runtime.EXTENSION_ORIGIN_PATTERN,
@@ -54,6 +64,7 @@ routes = [
     ("/glossary/pending", runtime.glossary_pending_add, ["POST"]),
     ("/glossary/pending/count", runtime.glossary_pending_count, ["GET"]),
     ("/ocr", runtime.ocr, ["POST"]),
+    ("/ocr/timings", runtime.ocr_timings, ["GET"]),
     ("/debug-background", runtime.debug_background, ["POST"]),
     ("/translations/health", runtime.translations_health, ["GET"]),
     ("/translations/query", runtime.translations_query, ["POST"]),

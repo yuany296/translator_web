@@ -92,50 +92,56 @@ def run_ocr(
         except Exception as exc:
             print(f'[local-ocr] detect/crop/recognize failed, using fallback OCR: {exc}', flush=True)
     image_width, image_height = runtime.get_image_size(image_bytes)
-    variants = runtime.create_ocr_image_variants(image_bytes, mode, seam_rows)
+    with runtime.ocr_request_timings_scope('preprocess'):
+        variants = runtime.create_ocr_image_variants(image_bytes, mode, seam_rows)
     debug_paths: dict[str, str] = {}
-    debug_enabled = debug or runtime.os.environ.get('LOCAL_OCR_DEBUG_ALWAYS', '1') != '0'
+    debug_enabled = debug or runtime.debug_artifacts_always_enabled()
     debug_stem = runtime.safe_debug_stem(debug_id or f'{int(runtime.time.time() * 1000)}')
     return_raw = runtime.env_bool('OCR_RETURN_RAW', debug)
     filter_ui_text = runtime.env_bool('OCR_FILTER_UI_TEXT', not return_raw)
     merge_lines = runtime.env_bool('OCR_MERGE_LINES', True)
     min_score = runtime.env_float('OCR_MIN_SCORE', 0.0 if return_raw else params['text_rec_score_thresh'])
     if debug_enabled:
-        debug_paths['input'] = runtime.save_debug_input(image_bytes, debug_id)
-        debug_paths['plugin_input'] = runtime.save_service_plugin_input(image_bytes, debug_stem)
-        debug_paths['input_received'] = runtime.save_service_input_received(image_bytes, debug_stem)
-        debug_paths['input_to_paddle'] = runtime.save_service_input_to_paddle(variants, debug_stem)
+        with runtime.ocr_request_timings_scope('debugArtifacts'):
+            plugin_input = runtime.save_service_plugin_input(image_bytes, debug_stem)
+            # 原图只写一份：input / plugin_input / input_received 曾经是同一张图的三个副本。
+            debug_paths['input'] = plugin_input
+            debug_paths['plugin_input'] = plugin_input
+            debug_paths['input_received'] = plugin_input
+            debug_paths['input_to_paddle'] = runtime.save_service_input_to_paddle(variants, debug_stem)
     try:
         langs = ['japan', 'korean'] if lang == 'auto' else [lang]
         items: list[dict[str, runtime.Any]] = []
         raw_items: list[dict[str, runtime.Any]] = []
         raw_result_paths: list[str] = []
         crop_paths: list[str] = []
-        for variant in variants:
-            for current_lang in langs:
-                raw_result = runtime.predict_with_variant_lang(str(variant['path']), variant, current_lang, params)
-                variant_items = runtime.extract_items(raw_result, filter_symbols=filter_ui_text, min_score=min_score)
-                if merge_lines:
-                    variant_items = runtime.split_multiline_items(variant_items, variant, current_lang, params, debug_enabled, debug_stem)
-                if not return_raw:
-                    variant_items = runtime.filter_variant_items_for_normal_mode(variant_items, variant, current_lang)
-                if debug_enabled:
-                    raw_result_paths.append(runtime.save_service_raw_result(raw_result, variant_items, debug_stem, variant, current_lang))
-                    crop_paths.extend(runtime.save_service_crops(variant['path'], variant_items, debug_stem, variant, current_lang))
-                for item in variant_items:
-                    raw_copy = dict(item)
-                    raw_copy['lang'] = current_lang
-                    raw_copy['variant'] = variant['name']
-                    raw_items.append(raw_copy)
-                    runtime.normalize_item_box_scale(item, float(variant['scale']))
-                    item['lang'] = current_lang
-                    item['variant'] = variant['name']
-                    items.append(item)
+        with runtime.ocr_request_timings_scope('fallbackPredict'):
+            for variant in variants:
+                for current_lang in langs:
+                    raw_result = runtime.predict_with_variant_lang(str(variant['path']), variant, current_lang, params)
+                    variant_items = runtime.extract_items(raw_result, filter_symbols=filter_ui_text, min_score=min_score)
+                    if merge_lines:
+                        variant_items = runtime.split_multiline_items(variant_items, variant, current_lang, params, debug_enabled, debug_stem)
+                    if not return_raw:
+                        variant_items = runtime.filter_variant_items_for_normal_mode(variant_items, variant, current_lang)
+                    if debug_enabled:
+                        raw_result_paths.append(runtime.save_service_raw_result(raw_result, variant_items, debug_stem, variant, current_lang))
+                        crop_paths.extend(runtime.save_service_crops(variant['path'], variant_items, debug_stem, variant, current_lang))
+                    for item in variant_items:
+                        raw_copy = dict(item)
+                        raw_copy['lang'] = current_lang
+                        raw_copy['variant'] = variant['name']
+                        raw_items.append(raw_copy)
+                        runtime.normalize_item_box_scale(item, float(variant['scale']))
+                        item['lang'] = current_lang
+                        item['variant'] = variant['name']
+                        items.append(item)
         runtime.annotate_variant_support(items)
         normalized = runtime.sort_items(runtime.apply_korean_contextual_corrections(runtime.reconstruct_enhanced_items(items) if mode == 'enhanced' else runtime.dedupe_items(items)))
         if not return_raw and filter_ui_text:
             normalized = [item for item in normalized if not runtime.is_symbol_only_text(item.get('text'))]
-        regions = runtime.annotate_visual_regions(image_bytes, normalized)
+        with runtime.ocr_request_timings_scope('appearance'):
+            regions = runtime.annotate_visual_regions(image_bytes, normalized)
         boxes = runtime.response_boxes(normalized)
         counts = {'paddle_raw_items': len(raw_items), 'filtered_items': len(items), 'merged_blocks': len(normalized), 'variants': len(variants), 'langs': len(langs)}
         for item in normalized:
@@ -144,12 +150,13 @@ def run_ocr(
         if return_raw:
             result_payload['rawItems'] = raw_items
         if debug_enabled:
-            debug_paths['raw_result'] = raw_result_paths
-            debug_paths['crops'] = crop_paths
-            debug_paths['boxes'] = runtime.save_debug_boxes(image_bytes, normalized, debug_id)
-            debug_paths['vis'] = runtime.save_service_vis(image_bytes, normalized, debug_stem)
-            debug_paths['result_json'] = runtime.save_service_result_json(result_payload, debug_stem)
-            debug_paths['latest_index'] = runtime.save_service_latest_debug_index(debug_paths, debug_stem)
+            with runtime.ocr_request_timings_scope('debugArtifacts'):
+                debug_paths['raw_result'] = raw_result_paths
+                debug_paths['crops'] = crop_paths
+                debug_paths['boxes'] = runtime.save_debug_boxes(image_bytes, normalized, debug_id)
+                debug_paths['vis'] = runtime.save_service_vis(image_bytes, normalized, debug_stem)
+                debug_paths['result_json'] = runtime.save_service_result_json(result_payload, debug_stem)
+                debug_paths['latest_index'] = runtime.save_service_latest_debug_index(debug_paths, debug_stem)
         print(f"[local-ocr] counts raw_items={counts['paddle_raw_items']} filtered_items={counts['filtered_items']} merged_blocks={counts['merged_blocks']} return_raw={return_raw} filter_ui_text={filter_ui_text} merge_lines={merge_lines}", flush=True)
         return result_payload
     finally:

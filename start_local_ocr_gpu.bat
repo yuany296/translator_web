@@ -48,6 +48,9 @@ if errorlevel 1 (
 set "LOCAL_OCR_DEVICE=auto"
 set "LOCAL_OCR_DISABLE_MODELSCOPE=1"
 set "PADDLE_PDX_MODEL_SOURCE=bos"
+REM debug 产物（每页 3 张整页 PNG + result JSON）默认关闭，每页可省 0.6~0.9s。
+REM 需要排查识别效果时取消下一行注释，或在设置页打开"本地 OCR 调试"。
+REM set "LOCAL_OCR_DEBUG_ALWAYS=1"
 
 echo.
 echo [local-ocr] Starting OCR service with LOCAL_OCR_DEVICE=%LOCAL_OCR_DEVICE%

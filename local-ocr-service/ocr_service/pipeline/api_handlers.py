@@ -17,7 +17,7 @@ def health() -> dict[str, runtime.Any]:
         device = ''
         device_error = str(exc)
     term_extractor = runtime.get_term_extractor_status()
-    return {'ok': runtime.PADDLE_IMPORT_ERROR is None and (not device_error), 'engine': 'paddleocr', 'ocrGeometryVersion': runtime.OCR_GEOMETRY_CONTRACT_VERSION, 'device': device, 'cuda': runtime.is_cuda_available(), 'cv2_available': runtime.CV2_AVAILABLE, 'term_extractor_available': term_extractor['available'], 'term_extractor_engine': term_extractor['engine'], 'term_extractor_error': term_extractor['error'], 'error': str(runtime.PADDLE_IMPORT_ERROR) if runtime.PADDLE_IMPORT_ERROR else device_error}
+    return {'ok': runtime.PADDLE_IMPORT_ERROR is None and (not device_error), 'engine': 'paddleocr', 'ocrGeometryVersion': runtime.OCR_GEOMETRY_CONTRACT_VERSION, 'device': device, 'cuda': runtime.is_cuda_available(), 'cv2_available': runtime.CV2_AVAILABLE, 'warmup': getattr(runtime, 'ocr_warmup_state', None), 'term_extractor_available': term_extractor['available'], 'term_extractor_engine': term_extractor['engine'], 'term_extractor_error': term_extractor['error'], 'error': str(runtime.PADDLE_IMPORT_ERROR) if runtime.PADDLE_IMPORT_ERROR else device_error}
 
 runtime.health = health
 
@@ -48,10 +48,12 @@ async def extract_terms(payload: runtime.TermExtractionRequest) -> dict[str, run
         'apiKey': (payload.upstream.apiKey or '').strip() if payload.upstream else '',
     }
     engine = 'ollama' if upstream['baseUrl'] else 'heuristic'
-    candidates = await runtime.asyncio.to_thread(
-        runtime.extract_term_candidates, blocks, upstream, payload.target_language or 'zh-CN'
+    candidates, dropped = await runtime.asyncio.to_thread(
+        runtime.extract_term_candidates_with_stats, blocks, upstream, payload.target_language or 'zh-CN'
     )
-    return {'ok': True, 'engine': engine, 'candidates': candidates}
+    # dropped：模型返回了但被判掉的条数与原因（kind 非法 / 原文里找不到 / schema 不符）。
+    # 扩展侧把它写进「最近一次提取」，术语没收集到时才能分清是「模型没给」还是「给了被丢」。
+    return {'ok': True, 'engine': engine, 'candidates': candidates, 'dropped': dropped}
 
 runtime.extract_terms = extract_terms
 
@@ -223,28 +225,42 @@ async def ocr(payload: runtime.OcrRequest) -> dict[str, runtime.Any]:
         raise runtime.HTTPException(status_code=500, detail=f'PaddleOCR import failed: {runtime.PADDLE_IMPORT_ERROR}')
     lang = runtime.normalize_lang(payload.lang)
     mode = runtime.normalize_ocr_mode(payload.mode)
+    # 计时从收到请求开始；decode 与推理槽位排队都单独记账。
+    timings = runtime.ocr_request_timings_begin()
+    request_started = runtime.ocr_request_timings_now()
     image_bytes = runtime.decode_data_url(payload.image)
+    runtime.ocr_request_timings_add('decode', (runtime.ocr_request_timings_now() - request_started) * 1000.0)
     params = runtime.normalize_ocr_params(payload)
-    async with runtime._ocr_runtime_lock:
-        result = await runtime.asyncio.to_thread(
-            runtime.run_ocr,
-            image_bytes,
-            lang,
-            mode,
-            params,
-            bool(payload.debug),
-            payload.debug_id,
-            payload.seam_rows,
-        )
+    # 不再用一把全局锁包住整个 run_ocr：只有 Paddle 推理走预测槽位（runtime.predict_guard），
+    # 解码/透视裁剪/外观分析/清理图/写盘可以与其他请求的推理重叠。
+    result = await runtime.asyncio.to_thread(
+        runtime.run_ocr,
+        image_bytes,
+        lang,
+        mode,
+        params,
+        bool(payload.debug),
+        payload.debug_id,
+        payload.seam_rows,
+    )
     response = {'items': result['items'], 'boxes': result['boxes'], 'regions': result.get('regions', []), 'detectedRegions': result.get('detectedRegions', []), 'recognizedRegions': result.get('recognizedRegions', []), 'semanticBlocks': result.get('semanticBlocks', []), 'geometryReliability': result.get('geometryReliability', 'fallback'), 'lang': lang, 'mode': mode, 'ocrGeometryVersion': runtime.OCR_GEOMETRY_CONTRACT_VERSION, 'imageWidth': result['imageWidth'], 'imageHeight': result['imageHeight'], 'debug': result.get('debug', {}), 'counts': result.get('counts', {}), 'rawItems': result.get('rawItems', [])}
     if payload.return_cleaned_image:
+        cleaned_started = runtime.ocr_request_timings_now()
         cleaned_image = runtime.build_cleaned_image_data_url(image_bytes, result['items'], payload.cleaned_masks)
+        runtime.ocr_request_timings_add('cleanedImage', (runtime.ocr_request_timings_now() - cleaned_started) * 1000.0)
         if cleaned_image:
             response['cleanedImage'] = cleaned_image
         response['cleanedMaskToken'] = payload.cleaned_mask_token
+    response['timings'] = runtime.ocr_request_timings_finish(timings, (runtime.ocr_request_timings_now() - request_started) * 1000.0)
     return response
 
 runtime.ocr = ocr
+
+def ocr_timings() -> dict[str, runtime.Any]:
+    """最近若干次 /ocr 请求的分阶段耗时（p50/p95），用于定位慢在哪一段。"""
+    return runtime.ocr_request_timings_summarize()
+
+runtime.ocr_timings = ocr_timings
 
 async def debug_background(payload: runtime.BackgroundDebugRequest) -> dict[str, runtime.Any]:
     """运行独立背景判定实验，不获取模型锁，也不改变生产阈值。"""

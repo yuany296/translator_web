@@ -271,6 +271,14 @@ def classify_solid_region_type(image: runtime.Any, roi: tuple[int, int, int, int
 
 runtime.classify_solid_region_type = classify_solid_region_type
 
+def cleaned_image_format() -> str:
+    """清理图编码格式：默认 png（现状）。jpeg 可显著降低跨页 seam 请求的编码与回传体积，
+    但会让覆盖层有轻微压缩痕迹，所以只在显式设置 LOCAL_OCR_CLEANED_IMAGE_FORMAT=jpeg 时启用。"""
+    raw = str(runtime.os.environ.get('LOCAL_OCR_CLEANED_IMAGE_FORMAT', 'png') or '').strip().lower()
+    return 'jpeg' if raw in {'jpeg', 'jpg'} else 'png'
+
+runtime.cleaned_image_format = cleaned_image_format
+
 def build_cleaned_image_data_url(image_bytes: bytes, items: list[dict[str, runtime.Any]], supplemental_masks: list[dict[str, runtime.Any]] | None=None) -> str | None:
     """Inpaint complex-background OCR polygons and return the cleaned base image."""
     if not runtime.CV2_AVAILABLE:
@@ -283,11 +291,16 @@ def build_cleaned_image_data_url(image_bytes: bytes, items: list[dict[str, runti
     if mask is None or int(runtime.np.count_nonzero(mask)) == 0:
         return None
     cleaned = runtime.cv2.inpaint(image, mask, 3, runtime.cv2.INPAINT_TELEA)
-    ok, buffer = runtime.cv2.imencode('.png', cleaned)
+    if cleaned_image_format() == 'jpeg':
+        ok, buffer = runtime.cv2.imencode('.jpg', cleaned, [int(runtime.cv2.IMWRITE_JPEG_QUALITY), 90])
+        mime = 'jpeg'
+    else:
+        ok, buffer = runtime.cv2.imencode('.png', cleaned)
+        mime = 'png'
     if not ok:
         return None
     payload = runtime.base64.b64encode(buffer.tobytes()).decode('ascii')
-    return f'data:image/png;base64,{payload}'
+    return f'data:image/{mime};base64,{payload}'
 
 runtime.build_cleaned_image_data_url = build_cleaned_image_data_url
 

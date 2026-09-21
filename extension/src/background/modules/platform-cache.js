@@ -208,6 +208,74 @@ export function installPlatformCache(runtime) {
     return entry.value || null;
   }
   runtime.getCache = getCache;
+  /**
+   * 批量读缓存：一次 storageGet 取代逐条 await。
+   * 一页几十个气泡时，逐条读会变成几十次 storage 往返（每页固定开销）。
+   */
+  async function getCacheMany(cacheKeys) {
+    const keys = [...new Set((Array.isArray(cacheKeys) ? cacheKeys : []).map(key => String(key || "")).filter(Boolean))];
+    if (keys.length === 0) return new Map();
+    const store = await runtime.storageGet(keys);
+    const values = new Map();
+    const stale = [];
+    const now = Date.now();
+    for (const key of keys) {
+      const entry = store[key];
+      if (!entry || typeof entry !== "object") continue;
+      const timestamp = Number(entry.timestamp || 0);
+      if (!timestamp || now - timestamp > runtime.CACHE_TTL_MS) {
+        stale.push(key);
+        continue;
+      }
+      if (entry.value) values.set(key, entry.value);
+    }
+    if (stale.length > 0) await runtime.storageRemove(stale);
+    return values;
+  }
+  runtime.getCacheMany = getCacheMany;
+  /**
+   * 批量写缓存：LLM 返回后逐个气泡 `await setCache` 会变成 N 次串行 storage 写，
+   * 而且整批要等写完才把结果交给渲染。配额恢复策略与 setCache 保持一致。
+   */
+  async function setCacheMany(entries) {
+    const payload = {};
+    let count = 0;
+    for (const pair of Array.isArray(entries) ? entries : []) {
+      const cacheKey = String(pair && pair[0] || "");
+      if (!cacheKey) continue;
+      payload[cacheKey] = {
+        timestamp: Date.now(),
+        value: cacheKey.startsWith(runtime.OCR_CACHE_PREFIX)
+          ? runtime.buildCacheSafeOcrResult(pair[1])
+          : runtime.buildCacheSafeTranslationResult(pair[1])
+      };
+      count += 1;
+    }
+    if (count === 0) return true;
+    try {
+      await runtime.storageSet(payload);
+      return true;
+    } catch (error) {
+      if (!runtime.isStorageQuotaError(error)) {
+        console.warn("[MangaTranslator] Batch cache write failed; translation continues without cache.", error);
+        return false;
+      }
+    }
+    try {
+      const store = await runtime.storageGet(null);
+      const cacheKeys = Object.keys(store).filter(runtime.isTranslationCacheKey);
+      if (cacheKeys.length > 0) {
+        await runtime.storageRemove(cacheKeys);
+      }
+      await runtime.storageSet(payload);
+      console.info(`[MangaTranslator] Storage quota recovered by clearing ${cacheKeys.length} translation cache entries.`);
+      return true;
+    } catch (error) {
+      console.warn("[MangaTranslator] Batch cache write failed after quota recovery.", error);
+      return false;
+    }
+  }
+  runtime.setCacheMany = setCacheMany;
   async function setCache(cacheKey, value) {
     const entry = {
       [cacheKey]: {

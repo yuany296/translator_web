@@ -26,17 +26,18 @@ export function installTranslationProvider(runtime) {
     translationOptions,
     glossary,
     glossaryFingerprint,
-    pageUrl = "",
-    force = false, mode = "comic", signal = null, taskId = ""
+    pageUrl = "", force = false, mode = "comic", signal = null, taskId = "", onRow = null
   }) {
     const outcome = new Map();
     const pending = [];
     const newRequests = [];
     const configuredModel = model || runtime.DEFAULT_TRANSLATION_MODEL;
     const configuredBaseUrl = baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL;
-    for (const item of items) {
-      const translationFingerprint = runtime.buildCanonicalTranslationFingerprint({
-        originalText: item.original_text,
+    // 一次批量读取代逐条 await：指纹在这里算好，缓存键与命中值一起带回。
+    const cacheEntries = await runtime.lookupCanonicalTranslationCache({
+      items,
+      force,
+      fingerprintArgs: {
         sourceLanguage,
         targetLanguage,
         model: configuredModel,
@@ -45,9 +46,10 @@ export function installTranslationProvider(runtime) {
         glossaryFingerprint,
         translationOptions,
         mode
-      });
-      const cacheKey = `${runtime.CANONICAL_TRANSLATION_CACHE_PREFIX}${translationFingerprint}`;
-      const cached = force ? null : await runtime.getCache(cacheKey);
+      }
+    });
+    for (const entry of cacheEntries) {
+      const { item, translationFingerprint, cacheKey, cached } = entry;
       if (cached && typeof cached.translatedText === "string" && cached.translatedText.trim()) {
         outcome.set(runtime.canonicalTranslationItemKey(item), {
           translatedText: runtime.restoreDialogueQuotes(item.original_text, cached.translatedText.trim()),
@@ -83,6 +85,14 @@ export function installTranslationProvider(runtime) {
           }
         }
         try {
+          // 流式增量：把模型内部 id(canonical-request-N) 映射回本批外层 item id
+          const partialRow = typeof onRow === "function" ? rows => {
+            const mapped = (Array.isArray(rows) ? rows : []).map(row => {
+              const entry = newRequests[Number(String(row && row.id || "").replace("canonical-request-", ""))];
+              return entry ? { id: entry.item.id, translatedText: String(row.translated_text || "") } : null;
+            }).filter(Boolean);
+            if (mapped.length) onRow(mapped);
+          } : null;
           const rows = await runtime.requestCanonicalTranslationBatch({
             items: requestItems,
             apiKey,
@@ -95,9 +105,11 @@ export function installTranslationProvider(runtime) {
             glossary,
             mode,
             pageUrl,
-            signal: batchController.signal
+            signal: batchController.signal,
+            onRow: partialRow
           });
           const rowById = new Map((Array.isArray(rows) ? rows : []).map(row => [String(row && row.id || ""), row]));
+          const cacheWrites = [];
           for (let index = 0; index < newRequests.length; index += 1) {
             const entry = newRequests[index];
             const row = rowById.get(requestItems[index].id);
@@ -112,15 +124,20 @@ export function installTranslationProvider(runtime) {
               continue;
             }
             // LLM 偶发丢掉对话引号:按原文引号对做确定性兜底后再缓存。
-            await runtime.setCache(entry.cacheKey, {
-              translatedText: runtime.restoreDialogueQuotes(entry.item.original_text, translatedText),
+            const restored = runtime.restoreDialogueQuotes(entry.item.original_text, translatedText);
+            cacheWrites.push([entry.cacheKey, {
+              translatedText: restored,
               translationFingerprint: entry.translationFingerprint
-            });
+            }]);
             entry.inflight.resolve({
-              translatedText: runtime.restoreDialogueQuotes(entry.item.original_text, translatedText),
+              translatedText: restored,
               translationFingerprint: entry.translationFingerprint,
               cached: false
             });
+          }
+          // 缓存写入不挡渲染：先resolve（渲染立刻开始），写入在后台一次批量完成。
+          if (cacheWrites.length > 0) {
+            void runtime.setCacheMany(cacheWrites).catch(() => {});
           }
         } catch (error) {
           newRequests.forEach(entry => entry.inflight.reject(error));
@@ -187,20 +204,22 @@ export function installTranslationProvider(runtime) {
     }
     const endpoint = runtime.buildOpenAICompatibleEndpoint(baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL);
     const role = mode === "webpage" ? "webpage text translator" : "manga dialogue translator";
-    const systemMessage = `You are a ${role}. Translate from ${sourceLanguage || "auto-detected source"} to ${targetLanguage || "zh-CN"}. Return JSON only and preserve every supplied id.`;
     const prompt = mode === "webpage"
       ? runtime.buildWebpageTranslationPrompt(items, glossary, { sourceLanguage, targetLanguage, pageUrl })
       : runtime.buildOpenAICompatibleTranslationPrompt(items, glossary, { ...(translationOptions || {}), sourceLanguage, targetLanguage, pageUrl });
-    const promptVersionText = promptVersion || (mode === "webpage" ? runtime.WEBPAGE_TRANSLATION_PROMPT_VERSION : runtime.CANONICAL_TRANSLATION_PROMPT_VERSION);
     const body = {
-      model: model || runtime.DEFAULT_TRANSLATION_MODEL,
-      temperature: 0,
+      model: model || runtime.DEFAULT_TRANSLATION_MODEL, temperature: 0,
       messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: [`Prompt version: ${promptVersionText}`, `Translation options: ${runtime.stableSerialize(translationOptions && typeof translationOptions === "object" ? translationOptions : {})}`, prompt].join("\n") }
+        { role: "system", content: `You are a ${role}. Translate from ${sourceLanguage || "auto-detected source"} to ${targetLanguage || "zh-CN"}. Return JSON only and preserve every supplied id.` },
+        { role: "user", content: [`Prompt version: ${promptVersion || (mode === "webpage" ? runtime.WEBPAGE_TRANSLATION_PROMPT_VERSION : runtime.CANONICAL_TRANSLATION_PROMPT_VERSION)}`, `Translation options: ${runtime.stableSerialize(translationOptions && typeof translationOptions === "object" ? translationOptions : {})}`, prompt].join("\n") }
       ],
       response_format: { type: "json_object" }
     };
+    // 流式优先：模型每写完一行就交给 onRow 提前渲染；返回 null 表示不支持流式，走原来的整批请求
+    if (typeof onRow === "function" && typeof runtime.streamCanonicalTranslationBatch === "function") {
+      const streamed = await runtime.streamCanonicalTranslationBatch({ endpoint, apiKey, body, signal, onRow });
+      if (streamed) return streamed;
+    }
     let payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body, undefined, { signal });
     if (!payload) {
       const fallbackBody = {
@@ -215,88 +234,11 @@ export function installTranslationProvider(runtime) {
   runtime.requestOpenAICompatibleCanonicalTranslationBatch = requestOpenAICompatibleCanonicalTranslationBatch;
 
   function buildWebpageTranslationPrompt(items, glossary = null, context = null) {
-    const rows = items.map(item => ({
-      id: item.id,
-      text: item.original_text
-    }));
+    const rows = items.map(item => ({ id: item.id, text: item.original_text }));
     const glossaryPrompt = runtime.glossaryCore.buildPrompt(glossary, items, context);
     return buildWebpageTranslationPromptBody(rows, glossaryPrompt, context && context.targetLanguage);
   }
   runtime.buildWebpageTranslationPrompt = buildWebpageTranslationPrompt;
-  async function requestOpenAICompatibleTextTranslations({
-    items,
-    apiKey,
-    baseUrl,
-    model,
-    sourceImageId = "",
-    glossary = null,
-    glossaryFingerprint = ""
-  }) {
-    const result = new Map();
-    const cacheKeys = new Map();
-    const uncachedItems = [];
-    for (const item of items) {
-      const cacheKey = runtime.buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl, glossaryFingerprint);
-      cacheKeys.set(item.id, cacheKey);
-      const cached = await runtime.getCache(cacheKey);
-      if (cached && typeof cached.translatedText === "string" && cached.translatedText.trim()) {
-        result.set(item.id, cached.translatedText.trim());
-      } else {
-        uncachedItems.push(item);
-      }
-    }
-    if (uncachedItems.length === 0) {
-      return result;
-    }
-    const endpoint = runtime.buildOpenAICompatibleEndpoint(baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL);
-    const body = {
-      model: model || runtime.DEFAULT_TRANSLATION_MODEL,
-      temperature: 0,
-      messages: [{
-        role: "system",
-        content: "You are a manga dialogue translator. Translate grouped OCR blocks into the requested target language, obey every supplied glossary mapping, and return JSON only."
-      }, {
-        role: "user",
-        content: runtime.buildOpenAICompatibleTranslationPrompt(uncachedItems, glossary)
-      }],
-      response_format: {
-        type: "json_object"
-      }
-    };
-    let payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body);
-    if (!payload) {
-      const fallbackBody = {
-        ...body
-      };
-      delete fallbackBody.response_format;
-      payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, fallbackBody);
-    }
-    const text = runtime.extractOpenAIMessageText(payload).trim();
-    const parsed = runtime.parseModelJson(text);
-    const rows = parsed && Array.isArray(parsed.translations) ? parsed.translations : [];
-    for (const row of rows) {
-      const id = String(row && row.id ? row.id : "").trim();
-      const translatedText = String(row && row.translated_text ? row.translated_text : "").trim();
-      if (id && translatedText) {
-        result.set(id, translatedText);
-        const cacheKey = cacheKeys.get(id);
-        if (cacheKey) {
-          await runtime.setCache(cacheKey, {
-            translatedText
-          });
-        }
-      }
-    }
-    return result;
-  }
-  runtime.requestOpenAICompatibleTextTranslations = requestOpenAICompatibleTextTranslations;
-  function buildBlockTranslationCacheKey(sourceImageId, item, model, baseUrl, glossaryFingerprint = "") {
-    const text = runtime.normalizeTextForLocalPaddle(item && item.original_text);
-    const box = item && item.rawBox ? item.rawBox : item || {};
-    const bbox = [box.left ?? box.x, box.top ?? box.y, box.width ?? box.w, box.height ?? box.h].map(value => Math.round(Number(value || 0) * 10) / 10).join(",");
-    return `${runtime.CACHE_PREFIX}block:${runtime.hashString([sourceImageId || "unknown-image", text, bbox, model || "", baseUrl || "", glossaryFingerprint || ""].join("|"))}`;
-  }
-  runtime.buildBlockTranslationCacheKey = buildBlockTranslationCacheKey;
   async function sendOpenAICompatibleTranslationRequest(
     endpoint,
     apiKey,
@@ -345,10 +287,7 @@ export function installTranslationProvider(runtime) {
   }
   runtime.sendOpenAICompatibleTranslationRequest = sendOpenAICompatibleTranslationRequest;
   function buildOpenAICompatibleTranslationPrompt(items, glossary = null, context = null) {
-    const rows = items.map(item => ({
-      id: item.id,
-      text: item.original_text
-    }));
+    const rows = items.map(item => ({ id: item.id, text: item.original_text }));
     const glossaryPrompt = runtime.glossaryCore.buildPrompt(glossary, items, context);
     const nearbyText = String(context && context.nearbyText || "").slice(0, 4000);
     return [

@@ -1,6 +1,8 @@
 import { installMessages } from "./messages.js";
 import { installTermDiscoveryMessages } from "./term-discovery-messages.js";
+import { installTermDiscoveryExtract } from "./term-discovery-extract.js";
 import { installTermDiscovery } from "./term-discovery.js";
+import { installOcrTimings } from "./ocr-timings.js";
 import { installOcrPipeline } from "./ocr-pipeline.js";
 import { installOcrDispatch } from "./ocr-dispatch.js";
 import { installObservationResults } from "./observation-results.js";
@@ -19,11 +21,15 @@ import { installOcrItemFilter } from "./ocr-item-filter.js";
 import { installOcrCandidates } from "./ocr-candidates.js";
 import { installBaiduProvider } from "./baidu-provider.js";
 import { installBaiduResults } from "./baidu-results.js";
+import { installTranslationBlockBatch } from "./translation-block-batch.js";
+import { installTranslationCacheLookup } from "./translation-cache-lookup.js";
 import { installTranslationProvider } from "./translation-provider.js";
+import { installTranslationProviderStream } from "./translation-provider-stream.js";
 import { installTranslationHelpers } from "./translation-helpers.js";
 import { installTranslationCoalesce } from "./translation-coalesce.js";
 import { installTranslationUtils } from "./translation-utils.js";
 import { installNovelTranslation } from "./novel-translation.js";
+import { installNovelEmphasis } from "./novel-emphasis.js";
 import { installTermContextExtract } from "./term-context-extract.js";
 import { installTranslationCacheStore } from "./translation-cache-store.js";
 import { installTranslationConfig } from "./translation-config.js";
@@ -38,50 +44,13 @@ import { installPlatformStorage } from "./platform-storage.js";
 import { installBackgroundState } from "./background-state.js";
 import { installBootstrap } from "./bootstrap.js";
 
-export const backgroundInstallers = Object.freeze([
-  installMessages,
-  installTermDiscoveryMessages,
-  installTermDiscovery,
-  installOcrPipeline,
-  installOcrDispatch,
-  installObservationResults,
-  installSeamGrouping,
-  installSeamHandling,
-  installCapture,
-  installOcrProvider,
-  installVisionOcr,
-  installOcrClustering,
-  installOcrStyles,
-  installOcrLines,
-  installOcrRegions,
-  installOcrClusterGeometry,
-  installOcrDisplayGeometry,
-  installOcrItemFilter,
-  installOcrCandidates,
-  installBaiduProvider,
-  installBaiduResults,
-  installTranslationProvider,
-  installTranslationHelpers,
-  installTranslationCoalesce,
-  installTranslationUtils,
-  installNovelTranslation,
-  installTermContextExtract,
-  installTranslationCacheStore,
-  installTranslationService,
-  installTranslationStream,
-  installComicTranslationStore,
-  installPlatformCache,
-  installPlatformUtils,
-  installPlatformStorage,
-  installBackgroundState,
-  installBootstrap
-]);
-
 export const backgroundPhases = Object.freeze({
   functions: Object.freeze([
     installMessages,
     installTermDiscoveryMessages,
+    installTermDiscoveryExtract,
     installTermDiscovery,
+    installOcrTimings,
     installOcrPipeline,
     installOcrDispatch,
     installObservationResults,
@@ -100,11 +69,15 @@ export const backgroundPhases = Object.freeze({
     installOcrCandidates,
     installBaiduProvider,
     installBaiduResults,
+    installTranslationBlockBatch,
+    installTranslationCacheLookup,
     installTranslationProvider,
+    installTranslationProviderStream,
     installTranslationHelpers,
     installTranslationCoalesce,
     installTranslationUtils,
     installNovelTranslation,
+    installNovelEmphasis,
     installTermContextExtract,
     installPlatformCache,
     installTranslationCacheStore,
@@ -120,3 +93,15 @@ export const backgroundPhases = Object.freeze({
   state: Object.freeze([installBackgroundState]),
   startup: Object.freeze([installBootstrap])
 });
+
+/**
+ * 完整装配顺序（functions → state → startup）。
+ * 由 backgroundPhases 派生，避免两份手写列表各自维护时漏装模块：
+ * 曾漏掉 installOcrTimings，导致 messages.js 里的 OCR_DATA_URL 报
+ * 「runtime.handleOcrDataUrlWithTimings is not a function」。
+ */
+export const backgroundInstallers = Object.freeze([
+  ...backgroundPhases.functions,
+  ...backgroundPhases.state,
+  ...backgroundPhases.startup
+]);

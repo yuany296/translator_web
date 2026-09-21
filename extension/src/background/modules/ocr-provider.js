@@ -145,6 +145,9 @@ export function installOcrProvider(runtime) {
         throw new Error("本地 OCR 服务未确认跨页清理范围，请重启 local-ocr-service 后重试");
       }
       console.debug("[MangaTranslator][OCR] Server response items:", payload && Array.isArray(payload.items) ? payload.items.length : 0, "boxes:", payload && Array.isArray(payload.boxes) ? payload.boxes.length : 0, "imageWidth:", payload && payload.imageWidth, "imageHeight:", payload && payload.imageHeight);
+      runtime.recordOcrServiceTimings?.({
+        timings: payload.timings, debugId: debugId || "", lang, mode, counts: payload.counts
+      });
       return payload;
     } catch (error) {
       if (error && error.name === "AbortError") {

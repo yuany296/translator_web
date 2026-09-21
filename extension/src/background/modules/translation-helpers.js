@@ -101,6 +101,32 @@ export function installTranslationHelpers(runtime) {
     return `${normalized}/chat/completions`;
   }
   runtime.buildOpenAICompatibleEndpoint = buildOpenAICompatibleEndpoint;
+  /**
+   * 带图的 OpenAI 兼容请求（本地 OCR 低置信度 crop 的视觉修复用）。
+   *
+   * `vision-ocr.js` 的 `requestVisionCropOcr` 一直按这个签名调用，但这个入口从未被实现，
+   * 于是视觉修复在运行时抛 “not a function” 并被上层 catch 吞掉（功能静默失效）。
+   * 这里复用翻译同一套请求体构造与 JSON 兜底，避免再写一份。
+   */
+  async function requestOpenAICompatibleVision({
+    model,
+    apiKey,
+    baseUrl,
+    dataUrl,
+    prompt,
+    requestTimeoutMs
+  }) {
+    const endpoint = runtime.buildOpenAICompatibleEndpoint(baseUrl || runtime.DEFAULT_TRANSLATION_BASE_URL);
+    return runtime.sendOpenAICompatibleWithJsonFallback({
+      endpoint,
+      model: model || runtime.DEFAULT_VISION_OCR_MODEL,
+      apiKey,
+      dataUrl,
+      prompt,
+      requestTimeoutMs
+    });
+  }
+  runtime.requestOpenAICompatibleVision = requestOpenAICompatibleVision;
   function sanitizeOpenAICompatibleBaseUrl(baseUrl) {
     let normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
     normalized = normalized.replace(/\/chat\/completions$/i, "");

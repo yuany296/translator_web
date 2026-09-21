@@ -6,11 +6,13 @@ export function installMessages(runtime) {
       case "CAPTURE_VISIBLE_TARGET_DATA_URL":
         return runtime.handleCaptureVisibleTargetDataUrl(message, sender);
       case "OCR_DATA_URL":
-        return runtime.handleOcrDataUrl(message);
+        return runtime.handleOcrDataUrlWithTimings(message);
       case "TRANSLATE_TEXT_BLOCKS":
         return runtime.handleTranslateTextBlocks(message, sender);
       case "TRANSLATE_NOVEL_CHUNK":
         return runtime.handleTranslateNovelChunk(message, sender);
+      case "ALIGN_NOVEL_EMPHASIS":
+        return runtime.handleAlignNovelEmphasis(message);
       case "EXTRACT_TERM_FROM_CONTEXT":
         return runtime.handleExtractTermFromContext(message);
       case "EXTRACT_TERMS_FROM_SENTENCE":

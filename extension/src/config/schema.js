@@ -1,5 +1,7 @@
 import languages from "../shared/languages.js";
 import llmProviders from "../shared/llm-providers.js";
+import { NOVEL_SPEED_DEFAULTS, clampNovelSpeed } from "../shared/novel-speed.js";
+import { WEBPAGE_SPEED_DEFAULTS, clampWebpageSpeed } from "../shared/webpage-speed.js";
 
 export const CONFIG_KEYS = Object.freeze({
   ocr: "mt_ocr_config_v1",
@@ -62,14 +64,30 @@ export const DEFAULT_SENTENCE_EXTRACTION_CONFIG = Object.freeze({
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   enabled: true, showBall: true, captureMode: "direct", renderMode: "overlay",
   pretranslateMode: "manual", ignoreSimplifiedChinese: false,
-  overwriteFontScale: 1, overwriteCoverPadding: 1.2,
+  // 领先预翻译预取的切片数（配合 VISIBLE_TRANSLATION_RESERVED_SLOTS 决定能否追上滚动）。
+  pretranslateAheadCount: 6,
+  // 覆盖范围默认 0：遮罩贴合识别到的文字框，不外扩（用户现场：外扩会让覆盖层显得太大）。
+  overwriteFontScale: 1, overwriteCoverPadding: 0,
   debugOverlayMode: "final", overwritePreviewMode: "full", termDiscoveryEnabled: true,
   floatingSide: "right", floatingYRatio: 0.72,
   displayMode: "translated", webpageDisplayMode: "translated", novelDisplayMode: "translated",
   novelStreamBatchSize: 50,
+  // 小说翻译速度三件套：流式并发、渐进每块字数、补翻并发（含义见 shared/novel-speed.js）。
+  novelStreamConcurrency: NOVEL_SPEED_DEFAULTS.streamConcurrency,
+  novelChunkChars: NOVEL_SPEED_DEFAULTS.chunkChars,
+  novelRepairConcurrency: NOVEL_SPEED_DEFAULTS.repairConcurrency,
   // 两个提取服务的开关：整章提取复用 termDiscoveryEnabled，句子级提取用 sentenceExtractionEnabled。
   sentenceExtractionEnabled: true,
-  webpageBatchItems: 32, webpageBatchChars: 3200, webpageConcurrency: 5
+  // 网页翻译速度三件套：并发批数、每批段数、每批字符数（含义见 shared/webpage-speed.js）。
+  webpageBatchItems: WEBPAGE_SPEED_DEFAULTS.batchItems,
+  webpageBatchChars: WEBPAGE_SPEED_DEFAULTS.batchChars,
+  webpageConcurrency: WEBPAGE_SPEED_DEFAULTS.concurrency,
+  // 边缘 canonical 的等待策略：默认 false = 等邻页 seam 合并后再翻译（跨页句子只翻一次）。
+  // 打开后邻页没有进度时立即翻译，首屏更快，代价是 seam 之后确实合并的句子会多一次翻译。
+  edgeTranslateWithoutWaiting: false,
+  // 漫画流式渲染：模型每完成一批译文就提前上屏，不必等整批返回（默认关闭，
+  // 逐气泡上屏会改变现有观感，需要先在真实阅读器上确认）。
+  comicStreamingEnabled: false
 });
 
 const numberIn = (value, min, max, fallback) => {
@@ -209,9 +227,10 @@ export function normalizeRuntimeConfig(value = {}) {
     captureMode: value.captureMode === "screenshot" ? "screenshot" : "direct",
     renderMode: value.renderMode === "embedded" ? "embedded" : "overlay",
     pretranslateMode: ["ahead", "continuous"].includes(value.pretranslateMode) ? value.pretranslateMode : "manual",
+    pretranslateAheadCount: numberIn(value.pretranslateAheadCount, 1, 12, DEFAULT_RUNTIME_CONFIG.pretranslateAheadCount),
     ignoreSimplifiedChinese: value.ignoreSimplifiedChinese === true,
     overwriteFontScale: numberIn(value.overwriteFontScale, 0.5, 2.5, 1),
-    overwriteCoverPadding: numberIn(value.overwriteCoverPadding, 0, 1.2, 1.2),
+    overwriteCoverPadding: numberIn(value.overwriteCoverPadding, 0, 1.2, 0),
     debugOverlayMode: ["raw", "filtered", "merged", "final"].includes(value.debugOverlayMode) ? value.debugOverlayMode : "final",
     overwritePreviewMode: ["full", "cover", "text"].includes(value.overwritePreviewMode) ? value.overwritePreviewMode : "full",
     termDiscoveryEnabled: value.termDiscoveryEnabled !== false,
@@ -221,10 +240,17 @@ export function normalizeRuntimeConfig(value = {}) {
     floatingYRatio: numberIn(value.floatingYRatio, 0, 1, DEFAULT_RUNTIME_CONFIG.floatingYRatio),
     // 流式请求每批段落数:整章拆成多个请求,每个请求结果一到就逐段替换,避免整章一次替换。
     novelStreamBatchSize: numberIn(value.novelStreamBatchSize, 5, 150, DEFAULT_RUNTIME_CONFIG.novelStreamBatchSize),
-    // 网页翻译批次与并发:数值越大请求越少,但单请求等待时间可能变长。
-    webpageBatchItems: numberIn(value.webpageBatchItems, 4, 96, DEFAULT_RUNTIME_CONFIG.webpageBatchItems),
-    webpageBatchChars: numberIn(value.webpageBatchChars, 400, 8000, DEFAULT_RUNTIME_CONFIG.webpageBatchChars),
-    webpageConcurrency: numberIn(value.webpageConcurrency, 1, 8, DEFAULT_RUNTIME_CONFIG.webpageConcurrency),
+    // 小说速度参数统一走 shared/novel-speed.js 的收敛：空值/脏值一律回默认，不会被夹到最小值。
+    novelStreamConcurrency: clampNovelSpeed("streamConcurrency", value.novelStreamConcurrency),
+    novelChunkChars: clampNovelSpeed("chunkChars", value.novelChunkChars),
+    novelRepairConcurrency: clampNovelSpeed("repairConcurrency", value.novelRepairConcurrency),
+    // 网页翻译批次与并发统一走 shared/webpage-speed.js 的收敛：空值/脏值回默认（不学 numberIn 夹成下限），
+    // 数值越大请求越少，但单请求等待时间可能变长。
+    webpageBatchItems: clampWebpageSpeed("batchItems", value.webpageBatchItems),
+    webpageBatchChars: clampWebpageSpeed("batchChars", value.webpageBatchChars),
+    webpageConcurrency: clampWebpageSpeed("concurrency", value.webpageConcurrency),
+    edgeTranslateWithoutWaiting: value.edgeTranslateWithoutWaiting === true,
+    comicStreamingEnabled: value.comicStreamingEnabled === true,
     displayMode,
     // 旧字段继续镜像统一值，保证升级期间的旧内容脚本不会读到冲突配置。
     webpageDisplayMode: displayMode,

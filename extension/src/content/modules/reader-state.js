@@ -22,11 +22,12 @@ export function installReaderState(runtime) {
   const MAX_MANUAL_TARGETS = 4;
   runtime.MAX_MANUAL_TARGETS = MAX_MANUAL_TARGETS;
   const MAX_PARALLEL_TRANSLATIONS = runtime.IS_KAKAOPAGE_READER ? 6 : 3;
-  // 本地 Paddle 服务按全局锁串行执行 OCR；若同时放行多张 ahead 页面，
-  // 它们会先进入服务端 FIFO，让后来进入视口的正文排在队尾。Kakao 仅允许
-  // 一个 ahead 作业在途，其余槽位始终可由当前可视内容抢占。
   runtime.MAX_PARALLEL_TRANSLATIONS = MAX_PARALLEL_TRANSLATIONS;
-  const VISIBLE_TRANSLATION_RESERVED_SLOTS = runtime.IS_KAKAOPAGE_READER ? runtime.MAX_PARALLEL_TRANSLATIONS - 1 : 0;
+  // 这里曾经把 Kakao 的可见保留槽位设成「全部 - 1」，也就是领先任务同时只允许 1 个在途，
+  // 理由是当时本地 OCR 服务用一把全局锁串行处理所有请求，多个领先页会把正文挤到队尾。
+  // 该锁已经不存在（只剩推理槽位，实测 queueWait p95 ≈ 230ms），一个在途的领先任务
+  // 追不上滚动速度（单片 10~20s vs 3~5s/片）。现在保留 3 个槽位给可见页，领先可用 3 个。
+  const VISIBLE_TRANSLATION_RESERVED_SLOTS = runtime.IS_KAKAOPAGE_READER ? 3 : 0;
   runtime.VISIBLE_TRANSLATION_RESERVED_SLOTS = VISIBLE_TRANSLATION_RESERVED_SLOTS;
   const MANUAL_PARALLEL_TRANSLATIONS = 3;
   runtime.MANUAL_PARALLEL_TRANSLATIONS = MANUAL_PARALLEL_TRANSLATIONS;
@@ -211,8 +212,8 @@ export function installReaderState(runtime) {
     showFloatingBall: true,
     captureMode: runtime.CAPTURE_MODE_DIRECT,
     renderMode: runtime.RENDER_MODE_OVERLAY,
-    /** 「覆盖范围」：遮罩绕文字框中心的外扩倍数（0 贴合轮廓，1.2 最大）。 */
-    coverPadding: 1.2,
+    /** 「覆盖范围」：遮罩绕文字框中心的外扩倍数（0 贴合轮廓＝默认，1.2 最大）。 */
+    coverPadding: 0,
     floatingBallWrap: null,
     floatingBall: null,
     floatingTextBall: null,

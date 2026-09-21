@@ -40,7 +40,7 @@ export function installScheduler(runtime) {
     });
   }
   runtime.getAheadTranslationTargets = getAheadTranslationTargets;
-  function selectPendingAheadCandidates(candidates, viewportAnchor, isPending, aheadCount = runtime.PRETRANSLATE_AHEAD_COUNT) {
+  function selectPendingAheadCandidates(candidates, viewportAnchor, isPending, aheadCount = runtime.state.pretranslateAheadCount || runtime.PRETRANSLATE_AHEAD_COUNT) {
     let startIndex = candidates.findIndex(target => target.getBoundingClientRect().bottom >= viewportAnchor);
     if (startIndex < 0) {
       startIndex = Math.max(0, candidates.length - 1);

@@ -252,15 +252,56 @@ export function installReaderObservers(runtime) {
     if (!runtime.shouldSchedulePagePretranslation()) {
       return;
     }
+    pruneStaleAheadTranslations();
     runtime.getAheadTranslationTargets().forEach(target => runtime.queueTranslate(target, runtime.buildAheadTranslationOptions(reason)));
   }
   runtime.scheduleAheadPretranslation = scheduleAheadPretranslation;
+  /**
+   * 丢掉「已经滚到视口上方」的领先排队任务。
+   *
+   * 领先预翻译会一次排 6~12 张，用户滚动比流水线快时，队列里会堆着已经读过的切片；
+   * 它们继续占用 OCR/LLM 额度，还会把正在看的那张往后挤。在途任务不动（调用已经发出去了）。
+   */
+  function pruneStaleAheadTranslations() {
+    const queue = runtime.state.queue;
+    if (!Array.isArray(queue) || queue.length === 0) return 0;
+    let dropped = 0;
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      const item = queue[index];
+      if (!item || !runtime.isAheadTranslationOptions(item.options)) continue;
+      const target = item.target;
+      if (!target || typeof target.getBoundingClientRect !== "function") continue;
+      const rect = target.getBoundingClientRect();
+      if (rect && rect.bottom < 0) {
+        queue.splice(index, 1);
+        runtime.state.queuedTargets.delete(target);
+        dropped += 1;
+      }
+    }
+    return dropped;
+  }
+  runtime.pruneStaleAheadTranslations = pruneStaleAheadTranslations;
+  /**
+   * 当前是否有「可见页排队却拿不到槽位」的情况。
+   *
+   * 领先预翻译在滚动时被高频触发，如果槽位已经全被占满、还有可见页在队列里等，
+   * 就不能再往队列里塞领先任务：那只会让用户正在看的那张排得更久。
+   */
+  function visibleQueueOutnumbersFreeSlots() {
+    const queue = Array.isArray(runtime.state.queue) ? runtime.state.queue : [];
+    const queuedVisible = queue.filter(item => item && !runtime.isAheadTranslationOptions(item.options)).length;
+    if (queuedVisible === 0) return false;
+    const freeSlots = Math.max(0, Number(runtime.MAX_PARALLEL_TRANSLATIONS || 0) - Number(runtime.state.runningJobs || 0));
+    return queuedVisible > freeSlots;
+  }
+  runtime.visibleQueueOutnumbersFreeSlots = visibleQueueOutnumbersFreeSlots;
   function shouldSchedulePagePretranslation({
     enabled = runtime.state.enabled,
     pageEnabled = runtime.state.autoTranslatePageEnabled,
     mode = runtime.state.pretranslateMode,
     invalidated = runtime.state.invalidated
   } = {}) {
+    if (visibleQueueOutnumbersFreeSlots()) return false;
     return enabled && pageEnabled && !invalidated && runtime.isAutomaticPretranslateMode(mode);
   }
   runtime.shouldSchedulePagePretranslation = shouldSchedulePagePretranslation;

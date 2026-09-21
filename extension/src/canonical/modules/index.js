@@ -14,6 +14,7 @@ import { installSeamResiduals } from "./seam-residuals.js";
 import { installSceneIndexBuilder } from "./scene-index-builder.js";
 import { installSeamSurfaceUtils } from "./seam-surface-utils.js";
 import { installSceneIndexResolve } from "./scene-index-resolve.js";
+import { installCleanMasks } from "./clean-masks.js";
 import { installSceneIndexUtils } from "./scene-index-utils.js";
 import { installCleanedArtifactPlan } from "./cleaned-artifact-plan.js";
 import { installDedupeGlobal } from "./dedupe-global.js";
@@ -37,6 +38,7 @@ export const pipelineInstallers = Object.freeze([
   installSceneIndexBuilder,
   installSeamSurfaceUtils,
   installSceneIndexResolve,
+  installCleanMasks,
   installSceneIndexUtils,
   installCleanedArtifactPlan,
   installDedupeGlobal,
@@ -62,6 +64,7 @@ export const pipelinePhases = Object.freeze({
     installSceneIndexBuilder,
     installSeamSurfaceUtils,
     installSceneIndexResolve,
+    installCleanMasks,
     installSceneIndexUtils,
     installCleanedArtifactPlan,
     installDedupeGlobal

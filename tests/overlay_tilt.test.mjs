@@ -55,6 +55,8 @@ const T = api.__test;
 const { buildRenderSceneForBubbles } = await import("../extension/src/rendering/scene-builder.js");
 const { installRendererEmbed } = await import("../extension/src/content/modules/renderer-embed.js");
 const { installRendererCanvas } = await import("../extension/src/content/modules/renderer-canvas.js");
+const { polygonRotationDeg } = await import("../extension/src/rendering/cover-geometry.js");
+const { reconciler: R } = await import("../extension/src/canonical/reconciler.js");
 
 // 首边 -8/50 弧度 ≈ -9.0903°：向左上倾斜的原文四边形。
 const polygonTilted = [{ x: 10, y: 20 }, { x: 60, y: 12 }, { x: 62, y: 30 }, { x: 12, y: 38 }];
@@ -94,6 +96,10 @@ test("遮罩裁剪层：跟随原文字形使用倾斜四边形，而不是轴�
   assert.equal(corners.length, 4);
   // 四边形上边两角 y 不同 ⇒ 遮罩确实倾斜，而不是水平矩形。
   assert.notEqual(corners[0][1], corners[1][1]);
+  // 遮罩盒子必须仍是识别到的文字框大小（10..62 × 12..38），
+  // 不能撑成「旋转整个外接框」的包围盒（那正是用户看到的「覆盖层太大」）。
+  assert.equal(Number.parseFloat(clipNode.style.width), 52);
+  assert.equal(Number.parseFloat(clipNode.style.height), 26);
 });
 
 test("场景文字层：polygon 倾角传到 buildRenderSceneForBubbles 的 placement", () => {
@@ -131,6 +137,7 @@ test("嵌入式画布：drawEmbeddedBubbles 按 polygon 倾角执行 rotate", ()
     unionRenderBoxes: (left, right) => right || left,
     getDynamicStrokeWidth: size => size * 0.1,
     resolveBubblePolygonRotation: T.resolveBubblePolygonRotation,
+    resolveBubbleRotation: T.resolveBubbleRotation,
     resolveBubbleCoverGeometry: T.resolveBubbleCoverGeometry,
     drawFittedText: () => {}
   };
@@ -154,4 +161,152 @@ test("嵌入式画布：drawEmbeddedBubbles 按 polygon 倾角执行 rotate", ()
   assert.ok(rotate, "画布必须对译文执行 rotate");
   assert.ok(Math.abs(rotate[1] - (-9.090276920822323) * Math.PI / 180) < 1e-3,
     `画布旋转角应接近 -9.09°，实际 ${rotate[1]}`);
+
+  // 同一现场的另一半：倾角只在区域轮廓（region_polygon）上、顶层文字框轴对齐时，
+  // 画布同样必须 rotate，否则「覆盖层没有根据倾斜的文本进行倾斜」会换个入口复现。
+  calls.length = 0;
+  runtime.drawEmbeddedBubbles(ctx, 1000, 1000, [
+    makeBubble({ polygon: axisAlignedPolygon, region_polygon: polygonRegionTilted })
+  ], {});
+  const regionOnlyRotate = calls.find(call => call[0] === "rotate");
+  assert.ok(regionOnlyRotate, "区域轮廓倾斜时画布必须执行 rotate");
+  assert.ok(Math.abs(regionOnlyRotate[1] - (-9.090276920822323) * Math.PI / 180) < 1e-3,
+    `区域轮廓倾角应接近 -9.09°，实际 ${regionOnlyRotate[1]}`);
+});
+
+// 「文字框轴对齐、只有区域轮廓倾斜」是同一缺陷的另一种现场：OCR 把倾角留在
+// region_polygon（气泡/区域轮廓）上，而顶层 polygon 是轴对齐框或干脆没有。
+const axisAlignedPolygon = [{ x: 10, y: 20 }, { x: 60, y: 20 }, { x: 60, y: 30 }, { x: 10, y: 30 }];
+const polygonRegionTilted = [{ x: 10, y: 20 }, { x: 60, y: 12 }, { x: 60, y: 30 }, { x: 10, y: 38 }];
+
+test("DOM 译文节点：倾角只在 region_polygon 上时也要倾斜", () => {
+  for (const polygon of [null, axisAlignedPolygon]) {
+    const node = T.createBubbleNode(makeBubble({ polygon, region_polygon: polygonRegionTilted }), 0);
+    assert.ok(node, "应创建译文节点");
+    assert.equal(Number(node.dataset.rotationDeg).toFixed(2), "-9.09", `polygon=${JSON.stringify(polygon)}`);
+    assert.match(node.style.getPropertyValue("--mt-base-transform"), /rotate\(-9\.09deg\)/u);
+  }
+});
+
+test("DOM 译文节点：visual 里的同义倾角字段同样认", () => {
+  for (const visual of [{ rotationDeg: -9.09 }, { rotation_deg: -9.09 }]) {
+    const node = T.createBubbleNode(makeBubble({ polygon: null, visual }), 0);
+    assert.equal(Number(node.dataset.rotationDeg).toFixed(2), "-9.09", JSON.stringify(visual));
+  }
+});
+
+test("遮罩裁剪层：倾角只在 region_polygon 上时也倾斜", () => {
+  const bubble = makeBubble({ polygon: null, region_polygon: polygonRegionTilted });
+  assert.equal(T.resolveBubbleCoverGeometry(bubble).tilted, true);
+});
+
+test("遮罩尺寸跟着识别到的文字框：rotation_deg 与 polygon 角度「不一致」也不能撑大遮罩", () => {
+  // 现场：页面 720×947（长宽比 1.315），同一段斜排文字在像素坐标读 35°、在百分比坐标读 28°。
+  // 两个数字是同一个倾角，按数值比对会误判成冲突并退回「旋转整个外接框」，
+  // 实测把 362×278 的文字框撑成 443×532 的遮罩 —— 用户看到的「覆盖层太大」。
+  const bubble = makeBubble({ rotation_deg: 35 });
+  const cover = T.buildBubbleCoverProjection(bubble);
+  const clipNode = T.createBubbleCoverClipNode(bubble, T.createBubbleNode(cover, 0));
+  const polygonBox = {
+    w: Math.max(...bubble.polygon.map(p => p.x)) - Math.min(...bubble.polygon.map(p => p.x)),
+    h: Math.max(...bubble.polygon.map(p => p.y)) - Math.min(...bubble.polygon.map(p => p.y))
+  };
+  assert.equal(Number.parseFloat(clipNode.style.width), Number(polygonBox.w.toFixed(2)));
+  assert.equal(Number.parseFloat(clipNode.style.height), Number(polygonBox.h.toFixed(2)));
+
+  const geometry = T.resolveBubbleCoverGeometry(bubble);
+  assert.equal(geometry.tilted, true);
+  // 遮罩四边形就是识别到的文字框本身（按覆盖范围设置外扩），不是外接框的包围盒。
+  assert.ok(geometry.bounds.w <= polygonBox.w * 1.1 && geometry.bounds.h <= polygonBox.h * 1.1,
+    `遮罩不该比文字框大出 10% 以上：${JSON.stringify(geometry.bounds)} vs ${JSON.stringify(polygonBox)}`);
+});
+
+test("四边形倾角与顶点起点/绕向无关：轴对齐框恒为 0，倾斜四边形恒为同一角度", () => {
+  const orders = [
+    axisAlignedPolygon,
+    [axisAlignedPolygon[1], axisAlignedPolygon[2], axisAlignedPolygon[3], axisAlignedPolygon[0]],
+    [axisAlignedPolygon[2], axisAlignedPolygon[3], axisAlignedPolygon[0], axisAlignedPolygon[1]],
+    [axisAlignedPolygon[3], axisAlignedPolygon[0], axisAlignedPolygon[1], axisAlignedPolygon[2]],
+    [axisAlignedPolygon[0], axisAlignedPolygon[3], axisAlignedPolygon[2], axisAlignedPolygon[1]],
+    [axisAlignedPolygon[1], axisAlignedPolygon[0], axisAlignedPolygon[3], axisAlignedPolygon[2]]
+  ];
+  for (const order of orders) {
+    assert.equal(polygonRotationDeg(order.map(({ x, y }) => ({ x, y }))), 0, JSON.stringify(order));
+  }
+  // 高而窄的轴对齐外框（多行横排）也不能被读成 90°：没有倾角就没有可恢复的倾角。
+  assert.equal(polygonRotationDeg([{ x: 10, y: 20 }, { x: 40, y: 20 }, { x: 40, y: 60 }, { x: 10, y: 60 }]), 0);
+  for (const order of [
+    polygonTilted,
+    [polygonTilted[1], polygonTilted[2], polygonTilted[3], polygonTilted[0]],
+    [polygonTilted[2], polygonTilted[3], polygonTilted[0], polygonTilted[1]],
+    [polygonTilted[3], polygonTilted[0], polygonTilted[1], polygonTilted[2]]
+  ]) {
+    assert.ok(Math.abs(polygonRotationDeg(order) + 9.090276920822323) < 1e-6, JSON.stringify(order));
+  }
+});
+
+test("场景文字层：成员 region 缺 rotationDeg 时用成员四边形兜底", () => {
+  const bubble = {
+    x: 10, y: 20, w: 50, h: 10, original_text: "원문", translated_text: "译文",
+    bg_type: "solid", canonical_id: "c-tilt",
+    visual: {
+      rawBox: { width: 1000, height: 1000 }, box: { w: 100, h: 100 },
+      detectedRegions: [{
+        regionId: "r1",
+        sourcePolygon: [{ x: 100, y: 200 }, { x: 600, y: 120 }, { x: 600, y: 320 }, { x: 100, y: 400 }],
+        lineThickness: 40, geometryReliability: "detected"
+      }]
+    }
+  };
+  const scene = buildRenderSceneForBubbles({
+    id: "member-tilt", surface: { id: "p1", type: "page", width: 1000, height: 1000 },
+    bubbles: [bubble], measure: () => 10
+  });
+  const text = scene.layers.find(layer => layer.type === "text");
+  assert.ok(text, "应生成文字层");
+  assert.ok(Math.abs(text.geometry.placement.rotationDeg + 9.090276920822323) < 1e-3,
+    `成员四边形倾角应传到 placement，实际 ${text.geometry.placement.rotationDeg}`);
+});
+
+const { installSceneProjection } = await import("../extension/src/content/modules/scene-projection.js");
+const projectionRuntime = {
+  normalizeBubbleAlignment: value => String(value || "center"),
+  normalizeBubbleFontWeight: (value, fallback) => Number(value) || fallback
+};
+installSceneProjection(projectionRuntime);
+
+function canonicalProjection(polygon, rotationDeg, visualExtra = {}) {
+  const pageValue = { pageId: "tilt-page", imageRevision: "rev-tilt", width: 1000, height: 1000, readingOrder: 0 };
+  const observation = R.createObservation({
+    provider: "tilt-fixture", captureId: `tilt:${rotationDeg}:${Boolean(visualExtra.regionPolygon)}`,
+    sourceType: "page", pageIds: ["tilt-page"], imageRevisionByPage: { "tilt-page": "rev-tilt" },
+    pageSpans: [{
+      pageId: "tilt-page", box: { x: 10, y: 20, w: 50, h: 10 },
+      coordinateSpace: "percent", regionType: "dialogue", overlapRatio: 1
+    }],
+    originalText: "기울어진 문장", confidence: 0.95,
+    visual: {
+      regionType: "dialogue", bgType: "solid", bgColor: "#ffffff", polygon,
+      ...visualExtra, ...(rotationDeg === undefined ? {} : { rotationDeg })
+    }
+  });
+  const recon = R.reconcile({ pages: [pageValue], observations: [observation] });
+  const canonical = recon.canonicals[0];
+  return R.buildRenderProjections({
+    pages: [pageValue], canonicals: recon.canonicals,
+    translations: { [`${canonical.id}@${canonical.revision}`]: "译文" }
+  })[0];
+}
+
+test("canonical 投影气泡顶层带 rotation_deg；region_polygon 单独倾斜时渲染节点仍能恢复", () => {
+  const withRotation = projectionRuntime.projectionToRendererBubble(canonicalProjection(axisAlignedPolygon, -9.09));
+  assert.equal(Number(withRotation.rotation_deg).toFixed(2), "-9.09");
+  assert.equal(Number(T.createBubbleNode(withRotation, 0).dataset.rotationDeg).toFixed(2), "-9.09");
+
+  const regionOnly = projectionRuntime.projectionToRendererBubble(
+    canonicalProjection(axisAlignedPolygon, undefined, { regionPolygon: polygonRegionTilted })
+  );
+  assert.equal(regionOnly.rotation_deg, 0, "投影层确实没有显式倾角");
+  assert.equal(Number(T.createBubbleNode(regionOnly, 0).dataset.rotationDeg).toFixed(2), "-9.09",
+    "渲染侧必须从 region_polygon 恢复倾角");
 });

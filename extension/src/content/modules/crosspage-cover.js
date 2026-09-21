@@ -28,7 +28,15 @@ export function installCrossPageCover(runtime) {
       node.dataset.coverTilted = "false";
       return;
     }
-    const points = geometry.coverQuad.map(point => runtime.mapCompositePointToRoot(entry.surface, {
+    const mapPoint = runtime.mapCompositePointToRoot;
+    if (typeof mapPoint !== "function") {
+      // 缺少坐标映射时退回不倾斜的整块遮罩：宁可没有 clip-path，
+      // 也不能让跨页渲染在这里抛错（曾经因为没挂到 runtime 而整页不渲染）。
+      node.style.removeProperty("clip-path");
+      node.dataset.coverTilted = "unsupported";
+      return;
+    }
+    const points = geometry.coverQuad.map(point => mapPoint.call(runtime, entry.surface, {
       x: Number(point.x) / 100 * entry.surface.canvasWidth,
       y: Number(point.y) / 100 * entry.surface.canvasHeight
     }, targetRects, rootRect)).filter(Boolean);

@@ -1,3 +1,5 @@
+import { polygonRotationDeg, resolveTiltRotationDeg } from "../../rendering/cover-geometry.js";
+
 export function installTargetResolve(runtime) {
   function resolveBackgroundImageUrl(target) {
     if (!(target instanceof Element)) {
@@ -327,12 +329,42 @@ export function installTargetResolve(runtime) {
   function resolveBubblePolygonRotation(value, fallback = 0, imageWidth = 1, imageHeight = 1) {
     const explicit = normalizeBubbleRotation(fallback);
     if (Math.abs(explicit) > Number.EPSILON) return explicit;
-    const polygon = normalizeBubblePolygon(value, true);
-    if (!polygon) return explicit;
-    const first = polygon[0], second = polygon[1];
-    return normalizeBubbleRotation(Math.atan2((second.y - first.y) * imageHeight, (second.x - first.x) * imageWidth) * 180 / Math.PI);
+    return normalizeBubbleRotation(polygonRotationDeg(value, imageWidth, imageHeight));
   }
   runtime.resolveBubblePolygonRotation = resolveBubblePolygonRotation;
+
+  const RENDER_ROTATION_KEYS = ["rotation_deg", "rotationDeg"];
+
+  /** 同义字段里第一个非零倾角：0 视为「没有明确信息」，交给几何兜底。 */
+  function readExplicitBubbleRotation(source) {
+    if (!source || typeof source !== "object") return null;
+    for (const key of RENDER_ROTATION_KEYS) {
+      const value = Number(source[key]);
+      if (Number.isFinite(value) && Math.abs(value) > Number.EPSILON) return value;
+    }
+    return null;
+  }
+
+  /**
+   * 渲染倾角：气泡自带的 rotation_deg/rotationDeg（含 visual 里的同义字段）优先；
+   * 都没有时在 polygon / visual.polygon / region_polygon / visual.regionPolygon 里
+   * 「哪个四边形真的倾斜就用哪个」。
+   *
+   * 只看首边 + 只看顶层 polygon 会漏掉两类现场：集群合并框从短边起笔时报 ±90°，
+   * 以及文字框轴对齐、只有区域轮廓倾斜时整块退回水平（用户缺陷：覆盖层没有
+   * 根据倾斜的文本进行倾斜）。判定口径与渲染几何共用 resolveTiltRotationDeg。
+   */
+  function resolveBubbleRotation(bubble, imageWidth = 1, imageHeight = 1) {
+    const source = bubble && typeof bubble === "object" ? bubble : {};
+    const visual = source.visual && typeof source.visual === "object" ? source.visual : {};
+    const explicit = readExplicitBubbleRotation(source) ?? readExplicitBubbleRotation(visual);
+    const polygons = [
+      source.polygon, visual.polygon,
+      source.region_polygon, visual.regionPolygon, visual.region_polygon
+    ];
+    return normalizeBubbleRotation(resolveTiltRotationDeg(explicit, polygons, imageWidth, imageHeight));
+  }
+  runtime.resolveBubbleRotation = resolveBubbleRotation;
   function normalizeBubbleAlignment(value) {
     const text = String(value || "").trim().toLowerCase();
     return text === "left" || text === "right" || text === "center" ? text : "center";

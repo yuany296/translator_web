@@ -8,10 +8,17 @@ export function installRecognitionWorkflow(runtime) {
       if (result?.ok) {
         const timings = result.timings && typeof result.timings === "object" ? result.timings : null;
         if (timings) {
+          // total 是墙钟时间：与各阶段之和的差额就是没有单独打点的等待
+          // （OCR 服务端排队、边缘 canonical 等待邻页 seam 等）。
+          const accountedMs = Object.entries(timings)
+            .filter(([name]) => name !== "total")
+            .reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+          const unaccountedMs = Math.max(0, Math.round(Number(timings.total || 0) - accountedMs));
           console.info("[MangaTranslator][timing]", {
             pageId: result.pageId || "",
             reason: options?.reason || "",
             cached: result.cached === true || result.reused === true,
+            unaccountedMs,
             ...timings
           });
         }

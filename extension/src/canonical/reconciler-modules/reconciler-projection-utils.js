@@ -76,6 +76,10 @@ export function installReconcilerProjectionUtils(runtime) {
             region_type: String(visual.region_type || visual.regionType || "plain_text"),
             region_polygon: visual.region_polygon || visual.regionPolygon || null,
             polygon: visual.polygon || null,
+            // 倾角必须在气泡顶层给全：渲染侧（DOM 节点、遮罩、画布）默认只读顶层；
+            // 只放在 visual 里会让「文字框轴对齐 + 区域轮廓倾斜」的斜排文字退回水平。
+            rotation_deg: Number(visual.rotation_deg ?? visual.rotationDeg) || 0,
+            rotationDeg: Number(visual.rotationDeg ?? visual.rotation_deg) || 0,
             font_weight: visual.font_weight || visual.fontWeight || 0,
             translation_role: visual.translation_role || visual.translationRole || "",
             projection_role: role,

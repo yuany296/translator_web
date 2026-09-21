@@ -30,7 +30,7 @@ export function installLifecycleCover(runtime) {
       ? options.box : resolveBubbleCoverBox(bubble);
     return coverGeometry.resolveCoverQuad({
       polygon: runtime.normalizeBubblePolygon(bubble && bubble.polygon, allowVerticalOverflow),
-      rotationDeg: runtime.resolveBubblePolygonRotation(bubble && bubble.polygon, bubble && bubble.rotation_deg),
+      rotationDeg: runtime.resolveBubbleRotation(bubble),
       box: box || runtime.normalizeFillBox(bubble, allowVerticalOverflow),
       padding: runtime.state.coverPadding
     });

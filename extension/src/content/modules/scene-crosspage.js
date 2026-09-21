@@ -70,6 +70,8 @@ export function installSceneCrossPage(runtime) {
   }
   runtime.mapCompositeRectToCrossPageRoot = mapCompositeRectToRoot;
 
+  runtime.mapCompositePointToRoot = mapCompositePointToRoot;
+
   function mapPageBoxToRoot(surface, value, targetRects, rootRect) {
     const pageId = String(value?.pageId || "");
     const pageRect = targetRects.get(pageId);

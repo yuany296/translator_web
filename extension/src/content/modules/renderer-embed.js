@@ -248,9 +248,8 @@ export function installRendererEmbed(runtime) {
       let w = runtime.clamp(Number(bubble.w), 0, 100) / 100 * canvasWidth;
       let h = runtime.clamp(Number(bubble.h), 0, 100) / 100 * canvasHeight;
       const polygon = runtime.getEmbeddedPolygonGeometry(bubble.polygon, canvasWidth, canvasHeight);
-      // 与 DOM 覆盖层同源：rotation_deg 缺失时用 polygon 兜底恢复倾角，
-      // 否则画布译文会退回水平（“覆盖层没有倾斜”）。
-      const rotation = runtime.resolveBubblePolygonRotation(bubble.polygon, bubble.rotation_deg);
+      // 倾角取证与 DOM 覆盖层共用 runtime.resolveBubbleRotation，避免「遮罩歪了、译文还水平」。
+      const rotation = runtime.resolveBubbleRotation(bubble);
       if (polygon) {
         x = polygon.centerX - polygon.width / 2;
         y = polygon.centerY - polygon.height / 2;

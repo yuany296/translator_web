@@ -84,11 +84,7 @@ export function rotateBoxQuad(box, rotationDeg = 0, scale = 1) {
   }));
 }
 
-/**
- * 四边形首边的倾角（度，折到 ±90°）：与内容层 `resolveBubblePolygonRotation`
- * 的「polygon 兜底」同一语义。OCR/投影只把倾角放进 polygon 而 rotation_deg 缺失
- * 时，纯几何渲染路径（scene builder / 画布遮罩）用它恢复倾角，避免退回轴对齐。
- */
+/** 四边形首边的倾角（度，折到 ±90°）：早期「polygon 兜底」口径，保留给探针/回归对照。 */
 export function polygonEdgeRotationDeg(points) {
   const normalized = normalizePoints(points, 4);
   if (!normalized) return 0;
@@ -97,6 +93,65 @@ export function polygonEdgeRotationDeg(points) {
   while (deg >= 90) deg -= 180;
   while (deg < -90) deg += 180;
   return deg;
+}
+
+const LONG_EDGE_MIN_ASPECT = 1.2;
+
+/**
+ * 四边形倾角（度，折到 ±90°）：先看这个四边形到底歪没歪，歪了再取**最长边**
+ * 作为文字行方向；与顶点起点/绕向无关。
+ *
+ * 首边口径在两个方向上都会错：OCR 集群合并框从短边起笔时会报出 ≈±90°（水平文字
+ * 被竖过来），而「文字框轴对齐、只有区域轮廓倾斜」的气泡又会退回 0°（用户现场：
+ * 覆盖层没有跟着斜排原文倾斜）。
+ *
+ * 轴对齐框（倾斜量 ≤ 0.5°）一律返回 0：一个正正方方的框不管哪条边长，都没有倾角
+ * 可恢复，否则高而窄的多行外框会被误读成 90°。确实歪了的四边形里，长边就是文字
+ * 行方向；近正方形（长短边比 < 1.2）判断不出行方向，取更接近水平的那条边。
+ *
+ * scaleX/scaleY 把百分比坐标换算成像素比例：同一族倾斜在不同长宽比的图上角度不同。
+ */
+export function polygonRotationDeg(points, scaleX = 1, scaleY = 1) {
+  const normalized = normalizePoints(points, 4);
+  if (!normalized) return 0;
+  if (polygonTiltDeg(normalized) <= COVER_TILT_TOLERANCE_DEG) return 0;
+  const sx = Number.isFinite(Number(scaleX)) && Number(scaleX) > 0 ? Number(scaleX) : 1;
+  const sy = Number.isFinite(Number(scaleY)) && Number(scaleY) > 0 ? Number(scaleY) : 1;
+  const edges = normalized.map((current, index) => {
+    const next = normalized[(index + 1) % normalized.length];
+    const dx = (next.x - current.x) * sx;
+    const dy = (next.y - current.y) * sy;
+    let deg = Math.atan2(dy, dx) * 180 / Math.PI;
+    while (deg >= 90) deg -= 180;
+    while (deg < -90) deg += 180;
+    return { length: Math.hypot(dx, dy), deg };
+  }).filter(edge => edge.length > 0);
+  if (edges.length === 0) return 0;
+  let longest = edges[0];
+  let shortest = edges[0];
+  for (const edge of edges) {
+    if (edge.length > longest.length) longest = edge;
+    if (edge.length < shortest.length) shortest = edge;
+  }
+  if (longest.length >= shortest.length * LONG_EDGE_MIN_ASPECT) return longest.deg;
+  return edges.reduce((best, edge) => Math.abs(edge.deg) < Math.abs(best.deg) ? edge : best, edges[0]).deg;
+}
+
+/**
+ * 倾角取证：显式 rotationDeg 优先（0/非有限值当作「没有明确信息」），
+ * 否则在一串候选四边形里「哪个真的倾斜就用哪个」。
+ *
+ * 四条渲染路径（DOM 文字节点、遮罩四边形、场景文字层、嵌入式画布）共用这一个口径，
+ * 避免出现「文字倾斜、遮罩水平」这类各路径各自解释倾角的组合。
+ */
+export function resolveTiltRotationDeg(rotationDeg, polygons = [], scaleX = 1, scaleY = 1) {
+  const explicit = Number(rotationDeg);
+  if (Number.isFinite(explicit) && Math.abs(explicit) > COVER_TILT_TOLERANCE_DEG) return explicit;
+  for (const polygon of Array.isArray(polygons) ? polygons : []) {
+    const angle = polygonRotationDeg(polygon, scaleX, scaleY);
+    if (Math.abs(angle) > COVER_TILT_TOLERANCE_DEG) return angle;
+  }
+  return 0;
 }
 
 /** 四边形相对坐标轴的倾斜角（折到 ±45°）：轴对齐矩形返回 0。 */
@@ -117,11 +172,18 @@ export function polygonTiltDeg(points) {
 }
 
 /**
- * 遮罩四边形：斜排文字必须落在遮罩里。
+ * 遮罩四边形：斜排文字必须落在遮罩里，而且**只覆盖识别到的文字框**。
  *
- * - polygon 本身倾斜 → 直接用它（外扩后），最贴合字形；
- * - polygon 是轴对齐框但 OCR 给了 rotation_deg（历史上正是「遮罩保持水平」的现场）→ 按倾角旋转外接框；
+ * - polygon 本身倾斜 → 直接用它（外扩后）：它才是识别出来的文字框，
+ *   遮罩贴着字形，不会糊住周围画面；
+ * - polygon 是轴对齐框但 OCR 给了 rotation_deg（「遮罩保持水平」的现场）→ 按倾角旋转外接框；
  * - 两者都没有 → 轴对齐蓝框。
+ *
+ * 注意：**不能拿 rotation_deg 和 polygon 的夹角「比对是否一致」**。rotation_deg 来自
+ * OCR 的像素坐标，polygon 存的是百分比，同一段斜排文字在两套坐标里读出的角度本来
+ * 就不同（页面长宽比 720:947 时，35° 与 28° 是同一个倾角）。早期按数值比对会误判成
+ * 「冲突」，进而退回「旋转整个外接框」——那会把遮罩撑成外接框的包围盒（实测 362×278
+ * 的文字框变成 443×532 的遮罩），用户看到的就是「覆盖层太大」。
  */
 export function resolveCoverQuad({ polygon, rotationDeg = 0, box, padding = 0 } = {}) {
   const scale = coverScale(padding);
@@ -133,11 +195,14 @@ export function resolveCoverQuad({ polygon, rotationDeg = 0, box, padding = 0 } 
   if (!polygonPoints && !normalizedBox) return null;
   let quad = null;
   let tilted = rotationTilted;
-  if (polygonPoints && rotationTilted && polygonTiltDeg(polygonPoints) <= COVER_TILT_TOLERANCE_DEG) {
+  const polygonTilted = Boolean(polygonPoints) && polygonTiltDeg(polygonPoints) > COVER_TILT_TOLERANCE_DEG;
+  if (polygonPoints && rotationTilted && !polygonTilted) {
+    // 文字框本身是轴对齐的，只有 OCR 的 rotation_deg 说它歪：按倾角旋转这个框。
     quad = rotateBoxQuad(polygonBox, rotation, scale);
   } else if (polygonPoints) {
+    // 识别到的文字框就是斜的 → 遮罩就是它（外扩一点点），不再放大成外接框。
     quad = inflatePolygonAboutCenter(polygonPoints, scale);
-    tilted = rotationTilted || polygonTiltDeg(polygonPoints) > COVER_TILT_TOLERANCE_DEG;
+    tilted = rotationTilted || polygonTilted;
   } else {
     quad = rotateBoxQuad(normalizedBox, rotation, scale);
   }

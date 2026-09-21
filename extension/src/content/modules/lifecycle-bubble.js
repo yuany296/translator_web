@@ -33,7 +33,7 @@ export function installLifecycleBubble(runtime) {
     }
     const projectionRole = String(bubble.projection_role || "text_primary");
     const coverOnly = projectionRole === "cover_only";
-    const rotation = runtime.resolveBubblePolygonRotation(bubble.polygon, bubble.rotation_deg);
+    const rotation = runtime.resolveBubbleRotation(bubble);
     const originalText = runtime.cleanRenderableText(bubble.original_text || "");
     const translatedText = coverOnly ? "" : runtime.cleanRenderableText(bubble.translated_text || "") || originalText;
     const displayText = runtime.state.displayMode === "bilingual" && originalText

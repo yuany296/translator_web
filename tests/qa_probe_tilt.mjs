@@ -112,7 +112,11 @@ for (const [name, [bubble]] of Object.entries(cases)) {
     `  resolveCoverQuad.tilted=${geo ? geo.tilted : null}` +
     `  createBubbleNode.rotationDeg=${fmt(nodeRot)}`);
   if (name.startsWith("(c)")) {
-    console.log(`   >>> CONFLICT: text follows rotation_deg(${fmt(nodeRot)}) but cover follows polygon(${fmt(polygonEdgeRotationDeg(TILTED))})`);
+    // 契约：文字层用 rotation_deg；遮罩用**识别到的文字框本身**（polygon），只按覆盖范围外扩。
+    // 两者数值不同不代表冲突 —— rotation_deg 来自像素坐标、polygon 存百分比，
+    // 同一段斜排文字在两套坐标里本来就读出不同的角度（曾按数值比对，把遮罩撑成外接框）。
+    console.log(`   >>> text uses rotation_deg(${fmt(nodeRot)}); cover quad follows the recognized text box, ` +
+      `bounds=${geo ? `${fmt(geo.bounds.w)}x${fmt(geo.bounds.h)}` : "n/a"}`);
   }
 }
 

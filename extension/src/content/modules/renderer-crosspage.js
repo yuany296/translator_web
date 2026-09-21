@@ -213,15 +213,27 @@ export function installRendererCrossPage(runtime) {
     const rootRect = getRootRect(entry.rootState);
     const targetRects = new Map(entry.surface.pageIds.map((pageId, index) => [pageId, entry.targets[index].getBoundingClientRect()]));
     entry.bubbles.forEach(item => {
-      const geometry = runtime.buildCrossPageBubbleGeometry(entry.surface, item.bubble, targetRects, rootRect);
-      item.overlay.style.display = geometry ? "block" : "none";
-      if (!geometry) return;
-      item.overlay.style.left = `${Math.max(0, geometry.outer.left)}px`;
-      item.overlay.style.top = `${Math.max(0, geometry.outer.top)}px`;
-      item.overlay.style.width = `${geometry.outer.width}px`;
-      item.overlay.style.height = `${geometry.outer.height}px`;
-      runtime.updateCoverSegments(entry, item, geometry, { targetRects, rootRect });
-      applyCrossPageTextGeometry(entry, item, geometry);
+      // 单个气泡的几何/遮罩失败只降级这一个气泡：跨页渲染是整章共享的 root，
+      // 抛出去会让同一页其余气泡也一起消失（历史上 mapCompositePointToRoot 未挂载就是这样）。
+      try {
+        const geometry = runtime.buildCrossPageBubbleGeometry(entry.surface, item.bubble, targetRects, rootRect);
+        item.overlay.style.display = geometry ? "block" : "none";
+        if (!geometry) return;
+        item.overlay.style.left = `${Math.max(0, geometry.outer.left)}px`;
+        item.overlay.style.top = `${Math.max(0, geometry.outer.top)}px`;
+        item.overlay.style.width = `${geometry.outer.width}px`;
+        item.overlay.style.height = `${geometry.outer.height}px`;
+        runtime.updateCoverSegments(entry, item, geometry, { targetRects, rootRect });
+        applyCrossPageTextGeometry(entry, item, geometry);
+      } catch (error) {
+        const reason = runtime.getErrorMessage?.(error) || String(error && error.message || error);
+        console.warn("[MangaTranslator] cross-page bubble render failed:", reason);
+        runtime.tracePipeline?.("crosspage-render-error", entry.targets[0], {
+          renderKey: String(entry.surface && entry.surface.renderKey || ""),
+          canonicalId: String(item && item.canonicalId || ""),
+          error: reason
+        });
+      }
     });
     return true;
   }
@@ -232,6 +244,8 @@ export function installRendererCrossPage(runtime) {
     detachEntryFromRoot(entry);
     runtime.state.crossPageOverlaysByRenderKey.delete(entry.surface.renderKey);
   }
+  // crosspage-lifecycle.js 的清理路径按 runtime.removeCrossPageSurfaceEntry 调用。
+  runtime.removeCrossPageSurfaceEntry = removeCrossPageSurfaceEntry;
 
   function canReuseCrossPageSurfaceEntry(entry, surface, targets) {
     if (!entry || String(entry.surface?.pairKey || "") !== String(surface?.pairKey || "") ||

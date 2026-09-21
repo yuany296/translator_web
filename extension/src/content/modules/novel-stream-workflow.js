@@ -1,3 +1,5 @@
+import { resolveNovelSpeed } from "../../shared/novel-speed.js";
+
 export function installNovelStreamWorkflow(runtime) {
   function recordPayload(chapter, item) {
     return {
@@ -16,11 +18,11 @@ export function installNovelStreamWorkflow(runtime) {
   // 服务端 /translations/stream 单次请求有 200 段上限(超出返回 422 too_long);
   // 默认按 50 段分批发送(设置项 novelStreamBatchSize 可调),每个请求结果一到就
   // 逐段替换,避免整章打包成一次请求导致结果集中到达、整章一次替换。
-  // 各批次共享同一份前文译文与 previousTranslation,相互独立,因此同时并发
-  // 3 条流式请求,把整章串行等待模型生成的时间压到接近三分之一。
+  // 各批次共享同一份前文译文与 previousTranslation,相互独立,因此同时并发多条
+  // 流式请求(设置项 novelStreamConcurrency,默认 3),把整章串行等待模型生成的时间
+  // 压到接近 1/并发。
   const DEFAULT_STREAM_ITEMS_PER_REQUEST = 50;
   const MAX_STREAM_ITEMS_PER_REQUEST = 150;
-  const STREAM_BATCH_CONCURRENCY = 3;
 
   function resolveStreamBatchLimit(runtime) {
     const configured = Number(runtime.state?.novelStreamBatchSize);
@@ -32,6 +34,8 @@ export function installNovelStreamWorkflow(runtime) {
     if (!items.length || !runtime.runNovelTranslationStream) return { supported: false, completed: 0 };
     const taskId = state.taskId;
     const chapterKey = state.chapterKey;
+    // 并发数在本次任务开始时取一次：跑到一半改设置不会让在途批次数突然变化。
+    const laneCap = resolveNovelSpeed(runtime.state).streamConcurrency;
     state.streamState = "streaming";
     state.progress.textPhase = "正在建立逐段流式翻译…";
     runtime.setNovelTextStatus?.("working", state.progress);
@@ -88,7 +92,7 @@ export function installNovelStreamWorkflow(runtime) {
           if (!item || !translated) return;
           state.translations.set(item.id, translated);
           state.translationSnapshots?.set(event.record.recordKey, event.record);
-          runtime.renderNovelTranslation(item.node, translated, true);
+          runtime.renderNovelTranslation(item.node, translated, true, item.id);
           item.node.dataset.mtNovelStatus = "current";
           state.pendingParagraphs.delete(item.id);
           state.progress.textDone = chapter.paragraphs.filter(row => String(row.original_text || "").trim() && state.translations.has(row.id)).length;
@@ -118,7 +122,7 @@ export function installNovelStreamWorkflow(runtime) {
       let inFlight = 0;
       let nextIndex = 0;
       const pump = () => {
-        while (inFlight < STREAM_BATCH_CONCURRENCY && nextIndex < offsets.length && !stop) {
+        while (inFlight < laneCap && nextIndex < offsets.length && !stop) {
           const start = offsets[nextIndex];
           nextIndex += 1;
           inFlight += 1;

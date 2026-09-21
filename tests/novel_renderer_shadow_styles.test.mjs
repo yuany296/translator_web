@@ -42,8 +42,8 @@ test("injectNovelStyles appends bilingual block rules into a shadow root once", 
     runtime.injectNovelStyles(root);
     assert.equal(created.length, 1, "one style element is appended");
     const css = created[0].textContent;
-    assert.match(css, /\[data-p-id\] \.mt-novel-source \{ display: contents; \}/);
-    assert.match(css, /\[data-p-id\] \.mt-novel-translation \{ white-space: pre-wrap; font: inherit; color: inherit; \}/);
+    assert.match(css, /\[data-p-id\] \.mt-novel-source \{ display: contents; color: inherit !important; font: inherit !important; \}/);
+    assert.match(css, /\[data-p-id\] \.mt-novel-translation \{ white-space: pre-wrap; color: inherit !important; font: inherit !important; \}/);
     assert.match(css, /\[data-p-id\] \.mt-novel-source-bilingual \{ display: block; margin-bottom: 0\.42em; \}/);
     assert.match(css, /\[data-p-id\] \.mt-novel-translation\[hidden\] \{ display: none !important; \}/);
     runtime.injectNovelStyles(root);

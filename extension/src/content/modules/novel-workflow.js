@@ -29,6 +29,7 @@ export function installNovelWorkflow(runtime) {
     }
     state.chapterKey = chapterKey;
     state.translations.clear();
+    runtime.resetNovelEmphasis?.(state);
     state.textDiagnostics = [];
     state.cacheSavedIds.clear();
     state.pendingParagraphs.clear();
@@ -63,10 +64,37 @@ export function installNovelWorkflow(runtime) {
     );
   }
   runtime.buildNovelRecordKey = buildNovelRecordKey;
+
+  /**
+   * 只要本章有已译段落就排一次术语发现。
+   *
+   * 以前只有「点悬浮球」那条路（translateNovelChapter）排了它，Kakao 分屏阅读的
+   * 常态却是翻屏后由 continueNovelTranslationForCurrentScreen 自己接着翻——那条路
+   * 从不排发现，用户翻着读完两章，术语一条都没收集到。
+   * 采样与去重都在 scheduleNovelTermDiscovery 里做（同一批段落不会重复发请求），
+   * 所以这里可以放心地每个「本屏已全部有译文」的出口都排一次。
+   */
+  function scheduleTermDiscoveryForChapter(chapter) {
+    if (!chapter || runtime.state?.invalidated) {
+      return;
+    }
+    void runtime.scheduleNovelTermDiscovery?.(chapter);
+    // 「本屏已全部有译文」的出口同时也是「让模型排版」的发车点:只对含行内格式的段落
+    // 发一次小请求(见 novel-emphasis-align.js)。失败不影响译文,所以静默吞掉。
+    void Promise.resolve(runtime.alignNovelEmphasisForScreen?.(chapter)).catch(() => {});
+  }
+  runtime.scheduleTermDiscoveryForChapter = scheduleTermDiscoveryForChapter;
   runtime.resetNovelForChapter = resetForChapter;
 
   async function translateNovelText(chapter, options = {}) {
     const state = runtime.getNovelState();
+    // 新任务取代旧任务：旧任务的流式请求不会自己停，两条流会把同一批段落各翻一遍
+    // （真机数据：同一章 218 段里有 118 段出现第二个版本）。先取消旧任务，它没做完的
+    // 段落由本任务按「尚无译文」重新覆盖。
+    if (state.taskId) {
+      runtime.cancelNovelTranslationStream?.(state.taskId);
+      void runtime.sendRuntimeMessage?.({ type: "CANCEL_TRANSLATION_TASK", taskId: state.taskId })?.catch?.(() => {});
+    }
     state.taskId = `novel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const allItems = getTranslatableParagraphs(chapter);
     if (options.force) {
@@ -89,7 +117,7 @@ export function installNovelWorkflow(runtime) {
         );
         if (!translated) return;
         state.translations.set(item.id, translated);
-        runtime.renderNovelTranslation(item.node, translated, true);
+        runtime.renderNovelTranslation(item.node, translated, true, item.id);
       });
     }
     let pending = allItems.filter(item => !state.translations.has(item.id));
@@ -102,6 +130,8 @@ export function installNovelWorkflow(runtime) {
       state.showTranslation = true;
       runtime.setNovelTranslationVisibility(true);
       runtime.setNovelTextStatus?.("complete", state.progress);
+      // 全命中缓存的章节同样要收集术语：以前只有走到翻译请求的章节才会被采集。
+      scheduleTermDiscoveryForChapter(chapter);
       return { ok: true, completed: true, translated: allItems.length, showTranslation: true };
     }
     if (!service.ok) {
@@ -151,6 +181,8 @@ export function installNovelWorkflow(runtime) {
     state.showTranslation = true;
     runtime.setNovelTranslationVisibility(true);
     runtime.setNovelTextStatus?.(state.textStatus, state.progress);
+    // 本屏翻完（不论是这次翻的还是一直就有译文）就采一次样——翻屏补翻也走这里。
+    scheduleTermDiscoveryForChapter(chapter);
     return { ok: completed, completed, translated: state.translations.size, errors, warnings: finalWarnings };
   }
 
@@ -169,6 +201,8 @@ export function installNovelWorkflow(runtime) {
     const screenMissing = screenItems.filter(item => !state.translations.has(item.id));
     if (!screenMissing.length) {
       if (options.missingOnly) {
+        // 本屏早就全有译文（缓存/上个任务翻的）：术语发现同样要补排一次。
+        scheduleTermDiscoveryForChapter(chapter);
         return { ok: true, completed: true, reused: true };
       }
       if (state.textStatus === "complete" && !options.force) {
@@ -176,15 +210,13 @@ export function installNovelWorkflow(runtime) {
         state.showTranslation = !state.showTranslation;
         runtime.reapplyNovelTranslations?.(surface);
         runtime.setNovelTranslationVisibility(state.showTranslation);
+        scheduleTermDiscoveryForChapter(chapter);
         return { ok: true, toggled: true, showTranslation: state.showTranslation };
       }
     }
     try {
       const result = await translateNovelText(chapter, { force: options.force === true });
-      if (result && result.translated > 0) {
-        // 异步旁路：翻译完成后采样已译段落做术语发现，不阻塞译文渲染。
-        void runtime.scheduleNovelTermDiscovery?.(chapter);
-      }
+      // 术语发现由 translateNovelText 的成功出口统一排（含翻屏补翻那条路），这里不再重复。
       // 仅重译正文时不动图片(图片强制重处理是独立入口)。
       if (options.textOnly !== true && state.serviceOnline && state.imageStatus === "idle") {
         void runtime.translateNovelImages(chapter).catch(error => {
@@ -228,6 +260,8 @@ export function installNovelWorkflow(runtime) {
         if (cached && cached.hit > 0) {
           runtime.setNovelTextStatus?.("complete", state.progress);
         }
+        // 这一屏本来就有译文（缓存命中或上个任务翻过）：术语发现不能因此漏掉。
+        scheduleTermDiscoveryForChapter(chapter);
         return { ok: true, cachedOnly: true, hit: cached ? cached.hit : 0 };
       }
       return await translateNovelText(chapter, { missingOnly: true });

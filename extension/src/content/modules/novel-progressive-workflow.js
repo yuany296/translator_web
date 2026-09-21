@@ -1,9 +1,12 @@
+import { resolveNovelSpeed } from "../../shared/novel-speed.js";
+
 export function installNovelProgressiveWorkflow(runtime) {
   // 渐进小批采用窗 2 有序流水线:chunk N+1 在 chunk N 的响应到达后立即发出,
   // 与 chunk N 的 commit/渲染重叠;上下文边界严格按 chunk 顺序推进,前后文一致。
+  // 注意这里**不是**用户可调的并发：闸门 nextChunkIndex <= respondedChunkCount 保证
+  // 同时只有 1 个请求在途（2 只用来让「下一块的请求」和「本块的落库/渲染」重叠）。
+  // 想让回退通道更快只能调「每块字数」（novelChunkChars）：块越大轮数越少。
   const PROGRESSIVE_CHUNK_CONCURRENCY = 2;
-  // 逐段补齐的并行度;每段独立构建 nearby 上下文,结果按原顺序归并。
-  const REPAIR_CONCURRENCY = 3;
 
   function buildChunkContext(allItems, chunk, state) {
     const firstIndex = allItems.findIndex(item => item.id === chunk[0].id);
@@ -41,7 +44,7 @@ export function installNovelProgressiveWorkflow(runtime) {
       const committed = await runtime.commitTranslationOperation(operation);
       const officialText = String(committed?.record?.activeVersion?.translatedText || text);
       state.translations.set(item.id, officialText);
-      runtime.renderNovelTranslation(item.node, officialText, true);
+      runtime.renderNovelTranslation(item.node, officialText, true, item.id);
       item.node.dataset.mtNovelStatus = committed?.pending ? "pending" : "current";
       if (committed?.pending) state.pendingParagraphs.add(item.id);
       else state.pendingParagraphs.delete(item.id);
@@ -58,7 +61,9 @@ export function installNovelProgressiveWorkflow(runtime) {
   }) {
     const errors = [];
     const warnings = new Map();
-    const chunks = runtime.novelCore.buildChunks(pending);
+    // 速度参数在本次任务开始时取一次：跑到一半改设置不会让已经切好的块跟着变。
+    const speed = resolveNovelSpeed(runtime.state);
+    const chunks = runtime.novelCore.buildChunks(pending, speed.chunkChars);
     let respondedChunkCount = 0;
     let nextChunkIndex = 0;
     let chunkInFlight = 0;
@@ -188,7 +193,7 @@ export function installNovelProgressiveWorkflow(runtime) {
           errors: response.errors || []
         };
       });
-      const repairResults = await runtime.runWithConcurrency(repairs, REPAIR_CONCURRENCY);
+      const repairResults = await runtime.runWithConcurrency(repairs, speed.repairConcurrency);
       // 结果按 missing 原顺序返回,错误归并保持确定性。
       for (const result of repairResults) {
         if (!result || result.ok === false) {

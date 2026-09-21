@@ -52,7 +52,7 @@ export function installNovelCache(runtime) {
       state.translations.set(item.id, translated);
       // 命中缓存即按"显示译文"意图渲染:首次点击时 state.showTranslation 尚未翻转,
       // 显式传 true 让缓存段落与随后到达的流式译文保持一致,立即可见。
-      runtime.renderNovelTranslation?.(item.node, translated, true);
+      runtime.renderNovelTranslation?.(item.node, translated, true, item.id);
       hit += 1;
       if (match === "stale-config") stale += 1;
     });

@@ -103,12 +103,12 @@ export function installNovelRevisionPanel(runtime) {
     if (result.record) {
       state.translationSnapshots.set(key, result.record);
       const translated = String(result.record.activeVersion?.translatedText || "");
-      if (translated) { state.translations.set(item.id, translated); runtime.renderNovelTranslation(item.node, translated, true); }
+      if (translated) { state.translations.set(item.id, translated); runtime.renderNovelTranslation(item.node, translated, true, item.id); }
     } else if (result.pending) {
       const preview = snapshot?.recentVersions?.find(version => version.versionId === versionId);
       if (preview?.translatedText) {
         state.translations.set(item.id, preview.translatedText);
-        runtime.renderNovelTranslation(item.node, preview.translatedText, true);
+        runtime.renderNovelTranslation(item.node, preview.translatedText, true, item.id);
         state.pendingParagraphs.add(item.id);
       }
     }

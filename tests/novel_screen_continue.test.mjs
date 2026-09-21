@@ -120,6 +120,8 @@ function makeScreenHarness(overrides = {}) {
   };
   const toggles = [];
   let extractCalls = 0;
+  // 术语发现的排期探针：翻屏补翻以前从不排它，用户翻完整章一条术语都收不到。
+  const scheduled = [];
   const runtime = {
     getNovelState: () => state,
     reconcileKakaoNovelReader: () => surface,
@@ -142,8 +144,11 @@ function makeScreenHarness(overrides = {}) {
     // 服务离线:让翻译路径立刻停下,便于断言它确实走到了「要翻译」这一步
     ensureTranslationServiceOnline: async () => ({ ok: false, error: "本地服务未启动，当前仅显示已缓存译文" })
   };
+  runtime.scheduleNovelTermDiscovery = chapter => {
+    scheduled.push(chapter);
+  };
   installNovelWorkflow(runtime);
-  return { runtime, state, chapter, surface, toggles, extracts: () => extractCalls };
+  return { runtime, state, chapter, surface, toggles, scheduled, extracts: () => extractCalls };
 }
 
 test("本屏还有未译段落时,点击不再只是切换显示,而是真的去翻译", async () => {
@@ -182,6 +187,24 @@ test("本屏已全有译文时,普通点击仍是译文↔原文切换", async (
   assert.deepEqual(harness.toggles, [false]);
 });
 
+test("新任务取代旧任务：先取消旧任务的流式请求，避免同批段落被翻两遍", async () => {
+  const harness = makeScreenHarness();
+  const cancelled = [];
+  const messages = [];
+  // 模拟上一轮还在流式翻译中（真机上此时新旧两条流会同时跑同一批段落）
+  harness.state.taskId = "novel-old-task";
+  harness.runtime.cancelNovelTranslationStream = taskId => cancelled.push(taskId);
+  harness.runtime.sendRuntimeMessage = message => {
+    messages.push(message);
+    return Promise.resolve({ ok: true });
+  };
+  await harness.runtime.translateNovelChapter();
+  assert.deepEqual(cancelled, ["novel-old-task"], "旧任务的流必须被取消");
+  assert.equal(messages.some(message => message.type === "CANCEL_TRANSLATION_TASK"
+    && message.taskId === "novel-old-task"), true, "后台任务也要一起取消");
+  assert.notEqual(harness.state.taskId, "novel-old-task", "新任务换上新 id");
+});
+
 test("surfaceChanged 为 false 时不启动补翻,为 true 才启动", () => {
   const harness = makeScreenHarness();
   harness.runtime.onNovelSurfaceChanged(harness.surface, "shadow-mutation", false);
@@ -203,4 +226,30 @@ test("用户尚未开启本章翻译时,翻屏不会偷偷发翻译请求", asyn
   const result = await harness.runtime.continueNovelTranslationForCurrentScreen(harness.surface);
   assert.equal(result.skipped, true);
   assert.equal(harness.extracts(), 0, "未开启翻译时连提取都不应发生");
+  assert.equal(harness.scheduled.length, 0, "未开启翻译时也不该排术语发现");
+});
+
+// 事故回归：术语发现以前只挂在「点悬浮球」那条路上，Kakao 分屏阅读的常态是
+// 翻屏后由 continueNovelTranslationForCurrentScreen 自己接着翻 —— 全部不排发现，
+// 于是「翻完两章，术语待确认里一条都没有」。
+test("翻屏补翻：本屏早已有译文时也要排术语发现", async () => {
+  const harness = makeScreenHarness();
+  harness.state.translations.set("0@aaaa0001", "作者 │ 优斯");
+  harness.state.translations.set("3@aaaa0002", "营销 │ 韩在赫");
+  const result = await harness.runtime.continueNovelTranslationForCurrentScreen(harness.surface);
+  assert.equal(result.cachedOnly, true);
+  assert.equal(harness.scheduled.length, 1, "翻屏补翻要排一次术语发现");
+  assert.equal(harness.scheduled[0], harness.chapter);
+});
+
+test("本屏已全有译文时点悬浮球只切换显示，但依然要排术语发现", async () => {
+  const harness = makeScreenHarness();
+  harness.state.translations.set("0@aaaa0001", "作者 │ 优斯");
+  harness.state.translations.set("3@aaaa0002", "营销 │ 韩在赫");
+  const toggled = await harness.runtime.translateNovelChapter();
+  assert.equal(toggled.toggled, true);
+  assert.equal(harness.scheduled.length, 1, "切换显示这条出口同样要排");
+  const reused = await harness.runtime.translateNovelChapter({ missingOnly: true });
+  assert.equal(reused.reused, true);
+  assert.equal(harness.scheduled.length, 2, "补翻入口「无需重做」时也要排");
 });

@@ -6,6 +6,10 @@ export function installNovelReader(runtime) {
         rootObserver: null,
         reconcileTimer: 0,
         translations: new Map(),
+        // 「让模型排版」:段落 id → 带 ⟦⟧ 标记的译文(见 novel-emphasis-align.js);
+        // emphasisAligned 记「这段译文已经问过模型了」,避免 reconcile 反复重发。
+        emphasisMarks: new Map(),
+        emphasisAligned: new Map(),
         textDiagnostics: [],
         lastTextErrors: [],
         imageJobs: new Map(),
@@ -51,7 +55,7 @@ export function installNovelReader(runtime) {
     for (const host of candidates) {
       const root = host && host.shadowRoot;
       if (!root || typeof root.querySelectorAll !== "function") continue;
-      const paragraphs = [...root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphNode);
+      const paragraphs = [...root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphLeaf);
       if (paragraphs.length < 2) continue;
       return {
         viewer,
@@ -69,6 +73,30 @@ export function installNovelReader(runtime) {
     return !!node && /^(?:H[1-6]|P|DIV)$/u.test(String(node.tagName || "")) &&
       node.hasAttribute("data-p-id");
   }
+
+  /**
+   * KakaoPage 会把「容器」也打上 data-p-id:论坛/评论块是
+   * `div.box01[data-p-id] > div.box02[data-p-id] > p.box_txt[data-p-id] × N`,
+   * 三层同号。容器不是段落:若把它也当段落,整块会被当成一段送去翻译,渲染时
+   * 内层盒子又被塞进隐藏的原文包裹,译文只剩一整段纯文本(白底内框、逐行
+   * padding/行距、加粗标题全部消失),同一段文字还会被重复翻译。
+   * 判据:带 data-p-id 的块级节点若存在「同为段落的块级后代」,它就只是容器。
+   * 只认块级后代——`<br data-p-id>`、`<img data-p-id>`、`<span data-p-id>` 是
+   * 空元素或行内元素,不构成嵌套段落,否则整屏的空行段落会被误删。
+   */
+  function hasNestedNovelParagraph(node) {
+    const descendants = node?.querySelectorAll?.("[data-p-id]");
+    if (!descendants || typeof descendants.length !== "number") return false;
+    for (let index = 0; index < descendants.length; index += 1) {
+      if (isNovelParagraphNode(descendants[index])) return true;
+    }
+    return false;
+  }
+
+  function isNovelParagraphLeaf(node) {
+    return isNovelParagraphNode(node) && !hasNestedNovelParagraph(node);
+  }
+  runtime.isNovelParagraphLeaf = isNovelParagraphLeaf;
 
   function findCommonAncestor(nodes, fallback) {
     let current = nodes[0] && nodes[0].parentElement;
@@ -95,7 +123,7 @@ export function installNovelReader(runtime) {
   function novelSurfaceSignature(surface) {
     const root = surface && surface.root;
     if (!root || typeof root.querySelectorAll !== "function") return "";
-    return [...root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphNode).map(node => {
+    return [...root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphLeaf).map(node => {
       const text = getOriginalParagraphText(node);
       const normalized = runtime.normalizeTranslationCacheText
         ? runtime.normalizeTranslationCacheText(text) : String(text || "");
@@ -135,7 +163,7 @@ export function installNovelReader(runtime) {
     const occurrences = new Map();
     const pidOrdinals = new Map();
     const paragraphs = orderParagraphs(
-      [...surface.root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphNode)
+      [...surface.root.querySelectorAll("[data-p-id]")].filter(isNovelParagraphLeaf)
     ).map(({ node, id, index }) => {
       const originalText = getOriginalParagraphText(node);
       const normalized = runtime.normalizeTranslationCacheText(originalText);
@@ -143,8 +171,11 @@ export function installNovelReader(runtime) {
       const occurrenceIndex = occurrences.get(normalizedSourceHash) || 0;
       occurrences.set(normalizedSourceHash, occurrenceIndex + 1);
       // KakaoPage 的 data-p-id 不是唯一标识:对话块内嵌套节点共享同一个
-      // data-p-id。给同 id 的节点追加序号生成唯一 id,避免翻译结果互相
-      // 覆盖、进度计数把嵌套副本重复计入;domAnchor 保留原始 id 供恢复。
+      // data-p-id。带嵌套段落的容器已由 isNovelParagraphLeaf 排除在外,这里
+      // 只处理真正的同级同号段落:给同 id 的节点追加序号生成唯一 id,避免译文
+      // 互相覆盖、进度计数把副本重复计入;domAnchor 保留原始 id 供恢复。
+      // (novel-renderer 的 findNovelParagraphNode 必须用同一套 leaf 判据算
+      // 序号,否则 reapply 会把容器当成第 0 段,哈希对不上而清掉译文。)
       // 且 data-p-id 只在单个 EPUB 文档(一屏)内唯一,翻页后从 0 重新编号;
       // 若段落身份只用「pid#同 id 序号」,新一屏的同号段落就会认领上一屏的
       // 译文(表现为末页版权信息被画上作品开头的句子)。把源文哈希并入 id,
@@ -271,8 +302,17 @@ export function installNovelReader(runtime) {
   runtime.reconcileKakaoNovelReader = reconcileKakaoNovelReader;
 
   function resetNovelNavigationState(state) {
+    // 换章/换作品：上一章在途的流式请求必须一起取消。否则它会继续跑完并把译文
+    // 提交进库，而界面这边已经清空状态（任务 id 也换了）——同一批段落就会被
+    // 下一次点击再翻一遍（真机数据：同一章 118/218 段出现第二版）。
+    if (state.taskId) {
+      runtime.cancelNovelTranslationStream?.(state.taskId);
+      void runtime.sendRuntimeMessage?.({ type: "CANCEL_TRANSLATION_TASK", taskId: state.taskId })?.catch?.(() => {});
+      state.taskId = "";
+    }
     state.chapterKey = "";
     state.translations.clear();
+    runtime.resetNovelEmphasis?.(state);
     state.imageJobs.clear();
     state.imageContexts.clear();
     runtime.clearNovelImagePanel?.(true);

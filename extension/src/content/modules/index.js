@@ -26,6 +26,7 @@ import { installLifecycleFontFit } from "./lifecycle-font-fit.js";
 import { installLifecycleOverlayCleanup } from "./lifecycle-overlay-cleanup.js";
 import { installLifecycleRestore } from "./lifecycle-restore.js";
 import { installNovelReader } from "./novel-reader.js";
+import { installNovelEmphasisAlign } from "./novel-emphasis-align.js";
 import { installNovelRenderer } from "./novel-renderer.js";
 import { installNovelImagePanel } from "./novel-image-panel.js";
 import { installNovelWorkflow } from "./novel-workflow.js";
@@ -54,6 +55,7 @@ import { installWebpageNodeLoading } from "./webpage-node-loading.js";
 import { installWebpageObserver } from "./webpage-observer.js";
 import { installWebpageLifecycle } from "./webpage-lifecycle.js";
 import { installTranslationCacheClient } from "./translation-cache-client.js";
+import { installCanonicalPartialTranslations } from "./canonical-partial.js";
 import { installControlsAutotranslate } from "./controls-autotranslate.js";
 import { installControlsUtils } from "./controls-utils.js";
 import { installTargetFilter } from "./target-filter.js";
@@ -113,6 +115,7 @@ export const contentInstallers = Object.freeze([
   installNovelDiagnostics,
   installNovelRevisionPanel,
   installNovelCache,
+  installNovelEmphasisAlign,
   installWebpageSession,
   installWebpageTabState,
   installWebpageScheduler,
@@ -122,6 +125,7 @@ export const contentInstallers = Object.freeze([
   installWebpageObserver,
   installWebpageLifecycle,
   installTranslationCacheClient,
+  installCanonicalPartialTranslations,
   installControlsAutotranslate,
   installControlsUtils,
   installTargetFilter,
@@ -183,6 +187,7 @@ export const contentPhases = Object.freeze({
     installNovelDiagnostics,
     installNovelRevisionPanel,
     installNovelCache,
+    installNovelEmphasisAlign,
     installWebpageSession,
     installWebpageTabState,
     installWebpageScheduler,
@@ -192,6 +197,7 @@ export const contentPhases = Object.freeze({
     installWebpageObserver,
     installWebpageLifecycle,
     installTranslationCacheClient,
+  installCanonicalPartialTranslations,
     installControlsAutotranslate,
     installControlsUtils,
     installTargetFilter,

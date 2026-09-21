@@ -1,5 +1,217 @@
 # Operations Log
 
+## 2026-09-21 — 覆盖层「太大」：跨坐标空间比对倾角，把遮罩撑成了外接框的包围盒
+
+- 用户反馈：**这个覆盖层太大了吧，只要在识别的文字框里面就行了**（承接上一条的斜排遮罩修复）。
+- 在连着的 Chrome 里量到确凿数字（25 话 ENTRANCE→入口 气泡）：识别到的文字框 `dataset.polygon` = 30/12.1、75.56/36.32、70.79/41.5、25.23/17.28（百分比），文字节点盒子 **362×278 px**，而遮罩裁剪层 `.mt-cover-clip` 是 **443×532 px**（`clipPath: polygon(29.03% 0%, 100% 54.52%, 70.97% 100%, 0% 45.48%)`）——几乎是原文字框的两倍高。用 `rect.h > text.h * 1.4` 一量就能自动判出来。
+- 根因正是我上一轮加的「冲突」规则：`resolveCoverQuad` 会拿 `rotation_deg` 与 `polygonRotationDeg(polygon)` 比数值，超过 0.5° 就认为两者冲突、退回「旋转整个外接框」。但两套数字根本不在同一个坐标空间：同一段斜排文字，像素坐标读 **35°**（OCR 的 `rotation_deg`），百分比坐标读 **28°**（polygon），页面长宽比 720:947=1.315 → `atan(tan35° × 0.76) = 28°`，是同一个倾角。误判成冲突后 `rotateBoxQuad(polygonBox, 35)` 把 50.33×29.4 的文字框外接框旋转出 61.6×56.1% 的包围盒 = 443×532 px。
+- 修复：
+  - `resolveCoverQuad` 去掉跨空间的角度比对：**polygon 本身倾斜就直接用它**（按覆盖范围外扩），只有 polygon 是轴对齐框、而 OCR 给了 `rotation_deg` 时才旋转这个框。遮罩从此就是「识别到的文字框」。
+  - 「覆盖范围」默认值由 `1.2`（外扩 6%）改为 `0`（贴合识别到的文字框）：`config/schema.js` 的 `DEFAULT_RUNTIME_CONFIG`、`normalizeRuntimeConfig` 兜底、`reader-state.js` 的初始 state 三处同步；设置页选项与范围不变，用户想留白仍可自己调大。
+  - 清理遮罩（`clean-masks.js`）本来就走 `resolveCoverQuad`，一并跟着变紧，不再向外扩 6%。
+- 测试：`tests/overlay_tilt.test.mjs` 的「冲突跟 rotation_deg 走」一例改写为「遮罩尺寸跟着识别到的文字框」——断言裁剪层宽高等于文字框（±7%），并显式断言遮罩不会比文字框大出 10%（旋转外接框那条路会大出 30%+）。`qa_probe_tilt.mjs` 的 (c) 行改为打印遮罩实际包围盒（现在 = 52×26，即文字框本身）。
+- 验证：`npm run build` + 手机版构建成功；完整 Node 回归 **1445/1445**；行数门禁与 ESLint 干净。
+- 复现口径：同一个页面上量「文字节点盒子 vs 遮罩裁剪层盒子」，两者不一致就是这条缺陷；再算一次像素/百分比两套角度即可区分是坐标空间换算还是真的冲突。
+
+## 2026-09-21 — 斜排原文的「覆盖层」还是水平：清理图的遮罩几何是轴对齐蓝框
+
+- 承接上一条：渲染侧四条路径的倾角都补齐后，用户在看真实页面（我连的 Chrome：Kakao 小说 155 话的「正文图片 1」、漫画 25 话的 ENTRANCE→入口）反馈**还是水平的**。
+- 先把现场数据摊开：漫画页那个「入口」气泡在 DOM 里其实是歪的（`dataset.rotationDeg=35`、`--mt-base-transform: … rotate(35deg)`、遮罩 clip-path 也是 35°），所以「水平的」不是文字层，而是**用户眼里的覆盖层 = 清理图里被擦掉的那一块**。小说正文图片走的是嵌入式渲染：底图就是清理图（`payload.cleanedImage`），被擦掉的区域直接就是用户看到的白/补丁，没有任何 clip 去收拾它。
+- 根因：`canonical/modules/scene-index-resolve.js` 的 `buildCanonicalCleanMasks` 一律发**轴对齐蓝框**（`normalizeCanonicalCleanMaskGeometry(projection.geometry)`，注释写着"清理范围统一采用最终渲染蓝框"），而 Python 侧 `build_complex_text_inpaint_mask` 一旦收到 supplemental masks 就**只用它们**（`if final_polygons: … return`），连 OCR 自带的倾斜 polygon 都不再看。于是斜排文字被擦掉的永远是一个水平矩形：在漫画覆盖层里被倾斜 clip 盖住看不出来，在嵌入式（小说正文图片）里就是一块水平补丁。
+- 修复：新增 `canonical/modules/clean-masks.js`（`installCleanMasks`，从 `scene-index-resolve.js` 拆出来，原文件已经顶到 400 行门禁）：
+  - `buildCanonicalCleanMasks` 对**斜排**投影改发 `{coordinateSpace:'percent', polygon:[四角]}`；四边形由渲染侧的 `resolveCoverQuad` 直接算出 —— 「擦掉的范围」与「画上去的遮罩」从此是同一个几何，不再各写一份。
+  - 倾角取证与渲染同一口径（`resolveTiltRotationDeg`：`rotation_deg/rotationDeg`（含 `visual`）→ `polygon` → `region_polygon`）。轴对齐（≤0.5°）投影仍发原来的蓝框，行为不变。
+  - 清理多边形比遮罩多胀 1%（`padding: 0.2`）盖住抗锯齿边，避免擦不干净留笔画。
+  - JS 侧 `normalizeCleanedMask` 本来就是「有 polygon 用 polygon、没有才用 box」，Python 的 `normalize_percent_mask_polygon` 也早就支持 polygon 遮罩，两端都不用改；清理 artifact 的缓存键含遮罩内容（`buildCleanedArtifactKey(imageRevision, masks)`），所以新遮罩会强制重出清理图，不会被旧的矩形补丁缓存粘住。
+- 测试：新增 `tests/cleaned_mask_tilt.test.mjs` 4 例 —— 斜排投影发倾斜四边形且与 `resolveCoverQuad` 的角点逐个相等、没有 polygon 时按倾角旋转外接框、轴对齐投影仍发蓝框（行为不变）、实心背景/未激活投影不产出遮罩。
+- 验证：`npm run build` + 手机版构建成功；完整 Node 回归 **1445/1445**；Python **137 passed + 1 skipped**；`npm run check:lines` 与 ESLint 干净。
+- 备注：Chrome 里没法直接看像素（本会话模型不支持读图、页面 `fetch` 被 Kakao CDN 的 CORS 拦掉），所以现场取证是靠 DOM 数据（rotationDeg / clip-path / 清理补丁来源）而不是截图；上面结论中的「嵌入式底图=清理图」依据是 `renderer-embed.js` 的 `baseDataUrl = payload.cleanedImage`。
+
+## 2026-09-21 — 斜排原文的覆盖层仍是水平：倾角取证口径有四条路径各自为政
+
+- 用户反馈：**覆盖层没有根据倾斜的文本进行倾斜**（与既有回归 `tests/overlay_tilt.test.mjs` 抬头引用的同一句缺陷）。
+- 先用真实链路复现，不猜：写探针把「合成 OCR 观察 → `reconciler.reconcile` → `buildRenderProjections` → `projectionToRendererBubble` → `createBubbleNode`」整条跑通，逐例打印渲染节点倾角。结论——**倾角只在 `region_polygon`（区域轮廓）上、顶层 `polygon` 是轴对齐框或没有时，渲染节点恒为 0°**（`rotate(0.00deg)`），即覆盖层水平、斜排原文露在外面；其余三种来源（顶层 `rotation_deg`、`visual.rotationDeg`、倾斜 `polygon`）都能歪。
+- 根因是**倾角取证口径分散且口径不一致**，不是某一条渲染路径写错：
+  - canonical 投影气泡（`reconciler-projection-utils.addProjection`）**只把 `polygon` 写到顶层，没写 `rotation_deg`**，倾角只留在 `visual.rotationDeg` 里；渲染侧却只读顶层字段（`lifecycle-bubble` / `lifecycle-cover` / `renderer-embed` 都读 `bubble.rotation_deg`）；
+  - `resolveBubblePolygonRotation` 的几何兜底用**首边**：集群合并框从短边起笔时报 ≈±90°（水平文字被竖过来），顶点起点/绕向一变结果就变；
+  - `region_polygon` / `visual.regionPolygon` 从不参与倾角取证；
+  - `resolveCoverQuad` 在 `rotation_deg` 与 `polygon` 冲突时跟 `polygon` 走，而文字节点跟 `rotation_deg` 走 → 译文与遮罩错开（QA 探针 `qa_probe_tilt.mjs` 一直把这条打印成 CONFLICT）。
+- 修复（一处口径，四条路径共用）：
+  - `rendering/cover-geometry.js` 新增纯几何 `polygonRotationDeg(points, scaleX, scaleY)`：**轴对齐框（倾斜量 ≤ 0.5°）一律返回 0**（高而窄的多行外框不能被读成 90°）；确实歪了的四边形取**最长边**＝文字行方向，折到 ±90°，与起点/绕向无关；近正方形（长短边比 < 1.2）取更接近水平的那条边。另新增 `resolveTiltRotationDeg(rotationDeg, polygons, …)`：显式倾角优先（0 视为没有信息），否则在一串候选四边形里「哪个真的倾斜就用哪个」。`polygonEdgeRotationDeg`（首边口径）保留给探针/对照。
+  - `content/modules/target-resolve.js` 新增 `runtime.resolveBubbleRotation(bubble, imageWidth, imageHeight)`：从 `rotation_deg/rotationDeg`（含 `visual` 内同义字段）取证，再依次看 `polygon / visual.polygon / region_polygon / visual.regionPolygon / visual.region_polygon`；`resolveBubblePolygonRotation` 的几何兜底改为同一个 `polygonRotationDeg`。
+  - DOM 文字节点（`lifecycle-bubble`）、遮罩四边形（`lifecycle-cover`）、嵌入式画布（`renderer-embed`）三条路径改调 `resolveBubbleRotation`；纯几何的场景文字层（`scene-builder`：成员 region、成员四边形兜底、`cleanupGeometry` 的遮罩）改调 `resolveTiltRotationDeg`。画布与 DOM 保持同一个百分比空间口径，避免同一气泡在两条路径歪出两个角度（按画布像素换算真实倾角是另一件事，本次不动）。
+  - canonical 投影气泡补上顶层 `rotation_deg`/`rotationDeg`，下游只读顶层也有值。
+  - `resolveCoverQuad`：`polygon` 与 `rotation_deg` 冲突时以 `rotation_deg` 为准（它才是文字节点的渲染倾角），遮罩与译文不再错开。
+- 测试：`tests/overlay_tilt.test.mjs` 由 4 例扩到 11 例 —— region_polygon 单独倾斜（DOM/遮罩/画布三条路径）、`visual` 内同义字段、顶点起点与绕向不变性（轴对齐框 6 种点序恒为 0，含高而窄的轴对齐外框；倾斜四边形 4 种点序恒为同一角度）、成员 region 缺 `rotationDeg` 时用成员四边形兜底、canonical 投影气泡顶层带倾角且 region-only 场景渲染节点仍能恢复、遮罩与译文同源（冲突时都跟 `rotation_deg`）。`qa_probe_tilt.mjs` 的 CONFLICT 行改为打印遮罩实际倾角。
+- 验证：`npm run build` + 手机版构建成功；完整 Node 回归 **1436/1436**（exit 0）；`npm run check:lines` 通过；改动文件 ESLint 干净。
+- 复现/取证方式留在工作区临时探针里（跑完即删），思路可复用：只要把「canonical 投影 → 渲染气泡 → 渲染节点」串起来打印 `dataset.rotationDeg`，倾角在链路哪一段丢的一目了然。
+
+## 2026-09-21 — 正文图片 OCR 全挂：`runtime.handleOcrDataUrlWithTimings is not a function`
+
+- 用户报错：页面里每个正文图片的 OCR 请求都返回 `runtime.handleOcrDataUrlWithTimings is not a function`。
+- 根因是**装配漏装**，不是 OCR 逻辑：`background/modules/ocr-timings.js` 写好了包装器 `handleOcrDataUrlWithTimings`（只加计时日志，再转发 `runtime.handleOcrDataUrl`），`messages.js` 的 `OCR_DATA_URL` 也指向它，但 `background/modules/index.js` 里 `installOcrTimings` **只出现在了那份没人用的 `backgroundInstallers` 列表**，漏在真正被使用的 `backgroundPhases.functions` 之外；`createBackgroundRuntime()` / `novel-mobile/background.js` 都只装 `backgroundPhases`，于是运行时既没有 `handleOcrDataUrlWithTimings`，连带 `recordOcrPipelineTimings/summarizeOcrTimings` 也没有。
+- 定位方式：用假的 `chrome` 全局直接 `createBackgroundRuntime()`，逐个打印 `typeof runtime.*` —— `handleOcrDataUrl: function` 而 `handleOcrDataUrlWithTimings: undefined`，一眼看出是漏装而非调用姿势错误。
+- 修复：
+  - `backgroundPhases.functions` 补上 `installOcrTimings`（放在 `installOcrPipeline` 前，顺序与旧列表一致）；
+  - 把重复的 `backgroundInstallers` 改成由 `backgroundPhases` 派生（`[...functions, ...state, ...startup]`），消除「两份手写列表各自维护」这个漂移源 —— 本次事故正是漂移的结果（旧列表还额外漏了 `installTranslationConfig/installTranslationTaskCancel/installWebpageTabController`）。
+- 新增 `tests/background_message_wiring.test.mjs` 3 例做同类回归：① `messages.js` 里路由的每个 `runtime.*` 处理器都必须在 background 目录某个文件里被赋值（防「路由到没人装的处理器」）；② `index.js` 里 import 的每个 `install*` 都必须落进阶段数组（防「模块写好但没接线」），并钉住 `installOcrTimings` 在 `functions` 里、`backgroundInstallers` 必须是派生写法；③ 包装器必须转发真正的 `handleOcrDataUrl`。
+- 验证：`npm run build` 成功；直接 import 构建产物 `dist/extension/background.js` 检查 `backgroundRuntime` 的 6 个计时相关处理器全为 `function`；新增用例 3/3、`novel_mobile_isolation` + `translation_cache` + 本次用例合计 38/38、`background_runtime.part05`（含 OCR_DATA_URL 校验用例）11/11；`npm run check:lines` 通过、改动文件 ESLint 干净。
+- 备注：沙箱里 `esbuild`/`node --test` 会因命名管道被拦（spawn EPERM），构建与用例改用「提权跑 build」和「进程内 `import()` 测试文件」完成验证。
+
+## 2026-09-21 — 手机端小说术语提取「漏术语」：分段失败被当成成功 + 没有进度、没有诊断
+
+- 用户反馈：手机端待确认里**有**术语，但比电脑少、老漏；怀疑是 service worker 被回收。核实结论：回收只丢「整趟」（消息失败会让内容脚本 30 秒后重试，且没标记任何段落），真正会**永久漏**的是：
+  - `novel-mobile/term-extract-llm.js` 逐段 try/catch：只要有一段成功就 `ok:true` 返回，随后 `mergeDiscovery` 把**整屏所有段落**写进 `processedEvidenceIds` —— 落在失败/超时分段里的术语再也不会被重新提取（电脑相反：任一段失败 → 整趟失败 → 不标记 → 30 秒后自动重跑）。
+  - 手机更容易出现失败分段：没有串行队列（多屏并发抢同一个模型）、每段超时 120s（桌面读超时 300s、整趟预算 120–1200s）、SW 被回收。
+  - 手机**从不写** `mt_term_discovery_last_v1`：它整段覆盖了桌面的 `runTermDiscovery`，把 `recordDiscovery` 一起漏掉，所以术语库页「最近一次提取」在手机上是空的 —— 漏了也看不见。
+- 修复：
+  - **逐段覆盖**：`requestChapterTermExtraction` 返回 `partial{totalChunks,failedChunks,timedOutChunks,coveredBlockIds}`；`mergeDiscoveryResult` 新增 `processedBlockIds`（默认仍是全部块），手机只把「成功分段覆盖的块」记为已处理；未覆盖的段落由新增的 `reason:"partial"` 触发 30 秒重试补跑（`novel-term-discovery.js` 的 RETRY_REASONS）。
+  - **断点续跑**：每跑完一段把候选写 `chrome.storage.session`（测试可注入 store），同一趟提取重入时跳过已完成分段、只补剩下的；整趟跑完才清理。
+  - **串行队列**：新增 `novel-mobile/term-extract-queue.js`（在途 1 + 排队 1，超出按 `throttled` 交回内容脚本重试），对齐桌面 `enqueueExtraction`；超时冷却 60 秒、其它 5 分钟（`platform-storage.js` 的超时错误现在带 `timeout` 标记）。
+  - **结果记账共享**：新增 `shared/term-discovery-report.js`，桌面与手机都写 `mt_term_discovery_last_v1`；术语库页「最近一次提取」新增「有 N 段没跑完，稍后自动补跑」与丢弃统计（kind 非法 / 原文里找不到 / 自造 kind 已按专有名词保留）。
+  - **两端单一真源**：Python `_chunk_prompt` 补上手机版那 3 条加固规则；`_validate_llm_output` 移植 FIELD/KIND/INVALID 别名表，自造 kind 归一成 `proper_noun` **保留**（以前整条静默丢弃），丢弃计数随 `/terms/extract` 返回；新增 `tests/term_extractor_parity.test.mjs` 逐行/逐键钉住两边。
+  - **空模型保护**：`resolveExtractionConfig` 在选中配置没填 model 时继承翻译模型；Python/JS 只在 base_url 指向本机时才退到 `qwen2.5:7b`，否则报「未配置术语提取模型」。
+  - **Python 拆文件**过行数门禁：`term_text_utils.py`（规范化与包含判定）+ `term_extract_heuristic.py`（零依赖启发式），`verify.mjs` 与 pylint 列表同步。
+- 验证：`npm run verify` 全绿（Node 1413/1413、Python 129 passed + 1 skipped、行数门禁、ESLint、Pylint 10.00/10）；`dist/extension` 与 `dist/novel-mobile` 均已重建。
+
+## 2026-09-21 — 网页翻译速度从快捷弹窗搬进设置页（顺带澄清它和「小说翻译速度」不是同一套）
+
+- 用户问「网页端现在每块字数是哪里调的？popup 和设置页都有，一个是网页快速翻译，一个是小说翻译速度，这两个重复了，保留设置页」。先按代码纠正事实：
+  - 弹窗「速度与调试 → 网页快速翻译 → 高级参数」写的是 `runtime.webpageConcurrency / webpageBatchItems / webpageBatchChars`，**唯一**消费者是 `content/modules/webpage-scheduler-config.js`（→ `webpage-scheduler.js` 的每批上限与车道数），管的是**网页正文翻译**；
+  - 设置页「小说翻译速度 → 渐进每块字数」写的是 `runtime.novelChunkChars`，走 `shared/novel-speed.js` → `novel-progressive-workflow.js`，管的是**小说回退通道**。
+  - 两者是两条管线、两个键，不是重复的一份 —— 所以按用户选择把**网页那三个参数整块搬到设置页**，而不是删掉弹窗那份能力。
+- 新增 `extension/src/shared/webpage-speed.js`：`WEBPAGE_SPEED_LIMITS`（1–8 / 4–96 / 400–8000）、`WEBPAGE_SPEED_DEFAULTS`（5 / 32 / 3200）、`WEBPAGE_SPEED_STATE_KEYS`、`WEBPAGE_SPEED_PRESETS`（fast 5·32·3200 = 旧弹窗 `FAST_MODE`；normal 3·24·1600 = 旧 `NORMAL_MODE`）、`clampWebpageSpeed`、`isWebpageFastMode`、`describeWebpageSpeed`。默认值与档位与搬走前逐个相等 —— 不动设置＝行为不变。
+- `config/schema.js`：`DEFAULT_RUNTIME_CONFIG` 的三个数字改为引用共享默认值，`normalizeRuntimeConfig` 改用 `clampWebpageSpeed`（与小说速度同一套收敛）。**有意的行为差异**：`null`/`""` 现在回默认 3200，而不是被 `numberIn` 夹成下限 400（`0` 仍夹下限）——与「空输入框当没填」的既有规则统一。
+- 设置页：`public/settings.html` 在「小说翻译速度」卡后新增「网页翻译速度」卡（并发批数 / 每批段数 / 每批字符数 + 每个参数一句作用说明 + 「快速模式」勾选项 + `webpageSpeedHint` 提示行），`settings/controller.js` 接上回填、写回、输入时实时算「一批多大」、手改任意一格让勾选跟着掉。说明文案全部来自代码事实（视口内批次 1/4 上限、近屏 1/2、有视口任务时后台只占 1 条车道、段数与字符数「先到者为准」）。
+- 快捷弹窗：`public/quick-popup.html` 的「速度与调试」卡缩成纯「调试」卡（`#debugHeading`，只留 OCR 调试 + 一行「网页翻译速度在完整设置 → 阅读与显示」的指引），`quick-popup/controller.js` 删掉两档常量、三个字段的回填/写回与全部绑定。删 HTML 必须同步删绑定：`byId(...)` 绑定在模块加载期执行，漏删会整页抛 null。
+- 手机版：`novel-mobile/popup-local.js` 改按 `debugHeading` 藏卡；`novel-mobile/settings-local.js` 新增 `DESKTOP_WEBPAGE_ARTICLE_FIELDS`（三个 id 逐个藏所在卡）——手机版不做网页翻译，这些值对它完全不生效。
+- 测试：新增 `tests/webpage_speed_settings.test.mjs` 9 例（默认值/两档与搬走前逐个相等、状态键不新开存储键、脏数据收敛、`normalizeRuntimeConfig` 新规则、`isWebpageFastMode` 只认短键与三值全等、提示语、设置页三格范围与逐条说明、控制器接线、以及「弹窗里不能再出现这三个键与任何数字输入框」的反向断言）；`tests/novel_mobile_pages.test.mjs` 跟着改 `debugHeading` 并加「网页速度卡在手机版整卡隐藏」。
+- 验证：完整 Node 回归 **1400/1400**（exit 0）、Python **129 passed + 1 skipped**、ESLint 干净、`dist/extension` 与 `dist/novel-mobile` 已重建且两套产物完整性检查通过。真机（file:// 加载 `dist/extension/settings.html#reading`，伪 chrome 注入配置）实测：三格回填 5/32/3200、范围与 step 正确、提示行「当前：并发 5 批 · 每批最多 32 段 / 3200 字（先到者为准）」；取消快速模式 → 3/24/1600，勾回 → 5/32/3200，手改字符数 900 → 勾选自动掉且提示重算；快捷弹窗渲染后 `input[type=number]` 数量为 0、无控制台报错、语言/启用开关正常回填。
+- 过程中观察到零星抖动（同一批用例单独复跑全绿、最后一轮完整回归 0 失败），且这些文件都不引用本次改动的模块，故记为既有抖动、非本次引入：`kakao_pipeline.part14/15/17` 的接缝超时用例（只 import `canonical/pipeline.js` 与 legacy harness）、`novel_mobile_background_local` 的提取节流与 `term_extract_llm`（属工作区未提交的术语提取 WIP）。
+- **既有红灯（与本次改动无关）**：`npm run check:lines` 报 `local-ocr-service/term_extractor.py: 540 lines (limit 400)`——本次未触碰任何 Python 文件，`tests/length_gate.test.mjs` 只单测 `validateLength` 的 extension 规则所以照过。
+
+## 2026-09-21 — 混排交给模型排版 + 术语「模型判断但必须逐条交代」
+
+- 用户两条要求：
+  1. 「这种混排不能让 AI 去排版吗？」—— 按字符占比猜强调边界只能猜个大概，希望由模型判定；
+  2. 「去掉校验是因为会直接套用术语，即使在原文里不是那个意思。但是发现去掉校验会导致有时候术语会不生效。」—— 保留「模型按语境判断」，但要堵住「静默漏用」。
+- 版式（AI 排版）：新开一条**独立的排版对齐小请求**，不动译文缓存、已翻好的章节不用重译也能修：
+  - `content/modules/novel-inline-format.js`（新）：把行内格式复刻逻辑从 `novel-renderer.js` 拆出来（渲染器已接近 400 行上限），新增 `describeNovelEmphasis(node)` —— 把原文强调片段标成 `⟦…⟧`，作为对齐请求的输入；
+  - `content/modules/novel-emphasis-align.js`（新）+ `background/modules/novel-emphasis.js`（新）：一屏译文到齐后（桌面版挂在 `scheduleTermDiscoveryForChapter` 的出口、手机版挂在 `afterScreenTranslated`），只把含行内格式的段落（真机 137 段里个位数）发一次 `ALIGN_NOVEL_EMPHASIS`，拿回带标记的译文存进 `state.emphasisMarks`；`state.emphasisAligned` 记账保证每段只问一次（reconcile 每 80ms 会走到那个出口）；
+  - 采用条件很硬：**标记成对、段数与原文一致、去掉标记后与译文逐字相同**（允许空白差异，会按字符投影回去）。模型借排版改了译文就整条丢弃，退回比例映射；`⟦⟧` 永远在写入页面前剔除；
+  - 每屏只对混排段落各问一次，纯文本屏（如今日打开的 126 话，251 段里 85 段只有 `<br>`/`<img>`）零请求。
+- 术语（判断 + 交代）：
+  - `shared/novel.js#validateTranslations` 新增 `glossary_unaccounted`：命中的术语必须要么「译文里逐字有译名」，要么在 `terms.skipped` 里写明「这次语境不是它 + 理由」；两者都没有 = 静默漏用 → 点名重试。`terms.used` 声称用了却查不到译名 → 仍是 `glossary_violation`。模型没按新 schema 回（旧缓存/老模型）时退回旧的字符串硬校验，**不会**把所有命中都判成「没交代」而整章重试；
+  - 小批提示词（`novel-translation.js`）与流式提示词（`translation_stream.py`）都带上同一套交代规则 + schema，重试时点名未交代的术语；流式事件把模型的 `terms` 原样转发给守卫；
+  - 「译文里照抄术语原文拼写」的确定性修复从手机版提到 `shared/term-repair.js`，桌面小批链路与流式链路（转发前就地改写事件与落库快照）现在也享受；
+  - 手机版定点修正不再「只修前 N 段」：`maxParagraphs` 改成**每批段数**，全量分批修完（真机症状：同一个名字这一章里两种写法），设置项文案同步改成「修正每批段数」。
+- 验证：Node 1377/1377、Python 110 passed + 1 skipped、`check:lines`、ESLint、Pylint 10.00/10 全绿；`dist/extension` 与 `dist/novel-mobile` 均已重建，Chrome 里已确认加载到新样式（包裹层 `color: inherit !important` 生效、页面无 `⟦⟧` 残留）。
+
+## 2026-09-21 — 桌面版小说翻译速度也做成可调（手机版那套旋钮的桌面对应物）
+
+- 用户要求「桌面侧也改」：手机版已有「翻译速度」卡片（并发 / 每块字数 / 补翻段数），桌面版这三个数却仍是 `novel-stream-workflow.js` / `novel-progressive-workflow.js` / `shared/novel.js` 里写死的常量。
+- 先分清楚桌面小说**两条通道**各有什么真旋钮（写代码前用现有测试与代码路径确认，不猜）：
+  1. 流式（主力，`attemptNovelTranslationStream`，服务端 `/translations/stream`）：按 `novelStreamBatchSize` 段切批、`STREAM_BATCH_CONCURRENCY = 3` 条请求并发 ⇒ 并发是真并发，一轮最多翻「并发 × 每批段数」段；
+  2. 渐进（`attemptNovelTranslationStream` 失败后的回退，`novel-progressive-workflow.js`）：闸门 `nextChunkIndex <= respondedChunkCount` 保证**同时只有 1 个请求在途**，`PROGRESSIVE_CHUNK_CONCURRENCY = 2` 只是让「下一块的请求」与「本块的落库/渲染」重叠 ⇒ 这里唯一能拧的是 `CHUNK_TARGET_CHARS`（1400，块越大轮数越少），把「并发」暴露给用户会是个谎，故不暴露，只在代码注释里写明原因；
+  3. 漏译逐段补齐 `REPAIR_CONCURRENCY = 3`：各段独立，可以真并发。
+- 新增 `extension/src/shared/novel-speed.js`：桌面三个旋钮的取值范围 / 默认值 / 收敛函数 / `resolveNovelSpeed(runtime.state)` / 设置页提示语，成为唯一真源（`shared/novel.js` 的 `CHUNK_TARGET_CHARS` 也改成引用它的默认值，避免两处各写一个 1400）。
+- 接进既有桌面配置链路（不新开存储键，避免第二个真源）：`config/schema.js`（`DEFAULT_RUNTIME_CONFIG` + `normalizeRuntimeConfig` 收敛）、`public/settings.html`（阅读与显示 → 新增「小说翻译速度」卡片：流式并发 1–8 / 渐进每块字数 400–4000 / 补翻并发 1–8，并带一行 `novelSpeedHint`）、`settings/controller.js`（回填、保存、输入时实时刷新提示、保存后回填夹紧值）、`content/configure.js`（`runtime.state` 初载 + storage 变更时同步，改完下一次翻译生效，不用刷新页面）。
+- 默认值 3 / 1400 / 3 与改动前逐个相等：不动设置＝行为不变（这是本次改动的底线，有测试兜住旧配置读出来仍是老行为）。
+- 收敛复用手机版踩过的坑：`null` / `""` / 空白一律按「没填」回默认，不像 `numberIn` 那样被 `Number(null) === 0` 夹成下限（每块 400 字、并发 1 这种莫名其妙的值）。
+- 手机版：`novel-mobile/settings-local.js` 的 `DESKTOP_NOVEL_ARTICLE_FIELDS` 逐个 id 藏掉这张桌面专属卡（手机版走 `novel-batch.js` 并发小批 + 自己的 `mt_novel_mobile_tuning_v1`，这些值对它完全不生效）。
+- 测试：新增 `tests/novel_speed_desktop.test.mjs` 10 例（默认值与旧常量逐个相等 / 脏数据收敛 / `resolveNovelSpeed` 缺失 state 不炸 / 提示语 / 设置页与控制器接线 / 流式并发 1、6、越界 99、0 / 渐进每块字数真的传给 `buildChunks` 且块数随之变化 / 补翻并发 1、4、默认 3）；`tests/novel_mobile_pages.test.mjs` 增「桌面速度卡在手机版整卡隐藏」。
+- 验证：Node **1353/1353**；Python **110 passed + 1 skipped**；`check:lines`、`eslint extension/src` 全绿；`dist/extension` 与 `dist/novel-mobile` 均已重建并通过产物门禁；`dist/novel-mobile.crx` 重新打包（1469 KB，ID `ahadlldgbllcbhpkhebglhdcjbadliap` 不变）。
+- 生效方式：桌面版需在 `chrome://extensions` 点「重新加载」并刷新阅读页；已渲染的旧 DOM 不会自愈（对存量译文要重新翻译才用上新参数）。
+
+## 2026-09-21 — 小说版三条：包裹层被页面主题规则抢走颜色、译文不复刻行内格式、原文模式残留隐藏译文
+
+- 用户反馈:①术语有时候不正确(全站生效时也一样);②无法完全模仿原文版式 —— 蓝框里的「黑色正文 + 灰色加粗段」混排全变成一种颜色,且切回原文也不恢复;③切换原文后其他翻译软件直接跳过这段韩文(像已经翻译过一样)。
+- 真机取证(`page.kakao.com/content/61822085/viewer/62231885/`,shadow DOM + `getComputedStyle`):
+  - `p.box_txt` 计算色 `rgb(0,0,0)`,而 `.mt-novel-source` / `.mt-novel-translation` 及其内部 `<strong>` 全是 `rgb(189,189,189)`;
+  - 把包裹层摘掉后实测:纯文本节点=黑、`<strong>`=灰 ⇒ 页面注入的 `* { color: rgb(var(--…-darkgray-text)) !important; }` 同样命中我们插入的两个 span,而不带 `!important` 的 `color: inherit` 压不过它。
+  - 原文模式只把译文标 `hidden`:整段 `textContent` 成了「韩文+中文」,别的翻译插件据此判「这段已经是译文」而跳过。
+- `novel-renderer.js`:
+  - 包裹层改为 `color: inherit !important; font: inherit !important`,对页面主题规则完全透明(实测 source/translation 恢复黑、内部 `<strong>` 保持灰)。
+  - 新增 `collectInlineRuns` / `buildTranslationMirror`:按原文每个行内片段的字符占比把译文切回去复刻(旧的「只有一个行内包裹才镜像」在 `본 보고에는 <strong>…</strong> 포함되어 있습니다.` 这类混排上整段放弃);遇到 `<br>`/图片/链接等无法复刻的结构仍退回纯文本;镜像壳只搬 class/style,必须丢掉 `data-p-id`。
+  - `setNovelTranslationVisibility(false)` 改成**完全还原 DOM**(撤掉译文节点与两个包裹节点),译文留在 `state.translations`;`reapplyNovelTranslations` 在原文模式直接返回,避免 80ms reconcile 又把壳贴回去。实测还原后 `textContent` 无中文、无残留节点。
+- 术语(桌面流式链路,多数段落走的这条):提示词只有一句 `Required glossary:`、丢掉条目备注,而且**没有任何校验** —— 模型漏用术语照样渲染、照样落库,小批链路却有两道(硬规则提示词 + `validateTranslations` 重试/回落)。现在:
+  - `translation_stream.py` 的术语段与小批链路同规则(逐字照用、最长优先、备注用于选人称语气),并带上 `note`;
+  - `translation-stream.js` 用 `buildStreamGlossaryGuard` 逐段核对,漏用术语的段落**不转发、不写译文库缓存镜像**,内容侧因此仍视其为未翻译,随后由渐进小批链路重译(那条链路自带重试与「术语违规保留译文 + 警告」回落,不会丢段)。
+- 顺带修既有红灯:`settings-local.js#DESKTOP_NOVEL_ARTICLE_FIELDS` 补 `novelChunkChars` / `novelRepairConcurrency`(桌面三个速度旋钮同一张卡,按 id 逐个隐藏才不依赖卡片 DOM 结构)。
+- 验证:Node 1353/1353、Python 110 passed + 1 skipped、`check:lines`、`eslint` 全绿;`dist/extension` 与 `dist/novel-mobile`(手机版共用同一份 novel-renderer)均已重建。Chrome 侧需在扩展管理页点「重新加载」后再刷新阅读页才会生效(MCP 无法访问 `chrome://`)。
+
+## 2026-09-19 — 小说译文「格式和原文不一样」:论坛/评论块被当成一段段落,整块排版被压平
+
+- 用户提问(附截图):第 3 话里 `[New Renez 车敏锡 原本是Miro练习生这件事,是真的吗?]` 那条论坛块,原文和译文格式不一样。
+- 真机取证(页面 `page.kakao.com/content/61822085/viewer/61869653/`,译文模式,shadow DOM 实测):
+  - 该块标记是**容器与内层段落同号**:`div.box01[data-p-id="162"] > div.box02[data-p-id="162"] > p.box_txt[data-p-id="162"] × 9`;
+  - `box01` 内 **9 个 `p.box_txt` 全部不可见**(可见段落数 0),`div.box02`(白底内框)rect 为 `0×0`、`checkVisibility() === false`;
+  - 唯一可见的是外层 `.mt-novel-translation`:217 字纯文本、`font-size:24px`、`line-height:1.6`;
+  - 页面 shadow CSS:`box01{background:#B0DFE5;padding:.3em}`、`box02{background:#fff;padding:.5em}`、`box_txt{font-size:.95em;line-height:1.8em;padding:.5em}`、`txt_b{font-weight:bold}` ⇒ **白底内框、逐行留白、加粗标题全部丢失**;
+  - 全屏 233 个块级 `data-p-id` 节点里只有这 2 个是容器;143 条译文里有 2 条属于容器(同一段文字被重复翻译)。
+- 根因两条:`novel-reader.js` 的 `isNovelParagraphNode()` 只判「块级标签 + data-p-id」,容器被当成段落(整块拼接文本进 `chapter.paragraphs`);`novel-renderer.js` 的 `ensureNovelWrappers(node)` 会把该节点的**全部子节点**(含已渲染的内层段落)搬进 `[hidden]` 的 `.mt-novel-source`,只留一段扁平译文。
+- 第三处隐患(必须同改):`findNovelParagraphNode(surface,id)` 用 `[...rawMatches].filter(块级标签)[ordinal]` 解析序号,容器占 ordinal 0 ⇒ 只改提取不改这里,reapply 会把译文定位到容器、源文哈希不匹配而被 `restoreNovelNode` 清掉(表现为译文静默消失)。
+- 修复:
+  1. `content/modules/novel-reader.js` 新增 `hasNestedNovelParagraph()` / `isNovelParagraphLeaf()`:「带 data-p-id 的块级节点若存在**同为段落的块级后代**,就只是容器」,`findKakaoNovelSurface` / `novelSurfaceSignature` / `extractKakaoNovelChapter` 三处收集统一改用 leaf 判据。判据只认块级后代——`<br data-p-id>`、`<img data-p-id>`、`<span class="txt_b" data-p-id>` 是空元素/行内元素,不构成嵌套段落(否则满屏空行段落会被误删)。
+  2. `content/modules/novel-renderer.js` 的 `findParagraphNode()` 用同一个 `runtime.isNovelParagraphLeaf` 过滤后再取 ordinal(序号口径与提取一致);另加「整段只有一个行内包裹元素时镜像该包裹」,`<p class="box_txt"><span class="txt_b">…</span></p>` 这类标题行的加粗不再丢失(混排格式仍按纯文本,不清空重写以外不叠加镜像)。
+- 真机判据预演(把修复后的判据源码贴进当前页面跑真实 DOM):候选 233 → leaf **231**,被排除的正好是 `DIV.box01`/`DIV.box02`;按 pid 比对「过滤后的文档序」与提取序,**ordinal 错位 0 处**;有文字的 leaf 141 个且全部已有译文 ⇒ 修后进度由 143 变 141,同一段文字不再重复送翻译。
+- 缓存不受影响:`paragraphKey`/recordId 依赖 `chapterId + 源文哈希 + occurrenceIndex`,容器从不与内层段落共享哈希,已缓存的 141 段译文仍命中,只是 id 序号重排(`162#1..9` → `162`,`162#1..8`)。
+- 测试:`tests/novel_nested_container.test.mjs` 新增 6 例(容器不是段落/空行 `<br>` 不误判/序号与提取同口径/渲染不吞容器/行内包裹镜像且重复渲染不叠加/混排保持纯文本);`check:lines`、`eslint extension/src`、`scripts/build-extension.mjs` 全部通过。
+- 生效方式:需在 `chrome://extensions` 重新加载扩展并刷新页面(已渲染的旧 DOM 不会自愈)。
+
+## 2026-09-18 — 网文翻译「后面的比前面先出来」：不是顺序颠倒，也不只是失败重发，还有「上一轮任务没被取消」
+
+- 用户问:网文翻译是按阅读顺序发申请的吗?有没有颠倒?还是失败后重发了一次?
+- 代码事实:`novel-stream-workflow.js` 里待译段落按阅读顺序取(`orderParagraphs` 按 `data-p-id` 数字序,否则 DOM 序),按下标切片,**发送顺序就是阅读顺序**(0-49、50-99、100-149…);但**同时并发 3 条流**(`STREAM_BATCH_CONCURRENCY = 3`,原注释写明是为了把整章串行等待压到约 1/3),每条流独立返回 ⇒ 谁先出字谁先显示。服务端 `translation_stream.py` 收到一行就 commit 一行并立刻推事件,不重排;所以单条流内是模型的输出顺序。
+- 真机取证(用户当前章 58화 = 69908877,218 段):在页面 shadow DOM 里按阅读顺序现算 `paragraphKey`(与库里 `segment_key` **218/218 完全对齐**),再按本地服务提交序号 `translation_records.change_seq` 还原到达顺序:
+  - 首 12 个到达的段落下标 = `100, 101, 50, 102, 51, 103, 52, 104, 53, 105, 54, 55` —— 三条流(0-49 / 50-99 / 100-149)交错,后段先出是**并发**,不是颠倒;
+  - 更极端:0-49 那条流**首行迟到 58s**(首个提交 1789744098972,而 100-149 是 1789744031152),这段时间 50-199 甚至 200-217 都先出完了 ⇒ 用户看到「后面的快得多」;
+  - 本轮跨度 98.4s,5 个 50 段桶 + 18 段尾桶。
+- 但确实多翻了一遍,原因不是失败重试:`applied_operations` 显示同章有**两个 taskId**(…f6zyu6 与 …s4iilj),后者在前者还在流式时就启动、重叠约 47s;按段落下标映射,第二轮覆盖的正是第一轮尚未出字的 118 段 ⇒ **218 段里 118 段被翻了两遍**(`record_revision = 2`、两条版本)。第一轮全部是 `stream:` 操作、rev 从 1 开始 ⇒ 这次**没有**发生「批次失败 → 逐段补翻」。
+- 根因:`translateNovelText` 换新 taskId 时**不取消旧任务的流**——旧流会继续把同一批段落翻完并提交;而新任务的 `pending` 只看「已有译文的段落」,把旧任务**在途**的段落当成缺失又发了一遍。
+- 修复(`content/modules/novel-workflow.js`):新任务开始前先 `cancelNovelTranslationStream(旧taskId)` + `CANCEL_TRANSLATION_TASK` 取消旧任务,它没做完的段落由新任务按「尚无译文」覆盖 ⇒ 同一批段落最多只翻一遍,也省下重复的 token 与时间。
+- 测试:`tests/novel_screen_continue.test.mjs` 新增「新任务取代旧任务:先取消旧任务的流式请求,避免同批段落被翻两遍」。全量 Node 回归 **107 个文件 1142/1142 通过**;`eslint extension/src` 0 错;行数门禁过;`scripts/build-extension.mjs` 构建成功。
+- 回答用户的三个可能:①发送顺序**没有**颠倒(就是阅读顺序);②**不是**批次失败重发(这一轮没有失败重试);③真正多出来的一遍来自「上一轮任务没被取消」,已修。
+- 触发链(为什么会冒出第二个任务):`resetNovelNavigationState`(`novel-reader.js`,换章/换作品时重置)把 `textStatus` 打回 `idle`、清空 `translations`,却**没有取消在途的流** ⇒ 悬浮球不再显示「翻译中」,用户再点一下(或走补翻入口)就开了第二个任务;新任务先按持久缓存过滤(已提交的 100 段直接从库里补出来),剩下没落库的 118 段正是第一条流里还没出字的那批 ⇒ 同一批段落被两条流同时翻。第二条修复:`resetNovelNavigationState` 重置前先取消旧任务的流(内容侧 port + `CANCEL_TRANSLATION_TASK`),并清空 taskId。
+- 代价(为什么这算真 bug 而不是"多花点钱"):两条任务同时在跑时,上游最多 6 条并发流,服务商排队 ⇒ 0-49 那条流在任务 1 里 118s 才出第一行、在任务 2 里 160s 才出第一行;整章 218 段耗时被拉长,且 118 段译文会被第二条流改写一次(版本 v1→v2)。
+- 测试:新增 `tests/novel_reader_reset_cancel.test.mjs` 2 例(换章必须取消在途任务并清空状态;同章重渲染不得误取消);`tests/novel_screen_continue.test.mjs` 增「新任务取代旧任务:先取消旧任务的流式请求」。全量 Node 回归 **108 个文件 1144/1144 通过**;`eslint extension/src` 0 错;行数门禁过;`scripts/build-extension.mjs` 构建成功。
+- 仍未修(诚实说明):`pending` 只按「是否已有译文」算,不认识「在途」——跨任务无法感知,所以只要还能出现两个任务就仍有重复风险;本次两处取消把「两个任务并发」这个前提消掉了,重复随之消失。
+- 渲染时序(回答「后面先到、前面迟到时,前面是立即补上还是等后面渲染完」):**立即补上,不存在等待**。`novel-stream-workflow.js` 的事件回调每收到一个 `paragraph` 事件就同步调 `renderNovelTranslation(item.node, text, true)`(`novel-renderer.js:109`,纯同步 DOM 写,不排队、不等别的段);单条流内部用 `eventQueue = eventQueue.then(...)` 串行处理(所以单条流内不会乱序),三条流之间没有任何锁——JS 单线程,DOM 写入天然一次一个,但谁也不等谁。译文写在各段自己的 `:scope > .mt-novel-translation` 里,「补洞」是就地补,文档顺序永远等于阅读顺序。唯一会「迟到才出现」的情况:该段 DOM 节点在流式期间被阅读器换掉(重渲染/翻屏),那次渲染写进了已脱离文档的旧节点,要等下一次 `reapplyNovelTranslations`(shadow DOM 变动触发 reconcile,或切显示模式)按内容哈希匹配当前节点再补上。
+- 由此产生的两个可见现象(均未改,记录在案):①双语模式下补洞会把下方内容下推,页面会被顶一下;②流式到达的段一律按 `showTranslation = true` 渲染并翻转全局意图,所以流式期间按「显示原文」挡不住后续到达的段。
+- 若想更接近「顺序出现」:设置 → 小说流式分段把每批段数调大(默认 50,上限 150),批数变少、并发交错的窗口就小;代价是整章总时长变长(并发本身就是为了压总时长)。
+
+
+## 2026-09-18 — 网页翻译「太慢」：实测瓶颈在模型往返，改为流式增量渲染
+
+- 用户追加反馈:「而且感觉网页翻译太慢了。」
+- 实测(Chrome 真机 + 本地夹具页 `http://127.0.0.1:8899/`,54 段韩文 ≈ 3.2k 字,用用户当前配置):
+  - 点击 → **已缓存**的段渲染出来:**330ms**(说明扫描/enrich/服务预检/缓存查询都不是瓶颈);
+  - 22 个未缓存可视区段被组成 3 个请求,先后在 **23.1s / 28.6s / 28.9s** 返回(每次 6~8 段);
+  - 之前那次 Kakao 页 23 段约 5s ⇒ 同一条链路快慢差距就是**模型生成速度/首字延迟**,不是扩展调度。整个可视区必须等一次 20~30s 的往返才有第一个字。
+- 结论:再优化扫描/分批收益有限(极小批次换来的只是更早一点),真正的问题是「等一整批」。修复方向 = **把等待变成渐进的**:
+  - 新增 `shared/translation-row-stream.js`:SSE 事件切分(跨网络分片可拼)+ 从**尚未闭合**的 JSON 里增量提取**已经完整**的译文行。安全规则:一行必须成对出现且紧跟右花括号,残缺行绝不猜(否则会把下一行开头误当本行译文);两种键序都认;转义用 `JSON.parse` 还原。
+  - 新增 `background/modules/translation-provider-stream.js`:`stream:true` 请求,边收边把行抛给 `onRow`;服务端忽略 stream 直接回普通 JSON 时就地解析(**不再白发一次**);`response_format` 兼容性 4xx 返回 `null` 交回非流式;**中途断流但已拿到行时返回已拿到的行**(缺项交给既有的逐项补翻兜底,部分译文比整批失败有用);真失败(Key/额度/401)照旧抛错 ⇒ 失败原因照旧可见。
+  - `translation-provider.js`:批量请求支持 `onRow`,并把模型内部 id(`canonical-request-N`)映射回本批 item id;`ocr-pipeline.js` 再映射回**原文**并 `chrome.tabs.sendMessage({type:"WEBPAGE_TRANSLATION_PARTIAL"})` 推给标签页。
+  - 内容脚本:`applyPartialWebpageTranslations`(实现在 `webpage-renderer.js`,受 400 行门禁)只认当前 taskId、按原文匹配未完成段、立即渲染;最终 `settleBatch` 仍会覆盖一次(渲染幂等),所以提前显示的内容不会被留下错的;另加守卫「已 done 的段不因整批缺项被翻成失败」。
+- 安全边界:流式只对 `mode === "webpage"` 开启;链路上任何一步不成立(无 body reader / 非 SSE 且解析不出 / 400 response_format)都会回退到原来的整批请求 ⇒ 最坏情况等于今天的体验。图形行数门禁压力用等价压缩处理(`translation-provider.js`、`ocr-pipeline.js`、`webpage-translate.js`、`webpage-scheduler.js` 均压回 400 行内)。
+- 测试:新增 `tests/translation_row_stream.test.mjs` 11 例(残行不猜、逐行不重复、键序颠倒、转义、跨分片 SSE、边收边抛、忽略 stream 时就地解析且只发一次请求、response_format 回退、断流返回部分行、真失败仍抛错);`tests/webpage_toggle.test.mjs` 增「过期任务的增量丢弃 + 同一行不重复渲染」。全量 Node 回归 **107 个文件 1141/1141 通过**;`eslint extension/src` 0 错;行数门禁过;`scripts/build-extension.mjs` 构建成功。
+- 待用户操作:**必须在 `chrome://extensions` 重新加载扩展再刷新页面** —— 这次内容脚本与背景都改了(实测只刷新页面时页面里跑的还是旧内容脚本)。重载后应能看到译文「一条条陆续出现」,而不是等半天一次性出现。
+- 补充(回答「为什么慢」):单次请求 20~30s 是**服务商侧的生成速度**(实测约 2.7s/条,≈20 tok/s 量级)。扩展能做的是「早显示」和「并行」;若想整体更快,换更快的模型/服务商比调参数有效。快捷弹窗里的「并发数/每批段数/每批字符数」(快速模式 = 5/32/3200)是并行与批次大小的旋钮:并发调高、每批调小会让**第一行更早**出现(代价是请求数变多,可能触发限流)。
+
+
+## 2026-09-18 — 网页翻译双语模式：译文退化成 hover 提示（看不到）；长文本节点让调度器死循环
+
+- 用户反馈两件事:①「双语模式,网页翻译只有当鼠标移到文字上的时候才出现翻译,我想让它直接出现在原文字后面」;②「翻译总是出现错误,就是那个红色的刷新图标,这不是偶发现象」。
+- 真机取证(Chrome,用户当前 Kakao 阅读页):`document.querySelectorAll('.mt-webpage-bilingual-translation').length === 0`,页面里只存在**一个** `.mt-webpage-translation-tooltip` ⇒ 双语模式下 30/30 段全部走了 hover 分支,不悬停就一个字都看不到。与用户描述完全一致。
+- 根因 1(`webpage-renderer.js`):`safeBilingualContainer` 只认「独占一个块级元素的文本节点」,而 `BLOCK_TAGS` 只列了 P/H1-H6/BLOCKQUOTE/LI/TD/TH。真实网页的文字大多在 div/span/a/button 里 ⇒ 主路径几乎不命中,其余一律 `attachTooltip` 悬停提示。修复:**删掉 hover 提示整条链路**,双语译文元素永远插在**原文字节点之后**:独占块级容器时块级排版(另起一行),否则行内排版(紧跟原文同一行)。重复渲染幂等(同一条译文不插第二份,菜单「重新显示译文」会重放),cleanup 同时支持 block/inline。
+- 根因 2(红 ↻ 看不到原因):失败原因此前只写在红图标的 `title` 上,不悬停就无从得知;悬浮球也只说「翻译失败」。修复:进度面板在 `失败 N` 后追加一行 `失败原因：…`(首个失败段 `errors[0].error`,截断 160 字),同一原因只写一次 `console.warn`。**红 ↻ 的含义是「这一段的翻译请求真的失败了」——Key 未配置/余额不足/限流/超时/模型漏 id,现在都能直接看到。**
+- 根因 3(调度器死循环,网页翻译会永远转圈):`webpage-scheduler.js#composeBatch` 把字符上限写成 `chars + len > maxChars` 就 break。单个文本节点超过该档上限(默认 P0 600 / P1 1200 / P2·P3 2400 字,长正文段落很常见)时,该档第一批就 break ⇒ **返回空批**,而这段仍是 pending ⇒ `tryStartBatches` 在同一批上无限空转:队列永不排空、`drainWebpageQueue` 永不返回、`state.working` 永远为真,并向后台空发无数条 0 项 `TRANSLATE_TEXT_BLOCKS`。修复:上限改「软上限」——首个段超限也单独成批;`tryStartBatches` 另加空批防护。
+- 顺带修复 1:`controls-triple.js` 的「重试失败段落 / 全部重新翻译」把同步函数 `requeueWebpageSegments()` 的返回值(数字)当 Promise 用(`.then`)⇒ 点击必抛 TypeError、界面毫无反应,这两条菜单此前是**死的**。
+- 顺带修复 2:`requeueWebpageSegments(statuses, options)` 支持 `force`,「全部重新翻译(绕过缓存)」现在真的把 `force` 传进翻译请求(此前只是把段标回 pending,再请求仍命中缓存 ⇒ 对已译段落等于空操作);结算后清掉 force,普通失败重试继续走缓存。
+- 测试:新增 `tests/webpage_bilingual_render.test.mjs` 8 例(块级/行内都插在原文之后、段落含链接走行内、重复渲染幂等、译文变化替换、恢复原文只删译文元素、仅译文模式仍改写文本节点、**面板写出失败原因**);`tests/webpage_scheduler.test.mjs` 新增「长文本节点单独成批、队列排空」并扩展重译用例断言 `force` 真的传到请求。全量 Node 回归 **106 个文件 1129/1129 通过**;`eslint extension/src` 0 错;行数门禁过;`scripts/build-extension.mjs` 构建成功。
+- 环境备注:本沙箱里 `node --test` 会 spawn EPERM,全量回归改为「逐文件直接 `node <file>`」执行;`npm run build`(esbuild 需要 spawn 子进程)同样需要更宽的执行权限。
+- 待用户操作:`chrome://extensions` 重新加载 + 刷新页面(内容脚本与 styles.css 都要重载)。**若红 ↻ 仍出现,请把进度面板/控制台里的「失败原因」原文发来** —— 那句话直接指向 Key、余额、限流还是超时,是这次唯一还缺的现场证据。
+
 ## 2026-09-16 — 修复「对话引号被丢掉」:流式链路既没有提示词规则、也没有兜底修复
 
 - 用户反馈:`“난 무조건 탈색부터 한다.”` 被翻成 `我不管，肯定要先漂发。`(引号没了),并要求「限制一下提示词和加上代码检测，除了双引号还有单引号也忽略了」,同时说「我之前好像让AI处理过这个问题」。

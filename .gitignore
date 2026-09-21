@@ -67,3 +67,19 @@ debug_before/
 # === Runtime logs / debug dumps ===
 service.log
 tmp-snapshot.txt
+
+# === Local scratch outputs (command output dumps, not source) ===
+b.txt
+gi.txt
+l.txt
+build-out*.txt
+lengths-out*.txt
+lint-out.txt
+test-run.log
+test3_fails.txt
+tmp-ocr-bench-*.json
+tmp_pairing_tests/
+
+# === Local data snapshots / design references (not source) ===
+glossary-restore-*.json
+/术语库应用网址 - 界面设计.pdf

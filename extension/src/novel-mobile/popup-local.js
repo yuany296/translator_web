@@ -20,7 +20,7 @@ export function renamePopupBrand(doc = document) {
   const title = doc.querySelector(".popup-header h1");
   const eyebrow = doc.querySelector(".popup-header .eyebrow");
   if (title) title.textContent = "小说翻译器";
-  if (eyebrow) eyebrow.textContent = "KAKAOPAGE NOVEL";
+  if (eyebrow) eyebrow.textContent = "KAKAO / RIDI NOVEL";
   const hint = doc.querySelector("#languageHeading + p");
   if (hint) hint.textContent = "小说与翻译服务共用";
 }

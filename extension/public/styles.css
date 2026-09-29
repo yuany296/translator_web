@@ -1,26 +1,19 @@
 .mt-overlay-layer {
-  position: fixed;
-  left: 0;
-  top: 0;
-  width: 0;
-  height: 0;
+  /* 挂在阅读器内容容器内（见 resolveOverlayHost），与原图同一个滚动上下文：
+     滚动时两层由浏览器合成线程一起移动，覆盖层不会再被拖着走。
+     inset: 0 让图层盒子等于宿主内容盒，子节点不会撑大滚动区域（多出一条滚动条）。 */
+  position: absolute;
+  inset: 0;
   z-index: 2147483000;
   pointer-events: none;
-}
-
-.mt-overlay-root {
-  position: fixed;
-  pointer-events: none;
-  contain: layout style;
   overflow: visible;
 }
 
-.mt-overlay-layer.mt-overlay-document-flow {
+.mt-overlay-root {
   position: absolute;
-}
-
-.mt-overlay-layer.mt-overlay-document-flow .mt-overlay-root {
-  position: absolute;
+  pointer-events: none;
+  contain: layout style;
+  overflow: visible;
 }
 
 .mt-cross-page-root {
@@ -186,6 +179,37 @@
   pointer-events: none;
 }
 
+/* ---------------------------------------------------------------------------
+   宿主页面文字样式隔离
+   页面常用「元素级」规则统一正文字号/字体，例如 RIDI：
+     h1, h2, …, div, label, a, li, … {
+       font-size: 13px; font-family: "Pretendard Variable", …;
+       line-height: 1em; letter-spacing: -0.03em; color: #333;
+     }
+   元素选择器优先级虽低，但**高于继承**，于是挂在页面里的覆盖层文字会被改小、变灰、
+   字距被压：实测 RIDI 上 .mt-bubble-content 的译文被钉成 13px/#333/Pretendard，
+   .mt-bubble 上 inline 的 40~70px 字号与 --mt-text-color 全部失效；而且字号拟合
+   探针里也是同一个 13px，溢出永远测不出来，字号再也不会被收小。
+   这里只做「显式声明 = 原本的继承/默认值」，因此在不漏样式的站点（KakaoPage 等）
+   是严格 no-op，只让结果与宿主页面无关。
+   --------------------------------------------------------------------------- */
+.mt-overlay-root,
+.mt-cross-page-root,
+.mt-cross-page-overlay,
+.mt-cross-page-text,
+.mt-bubble,
+.mt-bubble-content,
+.mt-loading-card,
+.mt-floating-feedback,
+.mt-novel-source,
+.mt-novel-translation,
+.mt-novel-progress-panel,
+.mt-debug-label {
+  letter-spacing: normal;
+  font-style: normal;
+  text-transform: none;
+}
+
 .mt-bubble {
   position: absolute;
   box-sizing: border-box;
@@ -213,13 +237,22 @@
 
 /* 内层文字节点：负责文字换行、水平居中与行距。
    译文始终以原文字块中心为锚点并整体居中排版；
-   OCR 推断的 left/right 对齐只保留在 mt-align-* 类名上做调试信息，不再改变布局。 */
+   OCR 推断的 left/right 对齐只保留在 mt-align-* 类名上做调试信息，不再改变布局。
+   字体/字号/字重/颜色必须显式写 inherit：宿主页面的元素级规则高于继承，不写就会被
+   换成正文字号与正文色（详见上方「宿主页面文字样式隔离」）。 */
 .mt-bubble-content {
   display: block;
   width: 100%;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
   text-align: center;
   white-space: pre-line;
   line-height: 1.18;
+  letter-spacing: normal;
+  margin: 0;
+  padding: 0;
   word-break: break-word;
 }
 
@@ -333,6 +366,10 @@
 }
 
 .mt-bg-none {
+  /* 拿不到清理图时保持**透明**：绝不画纯色补丁。
+     实测（KakaoPage + RIDI）纯色补丁比没有遮罩更糟：清理图还没回来时它会先糊上一块
+     白/近色方块，用户看到的是"本来有清理图的站点突然变成白色补丁"。正确做法是
+     透明等清理图（见 data-mt-mask-report 诊断属性）。 */
   background: transparent;
   background-image: var(--mt-cleaned-image, none);
   background-repeat: no-repeat;
@@ -517,6 +554,9 @@
 .mt-floating-ball.mt-auto-enabled:hover {
   box-shadow: 0 8px 18px rgba(5, 150, 105, 0.46);
 }
+/* 段落锚点有两种：KakaoPage 页面自带的 data-p-id，与 RIDI 侧由我们盖章的
+   data-mt-novel-pid（见 content/modules/novel-paragraph.js）。两条选择器必须
+   成对出现——少一条就等于某个站点没有这层样式，而且不会报错。 */
 .mt-novel-source[hidden],
 .mt-novel-translation[hidden] {
   display: none !important;
@@ -529,16 +569,29 @@
   font: inherit;
   color: inherit;
 }
-/* 覆盖 Kakao 阅读器的 user-select: none（防复制），允许在正文中选中文字以添加术语 */
+/* 覆盖阅读器的 user-select: none（防复制），允许在正文中选中文字以添加术语 */
 [data-p-id],
 [data-p-id] .mt-novel-source,
-[data-p-id] .mt-novel-translation {
+[data-p-id] .mt-novel-translation,
+[data-mt-novel-pid],
+[data-mt-novel-pid] .mt-novel-source,
+[data-mt-novel-pid] .mt-novel-translation {
   user-select: text !important;
   -webkit-user-select: text !important;
 }
+/* RIDI 的阅读器会给正文里的 span 直接下颜色/字体（构建期哈希类名，压不过 */
+/* 单纯的 inherit），译文包裹必须带 !important 才能对页面主题完全透明。 */
+[data-mt-novel-pid] .mt-novel-source,
+[data-mt-novel-pid] .mt-novel-translation {
+  color: inherit !important;
+  font: inherit !important;
+}
 [data-p-id]::selection,
 [data-p-id] .mt-novel-source::selection,
-[data-p-id] .mt-novel-translation::selection {
+[data-p-id] .mt-novel-translation::selection,
+[data-mt-novel-pid]::selection,
+[data-mt-novel-pid] .mt-novel-source::selection,
+[data-mt-novel-pid] .mt-novel-translation::selection {
   background: rgba(96, 165, 250, 0.4);
   color: inherit;
 }

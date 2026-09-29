@@ -13,6 +13,7 @@ import { installSceneCrossPage } from "./scene-crosspage.js";
 import { installSceneCanonical } from "./scene-canonical.js";
 import { installSceneDispatch } from "./scene-dispatch.js";
 import { installRendererOverlay } from "./renderer-overlay.js";
+import { installRendererMask } from "./renderer-mask.js";
 import { installRendererCover } from "./renderer-cover.js";
 import { installCrossPageCover } from "./crosspage-cover.js";
 import { installRendererCrossPage } from "./renderer-crosspage.js";
@@ -39,6 +40,7 @@ import { installFloatingFeedback } from "./floating-feedback.js";
 import { installNovelActionFeedback } from "./novel-action-feedback.js";
 import { installNovelFocusClick } from "./novel-focus-click.js";
 import { installControlsUi } from "./controls-ui.js";
+import { installOverlayHost } from "./overlay-host.js";
 import { installControlsTriple } from "./controls-triple.js";
 import { installFloatingMenu } from "./floating-menu.js";
 import { installFloatingPosition } from "./floating-position.js";
@@ -59,15 +61,18 @@ import { installCanonicalPartialTranslations } from "./canonical-partial.js";
 import { installControlsAutotranslate } from "./controls-autotranslate.js";
 import { installControlsUtils } from "./controls-utils.js";
 import { installTargetFilter } from "./target-filter.js";
+import { installTargetIdentity } from "./target-identity.js";
 import { installTargetResolve } from "./target-resolve.js";
 import { installTargetCache } from "./target-cache.js";
 import { installPlatformRuntime } from "./platform-runtime.js";
 import { installPlatformDom } from "./platform-dom.js";
+import { installDiagnosticsOverlay } from "./diagnostics-overlay.js";
 import { installReaderState } from "./reader-state.js";
 import { installReaderApi } from "./reader-api.js";
 import { installReaderStartup } from "./reader-startup.js";
 
 export const contentInstallers = Object.freeze([
+  installTargetIdentity,
   installReaderInit,
   installReaderObservers,
   installScheduler,
@@ -83,6 +88,7 @@ export const contentInstallers = Object.freeze([
   installSceneCanonical,
   installSceneDispatch,
   installRendererOverlay,
+  installRendererMask,
   installRendererCover,
   installCrossPageCover,
   installRendererCrossPage,
@@ -107,6 +113,7 @@ export const contentInstallers = Object.freeze([
   installFloatingFeedback,
   installNovelActionFeedback,
   installControlsUi,
+  installOverlayHost,
   installControlsTriple,
   installNovelFocusClick,
   installFloatingMenu,
@@ -133,6 +140,7 @@ export const contentInstallers = Object.freeze([
   installTargetCache,
   installPlatformRuntime,
   installPlatformDom,
+  installDiagnosticsOverlay,
   installReaderState,
   installReaderApi,
   installReaderStartup
@@ -140,6 +148,7 @@ export const contentInstallers = Object.freeze([
 
 export const contentPhases = Object.freeze({
   functions: Object.freeze([
+    installTargetIdentity,
     installReaderInit,
     installReaderObservers,
     installScheduler,
@@ -155,6 +164,9 @@ export const contentPhases = Object.freeze({
     installSceneCanonical,
     installSceneDispatch,
     installRendererOverlay,
+    // 清理图是异步落到页上的：装配它，canonical 层才能在 artifact 落地时
+    // 立刻把遮罩绑到已存在的覆盖层上，而不是等一次未必会发生的重渲染。
+    installRendererMask,
     installRendererCover,
     installCrossPageCover,
     installRendererCrossPage,
@@ -178,6 +190,9 @@ export const contentPhases = Object.freeze({
     installNovelImageWorkflow,
     installFloatingFeedback,
     installNovelActionFeedback,
+    // 必须早于 controls-ui：后者的 ensureOverlayLayer 会优先委托给它，
+    // 缺了这一步覆盖层又会退回挂在 documentElement 上（不随内容滚动 → 逐帧追赶 + 多一条滚动条）。
+    installOverlayHost,
     installControlsUi,
     installControlsTriple,
     installNovelFocusClick,
@@ -204,7 +219,8 @@ export const contentPhases = Object.freeze({
     installTargetResolve,
     installTargetCache,
     installPlatformRuntime,
-    installPlatformDom
+    installPlatformDom,
+    installDiagnosticsOverlay
   ]),
   state: Object.freeze([installReaderState, installReaderApi]),
   startup: Object.freeze([installReaderStartup])

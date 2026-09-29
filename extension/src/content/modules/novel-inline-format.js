@@ -250,7 +250,12 @@ export function installNovelInlineFormat(runtime) {
     return pieces.length ? buildMirrorNodes(pieces) : null;
   }
 
-  /** 镜像壳只搬运样式语义(class / inline style);data-p-id 必须丢掉,否则它会被当成段落。 */
+  /**
+   * 镜像壳只搬运样式语义(class / inline style)；段落锚点必须丢掉，否则镜像里的副本
+   * 会被当成段落。两个锚点属性都要清：KakaoPage 的 data-p-id 与 RIDI 侧我们盖章的
+   * data-mt-novel-pid（见 novel-paragraph.js），只清一个就会给某个站点留下重复锚点，
+   * findNovelParagraphNode 按序号取值时就会指到镜像副本上。
+   */
   function cloneInlineShell(source) {
     const tag = String(source.tagName || "span").toLowerCase();
     const clone = document.createElement(tag);
@@ -267,6 +272,7 @@ export function installNovelInlineFormat(runtime) {
       }
       if (style) clone.setAttribute("style", style);
       clone.removeAttribute("data-p-id");
+      clone.removeAttribute("data-mt-novel-pid");
     }
     return clone;
   }

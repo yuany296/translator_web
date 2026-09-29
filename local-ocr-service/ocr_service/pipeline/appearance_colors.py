@@ -210,6 +210,17 @@ def sample_box_background_color(image: runtime.Any, box: dict[str, runtime.Any])
 
 runtime.sample_box_background_color = sample_box_background_color
 
+def _quantized_bucket_hex(key: runtime.Any) -> str:
+    """24 级量化桶的桶中心色（keys*24+12 clip 到 0..255 后转 hex）。"""
+    center = runtime.np.clip(key * 24 + 12, 0, 255)
+    return runtime.bgr_to_hex([int(value) for value in center])
+
+
+def _rgb_distance(first: list[int], second: list[int]) -> float:
+    """RGB 欧氏距离（与墨色筛选的 INK_DISTANCE_THRESHOLD 同款口径）。"""
+    return runtime.math.sqrt(sum((a - b) ** 2 for a, b in zip(first, second)))
+
+
 def sample_text_ink_color(image: runtime.Any, polygon: runtime.Any, box: dict[str, runtime.Any], bg_color: str) -> str:
     height, width = image.shape[:2]
     left = max(0, int(float(box.get('left') or 0)))
@@ -227,16 +238,75 @@ def sample_text_ink_color(image: runtime.Any, polygon: runtime.Any, box: dict[st
         return '#111827' if runtime.relative_luminance(bg_color) > 0.45 else '#ffffff'
     quantized = (ink // 24).astype(runtime.np.int16)
     keys, counts = runtime.np.unique(quantized, axis=0, return_counts=True)
-    dominant = runtime.np.clip(keys[int(runtime.np.argmax(counts))] * 24 + 12, 0, 255)
-    return runtime.bgr_to_hex([int(value) for value in dominant])
+    # 墨色主色挑选（与扩展侧 sampleBubbleAppearance::pickDominantInkBucket 同口径）：
+    # 第一层（v2）：像素数最多的桶可能是**白描边**而不是笔画（浅色背景上白描边
+    # 对比度不足 2，按像素数降序取第一个与背景对比度 >= INK_BACKGROUND_MIN_CONTRAST
+    # 的桶即可跳过）；全部不满足时回退旧行为：像素数最多者。
+    # 第二层（v3/v4）白描边守卫：白描边在各种背景上都能靠对比度或像素数当选
+    # （粉字案白桶 ct 15.6 当选；渐变红字案白桶 ct 4.5 当选、红笔画 ct 1.0~1.8
+    # 全被 ct>=2 跳过）—— TOP 桶无彩（chroma < 20）且近白（min(r,g,b) >= 200）
+    # 时，按「色度 + 与背景 RGB 距离 + 像素数」找彩色笔画候选：chroma >= 40、
+    # RGB 欧氏距离 >= 60（亮度对比度不可靠，不能再用 ct 过滤候选）、
+    # count >= max(64, 0.5% × 全部墨色像素) 且 count >= 4% × TOP.count；
+    # 找到即让位给色度最高者（并列取像素多者），不比总量（厚描边下彩色合计
+    # 远小于白桶）；无候选维持 TOP（之后仍由 choose_readable_text_colors 兜底）。
+    order = runtime.np.argsort(-counts, kind='stable')
+    bucket_hexes = [_quantized_bucket_hex(key) for key in keys]
+    top_index = -1
+    for index in order.tolist():
+        if runtime.contrast_ratio(bucket_hexes[index], bg_color) >= INK_BACKGROUND_MIN_CONTRAST:
+            top_index = index
+            break
+    if top_index < 0:
+        top_index = int(runtime.np.argmax(counts))
+    top_hex = bucket_hexes[top_index]
+    top_rgb = runtime.hex_to_bgr(top_hex)[::-1]
+    if min(top_rgb) >= NEAR_WHITE_MIN_CHANNEL and runtime.color_chroma(top_hex) < WHITE_OUTLINE_MAX_CHROMA:
+        background_rgb = runtime.hex_to_bgr(bg_color)[::-1]
+        minimum_by_ink = max(STROKE_GUARD_MIN_BUCKET_COUNT, STROKE_GUARD_TOTAL_INK_RATIO * int(counts.sum()))
+        minimum_by_top = STROKE_GUARD_TOP_COUNT_RATIO * int(counts[top_index])
+        best_index = -1
+        best_rank = None
+        for index in order.tolist():
+            if index == top_index or int(counts[index]) < minimum_by_ink or int(counts[index]) < minimum_by_top:
+                continue
+            chroma = runtime.color_chroma(bucket_hexes[index])
+            if chroma < STROKE_GUARD_COLOURED_CHROMA:
+                continue
+            bucket_rgb = runtime.hex_to_bgr(bucket_hexes[index])[::-1]
+            if _rgb_distance(bucket_rgb, background_rgb) < STROKE_GUARD_MIN_BG_DISTANCE:
+                continue
+            rank = (chroma, int(counts[index]))
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_index = index
+        if best_index >= 0:
+            return bucket_hexes[best_index]
+    return top_hex
 
 runtime.sample_text_ink_color = sample_text_ink_color
 
 def choose_readable_text_colors(original: str, background: str) -> tuple[str, str]:
-    if runtime.contrast_ratio(original, background) >= 4.5:
-        text = original
+    """与扩展侧 rendering/bubble-colors.js::chooseReadableTextColors 同口径。
+
+    只看对比度会把"旁白蓝字"这类低对比但明显有彩色的墨色压成黑字白边：实测
+    复杂插画背景上蓝字的对比度到不了 4.5，规则于是改写成黑字，用户看到的正是
+    "原图蓝字白边、译文黑字白边"。因此这里与扩展侧一样保留彩色墨色：
+    对比度 >= 4.5 直接用；或者色度 >= 40 也保留（v4：不再要求对比度下限——
+    渐变红字与中灰蓝背景亮度几乎相同（ct 1.0），ct >= 2.2 会把真彩字拒成黑字；
+    彩色墨色的可读性由必渲染的白/黑描边保证）。灰阶（chroma < 40）路径不变。
+    """
+    ink = str(original or '').strip()
+    bg = str(background or '').strip() or '#ffffff'
+    ink_contrast = runtime.contrast_ratio(ink, bg) if ink else 0.0
+    keep_ink = bool(ink) and (
+        ink_contrast >= READABLE_CONTRAST or
+        runtime.color_chroma(ink) >= COLOURED_INK_CHROMA
+    )
+    if keep_ink:
+        text = ink
     else:
-        text = '#000000' if runtime.contrast_ratio('#000000', background) >= runtime.contrast_ratio('#ffffff', background) else '#ffffff'
+        text = '#000000' if runtime.contrast_ratio('#000000', bg) >= runtime.contrast_ratio('#ffffff', bg) else '#ffffff'
     stroke = '#ffffff' if runtime.relative_luminance(text) < 0.45 else '#000000'
     return (text, stroke)
 
@@ -269,3 +339,35 @@ def contrast_ratio(first: str, second: str) -> float:
     return (high + 0.05) / (low + 0.05)
 
 runtime.contrast_ratio = contrast_ratio
+
+# 保留原图墨色的门槛（与扩展侧 rendering/bubble-colors.js 一致）：
+# 对比度 >= 4.5 直接用原墨色；或者色度 >= 40 也保留（v4：彩色字可读性由必渲染
+# 的描边保证，不再要求对比度下限——渐变红字与中灰蓝背景亮度几乎相同（ct 1.0），
+# ct >= 2.2 会把真彩字拒成黑字）。灰阶（chroma < 40）路径不变。
+READABLE_CONTRAST = 4.5
+COLOURED_INK_CHROMA = 40
+# 墨色主色挑选的背景对比度门槛（与扩展侧 bubble-colors.js INK_BACKGROUND_MIN_CONTRAST
+# 一致）：v2 引入，用于 TOP 桶挑选（跳过低对比的浅底白描边）；v4 起它只影响 TOP
+# 的位次，不再代表"没采到"——守卫与 choose_readable_text_colors 会另行判别。
+INK_BACKGROUND_MIN_CONTRAST = 2
+# 白描边守卫（与扩展侧 bubble-colors.js 同口径）：白描边靠对比度或像素数总能当选
+# （浅底 ct < 2 被 v2 跳过、深底 ct 15.6 当选、中灰蓝底 ct 4.5 当选而真笔画
+# ct 1.0~1.8 被埋），判别尺不能只靠亮度对比度 —— TOP 桶无彩（chroma < 20）且
+# 近白（min(r,g,b) >= 200）时，在其余桶里找彩色笔画候选：chroma >= 40、与背景
+# RGB 欧氏距离 >= 60（色相不同，亮度可比）、count >= max(64, 0.5% × 全部墨色
+# 像素) 且 count >= 4% × TOP.count；找到即让位给色度最高者（并列取像素多者），
+# 不比总量（厚描边下彩色合计远小于白桶），否则维持 TOP。
+WHITE_OUTLINE_MAX_CHROMA = 20
+NEAR_WHITE_MIN_CHANNEL = 200
+STROKE_GUARD_MIN_BUCKET_COUNT = 64
+STROKE_GUARD_COLOURED_CHROMA = 40
+STROKE_GUARD_MIN_BG_DISTANCE = 60
+STROKE_GUARD_TOTAL_INK_RATIO = 0.005
+STROKE_GUARD_TOP_COUNT_RATIO = 0.04
+
+def color_chroma(value: str) -> int:
+    """色度 = max(R,G,B) - min(R,G,B)：用来区分"有彩色倾向的墨色"和灰阶。"""
+    red, green, blue = runtime.hex_to_bgr(value)[::-1]
+    return max(red, green, blue) - min(red, green, blue)
+
+runtime.color_chroma = color_chroma

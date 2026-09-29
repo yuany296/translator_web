@@ -1,3 +1,5 @@
+import { sanitizeRenderRotationDeg } from "../../rendering/cover-geometry.js";
+
 export function installRendererCrossPage(runtime) {
   function findCommonAncestor(targets) {
     const values = targets.filter(Boolean);
@@ -172,7 +174,11 @@ export function installRendererCrossPage(runtime) {
       h: frame.height,
       centerX: frame.centerX,
       centerY: frame.centerY,
-      rotation: Number(node.dataset.rotationDeg || 0),
+      rotation: sanitizeRenderRotationDeg(
+        Number(node.dataset.rotationDeg || 0),
+        frame.width,
+        frame.height
+      ),
       unit: "px",
       allowVerticalOverflow: true
     });
@@ -260,6 +266,48 @@ export function installRendererCrossPage(runtime) {
     });
   }
 
+  /**
+   * 文本节点里的原文/译文/行数是否与当前 bubble 一致（派生口径与 createBubbleNode 相同，
+   * 因此只在真实文本变化时返回 false）。
+   */
+  function crossPageTextNodeMatches(node, bubble) {
+    if (!node || !bubble) return true;
+    const original = runtime.cleanRenderableText(bubble.original_text || "");
+    const translated = runtime.cleanRenderableText(bubble.translated_text || "") || original;
+    return String(node.dataset.original || "") === original &&
+      String(node.dataset.translated || "") === translated &&
+      String(node.dataset.sourceLineCount || "") === String(Math.max(1, Math.round(Number(bubble.source_line_count) || 1)));
+  }
+  runtime.crossPageTextNodeMatches = crossPageTextNodeMatches;
+
+  /**
+   * surface 被复用时只换 item.bubble，DOM 里的原文/译文会停留在上一版：用户看到的是
+   * 「译文只对应半句」「data-original 还是接缝合并前的旧片段」。文本身份一变就重建文本节点，
+   * 几何与字号仍由随后的 syncCrossPageSurfaceEntry 统一刷新。
+   */
+  function refreshCrossPageTextNode(entry, item, index, surface) {
+    const previous = item.textNode;
+    const next = runtime.createBubbleNode({
+      ...item.bubble,
+      x: 0,
+      y: 0,
+      w: 100,
+      h: 100,
+      polygon: null,
+      fill_box: null,
+      stitch_overflow: false,
+      projection_role: "text_primary"
+    }, index, { textOnly: true, seamRenderKey: surface.renderKey });
+    if (!next) return false;
+    next.classList.add("mt-cross-page-text");
+    item.overlay.appendChild(next);
+    if (previous && typeof previous.remove === "function") previous.remove();
+    item.textNode = next;
+    item.layout = null;
+    return true;
+  }
+  runtime.refreshCrossPageTextNode = refreshCrossPageTextNode;
+
   function updateCrossPageSurfaceEntry(entry, surface) {
     const previous = entry.surface;
     const previousKey = String(previous.renderKey || "");
@@ -276,6 +324,10 @@ export function installRendererCrossPage(runtime) {
       item.overlay.classList.toggle("mt-show-source", showSource);
       item.overlay.classList.toggle("mt-cross-page-debug",
         runtime.hasRenderableOcrDebug({ debug: surface.debug }));
+      if (!crossPageTextNodeMatches(item.textNode, item.bubble)) {
+        refreshCrossPageTextNode(entry, item, index, surface);
+        item.textNode.dataset.seamRenderKey = nextKey;
+      }
     });
     if (previousKey !== nextKey) {
       runtime.state.crossPageOverlaysByRenderKey.delete(previousKey);

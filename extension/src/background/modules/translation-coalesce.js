@@ -144,6 +144,16 @@ export function installTranslationCoalesce(runtime) {
     const rawTop = rawBoxes.length > 0 ? Math.min(...rawBoxes.map(box => Number(box.top) || 0)) : 0;
     const rawRight = rawBoxes.length > 0 ? Math.max(...rawBoxes.map(box => (Number(box.left) || 0) + (Number(box.width) || 0))) : 0;
     const rawBottom = rawBoxes.length > 0 ? Math.max(...rawBoxes.map(box => (Number(box.top) || 0) + (Number(box.height) || 0))) : 0;
+    // 采样到的文字/描边色必须保留：这里以前在 bg_type === "none" 时直接写死
+    // #000000/#ffffff，把本地 OCR 从原图采到的墨色丢掉了，渲染层于是永远"黑字白边"。
+    // 只有整组都没有有效颜色时才退回历史默认值。
+    const groupColor = key => (Array.isArray(sorted) ? sorted : [])
+      .map(item => String(item && item[key] || "").trim())
+      .find(candidate => /^#[0-9a-f]{6}$/iu.test(candidate)) || "";
+    const groupTextColor = groupColor("text_color");
+    const groupStrokeColor = groupColor("stroke_color");
+    const textColor = groupTextColor || (bgType === "none" ? "#000000" : "");
+    const strokeColor = groupStrokeColor || (bgType === "none" ? "#ffffff" : "");
     return {
       ...sorted[0],
       id: `t${index}`,
@@ -155,13 +165,15 @@ export function installTranslationCoalesce(runtime) {
       translated_text: "",
       fill_box: bgType === "solid" ? mergedFillBox : null,
       bg_type: bgType,
-      bg_color: bgType === "solid" ? String(sorted[0] && sorted[0].bg_color || "") : "",
+      // 采样到的背景色对非实底同样要留着：它既是清理图缺位时的遮罩兜底色
+      // （复杂背景的旁白必须挡住原文），也是渲染侧推导可读文字色的依据。
+      bg_color: String(sorted[0] && sorted[0].bg_color || ""),
       bg_confidence: Number(sorted[0] && sorted[0].bg_confidence || 0),
       region_id: String(sorted[0] && sorted[0].region_id || ""),
       region_type: String(sorted[0] && sorted[0].region_type || "plain_text"),
       region_polygon: sorted[0] && sorted[0].region_polygon || null,
-      text_color: bgType === "none" ? "#000000" : String(sorted[0] && sorted[0].text_color || ""),
-      stroke_color: bgType === "none" ? "#ffffff" : String(sorted[0] && sorted[0].stroke_color || ""),
+      text_color: textColor,
+      stroke_color: strokeColor,
       alignment: runtime.inferOcrCandidateGroupAlignment(sorted),
       translation_role: runtime.inferOcrCandidateGroupTranslationRole(sorted),
       font_weight: runtime.inferOcrCandidateGroupFontWeight(sorted),

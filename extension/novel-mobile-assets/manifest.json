@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "小说翻译器 · KakaoPage（手机版）",
+  "name": "小说翻译器 · KakaoPage / RIDI（手机版）",
   "short_name": "小说翻译器",
-  "version": "1.1.0",
-  "description": "在手机上翻译 KakaoPage 小说：抓取正文、直连 AI 翻译、本地译文缓存与术语库，不需要本地服务。",
+  "version": "1.1.1",
+  "description": "在手机上翻译 KakaoPage 与 RIDI 小说：抓取正文、直连 AI 翻译、本地译文缓存与术语库，不需要本地服务。",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -25,7 +25,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "小说翻译器 · KakaoPage",
+    "default_title": "小说翻译器 · KakaoPage / RIDI",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png"
@@ -42,7 +42,9 @@
         "https://*.kakao.com/*",
         "https://kakaopage.com/*",
         "https://*.kakaopage.com/*",
-        "https://*.kakaocdn.net/*"
+        "https://*.kakaocdn.net/*",
+        "https://ridibooks.com/*",
+        "https://*.ridibooks.com/*"
       ],
       "js": ["content.js"],
       "css": ["styles.css"],

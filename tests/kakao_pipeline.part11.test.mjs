@@ -596,6 +596,109 @@ test("a missing cleaned image releases the artifact attempt for a same-revision 
   assert.equal(harness.ocrMetas.filter(meta => meta.forceCleanedImageArtifact === true).length, 2);
   assert.equal(harness.timers.filter(timer => timer.delay === 5000).length, 1);
 });
+test("a stale artifact attempt marker with no in-flight request self-heals", async () => {
+  const observation = makeCanonicalObservation("page-a", "rev-a", "complex-page", 40, "complex");
+  observation.visual = {
+    ...observation.visual,
+    bgType: "none"
+  };
+  const options = {
+    pageObservations: {
+      a: [observation],
+      b: []
+    }
+  };
+  const harness = createCanonicalHarness(options);
+  // 第一次服务没给清理图 → 走"失败即释放"路径（retryKey + 退避）。
+  await harness.pipeline.run(harness.targets.a);
+  assert.equal(harness.ocrMetas.filter(meta => meta.forceCleanedImageArtifact === true).length, 1);
+  const failed = harness.store.getPageHandle("page-a");
+  const artifactKey = failed.artifactRefreshRetryKey;
+  assert.ok(artifactKey, "失败后必须留下可重试的 artifactKey");
+  // 模拟"上一次尝试夭折、标记没被释放"：attemptedKey 还在，但没有在途请求、
+  // 没有清理图、也没有退避窗口 —— 这正是"cleanArtifacts 永远 0ms 且旁白永远没有遮罩"的现场。
+  harness.store.registerPageHandle({
+    ...failed,
+    cleanedImage: null,
+    cleanedImageArtifactKey: "",
+    artifactRefreshAttemptedKey: artifactKey,
+    artifactRefreshRetryKey: "",
+    artifactRefreshRetryAfter: 0,
+    artifactRefreshRetryTimer: null
+  });
+  assert.equal(harness.store.getInflightJob(`canonical-cleaned-artifact:page-a:${artifactKey}`), null);
+  // 现在服务能给清理图了：陈旧标记必须自愈，而不是被永久跳过。
+  options.artifactCleanedImage = "data:image/png;base64,Y2xlYW4=";
+  await harness.pipeline.refresh({
+    reason: "stale-artifact-attempt",
+    focusPageIds: ["page-a"]
+  });
+  assert.equal(harness.ocrMetas.filter(meta => meta.forceCleanedImageArtifact === true).length, 2,
+    "陈旧标记必须自愈并重新请求清理图");
+  assert.equal(harness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+});
+test("cleaned artifact report says why a complex page did or did not get a mask", async () => {
+  const complex = makeCanonicalObservation("page-a", "rev-a", "complex-page", 40, "complex");
+  complex.visual = {
+    ...complex.visual,
+    bgType: "none"
+  };
+  const complexHarness = createCanonicalHarness({
+    pageObservations: {
+      a: [complex],
+      b: []
+    },
+    artifactCleanedImage: "data:image/png;base64,Y2xlYW4="
+  });
+  await complexHarness.pipeline.run(complexHarness.targets.a);
+  // 一轮里 translate 可能跑两次（页 + seam 刷新），报告记的是最后一次判定：
+  // 无论哪次，复杂背景页都必须被认成"需要清理图"并带上掩膜数。
+  const complexReport = complexHarness.store.getCleanedArtifactReport();
+  assert.equal(complexReport.length, 1);
+  assert.ok(["request", "cached", "inflight"].includes(complexReport[0].r), JSON.stringify(complexReport));
+  assert.equal(complexReport[0].masks, 1);
+  assert.equal(complexHarness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+  // 清理图已在手时，报告必须说 cached（而不是又去请求一次）。
+  await complexHarness.pipeline.refresh({
+    reason: "report-cached",
+    focusPageIds: ["page-a"]
+  });
+  assert.deepEqual(complexHarness.store.getCleanedArtifactReport().map(item => item.r), ["cached"]);
+
+  // 实底页面根本不需要清理图：报告要能区分"不需要"和"要不到"。
+  const solidHarness = createCanonicalHarness();
+  await solidHarness.pipeline.run(solidHarness.targets.a);
+  assert.deepEqual(solidHarness.store.getCleanedArtifactReport().map(item => item.r), ["no-complex-projection"]);
+});
+test("渲染侧报出透明遮罩方块时，即使投影计划判成 no-complex-projection 也要补清理图", async () => {
+  // 默认 harness 的观测是实底 → 投影计划判成"这一页不需要清理图"。
+  // RIDI 上的现场就是这样：页面画了 bg_type=none 的透明遮罩，计划却说不需要图，
+  // 于是那一页永远没有 inpainted 遮罩。渲染侧是唯一确知"我画了透明遮罩"的地方。
+  const harness = createCanonicalHarness({
+    artifactCleanedImage: "data:image/png;base64,Y2xlYW4="
+  });
+  await harness.pipeline.run(harness.targets.a);
+  assert.deepEqual(harness.store.getCleanedArtifactReport().map(item => item.r), ["no-complex-projection"]);
+  assert.equal(harness.ocrMetas.filter(meta => meta.forceCleanedImageArtifact === true).length, 0);
+
+  await harness.pipeline.requestMissingPageMask("page-a", [{ x: 10, y: 20, w: 30, h: 8 }]);
+  const artifacts = harness.ocrMetas.filter(meta => meta.forceCleanedImageArtifact === true);
+  assert.equal(artifacts.length, 1, "渲染侧报出的需求必须真的发出清理图请求");
+  assert.equal(artifacts[0].requireCleanedImage, true);
+  assert.deepEqual(artifacts[0].cleanedMasks, [{
+    coordinateSpace: "percent",
+    box: { x: 10, y: 20, w: 30, h: 8 }
+  }]);
+  assert.equal(harness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+
+  // 已经有图之后再报同一批方块：不得重复请求。
+  await harness.pipeline.requestMissingPageMask("page-a", [{ x: 10, y: 20, w: 30, h: 8 }]);
+  assert.equal(harness.ocrMetas.filter(meta => meta.forceCleanedImageArtifact === true).length, 1);
+  // 空需求 / 不存在的页：安静返回，不发请求。
+  await harness.pipeline.requestMissingPageMask("page-a", []);
+  await harness.pipeline.requestMissingPageMask("page-missing", [{ x: 1, y: 1, w: 2, h: 2 }]);
+  assert.equal(harness.ocrMetas.filter(meta => meta.forceCleanedImageArtifact === true).length, 1);
+});
 test("a cleaned artifact retry timer cannot refresh a newer page revision", async () => {
   const observation = makeCanonicalObservation("page-a", "rev-a", "complex-page", 40, "complex");
   observation.visual = {

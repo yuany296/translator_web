@@ -1,4 +1,4 @@
-﻿export function installSeamSurfaceUtils(runtime) {
+export function installSeamSurfaceUtils(runtime) {
   // 同气泡相邻行(kind: "adjacent_line" 的 coveredResidual)被吸收进 surface 后,
   // 其译文按页面顺序与纵向位置并入 winner 气泡文本,page_text/cover 框与
   // 复合框一并扩展,保证跨页气泡完整覆盖原文且译文不缺行。
@@ -27,7 +27,8 @@
         box: residualBox,
         pageText: residualPageBoxes.text,
         pageCover: residualPageBoxes.cover || [],
-        text: residualText
+        text: residualText,
+        original: String(canonical.originalText || canonical.original_text || "")
       });
       residualsByWinner.set(String(item.winnerCanonicalId), list);
     }
@@ -42,19 +43,28 @@
       const lines = [{
         pageIndex: pageIndex.get(residuals[0].pageId) ?? 0,
         y: Number((winnerBoxByPage.get(residuals[0].pageId) || {}).y) || 0,
-        text: String(bubble.translated_text || bubble.translatedText || "")
+        text: String(bubble.translated_text || bubble.translatedText || ""),
+        original: String(bubble.original_text || bubble.originalText || "")
       }];
       for (const residual of residuals) {
         const pageBox = residual.pageText[0] || {};
         lines.push({
           pageIndex: pageIndex.get(residual.pageId) ?? 0,
           y: Number(pageBox.y) || 0,
-          text: residual.text
+          text: residual.text,
+          original: String(residual.original || "")
         });
       }
       lines.sort((left, right) => left.pageIndex - right.pageIndex ||
         left.y - right.y || left.text.localeCompare(right.text));
       const text = lines.map(line => line.text).filter(Boolean).join("\n");
+      // 原文同样并入：吸收相邻行后，框和译文都盖住两行了，原文却还停在 winner 的半句上，
+      // 标题/双语显示与"只识别到一行"的观感就是这么来的。逐行取原文，顺序与译文一致。
+      const lineOriginal = lines.map(line => line.original).filter(Boolean).join("\n");
+      const winnerOriginal = String(bubble.original_text || bubble.originalText || "");
+      const residualOriginal = String(residuals[0].original || "");
+      const originalText = lineOriginal && residualOriginal && !winnerOriginal.includes(residualOriginal)
+        ? lineOriginal : winnerOriginal;
       const unionBox = runtime.unionSeamPercentBoxes([
         { x: Number(bubble.x), y: Number(bubble.y), w: Number(bubble.w), h: Number(bubble.h) },
         ...residuals.map(item => item.box)
@@ -63,13 +73,16 @@
       const sourceLineCount = Math.max(1,
         Number(bubble.source_line_count ||
           (bubble.visual && bubble.visual.sourceLineCount) || 1),
-        text.split("\n").length);
+        text.split("\n").length,
+        originalText.split("\n").length);
       extended.set(canonicalId, runtime.freezeCanonicalValue({
         ...bubble,
         x: unionBox.x,
         y: unionBox.y,
         w: unionBox.w,
         h: unionBox.h,
+        originalText,
+        original_text: originalText,
         translatedText: text,
         translated_text: text,
         source_line_count: sourceLineCount,

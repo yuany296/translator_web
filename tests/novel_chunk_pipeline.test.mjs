@@ -71,8 +71,8 @@ function makeHarness(options = {}) {
   const runtime = {
     state: { invalidated: false },
     getNovelState: () => state,
-    reconcileKakaoNovelReader: () => chapter.surface,
-    extractKakaoNovelChapter: () => chapter,
+    reconcileNovelReader: () => chapter.surface,
+    extractNovelChapter: () => chapter,
     getConfiguredSourceLanguage: () => "auto",
     getTargetLanguage: () => "zh-CN",
     resolveSourceLanguage: () => "ko",

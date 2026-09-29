@@ -1,5 +1,138 @@
 # Operations Log
 
+## 2026-09-25（续 4）— 手机版点译文段落跳「找不到文件」：桌面专属回退撞上无拦截的旧包，装配期整段取消
+
+- 用户反馈：**手机上点击某个已翻译的段落 → 跳到「未找到文件」界面**。用户明确口径：**取消这个行为，不是给手机版补 sidepanel**。
+- 取证：点段落链路 = `novel-focus-click.js` 发 `OPEN_NOVEL_SIDEPANEL` → 桌面 `bootstrap.js#openNovelManageUi`（sidePanel.open 失败回退 `chrome.tabs.create(chrome.runtime.getURL("sidepanel.html"))`）。手机版从出生提交（88a3da7）起 `background-local.js` 就覆盖 `openNovelManageUi` 返回 ok:false —— **最新构建点段落无事发生**；真机装的是开发中途旧包（内容脚本已有点击、后台还没有拦截）→ 走桌面回退 → 打开手机包里不存在的 sidepanel.html → ERR_FILE_NOT_FOUND。用户确认现象即「未找到文件」。
+- 修复（手机上点段落 = 什么都不做）：
+  - `novel-mobile/content.js`：runtime 字面量加 `IS_NOVEL_MOBILE: true`（必须在 `contentPhases.functions` 装配循环之前就位）。
+  - `content/modules/novel-focus-click.js`：`installNovelFocusClick` 开头 `if (runtime.IS_NOVEL_MOBILE) return;`（在 `isNovelReaderHost` 之前，装配期拦截，监听根本不挂）；桌面版零改动。
+  - 双保险保留：`background-local.js` 的 ok:false 覆盖原样。
+  - `novel-mobile-assets/manifest.json` 1.1.0 → **1.1.1**（版本号可见化，用户能在扩展页确认装上新包）。
+- 测试：`tests/novel_focus_click.test.mjs` 扩到 **13 例**（新增「手机版不挂监听、点击不发消息」；QA 实证：若删 guard，KakaoPage hostname 命中名单 → 监听挂上 → 断言即红）。全量 Node 回归 **1570/1570**（`NODE_OPTIONS=` 前置）；ESLint 与行数门禁干净；双端重建 + `pack-novel-mobile.mjs` 产出新 zip/crx（CRX3 签名自检过）。
+- 交付：`dist/novel-mobile.zip` / `.crx`（1.1.1）——手机上删旧装新、刷新阅读页后点段落应毫无反应。
+- 备注：这几个文件的 diff 里还混着 9/25 RIDI 接入的未提交改动（QA 记录在案），与本修复无关但同批未提交；本次改动**未提交**（工作区 WIP 保护）。
+- 通用教训：**手机版是「桌面共用模块 + 覆盖层」的减法产物，桌面专属功能的所有入口必须在装配期缺席**——后台消息拦截只兜得住「消息能到后台」的路径，挂监听这类入口根本不经过后台。以及：**查手机 Bug 第一步先确认真机上是哪一刻的构建**，包版本永远存疑。
+
+## 2026-09-25（续 3）— 分片被剪断那行还是两份：提示被后台白名单丢掉 + 文本不可比时缺「几何同一行」判据
+
+- 复验（第二次重载后）：跨页面已横跨分片边界、面板被吸收成一条气泡，但页级仍留一个 `'지오의조정화]` 的小气泡盖在第一行下半截上 —— 用户描述为「另外一个框是第一行的一半和剩下的行」。
+- 取证（`data-mt-*` + 现场 OCR 产物）：
+  - 内容侧确实发了接缝带提示（新加的 `data-mt-ocr-hint` 读到 `{strip:true,width:1280,band:96}`），但**后台入口 `normalizeImageMeta` 的白名单把它丢了**：`ocr-pipeline.js` 用 `normalizeImageMeta(message.imageMeta)` 重建 imageMeta，字段表里没有 `edgeLineBandPx` → 聚类永远收不到提示 → 页级面板仍是三行合一。这就是「提示没发」与「后台没用」之间的第三段断链（内容 → 消息 → 白名单 → 聚类）。
+  - 补上透传后页级正确拆成「被剪断的那一行」+「其余两行」；但现场这一次复合图把左右两半**合成了一条观测**（原文 `[지오의 초상화]`），与页级残缺读法 `'지오의조정화]` 的模糊子串相似度只有 0.69（< 0.80），同一行仍裂成两条 canonical：接缝面一条、页级一条，后者还盖在接缝面上。
+- 修复：
+  - `background/modules/ocr-item-filter.js`：`normalizeImageMeta` 白名单补 `edgeLineBandPx`（`toNumber(..., 0)`）—— 契约是「内容侧发的提示必须原样到聚类」。
+  - `canonical/reconciler-modules/reconciler-seam-eval.js`：`relationBetweenSeamAndPage` 从 `reconciler-canonical.js` 搬过来（那边顶到 400 行门禁），并新增 `seamPageGeometryDuplicateRelation`（几何同一行）+ `sharedComparableRun`（最长连续公共片段）。判据：同一页上两边框互相覆盖 ≥ 0.8、水平中心对齐 ≥ 0.85，**且两侧文本至少共享一段 ≥ 较短一侧 30% 的连续片段**。现场那行共享 `지오의`（3/8）✓；「同位置却互不相干的接缝」共享 0~1 字符 → 继续各走各的（三条既有护栏用例原样通过）。
+  - `content/modules/recognition-seam.js`：接缝带提示取值提到一处，并把「有没有带上」写进 `data-mt-ocr-hint`（与既有 `data-mt-mask-report` 同类的主世界诊断）。
+- 测试：`tests/seam_cut_line_evidence.test.mjs` 扩到 8 例，新增「后台入口必须原样透传接缝带提示」与「复合图合成一条完整读法时，页级残缺读法仍按几何认作同一行」（后者**实测去掉几何判据即红**）；`tests/strip_tile_reader.test.mjs` 新增「分片页请求带接缝带提示」。全量 Node 回归 **1569/1569**；行数门禁与 ESLint 干净。
+- 真机终检（第三次重载后，`ridibooks.com/books/6305000008/view`）：那一块只剩**一条**跨页面气泡 —— 原文 `[지오의 초상화] 탐색3일차, 종료`、译文 `[地奥的肖像] 探索,第三天,结束。`，框 463×256 横跨分片边界；`data-mt-ocr-hint` = `{strip:true,width:1280,band:96}`；页级 `'지오의조정화]` 残留气泡消失，DOM 全文检索只剩这一条命中。
+- 通用教训：**跨模块提示要一路验到消费点**——这次提示「发了、也带了」，却死在后端入口的白名单重建上；白名单式的字段归一化必须与新增契约同步，否则表现为「上游明明发了、下游就是没反应」。以及：**文本判据失效时要有几何兜底，但几何兜底必须带一点文字证据**，否则同位置的不相干证据会被并进来（既有护栏立刻抓到）。
+
+## 2026-09-25（续 2）— RIDI 小说接入小说模式（桌面版 + 手机小说版）
+
+- 用户需求：**想把 ridi 的小说界面加入小说模式**（`ridibooks.com/books/6224000125/view`），随后补一句**小说版的插件也要**（手机小说版同样要能翻 RIDI）。
+- 真机取证（连用户已登录的 Chrome，同一 URL；并对比 RIDI 漫画页 `/books/6305000008/view`）：
+  - 小说正文在**普通 DOM** 里：`#viewer_contents > div > div._container_* > div.css-*[._isScrollMode_*] > div.css-* > h2/p…`，**全章一次进 DOM**（内容来自 `webview-cache-epub.ridibooks.com/{话id}/epub/Section0001.xhtml.json`，EPUB 分节，长章会随滚动续载）。
+  - **段落没有任何标识**（KakaoPage 的 EPUB 阅读器会打 `data-p-id`，RIDI 一个都不打）；类名是构建期哈希（`css-hafgtc` / `_container_d25rb_1`），换一次构建就变。
+  - 一个短章 88 个块里 **51 个是 `<p><br></p>` 空行**；正文首段带一长串 U+2060/U+2063 零宽水印（视觉上没有，会原样进提示词与缓存）。
+  - 作品级 id 不在 URL 里（URL 是**这一话**的 id）：`window.itemId`=6224000001、`window.itemEpisodeId`=6224000125，但那是**主世界**全局，isolated content script 读不到；阅读器自己渲染的作品标题链接 `#viewer a[href*="/library/books/"]`（`/library/books/8480770/`）里能读出作品 id 与作品名。
+  - 漫画页只有 `#viewer`、没有 `#viewer_contents` —— 小说/漫画的判据天然是「有没有正文容器 + 有没有段落」。
+- 结构（不是加分支，而是把「站点」收敛成适配器）：
+  - 新增 `shared/novel-hosts.js`：域名判据的**唯一真源**（Kakao/RIDI/RIDI∪Kakao）。装配期（`novel-focus-click` 决定要不要挂监听）与 state 阶段（`reader-state` 写 `IS_*_READER`）用的是同一份名单 —— 顺手修掉一个既有缺陷：`runtime.IS_KAKAOPAGE_READER` 要到 state 阶段才写入，装配期读到的永远是 `undefined`，所以**「点原文打开修订面板」在真机上从来没挂上过**。`readers/site-hints.js` 的 RIDI 正则也改为复用这一份（同一家站点在「分片长条」与「小说阅读器」两套判据里不会再有第二个定义）。
+  - 新增 `content/modules/novel-paragraph.js`：段落锚点契约 + leaf 判据 + 原文出口。锚点是**两个**属性名：Kakao 的 `data-p-id`（页面所有，只读）与 RIDI 的 `data-mt-novel-pid`（我们盖章），消费方一律走 `surface.anchorAttribute`，不硬编码。
+  - 新增 `content/modules/novel-kakao-reader.js` / `novel-ridi-reader.js`：两个适配器（表面发现 + 章节抽取），`novel-reader.js` 只剩站点无关的「分发 / 签名 / 重扫 / 回填」。
+  - RIDI 段落身份**按内容寻址**（`c{内容哈希}#{出现序号}@{哈希}`），锚点值就是内容哈希。理由：RIDI 是 EPUB 分节续载，DOM 序号会漂移；内容寻址让「同一段」在任何时刻都是同一个 id，译文与缓存不会认错段。空行不盖章、不计入 `chapter.paragraphs`（否则缓存覆盖率永远到不了「完整」、进度分母虚高）。
+  - 章节身份：`chapterId` = URL 里的话 id，`seriesId`/`scopeKey`(`ridi:{作品id}`) = 作品标题链接里的作品 id（读不到就退回话 id，作用域退化成「一话」）；标题优先取 `og:title`（浏览器整页翻译会改写 `document.title`，og:title 不会）。
+  - 零宽水印在**原文出口**（`getOriginalNovelParagraphText`）统一清掉：抽取与回填都走这个出口，源文哈希不会两边对不上。
+- 运行时 API 去站点化（一处改名、全部调用点同步）：`findNovelSurface` / `extractNovelChapter` / `collectNovelImages` / `reconcileNovelReader` / `reconcileNovelIfStale`；`floating-states` 的 `kakaoReader` → `novelReader`（不可用文案改为「当前页面不是已支持的小说阅读页面」）。桌面版与手机版共用同一份 `contentPhases`，所以手机小说版**不写一行站点代码**就跟着支持 RIDI。
+- 顺带修的两处真缺陷：
+  1. `renderNovelTranslation` 加了「同内容不重写」记账（`state.renderedKeys`）。reconcile 会因自己插入的包裹节点被观察器看到而重扫，没有这层判断就是「写译文 → 触发观察器 → 再重扫 → 再写译文」的每 80ms 重写全文循环（Kakao 与 RIDI 都吃这一条）。
+  2. `reconcileNovelIfStale` 恢复成**晚绑定** `runtime.reconcileNovelReader()`（手机版与测试靠覆盖这个属性做替换，直接调内部函数会让覆盖静默失效）。
+- 手机小说版：`novel-mobile-assets/manifest.json` 的 `content_scripts.matches` 增加 `https://ridibooks.com/*` 与 `https://*.ridibooks.com/*`（仍不全站注入），名称/描述/弹窗与设置页品牌文案改成「KakaoPage / RIDI」。`apply-url-widen.js`（「一键加入应用」把章节网址放宽成作品网址）**故意不放宽 RIDI**：作品 id 不在 URL 里，唯一能猜的放宽会把所有作品一起纳入（范围错比范围窄更糟），已在注释里写清并提示留空应用网址。
+- 测试：新增 `tests/ridi_novel_reader.test.mjs` 13 例（位置解析、漫画页不误判、正文重复渲染只取一条分支、内容寻址 id 与重复段落序号、空行不计入、水印清理、盖章锚点的回填与定位、同内容不重写 DOM、换话清空状态、站点名单唯一真源、RIDI 页面上三个 reader 标志）。`novel_focus_click` 改为「小说阅读站才挂监听（KakaoPage 与 RIDI 都算）」并新增盖章锚点用例；`novel_mobile_manifest` 增加 RIDI 注入断言；`floating_states` 跟随 `novelReader` 改名；`novel_renderer_inline_format` 增加「镜像壳也不许带盖章锚点」。
+- 验证：`npm run verify` 全绿（行数门禁 production 400 / tests 800、`eslint extension/src`、Pylint、构建、**Node 1569/1569**、Python 154 passed + 1 skipped）；`node scripts/build-novel-mobile.mjs` 与 `scripts/check-novel-mobile-dist.mjs` 通过。真机（RIDI `6224000125`，重建扩展后刷新页面）：小说球由「不可用（未识别为 Kakao 小说页面）」变为可点（「小说翻译 / 点击显示中文译文」）；正文 88 个块中 37 个非空段落盖章、51 个空行不盖章，id 无一重复；作品 id `8480770` / 作品名 / `og:title` / 话 id `6224000125` 四项都取到。渲染层在真机 CSS 上实测（手工复刻 `renderNovelTranslation` 的 DOM 形态后量 computed style，再还原）：「原文包裹」`display:none`，译文逐项继承段落的颜色/字号/字体/行高（`rgb(0,0,0)` / 18.4px / Pretendard / 30.728px），`user-select` 被改回 `text`（RIDI 全站 `user-select:none`）。漫画页（`6305000008`）行为不变。**未做**：没有真跑一次 LLM 翻译（用户选择自己点，避免消耗额度与写入译文库）。
+- 通用教训：**「这个站点是不是小说阅读器」必须是装配期就能回答的事实，不能依赖晚一阶段才写入的 runtime 标志。** 以及：**站点差异要收敛成适配器，而不是在管线里加 `if 站点`**——RIDI 只写了「怎么找正文、怎么定身份」，切块/翻译/渲染/缓存一行都没改。
+
+## 2026-09-25（续）— 同一行被画两遍：页级段落吞掉了被剪断的行 + 相邻行吸收差 0.05 容差
+
+- 真机复验第一轮修复后（用户重载扩展+刷新）跨页遮罩已横跨分片边界，但同一面板出现两份覆盖：接缝面盖住被剪断的标题行 `[吉奥的肖像]`，页级面板气泡又把这一行（带着误读 `조정화`）连同下面两行再翻一遍。
+- 取证（本地 OCR 服务当次产物 + 探针）：
+  - 页级整页 OCR 的三行（`'지오의조정화]` / `탐색3일차,` / `종료`）被**聚类并成一条 paragraph 观测**（`탐색3일차, '지오의조정화] 종료`），接缝证据于是没有可挂载的对象 —— 复合图读到的那一行只能自成一条 canonical。
+  - 接缝面本可吸收「同一面板的相邻行」（`seam-residuals.js` 的 `adjacent_line`：吸收后框取并集、译文逐行并入、页级气泡被摘掉），但实测几何差一点点：标题行框高 7.42%、正文行组从 5.21% 起 → 重叠 2.21% = 较矮行高的 **0.30**，旧上限 `minHeight * 0.25` 把它挡在门外。
+- 修复：
+  - `background/modules/ocr-lines.js`：新增 `isLocalPaddleEdgeCutLine`，`buildLocalPaddleParagraphGroups` 在分组**之后**把「真的贴住画布边（笔画被剪断）」的行摘出来单独成组。判据是「贴边」（容差按行高 8%，OCR 框常比笔画内缩一两像素），不是「落在边缘带里」—— 后者会把带内正常行也拆成单行气泡。其余行保持原段落（在连通图上断开会让同段邻行也各自成组，实测过）。
+  - `content/modules/recognition-seam.js`：分片页的整页 OCR 请求带上 `imageMeta.edgeLineBandPx`（= `calculateKakaoSeamCaptureBandHeight`，1280 宽分片为 96），后台才有依据判断哪一行贴边；接缝请求本身跨两页，不带这个提示。
+  - `background/modules/ocr-clustering.js` / `ocr-provider.js` / `ocr-dispatch.js`：把提示透传进聚类。
+  - `canonical/modules/seam-residuals.js`：相邻行吸收的重叠容差 `minHeight * 0.25` → `0.4`，与实测的 0.30 对齐；`pipeline-api.js` 补 `isSeamAdjacentBubbleLine` / `collectSeamSurfaceOwnership` 两个取证入口。
+- 结果（复现台，现场真实几何）：页级观测由 1 条（三行）变 2 条（被剪断的标题行 + 正文两行成段）；接缝证据与标题行合成一条 canonical（原文 `[지오의 초상화]`、几何覆盖两片）；面板其余两行作为 `adjacent_line` 被接缝面吸收 → 整块并成一条气泡，页级气泡从渲染里摘掉。
+- 测试：`tests/seam_cut_line_evidence.test.mjs` 扩到 6 例（新增「页级聚类摘行」「接缝面吸收相邻行」；两例都**实测修复前为红**），`tests/strip_tile_reader.test.mjs` 新增「分片页请求带接缝带提示」。全量 Node 回归 **1554/1554**；行数门禁与 ESLint 干净。
+- 通用教训：**多行块与「被页边界剪断的行」在聚类阶段就必须分开**（一个是本页内部单元，另一个有一半在邻页）；而**吸收判据的容差要拿实测几何校准**——差 0.05 个行高，整块内容就会被画两遍。
+
+## 2026-09-25 — RIDI 分片边界劈开的整行字：接缝跑了、证据被「带宽 × 1.5」的跨缝上限全丢
+
+- 用户反馈：**「探索第3天……」那条覆盖框没有完全对齐原图，因为是截页，好像只识别到了下面那一部分、上面的抛弃了**，问是不是没达成截页判断、于是没做截页合并。
+- 真机取证（连用户已登录的 Chrome，RIDI `ridibooks.com/books/6305000008/view`，1280 宽分片 / 带宽 96）：
+  - `img[data-mt-seam-diagnostics]`：这一对分片（上片 `c5f2a563` / 下片 `ad0902ba`）`status: "completed"`、`reasons: ["lower_ocr_edge","lower_visual_edge"]`，但 `observationIds: []`、`filteredObservationIds: [一条]` —— **接缝跑了、一条证据都没留下**；canonical 的 `geometryPageIds` 只有下片、`sharedSeamObservationIds: []`、没有跨页面（`surfaces: []`）。
+  - 本地 OCR 服务调试产物给出同一结论：上片整页只拿到 59px 字头碎片（乱码 `[기0 이 국 사히`，0.70 被服务端丢掉）；下片整页把字身读成 `'지오의조정화]`（0.81）；而**接缝复合图（1280x192）把这一行正确识别成 `[지오의` / `초상화]`（0.99）**。
+  - 把三份真实产物喂进真实代码复现（新探针 `tmp_pairing_tests/repro_ridi_seam_merge.mjs`）：两个框双双被判 `seam_not_cross_boundary`，接缝 observation 数为 0。
+- 根因（两层，都必须修）：
+  1. `background/modules/seam-handling.js` 把「跨缝」定义成 `rawBox.height <= maxCrossHeight`，而 `maxCrossHeight = max(48, 带宽 × 1.5) = 144`。被劈开那行聚类后字高 150~153px，于是一个**完整落在复合图内部**（上下都不贴画布边）的整行被当成「不跨缝」丢掉。字高不该由带宽决定：带宽是给接缝上下文用的，特效字完全可能高过它。
+  2. `canonical/reconciler-modules` 逐条挂载接缝观测：复合图把一行切成左右两个框时，只有一个框能通过文本关联到达 canonical，另一个自成一条 —— 同一行变成两条 canonical，各带半句原文、半幅几何，跨页遮罩自然只盖住一半。
+- 修复：
+  - `seam-handling.js` 新增 `seamLineFitsComposite(rawBox, imageSize)`：框严格落在复合图内部且不超过画布高的 90% → 视为「被劈开的一整行」，不再受带宽 × 1.5 限制；「整幅场景框」（贴住画布边或占满高度）仍被原上限挡住（新常量 `SEAM_CROSS_MAX_LINE_COVERAGE = 0.9`，`background-state.js`）。
+  - `reconciler-seam-eval.js` 新增接缝证据身份 `seamCaptureKey`（单一真源，片段分组的同名函数改为委托它）、`seamEvidenceCaptures`（按证据分组，只收真正跨页的观测）、`resolveSeamCaptureRoot`、`attachSeamEvidenceToComponents`（**同一次复合图的观测作为一份证据整体挂载**）、`joinSeamCaptureMemberText`（整份证据按页/纵向顺序拼出整行，剔除被包含的重复读法）。
+  - `reconciler-projection.js` 的挂载循环改为调用整体挂载；`reconciler-canonical.js` 的 `chooseCanonicalText` 在「整份证据都在本 canonical」时优先用拼出的整行，但页级读法更长时保留页级（页级证据还带着这一行以外的内容，例如整个面板的其余行）。
+- 复现台修复后：`canonical_572333e0…` 原文 `[지오의 초상화]`、3 个成员（下片碎片 + 左右两半）、几何覆盖两片且上下片各自都盖到 20~81%；面板其余两行仍是独立一条。
+- 测试：新增 `tests/seam_cut_line_evidence.test.mjs` 4 例（整行不再被带宽上限误杀 / 整幅场景框仍被挡住 / 两半整体挂载并用拼出的整行 / 对照组：拆成两份独立证据就只会各成半句）。**已实测**：把构建产物里的新判据短路后第 1 例变红、其余照旧；对照组证明修复前口径确实产出半句 canonical。
+- 验证：`npm run build` 成功；行数门禁通过（production 400 / tests 800）；`eslint extension/src` 干净；**全量 Node 回归 1550/1550**。
+- 通用教训：**「跨缝」不能用「框高 ≤ 上下文带宽的倍数」判定。** 带宽与字号无关；被劈开的一整行在复合图里是完整可见的（上下不贴画布边），这才是它与「整幅场景框」的分界。以及：**同一次复合图的观测是一份证据**，逐条挂载会让同一行在 OCR 的水平切分处裂成两条 canonical——几何各半、原文各半。
+
+## 2026-09-22（续）— 上一轮修复不够：真正让 RIDI 分片丢遮罩的是「分片换图 = 换 pageId」
+
+- 用户复测：**我刷新了，还是有的没有有的有**，并点名问 `물감이 그림이 마치 생명체인 것처럼 느껴졌지.`（"颜料和画作仿佛拥有了生命一般"）那一块为什么没有清理图覆盖。
+- 上一轮（下一条）修了 `carriedMask` 的 sourceToken 门禁，方向对但**不够**。重新做真机取证后拿到决定性事实：
+  - 现场 `<html data-mt-mask-bind>` 显示 `c74e0041 → 22` 次、`0d7f2cc5 → 6` 次**成功绑定**；`<html data-mt-mask-report>` 这些页都是 `cached`（图在手里）。可所有 `.mt-overlay-root` 的 `--mt-cleaned-image` **全是空的**。
+  - 我第一轮加的「main-world 监听 `setProperty/removeProperty`」拿到 0 事件——因为**扩展的 runtime 跑在 isolated world**，`evaluate_script` 在 main world，两边 `window` 不通。这个假阴性差点让我走错方向。**取证必须落在 isolated world（改源码 + 重建）**。
+  - 补上专项取证流水（`<html data-mt-mask-trace>`，环形 80 条，记录 bind / sync-write / sync-remove / sync-bail / rebuild / remove-overlay / store-rescue）后真相清楚了：
+    - `sync-write` 对某一页（`6ed6732f`）连打 **60+ 次**，**全程没有任何 `sync-remove`**，可那一页的 root 依旧是 `hasVar: 0`。
+    - 同时 3 秒内页面 pageId 从 `6ed6732f` 一路变成 `1d1efd02 → f5de19f9 → 5009fc71`；**可见的那一层（`display:block`）的 pageId 根本不在 `data-mt-mask-report` 里**。
+    - 现象归纳：**拿到遮罩并反复写入的，是已经不可见的那一页；用户真正看到的这一页，从来没被绑过。**
+- 根因（两条，都必须修）：
+  1. **`applyCleanedImageToPageOverlays` 用错身份。** `renderer-mask.js` 的 `overlayPageId()` 先读 `overlayState.pageId`——那是**建 root 那一刻的快照**。RIDI 分片阅读器换图是「同一个 `<img>` 元素原地换页」：新图有新 pageId / 新 imageRevision，但 targetId 不变、覆盖层不重建，于是快照永远停在旧页。结果：新页的图匹配不上（可见层永远没遮罩），旧页的图反而写进这个 target 的层。
+  2. **渲染侧取图只看快照。** `renderOverlay` 的 `cleanedImage` 只来自 `result.cleanedImage`（渲染那一刻的快照）和 `oldOverlay.cleanedImage`（同一枚 root）。清理图是异步产物，**图落地时这一版投影往往已经画完**；如果覆盖层恰好在图落地之后才重建，两个来源都空 → 新 root 天生没遮罩，而且再也不会有人来补（一键绑定已经消费掉了）。
+- 修复：
+  - `content/modules/renderer-mask.js`：`overlayPageId()` 改为**以 `state.kakaoPageIdByTarget` 的当前绑定为准**，`overlayState.pageId` 只作无绑定时的回退。同一口径同步到 `lifecycle-position.js` 的 `overlayPageIdOf` 与 `lifecycle-overlay-cleanup.js` 的 `maskPageIdOf`（三处必须一致，否则取证流水和实际绑定会对不上 pageId）。
+  - `renderer-overlay.js`：清理图取三个来源的第一个非空值 —— `result.cleanedImage` → `oldOverlay.cleanedImage` → **`runtime.getPageCleanedImage(pageId)`（直接问 canonical store 这一页此刻的 handle.cleanedImage）**。新增的 `getPageCleanedImage` 在 `renderer-mask.js` 里实现。这才是唯一不依赖时序的取法。
+- 测试：`tests/ridi_rendering_parity.test.mjs`
+  - 新增「分片原地换图（同一 target 换成新 pageId）后，新页的清理图必须能绑上可见层」——**已实测旧口径失败、新口径通过**（用 Python 临时把 `overlayPageId` 还原成快照优先，只有这一例红）。
+  - 新增「渲染没带图、旧层也没绑过时，必须从 store 兜底取这一页的清理图」——**已实测去掉 store 兜底则失败**。
+  - 原有那例源码断言改成匹配新的三来源形式。
+- 顺手修的门禁缺陷：`scripts/check-file-lengths.mjs` 的 `walk()` 会把**指向目录的软链**当成文件 `readFileSync` → `EISDIR` 直接崩掉整个门禁（pytest `--basetemp` 就会留下 `<name>current -> <name>0` 这类软链）。已加 `entry.isSymbolicLink()` 跳过。
+- 验证：ESLint 干净、行数门禁通过、构建成功、**Node 回归 1521/1521**、**Python 148 passed / 1 skipped**。
+- 通用教训：**「这一页的产物」不能用「建那一层时记下的这一页」去找。** 分片阅读器会原地换页，页面身份必须每次**现问当前绑定**。以及——**取证代码一定要跑在扩展真正所在的 world**，otherwise 会拿到"什么都没发生"的假阴性。
+
+## 2026-09-22 — RIDI 部分分片的遮罩「绑上了又被擦掉」：沿用清理图被错挂在 sourceToken 上
+
+- 用户反馈：**漫画翻译模式中，ridi 的界面和 kakaopage 的界面不相同，希望最终效果和 kakaopage 相同；但 ridi 界面有些翻译有背景清理图遮罩，有的没有。**
+- 现场取证（连用户已登录的 Chrome；RIDI `ridibooks.com/books/6305000008/view` vs KakaoPage 参照页）：
+  - RIDI 四个分片全是 `role: cover_only` + `region_type: effect_text` + `bg_type: none`，**条件完全一致**，所以"有的有、有的没有"不可能是判据不同造成的。
+  - `<html data-mt-mask-report>` 显示每个分片的清理图都**已经算出来**（`cached` + `masks: 1~2`），不是"上游没请求"。
+  - 决定性一条：分片 `0974bfe0` 的 `data-mt-mask-bind` 记着**成功绑定过 32 次**，而它的 `.mt-overlay-root` 上 `--mt-cleaned-image` **是空的**（同一时刻另一个分片 `ae112e20` 有图）。→ 图写进 DOM 之后**又被抹掉了**。
+- 根因在 `content/modules/renderer-overlay.js` 重建 root 时的"沿用上一版清理图"：
+  ```js
+  const carriedMask = oldOverlay && oldOverlay.sourceToken === currentSourceToken
+    ? String(oldOverlay.cleanedImage || "") : "";
+  ```
+  清理图是**页级**产物（按 pageId 由 canonical handle 提供），而 `sourceToken` 是**图源地址**——RIDI 的分片图会换 url（懒加载/换版），两者本就无关。换源那一轮：
+  1. `carriedMask` 被判空 → 新建的 root **不带** `--mt-cleaned-image`；
+  2. 新 `overlayState.cleanedImage` 也被写成空，把 `renderer-mask.js` 先前绑好的记录**覆盖掉**；
+  3. 紧接着的 `syncOverlayPosition`（`lifecycle-position.js`）按"这一层没有清理图"把变量 **removeProperty 掉**。
+  三步下来就是用户看到的"有的分片遮罩被擦掉、有的没被擦掉"——差别只在于该分片这一轮有没有换图源。
+- 修复：`carriedMask` 去掉 `sourceToken` 相等这一档，只要这一页之前拿到过清理图就沿用（`const carriedMask = String(oldOverlay && oldOverlay.cleanedImage || "")`）。换源导致失效的情形由 `syncOverlayPosition` 自己的 sourceToken 分支负责（它会重建 root 并解绑页面），不需要在这里重复把关。
+- 测试：`tests/ridi_rendering_parity.test.mjs` 新增 1 例「分片换图源（sourceToken 变化）也不能丢掉这一页已绑定的清理图」——用假 DOM 跑真实的 `renderOverlay`，先让 overlayState 持有清理图，再把 target 的图源换成 v2，断言新 root 立刻带上 `--mt-cleaned-image`。同时把原有的源码断言从「必须挂 sourceToken」改成「必须无条件沿用」。**已实测该用例在旧写法下失败、新写法下通过**。
+- 验证：ESLint 干净、行数门禁通过、`scripts/build-extension.mjs` 重新构建成功、完整 Node 回归全绿。
+- 通用教训：**「沿用上一个状态」这类 carry-over 守卫，必须挂在这个状态真正的身份上。** 清理图按 pageId 缓存，就不该用图源 URL 把关——挂错身份会在"身份恰好变化"的那一部分数据上静默失效，表现成"随机地有些行、有些不行"。
+
 ## 2026-09-21 — 覆盖层「太大」：跨坐标空间比对倾角，把遮罩撑成了外接框的包围盒
 
 - 用户反馈：**这个覆盖层太大了吧，只要在识别的文字框里面就行了**（承接上一条的斜排遮罩修复）。

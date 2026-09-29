@@ -687,3 +687,85 @@ test("late seam evidence reuses a cleaned artifact when the final blue mask is u
   }]);
   assert.equal(harness.store.getPageHandle("page-a").cleanedImageArtifactKey, P.buildCleanedArtifactKey("rev-a", pageAArtifacts[0].cleanedMasks));
 });
+test("a landed cleaned artifact is bound to the page overlay without waiting for a re-render", async () => {
+  const complex = makeCanonicalObservation("page-a", "rev-a", "complex-page", 40, "complex");
+  complex.visual = {
+    ...complex.visual,
+    bgType: "none"
+  };
+  const bound = [];
+  const options = {
+    pageObservations: {
+      a: [complex],
+      b: []
+    },
+    artifactCleanedImage: "data:image/png;base64,Y2xlYW4=",
+    adapterOverrides: {
+      applyCleanedImageToPageOverlays: (pageId, cleanedImage) => {
+        bound.push([pageId, cleanedImage]);
+        return 1;
+      }
+    }
+  };
+  const harness = createCanonicalHarness(options);
+  await harness.pipeline.run(harness.targets.a);
+  // 这一轮里页面覆盖层是在清理图之前渲染的：图落地的那一刻必须直接绑到 DOM 上。
+  assert.equal(harness.store.getPageHandle("page-a").cleanedImage, "data:image/png;base64,Y2xlYW4=");
+  assert.ok(bound.some(([pageId, image]) => pageId === "page-a" && image === "data:image/png;base64,Y2xlYW4="),
+    `清理图落地必须当场绑定，实际调用：${JSON.stringify(bound)}`);
+  assert.equal(bound.some(([pageId]) => pageId === "page-b"), false, "别把 A 的清理图绑到 B 上");
+  // 命中缓存这条路径同样要绑：handle 上有图不等于屏上有遮罩。
+  bound.length = 0;
+  await harness.pipeline.refresh({
+    reason: "mask-cached-rebind",
+    focusPageIds: ["page-a"]
+  });
+  assert.deepEqual([...new Set(bound.map(item => item[0]))], ["page-a"]);
+  assert.equal(bound.every(([, image]) => image === "data:image/png;base64,Y2xlYW4="), true);
+});
+test("renderer-driven mask demand binds the fetched mask onto the page overlay", async () => {
+  const complex = makeCanonicalObservation("page-a", "rev-a", "complex-page", 40, "complex");
+  complex.visual = {
+    ...complex.visual,
+    bgType: "none"
+  };
+  const bound = [];
+  // 第一轮拿不到清理图会留下 6 秒退避；退避是正确行为，测试要推进时钟而不是绕过它。
+  let clock = 1000;
+  const options = {
+    pageObservations: {
+      a: [complex],
+      b: []
+    },
+    adapterOverrides: {
+      now: () => clock,
+      applyCleanedImageToPageOverlays: (pageId, cleanedImage) => {
+        bound.push([pageId, cleanedImage]);
+        return 1;
+      }
+    }
+  };
+  const harness = createCanonicalHarness(options);
+  await harness.pipeline.run(harness.targets.a);
+  // 第一轮服务端给不出清理图：覆盖层按"没有遮罩"渲染，也没有可绑的图。
+  assert.equal(harness.store.getPageHandle("page-a").cleanedImage, null);
+  assert.ok(harness.store.getPageHandle("page-a").payload, "渲染侧补图需要页 payload");
+  assert.deepEqual(bound, []);
+  const maskBox = {
+    x: 20,
+    y: 40,
+    w: 20,
+    h: 6
+  };
+  // 渲染侧把"这一页画了透明遮罩却没有清理图"报回来 → 按报回的盒子补一张。
+  options.artifactCleanedImage = "data:image/png;base64,Y2xlYW4=";
+  clock = 100000;
+  await harness.pipeline.requestMissingPageMask("page-a", [maskBox]);
+  assert.ok(bound.some(([pageId, image]) => pageId === "page-a" && image === "data:image/png;base64,Y2xlYW4="),
+    `补图成功后必须绑到 DOM 上，实际调用：${JSON.stringify(bound)}`);
+  // 命中缓存也必须绑：handle 上有图，不代表屏上已经画出来了。
+  bound.length = 0;
+  await harness.pipeline.requestMissingPageMask("page-a", [maskBox]);
+  assert.ok(bound.some(([pageId, image]) => pageId === "page-a" && image === "data:image/png;base64,Y2xlYW4="),
+    `命中缓存时同样必须补绑，实际调用：${JSON.stringify(bound)}`);
+});

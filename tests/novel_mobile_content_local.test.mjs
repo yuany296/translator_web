@@ -32,10 +32,10 @@ function makeHarness(paragraphs = [makeParagraph("0", "첫 문단"), makeParagra
   const runtime = {
     state: {},
     getNovelState: () => state,
-    reconcileKakaoNovelReader: () => surface,
-    findKakaoNovelSurface: () => surface,
+    reconcileNovelReader: () => surface,
+    findNovelSurface: () => surface,
     novelSurfaceSignature: () => signature,
-    extractKakaoNovelChapter: () => chapter,
+    extractNovelChapter: () => chapter,
     resetNovelForChapter: (value, target) => {
       const key = `${value.scopeKey}:${value.chapterId}`;
       if (target.chapterKey === key) return;

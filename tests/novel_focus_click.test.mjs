@@ -2,34 +2,39 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { installNovelFocusClick } from "../extension/src/content/modules/novel-focus-click.js";
 
-function makeNode({ pid = null, children = [] } = {}) {
+function makeNode({ pid = null, stamp = null, children = [] } = {}) {
   return {
     nodeType: 1,
     tagName: "P",
     children,
-    getAttribute: name => (name === "data-p-id" ? pid : null)
+    getAttribute: name => {
+      if (name === "data-p-id") return pid;
+      if (name === "data-mt-novel-pid") return stamp;
+      return null;
+    }
   };
 }
 
-function setup({ isKakao = true, showTranslation = true, translatedIds = [], paragraphId = "52#1" } = {}) {
-  const paragraphNode = makeNode({ pid: "52" });
+function setup({ hostname = "page.kakao.com", showTranslation = true, translatedIds = [], paragraphId = "52#1", anchor = "page", isNovelMobile = false } = {}) {
+  const paragraphNode = anchor === "stamp" ? makeNode({ stamp: "c1a2b3c4" }) : makeNode({ pid: "52" });
   const surface = { root: {} };
   const sent = [];
   const documentListeners = new Map();
   const runtime = {
-    IS_KAKAOPAGE_READER: isKakao,
     getNovelState: () => ({
       showTranslation,
       surface,
       translations: new Map(translatedIds.map(id => [id, "译文"]))
     }),
-    findKakaoNovelSurface: () => surface,
+    findNovelSurface: () => surface,
     findParagraphIdForNode: (targetSurface, node) => (node === paragraphNode ? paragraphId : null),
     sendRuntimeMessage: message => {
       sent.push(message);
       return Promise.resolve({ ok: true });
     }
   };
+  if (isNovelMobile) runtime.IS_NOVEL_MOBILE = true;
+  globalThis.location = { hostname };
   globalThis.document = {
     addEventListener: (type, handler) => {
       if (!documentListeners.has(type)) documentListeners.set(type, []);
@@ -62,10 +67,23 @@ function clickEvent(overrides = {}) {
   };
 }
 
-test("Kakao 小说页才会挂载监听", () => {
-  const { clickHandlers, pointerHandlers } = setup({ isKakao: false });
-  assert.equal(clickHandlers.length, 0);
-  assert.equal(pointerHandlers.length, 0);
+test("小说阅读站才会挂载监听（KakaoPage 与 RIDI 都算）", () => {
+  const off = setup({ hostname: "example.com" });
+  assert.equal(off.clickHandlers.length, 0);
+  assert.equal(off.pointerHandlers.length, 0);
+
+  const ridi = setup({ hostname: "ridibooks.com" });
+  assert.equal(ridi.clickHandlers.length, 1);
+  assert.equal(ridi.pointerHandlers.length, 1);
+});
+
+test("RIDI 的盖章锚点（data-mt-novel-pid）同样能定位段落", () => {
+  const { sent, paragraphNode, fireClick } = setup({
+    hostname: "ridibooks.com", anchor: "stamp",
+    paragraphId: "c1a2b3c4@c1a2b3c4", translatedIds: ["c1a2b3c4@c1a2b3c4"]
+  });
+  fireClick(clickEvent({ __paragraphNode: paragraphNode }));
+  assert.deepEqual(sent, [{ type: "OPEN_NOVEL_SIDEPANEL", itemId: "c1a2b3c4@c1a2b3c4" }]);
 });
 
 test("显示译文 + 段落有译文 → 发送 OPEN_NOVEL_SIDEPANEL 并带 itemId", () => {
@@ -123,6 +141,15 @@ test("护栏 6：没点在段落上（无 data-p-id）不触发", () => {
   const { sent, fireClick } = setup({ translatedIds: ["52#1"] });
   fireClick(clickEvent({ __path: [makeNode({ pid: null })] }));
   assert.deepEqual(sent, []);
+});
+
+test("手机版构建（IS_NOVEL_MOBILE）不挂监听、点击什么都不发", () => {
+  const mobile = setup({ isNovelMobile: true, translatedIds: ["52#1"] });
+  assert.equal(mobile.clickHandlers.length, 0);
+  assert.equal(mobile.pointerHandlers.length, 0);
+  // 监听根本没挂，fireClick 不会执行任何 handler，sent 保持为空。
+  mobile.fireClick(clickEvent({ __paragraphNode: mobile.paragraphNode }));
+  assert.deepEqual(mobile.sent, []);
 });
 
 test("解析不到段落 id（正向映射落空）不发送消息", () => {

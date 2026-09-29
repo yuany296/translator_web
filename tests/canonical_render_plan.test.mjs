@@ -477,13 +477,17 @@ test("surface bubble merges absorbed adjacent-line translation and geometry", ()
     id: "whole:seam", canonical_id: "whole",
     x: 45, y: 95, w: 35, h: 5,
     translated_text: "那个名片!",
+    original_text: "명함!",
     source_line_count: 1,
     page_text_boxes: [{ pageId: "a", x: 45, y: 95, w: 35, h: 5 }],
     page_cover_boxes: [{ pageId: "a", x: 45, y: 95, w: 35, h: 5 }],
     visual: { fillBox: { x: 45, y: 95, w: 35, h: 5 }, sourceLineCount: 1 }
   };
   const covered = [{
-    canonical: { id: "canonical-line", revision: 1, memberObservationIds: ["line"] },
+    canonical: {
+      id: "canonical-line", revision: 1, memberObservationIds: ["line"],
+      originalText: "입사식때 받은"
+    },
     winnerCanonicalId: "whole",
     pageId: "a",
     kind: "adjacent_line",
@@ -500,6 +504,8 @@ test("surface bubble merges absorbed adjacent-line translation and geometry", ()
   const bubble = extended.get("whole");
   assert.ok(bubble, "adjacent line must be merged into the winner bubble");
   assert.equal(bubble.translated_text, "入职仪式时收到的\n那个名片!");
+  // 原文也要并入相邻行，否则框和译文都盖住两行、原文却只剩 winner 的半句。
+  assert.equal(bubble.original_text, "입사식때 받은\n명함!");
   assert.equal(bubble.source_line_count, 2);
   assert.deepEqual(bubble.page_text_boxes.map(item => item.y), [95, 88]);
   assert.deepEqual(bubble.page_cover_boxes.map(item => item.y), [95, 88]);

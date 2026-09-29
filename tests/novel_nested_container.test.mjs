@@ -216,7 +216,7 @@ function extractChapter(runtime, surface) {
       scopeKey: "series:1", seriesId: "series", chapterId: "c1", chapterTitle: "작품 1화"
     })
   };
-  return runtime.extractKakaoNovelChapter(surface);
+  return runtime.extractNovelChapter(surface);
 }
 
 // ---------- 用例 ----------

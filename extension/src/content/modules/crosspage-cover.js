@@ -89,36 +89,69 @@ export function installCrossPageCover(runtime) {
         return;
       }
       // 组内全部在捕获带内时用复合清理图(带内专用、优先于可能过期的整页图);
-      // 只要有一段在带外(如相邻行),union 超出带区,必须用整页清理图才能全覆盖。
+      // 只要有一段在带外(如相邻行),union 超出带区,就需要整页清理图补齐带外部分。
       const bandSegments = segments.filter(segment => segment.compositeIntersection);
-      if (bandSegments.length === segments.length && entry.surface.cleanedImage && bandSegments.length > 0) {
+      const compositeImage = entry.surface.cleanedImage;
+      const pageImage = entry.surface.cleanedImageByPage?.[pageId];
+      // 复合图的原点要按"带内那一段自己的元素位置"还原，而且必须再减去节点自身原点：
+      // 段坐标相对 overlay 外框，background-position 相对节点 padding box。节点矩形是
+      // 同页所有段（含被吸收相邻行的带外整页段）的并集，带外段可能落在带内段上方/左侧。
+      // 少了这一步，纯复合节点（只有 1 层背景）会因为 background-repeat: no-repeat
+      // 在节点顶部/左侧留下一段没有像素的空白 —— 原文直接露出来（实测「在画中」下片
+      // 顶部 21.672px 无遮罩，另一条接缝左侧 96.912px 无遮罩）。
+      const compositeOrigin = (scaleX, scaleY) => {
+        const offsets = bandSegments.map(segment => ({
+          x: Number(segment.left || 0) - left - Number(segment.compositeIntersection.left || 0) * scaleX,
+          y: Number(segment.top || 0) - top - Number(segment.compositeIntersection.top || 0) * scaleY
+        }));
+        return {
+          x: Math.min(...offsets.map(offset => offset.x)),
+          y: Math.min(...offsets.map(offset => offset.y))
+        };
+      };
+      const pagePlacement = () => {
+        const pageSegment = segments.find(segment => segment.mapping === "page") || segments[0];
+        return {
+          size: `${pageSegment.pageWidth}px ${pageSegment.pageHeight}px`,
+          position:
+            `${-Math.min(...segments.map(segment => segment.sourceLeft ?? 0))}px ` +
+            `${-Math.min(...segments.map(segment => segment.sourceTop ?? 0))}px`
+        };
+      };
+      if (bandSegments.length === segments.length && compositeImage && bandSegments.length > 0) {
         const scaleX = bandSegments[0].scaleX;
         const scaleY = bandSegments[0].scaleY;
-        const unionComposite = {
-          left: Math.min(...bandSegments.map(segment => segment.compositeIntersection.left)),
-          top: Math.min(...bandSegments.map(segment => segment.compositeIntersection.top)),
-          right: Math.max(...bandSegments.map(segment =>
-            segment.compositeIntersection.left + segment.compositeIntersection.width)),
-          bottom: Math.max(...bandSegments.map(segment =>
-            segment.compositeIntersection.top + segment.compositeIntersection.height))
-        };
+        const origin = compositeOrigin(scaleX, scaleY);
         node.style.removeProperty("background");
-        node.style.backgroundImage = `url("${entry.surface.cleanedImage}")`;
+        node.style.backgroundImage = `url("${compositeImage}")`;
         node.style.backgroundSize =
           `${entry.surface.canvasWidth * scaleX}px ${entry.surface.canvasHeight * scaleY}px`;
-        node.style.backgroundPosition =
-          `${-unionComposite.left * scaleX}px ${-unionComposite.top * scaleY}px`;
+        node.style.backgroundPosition = `${origin.x}px ${origin.y}px`;
         return;
       }
-      const pageImage = entry.surface.cleanedImageByPage?.[pageId];
+      if (bandSegments.length > 0 && compositeImage && pageImage) {
+        // 混合：带内用复合清理图，带外用整页清理图。
+        // 之前这里直接退回整页图，而整页图在带内根本没被清理（清理计划认为带内由复合图
+        // 负责），接缝处于是残留一条原文（实测 662 像素残留）。CSS 多背景第一层在最上，
+        // 正好让复合图压住整页图，两层各管一段。
+        const scaleX = bandSegments[0].scaleX;
+        const scaleY = bandSegments[0].scaleY;
+        const origin = compositeOrigin(scaleX, scaleY);
+        const page = pagePlacement();
+        node.style.removeProperty("background");
+        node.style.backgroundImage = `url("${compositeImage}"), url("${pageImage}")`;
+        node.style.backgroundSize =
+          `${entry.surface.canvasWidth * scaleX}px ${entry.surface.canvasHeight * scaleY}px, ${page.size}`;
+        node.style.backgroundPosition =
+          `${origin.x}px ${origin.y}px, ${page.position}`;
+        return;
+      }
       if (pageImage) {
-        const pageSegment = segments.find(segment => segment.mapping === "page") || segments[0];
+        const page = pagePlacement();
         node.style.removeProperty("background");
         node.style.backgroundImage = `url("${pageImage}")`;
-        node.style.backgroundSize = `${pageSegment.pageWidth}px ${pageSegment.pageHeight}px`;
-        node.style.backgroundPosition =
-          `${-Math.min(...segments.map(segment => segment.sourceLeft ?? 0))}px ` +
-          `${-Math.min(...segments.map(segment => segment.sourceTop ?? 0))}px`;
+        node.style.backgroundSize = page.size;
+        node.style.backgroundPosition = page.position;
         return;
       }
       // 复杂背景没有可映射的清理图时保持透明，避免用白色矩形破坏原图。

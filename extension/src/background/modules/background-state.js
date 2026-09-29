@@ -86,8 +86,13 @@ export function installBackgroundState(runtime) {
   runtime.CACHE_PREFIX = CACHE_PREFIX;
   const OCR_CACHE_PREFIX = "mt_cache_v28:ocr:";
   runtime.OCR_CACHE_PREFIX = OCR_CACHE_PREFIX;
-  const CANONICAL_TRANSLATION_CACHE_PREFIX = "mt_cache_v22:translation:";
+  // 代次前缀：供应商流式截尾事故（2026-09-21）把「游乐设施」这类截尾值写进了
+  // v22 这一代，而 CACHE_TTL_MS 是 7 天。指纹缓存命中时直接渲染、不再请求模型，
+  // 所以护栏与官方库修复都救不了旧值——只能换代次，让旧值彻底不可读。
+  const CANONICAL_TRANSLATION_CACHE_PREFIX = "mt_cache_v29:translation:";
   runtime.CANONICAL_TRANSLATION_CACHE_PREFIX = CANONICAL_TRANSLATION_CACHE_PREFIX;
+  const RETIRED_TRANSLATION_CACHE_PREFIXES = Object.freeze(["mt_cache_v22:translation:"]);
+  runtime.RETIRED_TRANSLATION_CACHE_PREFIXES = RETIRED_TRANSLATION_CACHE_PREFIXES;
   const LOCAL_OCR_GEOMETRY_VERSION = OCR_GEOMETRY_VERSION;
   runtime.LOCAL_OCR_GEOMETRY_VERSION = LOCAL_OCR_GEOMETRY_VERSION;
   runtime.OCR_COORDINATE_MODEL_VERSION = OCR_COORDINATE_MODEL_VERSION;
@@ -181,6 +186,10 @@ export function installBackgroundState(runtime) {
   runtime.SEAM_CROSS_MAX_ROTATION_DELTA_DEG = SEAM_CROSS_MAX_ROTATION_DELTA_DEG;
   const SEAM_CROSS_MAX_BAND_COVERAGE = 1.5;
   runtime.SEAM_CROSS_MAX_BAND_COVERAGE = SEAM_CROSS_MAX_BAND_COVERAGE;
+  // 「完整落在复合图里的单行文字」能占复合图高度的上限（见 seam-handling.js 的
+  // seamLineFitsComposite）：只用来挡「整幅场景框」，不给被劈开的一行字设字高上限。
+  const SEAM_CROSS_MAX_LINE_COVERAGE = 0.9;
+  runtime.SEAM_CROSS_MAX_LINE_COVERAGE = SEAM_CROSS_MAX_LINE_COVERAGE;
   const SEAM_CROSS_MAX_VISUAL_WIDTH_COVERAGE = 0.9;
   runtime.SEAM_CROSS_MAX_VISUAL_WIDTH_COVERAGE = SEAM_CROSS_MAX_VISUAL_WIDTH_COVERAGE;
   const SEAM_CROSS_MAX_VISUAL_AREA_COVERAGE = 0.6;

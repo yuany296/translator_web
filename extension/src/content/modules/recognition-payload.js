@@ -109,7 +109,8 @@ export function installRecognitionPayload(runtime) {
   }
   runtime.buildTargetSourceCacheKey = buildTargetSourceCacheKey;
   function shouldUseKakaoCanonicalPipeline(target) {
-    return !!(runtime.IS_KAKAOPAGE_READER && runtime.state.captureMode === runtime.CAPTURE_MODE_DIRECT && runtime.state.renderMode === runtime.RENDER_MODE_OVERLAY && target instanceof HTMLImageElement);
+    // 分片长条阅读器共用 canonical 链路（KakaoPage、RIDI），不再看站点名。
+    return !!(runtime.IS_STRIP_TILE_READER && runtime.state.captureMode === runtime.CAPTURE_MODE_DIRECT && runtime.state.renderMode === runtime.RENDER_MODE_OVERLAY && target instanceof HTMLImageElement);
   }
   runtime.shouldUseKakaoCanonicalPipeline = shouldUseKakaoCanonicalPipeline;
   function isKakaoEpisodeImageTarget(target) {
@@ -238,7 +239,6 @@ export function installRecognitionPayload(runtime) {
     const normalizedStableSource = runtime.normalizeKakaoStableImageSource(rawSource) || `inline:${imageRevision}`;
     const stableSource = runtime.buildKakaoPageSourceIdentity(rawSource, normalizedStableSource, imageRevision);
     const pageId = `page-${await runtime.sha256HexText(`${chapterId}\n${stableSource}\n${width}x${height}`)}`;
-    const rect = target && typeof target.getBoundingClientRect === "function" ? target.getBoundingClientRect() : null;
     const identity = Object.freeze({
       chapterId,
       pageId,
@@ -246,7 +246,9 @@ export function installRecognitionPayload(runtime) {
       stableSource,
       width,
       height,
-      readingOrder: Number(rect && rect.top || 0) + Number(window.scrollY || 0),
+      // 阅读顺序必须用布局坐标：内层滚动容器 + 虚拟化的阅读器（RIDI）里
+      // window.scrollY 恒为 0，旧口径会退化成「采集那一刻的视口位置」，滚动时抖动且互相打平。
+      readingOrder: runtime.resolveReadingOrderTop(target),
       shortPage: height <= 420 || height / Math.max(1, width) <= 0.45,
       imageMeta: Object.freeze({
         ...runtime.buildPayloadImageMeta(payload),

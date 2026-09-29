@@ -21,6 +21,34 @@ function parseKakaoNovelLocation(url, title = "") {
   };
 }
 
+/**
+ * RIDI 小说阅读页 `ridibooks.com/books/{id}/view`。
+ *
+ * 路径里的 id 是**这一话**的 id（연재물的一话各自是一个 book）。作品级 id 不在 URL 里，
+ * 只能从阅读器自己渲染的作品标题链接（`/library/books/{seriesId}/`）读出来；读不到时
+ * 退回话 id —— 那样作用域退化成「一话」，术语库的作品级词条不会跨话命中，但同一话内
+ * 一切正常。
+ *
+ * 标题优先用页面的 og:title：浏览器翻译会把 document.title 一起译掉（"… - 里迪"），
+ * 而 og:title 是页面自报的原文标题，不会被改写。兜底才清理标题尾巴的站点名。
+ */
+const RIDI_TITLE_SUFFIX_RE = /\s*[-–—|]\s*(?:리디|RIDI|Ridibooks)\s*$/iu;
+
+function parseRidiNovelLocation(url, title = "", seriesId = "") {
+  const match = String(url || "").match(/\/books\/(\d+)\/view(?:[?#]|$)/u);
+  if (!match) return null;
+  const episodeId = match[1];
+  const series = String(seriesId || "").trim() || episodeId;
+  return {
+    seriesId: series,
+    chapterId: episodeId,
+    scopeKey: `ridi:${series}`,
+    // RIDI 阅读页不暴露话序号（标题里只有话名，没有 "N화"），留空让下游按需处理。
+    chapterOrder: null,
+    chapterTitle: String(title || "").trim().replace(RIDI_TITLE_SUFFIX_RE, "").trim()
+  };
+}
+
 function normalizeParagraph(value, index = 0) {
   const id = String(value && value.id || "").trim().slice(0, 180);
   if (!id) return null;
@@ -244,6 +272,7 @@ function summarizeTranslationWarnings(warnings) {
 export default Object.freeze({
   CHUNK_TARGET_CHARS,
   parseKakaoNovelLocation,
+  parseRidiNovelLocation,
   normalizeParagraph,
   buildChunks,
   validateTranslations,

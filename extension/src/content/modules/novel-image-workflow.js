@@ -15,7 +15,7 @@ export function installNovelImageWorkflow(runtime) {
 
   async function translateNovelImages(chapter, retry = false, force = false) {
     const state = runtime.getNovelState();
-    const images = runtime.collectKakaoNovelImages(chapter.surface, chapter.paragraphs);
+    const images = runtime.collectNovelImages(chapter.surface, chapter.paragraphs);
     const pending = images.filter(item => force
       ? true
       : retry
@@ -61,7 +61,7 @@ export function installNovelImageWorkflow(runtime) {
   runtime.translateNovelImages = translateNovelImages;
 
   runtime.retryNovelImages = async (force = false) => {
-    const chapter = runtime.extractKakaoNovelChapter(runtime.reconcileKakaoNovelReader());
+    const chapter = runtime.extractNovelChapter(runtime.reconcileNovelReader());
     if (!chapter) return { ok: false, unavailable: true };
     runtime.resetNovelForChapter(chapter, runtime.getNovelState());
     const state = runtime.getNovelState();
@@ -103,7 +103,7 @@ export function installNovelImageWorkflow(runtime) {
     if (Number(state.imageAutoResumeCount || 0) >= NOVEL_IMAGE_AUTO_RESUME_LIMIT) return;
     const now = Date.now();
     if (state.lastImageResumeAt && now - state.lastImageResumeAt < NOVEL_IMAGE_RESUME_COOLDOWN_MS) return;
-    const chapter = runtime.extractKakaoNovelChapter(state.surface);
+    const chapter = runtime.extractNovelChapter(state.surface);
     if (!chapter || !chapter.images.length) return;
     const retryable = chapter.images.some(item => {
       const job = state.imageJobs.get(item.target);

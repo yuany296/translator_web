@@ -1,3 +1,5 @@
+import { sanitizeRenderRotationDeg } from "../../rendering/cover-geometry.js";
+
 export function installLifecyclePosition(runtime) {
   function recoverRenderedTargets() {
     const now = Date.now();
@@ -18,6 +20,7 @@ export function installLifecyclePosition(runtime) {
       const targetKey = runtime.computeTargetKey(target);
       const scopedTargetKey = runtime.buildTargetSourceCacheKey(targetKey, runtime.getQuickSourceToken(target));
       const renderedKey = target.dataset.mtLastTranslatedKey || "";
+      if (runtime.rediscoverRolledBackKakaoPage?.(target)) continue; // RIDI 滚回：标记永不匹配 → 重发现页 handle 重绑并重投影（见 recognition-binding.js）
       if (runtime.shouldUseKakaoCanonicalPipeline(target) && runtime.kakaoCanonicalPipeline && runtime.state.autoTranslatePageEnabled && runtime.hasPendingTranslationMarkerState(target, targetKey, scopedTargetKey)) {
         // 并发刷新可能让页面保持“有 OCR 证据、投影尚未完成”的 pending 状态。
         // 它没有完成标记，必须在重新进入视口时显式回到统一队列，不能被恢复扫描直接跳过。
@@ -27,7 +30,6 @@ export function installLifecyclePosition(runtime) {
       if (!runtime.matchesTargetMarker(renderedKey, targetKey, scopedTargetKey)) {
         continue;
       }
-
       // “无文字”是正常终态，本来就不应该存在气泡；恢复扫描不得重新启动 OCR。
       if (runtime.hasSettledNoTextMarker(target, targetKey, scopedTargetKey)) {
         runtime.clearKakaoLoadingOverlay(target);
@@ -74,7 +76,37 @@ export function installLifecyclePosition(runtime) {
   runtime.recoverRenderedTargets = recoverRenderedTargets;
   function syncOverlayPosition(overlayState) {
     if (!overlayState || !overlayState.target || !overlayState.root.isConnected) {
+      runtime.traceMaskEvent?.(overlayPageIdOf(runtime, overlayState), "sync-bail", {
+        root: overlayState && overlayState.root ? Number(overlayState.root.isConnected) : -1,
+        stateMask: String(overlayState && overlayState.cleanedImage || "").length
+      });
       return;
+    }
+    // 清理图（inpainted 遮罩图）校准。它原先只在创建 root 那一刻写一次
+    // --mt-cleaned-image，可清理图是**异步**产物（页级 artifact 请求回来的），
+    // 覆盖层先上屏、图后到；那一页于是永远停在"没有遮罩"的那一版。这里每次
+    // 同步都按 overlayState.cleanedImage 校准一次。
+    const maskStyle = overlayState.root.style;
+    if (maskStyle && typeof maskStyle.getPropertyValue === "function" && typeof maskStyle.setProperty === "function") {
+      const maskUrl = runtime.maskCssValue?.(overlayState.cleanedImage) || "";
+      const probe = String(overlayState.root.dataset.mtProbe || "");
+      if (maskUrl) {
+        if (maskStyle.getPropertyValue("--mt-cleaned-image") !== maskUrl) {
+          maskStyle.setProperty("--mt-cleaned-image", maskUrl);
+          runtime.traceMaskEvent?.(overlayPageIdOf(runtime, overlayState), "sync-write", {
+            len: String(overlayState.cleanedImage).length,
+            probe,
+            rootPid: String(overlayState.root.dataset.pageId || "").slice(5, 13)
+          });
+        }
+      } else if (maskStyle.getPropertyValue("--mt-cleaned-image")) {
+        runtime.traceMaskEvent?.(overlayPageIdOf(runtime, overlayState), "sync-remove", {
+          stateMask: String(overlayState.cleanedImage || "").length,
+          connected: overlayState.root.isConnected,
+          probe
+        });
+        maskStyle.removeProperty("--mt-cleaned-image");
+      }
     }
     if (overlayState.sourceToken && runtime.getQuickSourceToken(overlayState.target) !== overlayState.sourceToken) {
       const stalePageId = String(runtime.state.kakaoPageIdByTarget.get(overlayState.target) || "");
@@ -112,12 +144,25 @@ export function installLifecyclePosition(runtime) {
       return;
     }
     const visible = runtime.isRectVisible(runtime.getOverlayVisibilityRect(overlayState, rect));
-    const useDocumentFlow = runtime.IS_KAKAOPAGE_READER;
-    if (runtime.shouldHideOverlayRoot(rect, visible, useDocumentFlow)) {
+    // 覆盖层和原图挂在同一个滚动容器里（见 resolveOverlayHost），移动交给浏览器合成线程，
+    // 所以离开视口不再卸载：卸载/重建才是滚动中「跳走又跳回」的来源。整章保持挂载、
+    // 由容器自然裁剪 —— 与跨页（接缝）覆盖层的行为完全一致。
+    const keepMounted = true;
+    if (runtime.shouldHideOverlayRoot(rect, visible, keepMounted)) {
       overlayState.root.style.display = "none";
       return;
     }
-    const viewportRect = runtime.getOverlayPositionRect(rect, useDocumentFlow, window.scrollX || 0, window.scrollY || 0);
+    const layer = typeof runtime.ensureOverlayLayer === "function"
+      ? runtime.ensureOverlayLayer(overlayState.target)
+      : runtime.state.overlayLayer;
+    // 每片内容容器一个图层：目标换了宿主就把 root 搬过去，否则坐标会按别的宿主算。
+    if (layer && overlayState.root.parentElement !== layer) {
+      layer.appendChild(overlayState.root);
+    }
+    const layerOrigin = layer && typeof layer.getBoundingClientRect === "function"
+      ? layer.getBoundingClientRect()
+      : null;
+    const viewportRect = runtime.getOverlayPositionRect(rect, layerOrigin);
     const changes = runtime.compareOverlayViewportRects(overlayState.lastViewportRect, viewportRect);
     overlayState.root.style.display = "block";
     const clipLeft = Math.max(0, targetVisibleRect.left - rect.left);
@@ -154,6 +199,9 @@ export function installLifecyclePosition(runtime) {
       const bubbleHeightPercent = Number(node.dataset.hPercent || "0");
       const bubbleWidthPx = polygonGeometry ? polygonGeometry.width : rect.width * bubbleWidthPercent / 100;
       const bubbleHeightPx = polygonGeometry ? polygonGeometry.height : rect.height * bubbleHeightPercent / 100;
+      // 几何自洽：宽盒子不会承载「竖直文字」（±90° 会把宽高互换），见 sanitizeRenderRotationDeg。
+      const declaredRotation = Number(node.dataset.rotationDeg || 0);
+      const renderRotation = sanitizeRenderRotationDeg(declaredRotation, bubbleWidthPx, bubbleHeightPx);
       if (polygonGeometry) {
         node.style.width = `${polygonGeometry.width}px`;
         node.style.height = `${polygonGeometry.height}px`;
@@ -165,9 +213,21 @@ export function installLifecyclePosition(runtime) {
           h: polygonGeometry.height,
           centerX: polygonGeometry.centerX,
           centerY: polygonGeometry.centerY,
-          rotation: Number(node.dataset.rotationDeg || 0),
+          rotation: renderRotation,
           unit: "px",
           allowVerticalOverflow: true
+        });
+      } else if (renderRotation !== declaredRotation) {
+        // 没有 polygon 的气泡只在创建期按百分比排过一次版，这里补一次修正。
+        runtime.applyBubbleAnchorStyle(node, {
+          alignment: node.dataset.alignment,
+          x: Number(node.dataset.xPercent || 0),
+          y: Number(node.dataset.yPercent || 0),
+          w: bubbleWidthPercent,
+          h: bubbleHeightPercent,
+          rotation: renderRotation,
+          unit: "%",
+          allowVerticalOverflow: node.dataset.stitchOverflow === "true"
         });
       }
       if (bubbleWidthPx < 2 || bubbleHeightPx < 2) {
@@ -229,23 +289,27 @@ export function installLifecyclePosition(runtime) {
     };
   }
   runtime.compareOverlayViewportRects = compareOverlayViewportRects;
-  function getOverlayPositionRect(rect, useDocumentFlow, scrollX = 0, scrollY = 0) {
-    const offsetX = useDocumentFlow ? Number(scrollX) || 0 : 0;
-    const offsetY = useDocumentFlow ? Number(scrollY) || 0 : 0;
+  function getOverlayPositionRect(rect, origin) {
+    // 覆盖层是滚动容器内的绝对定位层：坐标相对「层原点」（= 容器 padding box 原点）。
+    // 容器滚动时图片与层一起移动，这个差值在滚动中恒定 —— 不再需要逐帧修正，
+    // 也就不会出现覆盖层被拖着走的观感。origin 为空时退化为视口坐标。
+    const originLeft = Number(origin && origin.left) || 0;
+    const originTop = Number(origin && origin.top) || 0;
     return {
-      left: Math.round(rect.left + offsetX),
-      top: Math.round(rect.top + offsetY),
+      left: Math.round(rect.left - originLeft),
+      top: Math.round(rect.top - originTop),
       width: Math.round(rect.width),
       height: Math.round(rect.height)
     };
   }
   runtime.getOverlayPositionRect = getOverlayPositionRect;
-  function shouldHideOverlayRoot(rect, visible, useDocumentFlow) {
+  function shouldHideOverlayRoot(rect, visible, keepMounted) {
     if (!rect || !(Number(rect.width) >= 2) || !(Number(rect.height) >= 2)) {
       return true;
     }
-    // 页面坐标覆盖层即使暂时离开视口也保持挂载，由浏览器自然裁剪并随原图一起进入视口。
-    return !useDocumentFlow && !visible;
+    // keepMounted（KakaoPage 的页面坐标层、以及分片长条阅读器）：即使暂时离开视口也保持
+    // 挂载，由浏览器自然裁剪并随原图一起进入视口 —— 卸载再重建会让覆盖层在滚动中「跳走又跳回」。
+    return !keepMounted && !visible;
   }
   runtime.shouldHideOverlayRoot = shouldHideOverlayRoot;
   function getOverlayVisibilityRect(overlayState, rect) {
@@ -320,4 +384,16 @@ export function installLifecyclePosition(runtime) {
     }
   }
   runtime.getOverlayPolygonGeometry = getOverlayPolygonGeometry;
+}
+
+// 与 renderer-mask.js 的 overlayPageId 同一口径：**先看这一 target 此刻绑在哪一页**
+// （分片原地换图会换 pageId），再看建 root 时的快照。取证流水要能和
+// data-mt-mask-report 里的 pageId 对上，否则分不清"撤的是不是这一页"。
+function overlayPageIdOf(runtime, overlayState) {
+  const target = overlayState && overlayState.target;
+  if (target && runtime.state && runtime.state.kakaoPageIdByTarget) {
+    const live = String(runtime.state.kakaoPageIdByTarget.get(target) || "");
+    if (live) return live;
+  }
+  return String((overlayState && overlayState.pageId) || "");
 }

@@ -1,4 +1,9 @@
 export function installBootstrap(runtime) {
+  // 控制台助手：`__mtOcrTimings()`、`__mtCacheAudit()`、`__mtTranslationSnapshots()` / `__mtStreamAb()`。
+  // 它们都只是只读取证入口，必须在装配完成后显式挂上——installer 里定义函数不会自动暴露到控制台。
+  runtime.exposeOcrTimingsConsoleHelper?.();
+  runtime.exposeTranslationCacheConsoleHelper?.();
+  runtime.exposeTranslationDiagnosticsConsoleHelper?.();
   // 阅读器页面建立 keep-alive 端口,保持 SW 存活,避免 MV3 空闲回收后
   // content script 首条消息失败与弹窗配置加载都要等待冷启动。
   const keepAlivePorts = new Set();

@@ -32,11 +32,13 @@ test("手机版 manifest 不带桌面专属能力", () => {
   assert.deepEqual(mobile.permissions, ["storage", "tabs", "unlimitedStorage"]);
 });
 
-test("手机版只在自己的域名上注入内容脚本", () => {
+test("手机版只在自己的域名上注入内容脚本（两家小说站，且不全站注入）", () => {
   const matches = mobile.content_scripts.flatMap(script => script.matches);
   assert.ok(matches.includes("https://*.kakao.com/*"));
   assert.ok(matches.includes("https://*.kakaopage.com/*"));
   assert.ok(matches.includes("https://*.kakaocdn.net/*"));
+  assert.ok(matches.includes("https://ridibooks.com/*"), "RIDI 小说也要能注入");
+  assert.ok(matches.includes("https://*.ridibooks.com/*"));
   assert.equal(matches.includes("<all_urls>"), false, "手机版不该在全网站点注入");
   const script = mobile.content_scripts[0];
   assert.deepEqual(script.js, ["content.js"]);

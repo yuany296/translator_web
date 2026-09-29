@@ -101,7 +101,11 @@ export function installCanonicalTranslate(runtime, scope) {
       isPageAvailable: scope.isPageAvailable
     }), handledIds => scope.buildCanonicalProjections(scope.store, handledIds, edgeWaitingIds));
     scope.store.setProjections(projectionPlan.projections);
-    await scope.refreshRequiredCleanedArtifacts(projectionPlan.projections, projectionPlan.seamSurfaceIndex);
+    // 清理图覆盖"即将渲染的投影"（plan ∪ fallback），否则会出现"渲染画了透明遮罩、
+    // 清理计划却认为这一页不需要清理图"的分叉，那一页永远拿不到 inpainted 遮罩。
+    await scope.refreshRequiredCleanedArtifacts(runtime.mergeCleanedArtifactProjectionSource(
+      projectionPlan.projections, ordinaryFallbackProjections
+    ), projectionPlan.seamSurfaceIndex);
     scope.timingPhase(runId, "cleanArtifacts");
     if (!guardAllows()) return {
       aborted: true

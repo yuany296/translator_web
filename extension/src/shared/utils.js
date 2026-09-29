@@ -124,6 +124,20 @@ function normalizeComparableText(value) {
 }
 
 /**
+ * 去掉零宽/不可见控制字符。
+ *
+ * 韩文 EPUB（RIDI 웹뷰어）会在正文开头塞一长串 U+2060/U+2063 之类的隐形标记：
+ * 视觉上什么都没有，却会原样进入提示词、缓存与「原文」字段，白白占用上下文。
+ * 段落原文只从 `getOriginalNovelParagraphText` 出口取，抽取与回填都经过它，
+ * 所以在这里清理不会让两边的源文哈希对不上。
+ */
+const INVISIBLE_MARK_RE = /[\u180e\u200b-\u200f\u2060-\u2064\ufeff]/gu;
+
+function stripInvisibleMarks(value) {
+  return String(value ?? "").replace(INVISIBLE_MARK_RE, "");
+}
+
+/**
  * LLM 翻译时常把对话引号当作"可省略的格式"丢掉(尤其 JSON 模式与流式 NDJSON),
  * 而流水线里没有任何环节会主动删引号。此函数做确定性兜底:若原文整段被某一对
  * 引号包住,且译文里一个引号字符都没有,就把同一对引号加回译文。
@@ -251,6 +265,7 @@ export default Object.freeze({
   getErrorMessage,
   normalizeText,
   normalizeComparableText,
+  stripInvisibleMarks,
   DIALOGUE_QUOTE_PAIRS,
   DIALOGUE_QUOTE_CHARS,
   containsDialogueQuote,

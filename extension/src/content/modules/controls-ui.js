@@ -11,23 +11,26 @@ export function installControlsUi(runtime) {
     runtime.clearAllEmbeddedTargets();
   }
   runtime.clearAllRenderedTargets = clearAllRenderedTargets;
-  function ensureOverlayLayer() {
-    if (runtime.state.overlayLayer && runtime.state.overlayLayer.isConnected) {
-      return runtime.state.overlayLayer;
+  function ensureOverlayLayer(target = null) {
+    if (typeof runtime.ensureOverlayLayerOnHost === "function") {
+      return runtime.ensureOverlayLayerOnHost(target);
     }
-    const layer = document.createElement("div");
-    layer.className = "mt-overlay-layer";
-    if (runtime.IS_KAKAOPAGE_READER) {
-      // 进入页面坐标系后，图片和覆盖层由浏览器合成线程同步滚动，避免 fixed 覆盖层逐帧追赶。
-      layer.classList.add("mt-overlay-document-flow");
+    let layer = runtime.state.overlayLayer;
+    if (!layer || !layer.isConnected) {
+      layer = document.createElement("div");
+      layer.className = "mt-overlay-layer";
+      layer.dataset.mangaTranslatorOverlay = "true";
+      runtime.state.overlayLayer = layer;
+      document.documentElement.appendChild(layer);
     }
-    layer.dataset.mangaTranslatorOverlay = "true";
-    document.documentElement.appendChild(layer);
-    runtime.state.overlayLayer = layer;
     runtime.reattachOverlayRoots(layer);
     return layer;
   }
   runtime.ensureOverlayLayer = ensureOverlayLayer;
+  runtime.forEachOverlayLayerUi = callback => {
+    if (typeof runtime.forEachOverlayLayer === "function") return runtime.forEachOverlayLayer(callback);
+    if (runtime.state.overlayLayer) callback(runtime.state.overlayLayer);
+  };
   function reattachOverlayRoots(layer) {
     if (!layer || !layer.isConnected) {
       return;
@@ -40,7 +43,8 @@ export function installControlsUi(runtime) {
   }
   runtime.reattachOverlayRoots = reattachOverlayRoots;
   function isExtensionUiMounted() {
-    const overlayOk = !!(runtime.state.overlayLayer && runtime.state.overlayLayer.isConnected);
+    let overlayOk = false;
+    runtime.forEachOverlayLayerUi(layer => { if (layer && layer.isConnected) overlayOk = true; });
     const ballOk = !runtime.state.showFloatingBall || !!(runtime.state.floatingBallWrap && runtime.state.floatingBallWrap.isConnected);
     return overlayOk && ballOk;
   }
@@ -74,17 +78,21 @@ export function installControlsUi(runtime) {
   }
   runtime.ensureExtensionUiMounted = ensureExtensionUiMounted;
   function getOverlayLayerVisibility() {
-    const layer = runtime.state.overlayLayer;
-    return !layer || !(runtime.state.overlayHideDepth > 0 || layer.style.visibility === "hidden");
+    if (runtime.state.overlayHideDepth > 0) return false;
+    // 多图层：任一图层被隐藏（例如截图前统一隐藏）就算整体不可见。
+    let hidden = false;
+    runtime.forEachOverlayLayerUi(layer => { if (layer && layer.style && layer.style.visibility === "hidden") hidden = true; });
+    return !hidden;
   }
   runtime.getOverlayLayerVisibility = getOverlayLayerVisibility;
   function setOverlayLayerVisibility(visible) {
-    const layer = runtime.state.overlayLayer;
-    if (!layer) return;
     const depth = runtime.state.overlayHideDepth;
     runtime.state.overlayHideDepth = visible ? Math.max(0, depth - 1) : depth + 1;
-    if (runtime.state.overlayHideDepth === 0) layer.style.visibility = "";
-    else if (visible && depth === 0) layer.style.visibility = "hidden";
+    runtime.forEachOverlayLayerUi(layer => {
+      if (!layer || !layer.style) return;
+      if (runtime.state.overlayHideDepth === 0) layer.style.visibility = "";
+      else if (visible && depth === 0) layer.style.visibility = "hidden";
+    });
   }
   runtime.setOverlayLayerVisibility = setOverlayLayerVisibility;
   function stopExtensionUiEvent(event) {

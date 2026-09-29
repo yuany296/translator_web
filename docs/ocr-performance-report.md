@@ -211,3 +211,178 @@ Array.from(document.querySelectorAll("[data-mt-last-translated-key]")).filter(n 
 
 目标：连续滚动 30 片，视口内命中率 ≥ 90%（修复前约 0~10%）。
 
+---
+
+# 第三轮（同日 21:47 起）：漫画译文被截尾事故
+
+## 12. 现象与证据
+
+用户反馈：可视区识别出很多文字，最后只呈现「游乐设施」二字。
+
+同一条原文在官方译文库里的版本历史（`translation_versions`，同一个 record）：
+
+| 原文 | 20:32（旧构建） | 21:47 起（上一轮构建） |
+|---|---|---|
+| `'좋아, 바로'` | 20:35 `好,马上` | 21:47 / 22:12 / 22:22 三次都是 `好,` |
+| `'어트랙션 안내에는 이 테마파크 관련 내용이 담겨 있다고 하더군요.'` | 20:32 `听说游乐设施指南里包含这个主题公园的相关内容。` | 21:47 `游乐设施` |
+
+两条都是**同一个 record 的旧版本完整、新版本被截尾**，而新版本被设为启用版本 → 页面显示截尾值。
+
+## 13. 根因（三条）
+
+1. **漫画被切到供应商流式请求（本项目的回归）**：上一轮把 partial 推送放宽成
+   `mode === "comic" && !!taskId`，并在 `canonical-translate.js` 传了 `taskId: runId`，
+   于是 `onRow` 非空 → `requestOpenAICompatibleCanonicalTranslationBatch` 走
+   `streamCanonicalTranslationBatch`（请求体加 `stream: true`）。网页一直走这条路，
+   漫画从这一轮开始才走，而这条路上的返回值被截尾。
+   `comicStreamingEnabled` 只挡住了**渲染**，没挡住**请求路径**——「默认关闭」名不副实。
+2. **流式行提取器有并发缺陷**：`shared/translation-row-stream.js` 的 `ROW_PATTERN` 是模块级
+   带 `g` 的正则，多个 extractor 共用它会互相踩 `lastIndex`；Kakao 下最多 6 个批次并发流式，
+   会重复/漏行，而下游用 `new Map(rows)` 取后到的那条 → 早到的残值可能压掉完整值。
+3. **页面里还有一层「看不见」**：可见的是 `mt-cross-page-overlay`（seam 表面，截尾值）；
+   同一句的完整译文在 `mt-overlay-root`（页 OCR 版）里，而那些 root **没有几何尺寸**
+   （没有 `left/top/width/height`，`rect = 0×0`，子节点按百分比定位全部塌成 0）。
+   即使译文正确也看不见。**待查**：这些 0 尺寸 root 是「本该由 seam 表面接管的 standby」还是「几何没写上去」。
+
+## 14. 已落地的止血（Phase 0）
+
+- **漫画默认不再走流式请求**：内容脚本按 `runtime.comicStreamingEnabled` 显式发
+  `streamPartials`，后台只在 `mode === "webpage"` 或显式开启时才传 `onRow`。
+  `comicStreamingEnabled` 现在真正只控制开关，且默认关。
+- **双层「变短」护栏**（同一套阈值：源 ≥ 4 字、旧译文 ≥ 4 字、新译文 < 旧译文 60%）：
+  - 服务端 `translation_store/shrink_guard.py`：自动译文明显变短时**只进历史、不设为启用版本**，
+    手动版本永远优先；`TRANSLATION_SHRINK_GUARD=0` 可关。
+  - 扩展侧 `shared/translation-shrink.js`：同一判据用于当次渲染——命中时沿用旧译文并打日志，
+    不让截尾值上屏。
+- **修掉共享正则游标**：`ROW_PATTERN` 改为每个 extractor 实例一把，并加并发用例。
+
+## 15. 怎么恢复那条记录（已执行）
+
+`record 724cf01c…`（原文 `어트랙션 안내에는…`）的启用版本曾被截尾的 `游乐设施` 覆盖。
+已通过服务端支持的 `select_version` 操作把 20:32 的完整译文切回启用版本（记录版本号 2 → 3，
+两条历史版本都保留）；扩展下次同步就会读到完整译文。
+
+顺手做了一次**全库扫描**（工具：`tools/repair_truncated_translations.py`），
+判据与护栏一致并且只修「回归特征」——启用版本是 api 来源、未置顶、比同记录最长版本短于 60%，
+且截尾那条是**后写入**的（避免覆盖用户自己的选择）：
+
+| 模式 | 原文 | 被写入的截尾值 | 恢复成 | 写入时间 |
+|---|---|---|---|---|
+| comic | `'좋아, 바로'` | `好,` | `好,马上` | 09-21 23:54 |
+| comic | `'굳이 연락 안할이유라도 있남~?'` | `何必联系` | `有什么特别不联系的理由吗~?` | 08-11 |
+| comic | `'오오오! 역시!'` | `哦哦哦!` | `哦哦哦!果然!` | 08-07 |
+| novel | `'??: ??'` | `??：??` | `“这是我的属性吗？”` | 09-14 |
+| novel | `'그런데, 어? 춤 D-는 좀 심해…'` | `“这，这不公平啊！”` | `但是，嗯？舞蹈D-是不是有点太低了？` | 09-14 |
+| novel | `'매니저가 펄쩍 뛰었다…'` | `经纪人吓了一跳。我却无所谓。…` | `经纪人吓了一跳。我却很平静。…` | 09-14 |
+
+**注意**：其中 2 条是 8 月、3 条是 9-14 的旧伤——说明「自动译文被截尾后覆盖完整版本」这件事
+在我这轮改动之前就发生过（用户说的「又出现了」是准确的）。所以真正该长期保留的是**写入侧护栏**，
+而不是只回退请求路径。修复后全库扫描为 0 条。
+
+## 16. 仍需做（下一轮）
+
+1. ~~**证明流式本身能否用**~~ → 见第 17 节第 3 条（本轮先补原始快照与 A/B 入口）。
+2. ~~**查清 `mt-overlay-root` 没有几何的原因**~~ → 见第 17 节第 2 条，已取证：是设计内抑制，
+   不是缺几何。
+3. **slice 边界把一句话劈成两半**（DB 里能看到 `'다크라이드는 보통'` 与
+   `'테마파크의 테마를 설명합니다.'` 是同一句的两半各自翻译）：判断该由 seam 合并、
+   还是该在 canonical 层合并跨 slice 的同一句。
+   第四轮已落地**遥测**（见第 17 节第 6 条），合并策略待真实阅读一轮的数据再定。
+4. ~~复核上一轮「官方库提交改成后台不 await」引入的**提交乱序**风险~~ → 见第 17 节第 4 条。
+
+## 17. 第四轮：缓存代次、护栏加强、隐藏 root 与接缝三重 OCR（2026-09-22 00:2x）
+
+### 1. 真正让「游乐设施」赖着不走的那一层：指纹缓存代次
+
+第 15 节只修了服务端库。但漫画 canonical 的**读路径**是 chrome.storage 里的指纹缓存
+（`CANONICAL_TRANSLATION_CACHE_PREFIX`），命中就直接渲染、不再请求模型，而
+`CACHE_TTL_MS` 是 **7 天**——所以护栏和官方库修复都救不了浏览器里的旧值。
+
+处置：代次前缀 `mt_cache_v22:translation:` → `mt_cache_v29:translation:`，
+并把退役前缀的键真正删掉（`background/modules/translation-cache-generation.js`，
+在 `lookupCanonicalTranslationCache` 首次调用时幂等执行一次）。
+代价很小：`handleTranslateTextBlocks` 先读官方库（`:166-178`），只有库里没有的源文才会重新请求。
+
+体检入口：service worker 控制台 `__mtCacheAudit()`（退役残留 / 当前代次条数 / 可疑短值采样），
+`__mtPruneCache()` 手动触发清理。顺带修掉一个既有缺口：`__mtOcrTimings()` 之前只定义没暴露，
+现在由 `bootstrap.js` 显式挂上。
+
+### 2. 「隐藏的 mt-overlay-root」取证结论：是抑制，不是缺陷
+
+现场（`page.kakao.com/content/69229506/viewer/69731856/`，scrollY 43493）：
+
+| 指标 | 值 |
+|---|---|
+| `.mt-overlay-root` | 18（其中 17 个 `display:none`） |
+| `.mt-cross-page-overlay`（接缝面） | 7 |
+| 同一 canonical 两种译文（冲突） | **0** |
+| 已渲染但「长原文只回几个字」的气泡 | **0** |
+| DOM 里有译文、当前不可见的 canonical | 25（其 root 的 target 都在视口外） |
+
+三个机制叠加，逐个排除：
+
+1. **接缝三重 OCR 抑制**（用户观察）：接缝处跑上片、下片、composite 三次 OCR，
+   reconciler 只让一份当 `primary`，其余标 `standby`
+   （`reconciler-projection-utils.js:99`、`scene-index-resolve.js:204`），
+   而 `content/configure.js:38` 在渲染前就把 standby 滤掉——standby 气泡**根本不会进 DOM**。
+2. **离屏切片隐藏**：`syncOverlayPosition` 里 target 不在视口 → `display:none`
+   （`lifecycle-position.js:109-113`）。这一条解释了那 17 个隐藏 root：它们是**已滚过/未滚到**
+   的切片覆盖层，滚回去时会自动恢复显示，不能删。
+3. **残留壳复活旧值**（本轮重点怀疑对象）：如果某个 root 在当前 canonical 还是 primary 时建立、
+   角色翻转后只是被 `display:none` 藏起来，它里面的旧 `data-translated` 可能在滚回时重新上屏。
+   实测**冲突 0**：同一 canonical 在所有 root 与接缝面上的译文完全一致，且没有任何可见气泡
+   是截尾形状。所以这个假设**当前不成立**，不做渲染改动，只把排查入口留下：
+   页面控制台 `__mtOverlayGeometryReport()`（列出每个 root 的 target/display/内联几何/气泡译文，
+   以及接缝面覆盖与 canonical 冲突）。
+
+顺带记录一个**尚未处理的性能观察**：`overlaysById` 随会话内渲染过的切片数增长（本次 18 个），
+帧同步会对每个 root 各做一次 `getBoundingClientRect()`；194 片的长章节读久之后这是每帧几十次
+布局读取。因为本轮没有测量数据，先记录不改（改法需要 IntersectionObserver 或缓存 rect）。
+
+### 3. 护栏加强：首次译文也要拦
+
+原有护栏只在**有旧值**时比较。事故里的第一次写入没有任何旧值可比（37 字符韩文原句回 4 个字），
+截尾值就这样成了启用版本，之后所有「与旧值比较」的判据都失效。
+
+新增判据（JS/Python 同参）：原文 ≥ 12 字符、且译文 ≤ `min(6, floor(原文长度 × 0.15))` 个字符
+→ 判为可疑。绝对上限 6 让长原文的合理短译不会被误判。
+命中时：扩展侧**不写缓存**（当次仍渲染，代价只有一次重复请求）+ warn 日志；
+服务端把候选写成**非激活**版本（`[translation-store] refused implausibly short translation: …`），
+不再污染官方库。
+
+### 4. 官方库提交的死代码
+
+见下面第 7 条。
+
+### 5. 流式取证入口
+
+`translation-row-stream.js` 增加原始快照（原始 SSE、逐行提取、最终解析、`finish_reason`、
+是否流式），service worker 控制台 `__mtTranslationSnapshots()` 查看、
+`__mtStreamAb({ repeat })` 用当前配置的服务商做「非流式 vs 流式」对照。
+只有 `repeat ≥ 20`、截尾行 0、且与整批逐行一致，才允许把 `comicStreamingEnabled` 交给用户开关。
+
+### 6. 切片边界「同一句被劈成两半」的遥测
+
+判据做成纯函数 `canonical/modules/split-detector.js`：上片最靠下的一条**没有结句标点**、
+下片最靠上的一条**不以引号/括号开头**，且没有任何 canonical 同时落在两页上（跨片即已合并）
+→ 记为漏合并。接缝 OCR 完成、canonical 快照刷新后由
+`canonical-pipeline-factory/canonical-split-report.js` 输出
+`[MangaTranslator][canonical-split]`（两条 canonical id、两段原文、接缝状态与 `shouldRun` 原因），
+最近 20 对留档。
+
+据此可以区分三种可能：(a) 接缝 OCR 被跳过（`skipped` 且原因是空的——准入判据没命中）；
+(b) 跑了但 reconciler 没合并（阈值）；(c) 合并了但记录口径不一致
+（`canonical_fb1d132cbfd52e5268e5998357136072` 的 `raw_source_text` 只存了前缀，而启用译文是整句——
+符合「记录按 segmentKey 复用、源文只在创建时写入」的形状）。合并策略待真实数据再定，本轮不动阈值。
+
+### 7. 官方库提交的死代码（已修）
+
+`ocr-pipeline.js` 的 `pendingRecordKeys` 在提交改 fire-and-forget 后从未被填充，
+`translations[].pending` 恒为 false，而 `comic-translation-store.js:96` 明明返回了 pending 集合。
+现在 IIFE 里接回返回值并在非空时打 `official comic commit queued N record(s) for retry`；
+失败的重试仍由 `queuePendingTranslationOperation` 落盘，因此不需要再在内存里镜像一份 pending。
+顺序方面无风险：`submitTranslationOperations` 经 `translation-service.js` 的 `writeQueue` 串行，
+且各切片提交的是不同 `recordKey`。
+
+
+

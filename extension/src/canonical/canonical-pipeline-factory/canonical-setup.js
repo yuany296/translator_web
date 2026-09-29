@@ -25,6 +25,9 @@ export function installCanonicalSetup(runtime, scope) {
   scope.getTargetForPageId = getTargetForPageId;
   const isAuthoritativePagePayload = typeof scope.adapters.isAuthoritativePagePayload === "function" ? scope.adapters.isAuthoritativePagePayload : runtime.defaultIsAuthoritativePagePayload;
   scope.isAuthoritativePagePayload = isAuthoritativePagePayload;
+  // 清理图在"覆盖层已经上屏之后"才落地时，把它直接绑到该页覆盖层 DOM 上
+  // （宿主侧实现见 content/modules/renderer-mask.js）。
+  scope.applyCleanedImageToPageOverlays = typeof scope.adapters.applyCleanedImageToPageOverlays === "function" ? scope.adapters.applyCleanedImageToPageOverlays : null;
   // Window 的计时器方法需要以 Window 为 receiver；脱离对象裸调用会在浏览器抛出 Illegal invocation。
   const defaultSetTimer = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout.bind(globalThis) : null;
   const defaultClearTimer = typeof globalThis.clearTimeout === "function" ? globalThis.clearTimeout.bind(globalThis) : null;

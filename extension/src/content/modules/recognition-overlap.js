@@ -4,7 +4,7 @@ export function installRecognitionOverlap(runtime) {
   }
   runtime.textSimilarity = textSimilarity;
   async function normalizeKakaopagePayload(target, payload, options = {}) {
-    if (!runtime.IS_KAKAOPAGE_READER || !payload || !runtime.isSupportedTarget(target)) {
+    if (!runtime.IS_STRIP_TILE_READER || !payload || !runtime.isSupportedTarget(target)) {
       return payload;
     }
 

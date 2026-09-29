@@ -17,19 +17,19 @@ function assertValidState(state) {
 }
 
 test("novel: disabled and detecting stay distinct", () => {
-  const disabled = states.buildNovelState({ enabled: true, kakaoReader: false });
+  const disabled = states.buildNovelState({ enabled: true, novelReader: false });
   assert.equal(disabled.availability, "disabled");
-  assert.match(disabled.availabilityReason, /未识别为 Kakao 小说页面/u);
+  assert.match(disabled.availabilityReason, /不是已支持的小说阅读页面/u);
 
   const off = states.buildNovelState({ enabled: false });
   assert.equal(off.availability, "disabled");
   assert.match(off.availabilityReason, /扩展已停用/u);
 
-  const detecting = states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: false, surfaceSettled: false });
+  const detecting = states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: false, surfaceSettled: false });
   assert.equal(detecting.availability, "detecting");
   assert.equal(detecting.phase, "idle");
 
-  const noContent = states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: false, surfaceSettled: true });
+  const noContent = states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: false, surfaceSettled: true });
   assert.equal(noContent.availability, "disabled");
   assert.match(noContent.availabilityReason, /未找到可翻译的小说正文/u);
   // detecting 与 disabled 的 presentation 不同：检测中有 spinner，无 badge
@@ -42,7 +42,7 @@ test("novel: disabled and detecting stay distinct", () => {
 });
 
 test("novel: original shown with none / partial / full cache coverage", () => {
-  const base = { enabled: true, kakaoReader: true, surfaceFound: true, showTranslation: false };
+  const base = { enabled: true, novelReader: true, surfaceFound: true, showTranslation: false };
   const none = states.buildNovelState({ ...base });
   assert.equal(none.cacheCoverage, "none");
   assert.equal(states.deriveFloatingActionPresentation("novel", none).badge, null);
@@ -61,14 +61,14 @@ test("novel: original shown with none / partial / full cache coverage", () => {
 });
 
 test("novel: translated shown, including translated + partial failure", () => {
-  const shown = states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "complete", showTranslation: true });
+  const shown = states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "complete", showTranslation: true });
   assert.equal(shown.displayMode, "translated");
   assert.equal(shown.phase, "idle");
   const check = states.deriveFloatingActionPresentation("novel", shown);
   assert.equal(check.badge, "check");
   assert.match(check.tooltip, /当前显示中文，点击恢复原文/u);
 
-  const partialFail = states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "partial", showTranslation: true });
+  const partialFail = states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "partial", showTranslation: true });
   assert.equal(partialFail.displayMode, "translated");
   assert.equal(partialFail.phase, "error");
   assert.equal(partialFail.cacheCoverage, "partial");
@@ -76,14 +76,14 @@ test("novel: translated shown, including translated + partial failure", () => {
   assert.equal(partialBadge.badge, "partial");
   assert.match(partialBadge.tooltip, /部分段落翻译失败，已显示的中文译文保留/u);
 
-  const failedOriginal = states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "partial", showTranslation: false, errorMessage: "API 请求失败" });
+  const failedOriginal = states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "partial", showTranslation: false, errorMessage: "API 请求失败" });
   const errorPresent = states.deriveFloatingActionPresentation("novel", failedOriginal);
   assert.equal(errorPresent.badge, "error");
   assert.match(errorPresent.tooltip, /API 请求失败/u);
 });
 
 test("novel: loading phase shows spinner without badge", () => {
-  const loading = states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "working", showTranslation: false });
+  const loading = states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "working", showTranslation: false });
   assert.equal(loading.phase, "loading");
   const present = states.deriveFloatingActionPresentation("novel", loading);
   assert.equal(present.spinner, true);
@@ -204,14 +204,14 @@ test("webpage: cache coverage drives off-mode badge", () => {
 
 test("every derived state is valid and every presentation has aria-label and tooltip", () => {
   const cases = [
-    states.buildNovelState({ enabled: true, kakaoReader: false }),
-    states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: false, surfaceSettled: false }),
-    states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true }),
-    states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, cacheStatus: "partial" }),
-    states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, cacheStatus: "cached" }),
-    states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "working" }),
-    states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "complete", showTranslation: true }),
-    states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "partial", showTranslation: true }),
+    states.buildNovelState({ enabled: true, novelReader: false }),
+    states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: false, surfaceSettled: false }),
+    states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true }),
+    states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, cacheStatus: "partial" }),
+    states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, cacheStatus: "cached" }),
+    states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "working" }),
+    states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "complete", showTranslation: true }),
+    states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "partial", showTranslation: true }),
     states.buildComicState({ enabled: true }),
     states.buildComicState({ enabled: true, working: true }),
     states.buildComicState({ enabled: true, running: true }),
@@ -241,7 +241,7 @@ test("every derived state is valid and every presentation has aria-label and too
 });
 
 test("novel menu exposes chapter actions and marks future features as disabled", () => {
-  const idle = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true }));
+  const idle = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true }));
   assert.deepEqual(idle.map(item => item.id), [
     "translate-chapter", "translate-missing", "show-translation",
     "restore-original", "force-retranslate", "retranslate-text", "retranslate-images", "manage-chapter"
@@ -252,10 +252,10 @@ test("novel menu exposes chapter actions and marks future features as disabled",
   assert.equal(idle.find(item => item.id === "force-retranslate").disabled, false);
   assert.equal(idle.find(item => item.id === "retranslate-text").disabled, false);
   assert.equal(idle.find(item => item.id === "retranslate-images").disabled, false);
-  const shown = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, textStatus: "complete", showTranslation: true }));
+  const shown = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "complete", showTranslation: true }));
   assert.equal(shown.find(item => item.id === "restore-original").disabled, false);
   assert.equal(shown.find(item => item.id === "translate-chapter").disabled, true);
-  const busy = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, kakaoReader: true, surfaceFound: true, imageStatus: "working" }));
+  const busy = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, imageStatus: "working" }));
   assert.equal(busy.find(item => item.id === "retranslate-images").disabled, true);
   assert.match(busy.find(item => item.id === "retranslate-images").disabledReason, /图片正在处理中/u);
 });

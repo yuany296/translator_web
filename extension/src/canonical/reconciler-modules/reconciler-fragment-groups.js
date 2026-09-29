@@ -68,9 +68,8 @@ export function installReconcilerFragmentGroups(runtime) {
   runtime.seamFragmentSupport = seamFragmentSupport;
 
   function seamCaptureKey(seam) {
-    const captureId = String(seam.captureId || "").trim();
-    if (captureId) return captureId;
-    return `seam_capture_${runtime.stableHash({ pageIds: seam.pageIds, revisions: seam.imageRevisionByPage, provider: seam.provider })}`;
+    // 单一真源在 reconciler-seam-eval.js：片段分组与「整份证据挂载/取文」必须用同一个身份。
+    return runtime.seamCaptureKey(seam);
   }
 
   function strongSeamCaptures(seamObservations, pageById) {

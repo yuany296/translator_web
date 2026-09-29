@@ -31,8 +31,8 @@ export function installCapturePayload(runtime) {
 
     // 图片 complete 但 naturalWidth=0 → CDN 限流或加载失败（常见于 429）
     if (img.complete && !img.naturalWidth && !img.naturalHeight && imageUrl && !runtime.isDataUrl(imageUrl)) {
-      if (runtime.IS_KAKAOPAGE_READER) {
-        // 对于 Kakao page-edge 图片，触发自动重试
+      if (runtime.IS_STRIP_TILE_READER) {
+        // 分片在快进入视口时才真正取字节：报成可重试状态，而不是记成一次失败的 OCR。
         throw new Error(runtime.SCREENSHOT_TARGET_NOT_VISIBLE);
       }
       throw new Error(`Image failed to load: ${imageUrl.slice(0, 80)}`);
@@ -83,7 +83,7 @@ export function installCapturePayload(runtime) {
       // Canvas 被跨域污染（SecurityError）→ 尝试截图回退。
       // 不 scrollIntoView（多图并行会导致页面跳动），改为抛出 SCREENSHOT_TARGET_NOT_VISIBLE
       // 依赖 retry 机制，当用户自然滚动到该位置时截图会成功。
-      if (runtime.IS_KAKAOPAGE_READER && img.isConnected && (img.naturalWidth || 0) > 0 && !runtime.getVisibleViewportRect(img)) {
+      if (runtime.IS_STRIP_TILE_READER && img.isConnected && (img.naturalWidth || 0) > 0 && !runtime.getVisibleViewportRect(img)) {
         throw new Error(runtime.SCREENSHOT_TARGET_NOT_VISIBLE);
       }
       console.debug("[MangaTranslator] image-fetch-fallback", imageFetchError || error);

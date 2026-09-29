@@ -12,7 +12,22 @@ export function installRendererOverlay(runtime) {
     const currentSourceToken = runtime.getQuickSourceToken(target);
     const hasTranslatedRenderContent = bubbles.length > 0;
     const renderSignature = hasTranslatedRenderContent ? runtime.buildOverlayRenderSignature(result) : runtime.buildOverlayDebugRenderSignature(result);
-    const cleanedImage = String(result && result.cleanedImage || "");
+    // 清理图（inpainted 遮罩图）有三个来源，取第一个非空的：
+    //
+    // 1) result.cleanedImage —— canonical 层这次带上来的图。最准，但它是「渲染那一刻
+    //    的快照」；清理图是异步产物，图落地时这一版投影往往已经画完。
+    // 2) oldOverlay.cleanedImage —— 这枚 root 上已绑好的图。不能要求 sourceToken 未变：
+    //    清理图是「页级」产物（按 pageId 缓存），与这一片的图源地址是两件事，RIDI
+    //    分片换 url 时同一页的清理图仍然有效。旧写法在这里丢掉沿用值 → 新 root 没
+    //    变量 → syncOverlayPosition 按"这一层没有清理图"撤掉变量，正是"有的有有的没有"。
+    // 3) store 里这一页此刻的 handle.cleanedImage —— 兜底。前两个都扑空说明覆盖层是在
+    //    图落地之后才（重）建的：绑过一次的那枚 root 已被换掉。问 store 最准。
+    const argMask = String(result && result.cleanedImage || "");
+    const carriedMask = String(oldOverlay && oldOverlay.cleanedImage || "");
+    const storeMask = String(runtime.getPageCleanedImage?.(options.pageId) || "");
+    const cleanedImage = String(argMask || carriedMask || storeMask || "");
+    const maskEv = { arg: argMask.length, carried: carriedMask.length, store: storeMask.length, eff: cleanedImage.length };
+
     if (oldOverlay && oldOverlay.targetKey === targetKey && oldOverlay.sourceToken === currentSourceToken) {
       // OCR debug 是中间态，不能为了显示诊断框先删掉已经稳定可见的译文。
       if (options.debugOnly === true && Number(oldOverlay.bubbleCount || 0) > 0) {
@@ -28,13 +43,19 @@ export function installRendererOverlay(runtime) {
         return;
       }
     }
+    // 走到这里 = 要重建 root。eff 为 0 就说明新 root 天生没有遮罩。
+    runtime.traceMaskEvent?.(options.pageId, "rebuild", maskEv);
     const root = document.createElement("div");
     root.className = "mt-overlay-root";
     root.dataset.mangaTranslatorOverlay = "true";
     root.dataset.targetId = targetId;
-    if (result && runtime.isDataUrl(result.cleanedImage)) {
-      root.style.setProperty("--mt-cleaned-image", `url("${result.cleanedImage}")`);
-    }
+    // 取证标签：sync-write 时记进流水，即可判断写入的是不是此刻 DOM 里那枚 root。
+    runtime.state.overlayProbeSeq = (Number(runtime.state.overlayProbeSeq) || 0) + 1;
+    root.dataset.mtProbe = `${targetId}:${runtime.state.overlayProbeSeq}`;
+    // 覆盖层与 pageId 的对应关系：诊断遮罩问题时要能和 data-mt-mask-* 的分片对上。
+    if (options.pageId) root.dataset.pageId = String(options.pageId);
+    const maskValue = runtime.maskCssValue?.(cleanedImage);
+    if (maskValue) root.style.setProperty("--mt-cleaned-image", maskValue);
     const debugNodeCount = runtime.appendOcrDebugNodes(root, result);
     const bubbleNodes = [];
     const coverNodes = [];
@@ -63,6 +84,7 @@ export function installRendererOverlay(runtime) {
     const overlayState = {
       target,
       targetId,
+      pageId: options.pageId ? String(options.pageId) : "",
       targetKey,
       sourceToken: currentSourceToken,
       root,
@@ -184,7 +206,9 @@ export function installRendererOverlay(runtime) {
   }
   runtime.buildTermDiscoveryMessage = buildTermDiscoveryMessage;
   function syncKakaoVisualDuplicateBubbles(force = false) {
-    if (!runtime.IS_KAKAOPAGE_READER || !runtime.KP || typeof runtime.KP.selectKakaoVisualDuplicateLoser !== "function") {
+    // 分片阅读器的相邻片各带一小段重叠像素，同一句可能被两片各渲染一次；
+    // 视觉去重把重复的那一枚藏掉，KakaoPage 与 RIDI 共用同一判据。
+    if (!runtime.IS_STRIP_TILE_READER || !runtime.KP || typeof runtime.KP.selectKakaoVisualDuplicateLoser !== "function") {
       return;
     }
     const now = performance.now();

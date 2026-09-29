@@ -41,7 +41,9 @@ function visibleItem() {
 // 本地 OCR 服务曾经是一把全局锁串行执行，于是 Kakao 把领先并发压到 1（保留 5 个槽位）。
 // 锁已经不存在，领先并发必须放开，否则「领先 6 张」只是排队 6 张、同时只跑 1 张。
 test("Kakao 的可见保留槽位为 3（领先并发 = 3），不再是 5", () => {
-  assert.match(readerStateSource, /const VISIBLE_TRANSLATION_RESERVED_SLOTS = runtime\.IS_KAKAOPAGE_READER \? 3 : 0;/u);
+  // 分片长条阅读器（KakaoPage、RIDI）共用同一套槽位口径：能力标志取代了 Kakao 专名。
+  assert.match(readerStateSource, /const VISIBLE_TRANSLATION_RESERVED_SLOTS = runtime\.IS_STRIP_TILE_READER \? 3 : 0;/u);
+  assert.match(readerStateSource, /const MAX_PARALLEL_TRANSLATIONS = runtime\.IS_STRIP_TILE_READER \? 6 : 3;/u);
   assert.doesNotMatch(readerStateSource, /VISIBLE_TRANSLATION_RESERVED_SLOTS = runtime\.IS_KAKAOPAGE_READER \? runtime\.MAX_PARALLEL_TRANSLATIONS - 1/u);
 
   const runtime = makeSchedulerRuntime();

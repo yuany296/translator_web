@@ -67,16 +67,19 @@ export function installNovelRenderer(runtime) {
   runtime.computeNovelParagraphSourceHash = computeParagraphSourceHash;
 
   function findParagraphNode(surface, id) {
-    // 用 id 里的原始 data-p-id 和同 id 序号在当前屏上定位节点。
+    // 用 id 里的原始锚点值和同锚点序号在当前屏上定位节点。
+    // 锚点属性由 surface 决定（Kakao 页面自带 data-p-id、RIDI 我们盖章的
+    // data-mt-novel-pid），这里不硬编码属性名。
     const { pid, ordinal } = splitParagraphId(id);
+    const attribute = runtime.novelAnchorAttribute?.(surface) || "data-p-id";
     const escaped = globalThis.CSS?.escape ? CSS.escape(pid) : String(pid).replace(/["\\]/gu, "\\$&");
-    const matches = surface?.root?.querySelectorAll?.(`[data-p-id="${escaped}"]`) || [];
-    // 序号必须与 extractKakaoNovelChapter 用同一套判据算出来:那里排除了
+    const matches = surface?.root?.querySelectorAll?.(`[${attribute}="${escaped}"]`) || [];
+    // 序号必须与 extractNovelChapter 用同一套判据算出来:那里排除了
     // 「带嵌套段落的容器」(KakaoPage 的论坛块容器与内层段落同号),这里若只按
     // 标签过滤,容器会占掉第 0 个序号,reapply 就会把译文画到容器上,又因源文
     // 哈希不匹配而被清掉(表现为译文静默消失)。runtime 未装 reader 时退回旧判据。
     const isParagraph = node => (typeof runtime.isNovelParagraphLeaf === "function"
-      ? runtime.isNovelParagraphLeaf(node)
+      ? runtime.isNovelParagraphLeaf(node, attribute)
       : /^(?:H[1-6]|P|DIV)$/u.test(String(node?.tagName || "")));
     return [...matches].filter(isParagraph)[ordinal] || null;
   }
@@ -84,12 +87,12 @@ export function installNovelRenderer(runtime) {
 
   /**
    * 正向映射:DOM 节点 → 已有段落 id(形如 "52#3")。
-   * 必须复用 extractKakaoNovelChapter 的提取结果,因为那里的序号是按数值 id
-   * 排序后算出来的;若在这里按 DOM 顺序自行推算,会与侧边栏卡片对不上号。
+   * 必须复用 extractNovelChapter 的提取结果,因为那里的序号是按锚点排序后算出来的;
+   * 若在这里按 DOM 顺序自行推算,会与侧边栏卡片对不上号。
    */
   function findParagraphIdForNode(surface, node) {
     if (!surface || !node) return null;
-    const paragraphs = runtime.extractKakaoNovelChapter?.(surface)?.paragraphs || [];
+    const paragraphs = runtime.extractNovelChapter?.(surface)?.paragraphs || [];
     for (const paragraph of paragraphs) {
       const candidate = paragraph.node;
       if (!candidate) continue;
@@ -132,25 +135,37 @@ export function installNovelRenderer(runtime) {
    *
    * paragraphId 用来取这一段「让模型对齐过的行内格式」(state.emphasisMarks);
    * 没对齐过就按字符占比近似映射(见 buildTranslationMirror)。
+   *
+   * 已经画好、且内容与本次请求完全一致时直接返回:reconcile 会在每次 DOM 变动后
+   * 重扫并 reapply,没有这层判断就会「写译文 → 触发观察器 → 再重扫 → 再写译文」，
+   * 变成一个每 80ms 重写一遍全文的自我激发循环(RIDI 的内容观察器与 Kakao 的
+   * shadow 观察器都会看到自己刚插进去的包裹节点)。
    */
   function renderNovelTranslation(node, translatedText, showTranslation = true, paragraphId = "") {
     const text = String(translatedText || "").trim();
     if (!node || !text) return false;
     const { source, translation } = ensureNovelWrappers(node);
-    // 先清空再写入:reapply/侧栏改译会重复调用,镜像包裹不能层层叠加。
-    translation.textContent = "";
     const marked = paragraphId
       ? runtime.getNovelState?.()?.emphasisMarks?.get(String(paragraphId)) || ""
       : "";
+    const key = `${String(paragraphId)}\u0000${marked}\u0000${text}`;
+    const novelState = runtime.getNovelState?.();
+    const renderedKeys = novelState && (novelState.renderedKeys || (novelState.renderedKeys = new Map()));
+    if (renderedKeys && renderedKeys.get(String(paragraphId)) === key && translation.firstChild) {
+      applyVisibility(source, translation, showTranslation);
+      return true;
+    }
+    // 先清空再写入:reapply/侧栏改译会重复调用,镜像包裹不能层层叠加。
+    translation.textContent = "";
     const mirror = runtime.buildNovelInlineMirror?.(source, text, marked) || null;
     if (mirror) mirror.forEach(child => translation.appendChild(child));
     else translation.textContent = text;
+    if (renderedKeys) renderedKeys.set(String(paragraphId), key);
     applyVisibility(source, translation, showTranslation);
     if (showTranslation) {
       // 译文按"显示译文"意图渲染后同步翻转全局意图:随后的 reconcile/reapply
       // 以 state.showTranslation 为准,若不翻转会把刚到达的译文重新藏回原文。
       // 切换回原文走 setNovelTranslationVisibility(false),不经由此处,不会误翻转。
-      const novelState = runtime.getNovelState?.();
       if (novelState) novelState.showTranslation = true;
     }
     node.dataset.mtNovelTranslated = "true";
@@ -176,13 +191,14 @@ export function installNovelRenderer(runtime) {
    */
   function setNovelTranslationVisibility(showTranslation) {
     const state = runtime.getNovelState();
-    const surface = state.surface || runtime.findKakaoNovelSurface();
+    const surface = state.surface || runtime.findNovelSurface();
     state.showTranslation = showTranslation;
     if (!surface) return;
     if (showTranslation) {
       // 原文模式下 DOM 里没有可翻转的壳,必须按 state.translations 重贴一遍。
       reapplyNovelTranslations(surface);
     } else {
+      state.renderedKeys?.clear();
       restoreAllNovelText(surface.root);
     }
     // 译文/原文切换时图片一起切换:显示译文则重新嵌入,恢复原文则还原原图。
@@ -202,6 +218,7 @@ export function installNovelRenderer(runtime) {
 
   function restoreAllNovelText(root = null) {
     const roots = root ? [root] : collectOpenShadowRoots();
+    runtime.getNovelState?.().renderedKeys?.clear();
     roots.forEach(candidate => candidate.querySelectorAll?.("[data-mt-novel-translated='true']")
       .forEach(restoreNovelNode));
   }
@@ -215,7 +232,7 @@ export function installNovelRenderer(runtime) {
     return roots;
   }
 
-  function reapplyNovelTranslations(surface = runtime.findKakaoNovelSurface()) {
+  function reapplyNovelTranslations(surface = runtime.findNovelSurface()) {
     if (!surface) return;
     const state = runtime.getNovelState();
     // 原文模式下正文必须保持页面原样:这里若继续套壳,又会把刚还原好的 DOM
@@ -224,11 +241,12 @@ export function installNovelRenderer(runtime) {
     state.translations.forEach((text, id) => {
       const node = findParagraphNode(surface, id);
       if (!node) return;
-      // 段落 id 自带源文哈希。当前屏上同号段落的源文与译文所属源文对不上,
+      // 段落 id 自带源文哈希。当前屏上同锚点段落的源文与译文所属源文对不上,
       // 说明这份译文属于另一屏(EPUB 翻页后 data-p-id 会从 0 重新编号)。
       // 直接套用会把作品开头的句子画到版权页上,必须拒收并清掉错配残影。
       const expected = splitParagraphId(id).sourceHash;
       if (expected && computeParagraphSourceHash(node) !== expected) {
+        state.renderedKeys?.delete(String(id));
         restoreNovelNode(node);
         return;
       }

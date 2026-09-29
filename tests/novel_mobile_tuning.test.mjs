@@ -74,7 +74,7 @@ function makeHarness(storedTuning) {
       ok: true, pending: false, record: { activeVersion: { translatedText: operation.payload.translatedText } }
     }),
     renderNovelTranslation: () => {},
-    findKakaoNovelSurface: () => chapter.surface,
+    findNovelSurface: () => chapter.surface,
     novelSurfaceSignature: () => "sig",
     reapplyNovelTranslations: () => {},
     setNovelTextStatus: () => {},

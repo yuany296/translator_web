@@ -70,12 +70,14 @@ export function installReaderInit(runtime) {
   }
   runtime.init = init;
   /**
-   * 在 Kakao 阅读器页面建立常驻端口,让后台 service worker 保持存活。
+   * 在分片长条阅读器页面建立常驻端口,让后台 service worker 保持存活。
    * 这样悬浮球消息与扩展弹窗的配置加载都不必等待 SW 冷启动,
    * 也避免 MV3 空闲回收瞬间消息失败(“Receiving end does not exist”)。
+   * RIDI 同样有整章长条 + DOM 回收的长会话，冷启动窗口里丢一条消息就表现为
+   * 「某一片永远没译文」，所以能力标志取代了 Kakao 站名。
    */
   function connectKeepAlive() {
-    if (!runtime.IS_KAKAOPAGE_READER || runtime.state.keepAlivePort) return;
+    if (!runtime.IS_STRIP_TILE_READER || runtime.state.keepAlivePort) return;
     try {
       const port = chrome.runtime.connect({ name: "mt-keepalive" });
       runtime.state.keepAlivePort = port;
@@ -212,7 +214,7 @@ export function installReaderInit(runtime) {
     if (!runtime.state.syncInterval) {
       runtime.state.syncInterval = window.setInterval(() => {
         runtime.ensureExtensionUiMounted();
-        runtime.reconcileKakaoNovelIfStale?.();
+        runtime.reconcileNovelIfStale?.();
         runtime.syncAllOverlays();
       }, 1200);
     }
@@ -226,14 +228,27 @@ export function installReaderInit(runtime) {
     for (const overlayState of runtime.state.overlaysById.values()) {
       runtime.syncOverlayPosition(overlayState);
     }
+    // 跨页（接缝）覆盖层与页面覆盖层共用同一帧同步。
+    // 它原先只在 resize/mutation 时刷新，滚动期间停在旧位置、之后才跳回文字处：
+    // 用户看到的就是「一层定死、另一层被拖着走」。两层同步节奏统一后不会再分家。
+    if (typeof runtime.syncCrossPageOverlayGeometry === "function") {
+      runtime.syncCrossPageOverlayGeometry();
+    }
     runtime.syncKakaoVisualDuplicateBubbles();
-    if (runtime.state.overlaysById.size > 0) {
+    if (runtime.state.overlaysById.size > 0 || hasCrossPageOverlays()) {
       runtime.state.overlayFrameRaf = window.requestAnimationFrame(runtime.overlayFrameSyncTick);
     }
   }
   runtime.overlayFrameSyncTick = overlayFrameSyncTick;
+  function hasCrossPageOverlays() {
+    const entries = runtime.state.crossPageOverlaysByRenderKey;
+    return !!entries && entries.size > 0;
+  }
+  runtime.hasCrossPageOverlays = hasCrossPageOverlays;
   function ensureOverlayFrameSync() {
-    if (runtime.state.invalidated || runtime.state.overlayFrameRaf || runtime.state.overlaysById.size === 0) {
+    // 只有跨页覆盖层时也要继续逐帧同步，否则接缝层又回到「等下一次事件才回位」的老问题。
+    if (runtime.state.invalidated || runtime.state.overlayFrameRaf ||
+        runtime.state.overlaysById.size === 0 && !hasCrossPageOverlays()) {
       return;
     }
     // 阅读器可能用 transform 平滑移动画面，此时不会持续触发原生 scroll 事件。
@@ -254,7 +269,7 @@ export function installReaderInit(runtime) {
     }
     runtime.state.io = new IntersectionObserver(runtime.onIntersection, {
       root: null,
-      rootMargin: runtime.IS_KAKAOPAGE_READER ? "800px 0px" : "280px 0px",
+      rootMargin: runtime.IS_STRIP_TILE_READER ? "800px 0px" : "280px 0px",
       threshold: 0.08
     });
     runtime.state.preloadIo = new IntersectionObserver(runtime.onPreloadIntersection, {
@@ -288,7 +303,7 @@ export function installReaderInit(runtime) {
       return;
     }
     runtime.ensureExtensionUiMounted();
-    runtime.reconcileKakaoNovelReader();
+    runtime.reconcileNovelReader();
     runtime.scanNode(document.documentElement || document.body);
     runtime.syncAllOverlays();
   }

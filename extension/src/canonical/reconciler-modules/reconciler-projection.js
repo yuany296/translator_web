@@ -114,22 +114,10 @@ export function installReconcilerProjection(runtime) {
     const attachableSeams = seamEvidenceObservations.filter(seam =>
       !seamContextOnlyIds.has(seam.id) || supportedContextSeamIds.has(seam.id)
     );
-    for (const seam of attachableSeams) {
-      let root = explicitlySupported.get(seam.id) || null;
-      if (!root) {
-        const candidates = Array.from(componentByRoot.entries()).map(([candidateRoot, members]) => ({
-          root: candidateRoot,
-          members,
-          score: Math.max(0, ...members.map(member => runtime.relationBetweenSeamAndPage(seam, member, pageById)))
-        })).filter(candidate => candidate.score >= 0.50 && runtime.canAttachSeamToComponent(seam, candidate.members, pageById)).sort((left, right) => right.score - left.score || left.root.localeCompare(right.root));
-        root = candidates[0]?.root || null;
-      }
-      if (root && componentSeams.has(root)) componentSeams.get(root).push(seam);else {
-        const seamRoot = `seam:${seam.id}`;
-        componentByRoot.set(seamRoot, []);
-        componentSeams.set(seamRoot, [seam]);
-      }
-    }
+    // 同一次复合图的观测作为一份证据整体挂载（见 attachSeamEvidenceToComponents）。
+    runtime.attachSeamEvidenceToComponents({
+      componentByRoot, componentSeams, seamObservations: attachableSeams, explicitlySupported, pageById
+    });
     const attachedSeamIds = new Set([...componentSeams.values()].flat().map(seam => seam.id));
     for (const observation of activeInput.filter(item =>
       seamContextOnlyIds.has(item.id) && !attachedSeamIds.has(item.id)

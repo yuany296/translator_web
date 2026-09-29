@@ -343,7 +343,7 @@ export function installNovelBatch(runtime, options = {}) {
     // renderNovelTranslation 写进的就是已经脱离文档的旧节点 —— 表现就是「翻译完成了但页面没替换」。
     // 这里按**当前** surface 按 id 重新贴一遍：state.translations 里有译文，节点是活的。
     // surfaceSignature 只由原文算出（渲染插入的包裹不改它），所以这一步不会自激触发重译。
-    const liveSurface = runtime.findKakaoNovelSurface?.() || chapter.surface;
+    const liveSurface = runtime.findNovelSurface?.() || chapter.surface;
     runtime.reapplyNovelTranslations?.(liveSurface);
     const liveSignature = runtime.novelSurfaceSignature?.(liveSurface) || "";
     return {

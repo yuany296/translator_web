@@ -98,6 +98,29 @@ export function installSeamHandling(runtime) {
     return "";
   }
   runtime.getSeamDirectPairSide = getSeamDirectPairSide;
+  /**
+   * 「被分片边界劈开的一整行字」在复合图里的样子：两半已经被拼回原样，所以这一行的
+   * 文字框**完整落在复合图内部**（上下都不贴画布边）。
+   *
+   * 现场（RIDI《绘制地下城的画家》第 8 集，1280 宽分片 / 带宽 96、复合图 1280x192）：
+   * 一行特效字 `「지오의 초상화」` 被劈成上片 62px + 下片 80px，接缝复合图把它正确识别成
+   * 两个框（字高 153.36 / 150.12）。旧判据要求字高 ≤ 带宽 × 1.5 = 144，两个框双双被判
+   * `seam_not_cross_boundary` 丢掉 —— 接缝跑了、也识别对了，证据却一条没留，canonical
+   * 只剩下面那半句，遮罩自然也只剩下面那一片（用户看到的「覆盖框没对齐原图」）。
+   * 字高不该由带宽决定：带宽是给接缝上下文用的，特效字完全可能高过它。
+   *
+   * 反过来，被这道过滤拦的「整幅场景框」（混合面板）几乎必然贴住画布上下边、或者占满
+   * 整幅高度，所以这里要求严格内缩 + 不占满高度；两条不满足就退回原来的带宽上限。
+   */
+  function seamLineFitsComposite(rawBox, imageSize) {
+    const canvasHeight = Math.max(1, Number(imageSize && imageSize.height) || 1);
+    const top = Number(rawBox && rawBox.top) || 0;
+    const height = Number(rawBox && rawBox.height) || 0;
+    if (!(top > 0 && height > 0)) return false;
+    if (top + height >= canvasHeight) return false;
+    return height <= canvasHeight * runtime.SEAM_CROSS_MAX_LINE_COVERAGE;
+  }
+  runtime.seamLineFitsComposite = seamLineFitsComposite;
   function resolveSeamCrossEdgeWindow(rawBox, maxCrossHeight) {
     const lineHeight = Math.max(1, Number(rawBox && rawBox.height) || 1);
     const adaptive = lineHeight * 1.35;
@@ -115,7 +138,8 @@ export function installSeamHandling(runtime) {
     const lowerTop = lowerSegment.canvasBox.top;
     // 分页可能切在两行之间；允许按当前字号扩展边缘窗口，避免固定 24px 漏掉正常行距。
     const edgeWindow = runtime.resolveSeamCrossEdgeWindow(rawBox, maxCrossHeight);
-    const textCrossesBoundary = Boolean(upperIntersection && lowerIntersection && rawBox.top < lowerTop && rawBox.top + rawBox.height > upperBottom && rawBox.height <= maxCrossHeight);
+    const textCrossesBoundary = Boolean(upperIntersection && lowerIntersection && rawBox.top < lowerTop && rawBox.top + rawBox.height > upperBottom &&
+      (rawBox.height <= maxCrossHeight || runtime.seamLineFitsComposite(rawBox, imageSize)));
     const visualBox = runtime.getSeamCandidateVisualContributionBox(candidate, imageSize, maxCrossHeight);
     const visualCrossesBoundary = Boolean(visualBox && runtime.intersectObservationBoxes(visualBox, upperSegment.canvasBox) && runtime.intersectObservationBoxes(visualBox, lowerSegment.canvasBox) && (upperIntersection && rawBox.top + rawBox.height >= upperBottom - edgeWindow || lowerIntersection && rawBox.top <= lowerTop + edgeWindow));
     return {

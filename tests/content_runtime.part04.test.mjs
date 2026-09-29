@@ -208,19 +208,20 @@ test("overlay movement updates position without triggering text layout", () => {
     sizeChanged: false
   });
 });
-test("Kakao overlays keep a stable document position while the page scrolls", () => {
+test("overlays keep a stable host-relative position while the page scrolls", () => {
+  // 覆盖层挂在滚动容器内、坐标相对层原点：同一份 (rect, origin) 差值在滚动前后必须一致。
   const before = runtime.__test.getOverlayPositionRect({
     left: 20,
     top: 100,
     width: 600,
     height: 800
-  }, true, 12, 500);
+  }, { left: -12, top: -500 });
   const after = runtime.__test.getOverlayPositionRect({
     left: 20,
     top: -140,
     width: 600,
     height: 800
-  }, true, 12, 740);
+  }, { left: -12, top: -740 });
   assert.deepEqual(before, {
     left: 32,
     top: 600,
@@ -228,12 +229,13 @@ test("Kakao overlays keep a stable document position while the page scrolls", ()
     height: 800
   });
   assert.deepEqual(after, before);
+  // 没有层原点（回落视口坐标）时保持原样。
   assert.deepEqual(runtime.__test.getOverlayPositionRect({
     left: 20,
     top: -140,
     width: 600,
     height: 800
-  }, false, 12, 740), {
+  }, null), {
     left: 20,
     top: -140,
     width: 600,
@@ -366,10 +368,10 @@ test("Kakao translation queue selects visible content before ahead and previous 
   assert.equal(runtime.__test.canStartKakaoTranslationQueueItem(ahead, 5, 6, 800), false);
   assert.match(contentSource, /queueMicrotask[\s\S]*processTranslationQueue\(\)/);
 });
-test("Kakao render debug logs are gated by pipeline trace", () => {
-  const renderMatch = contentSource.match(/async function renderTranslationResult\(target, targetKey, result, payload, options = \{\}\) \{[\s\S]*?\n  function isKakaopageTargetStillRenderable/);
-  assert.ok(renderMatch, "renderTranslationResult source should be present");
-  assert.match(renderMatch[0], /if \(runtime\.ENABLE_PIPELINE_TRACE && runtime\.IS_KAKAOPAGE_READER\)/);
+test("分片阅读器的渲染调试日志由管线 trace 与分片能力共同开关", () => {
+  const renderMatch = contentSource.match(/async function renderTranslationResult\(target, targetKey, result, payload, options = \{\}\) \{[\s\S]*?\n  function isKakaopageTargetStillRenderable/)?.[0] || "";
+  assert.match(renderMatch, /if \(runtime\.ENABLE_PIPELINE_TRACE && runtime\.IS_STRIP_TILE_READER\)/, "renderTranslationResult 的调试日志应由分片能力开关");
+  assert.doesNotMatch(renderMatch, /runtime\.IS_KAKAOPAGE_READER/);
   const debugMatch = contentSource.match(/function logOcrDebugMapping\(overlayState, result\) \{[\s\S]*?\n  function normalizeResult/);
   assert.ok(debugMatch, "logOcrDebugMapping source should be present");
   assert.match(debugMatch[0], /if \(!runtime\.ENABLE_PIPELINE_TRACE\)[\s\S]*?return/);

@@ -17,6 +17,10 @@ const entrypoints = new Set([
 function walk(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     if (excluded.has(entry.name) || entry.isDirectory() && entry.name.startsWith("tmp_")) return [];
+    // 符号链接一律跳过：readdirSync 的 isDirectory() 对软链返回 false，会把
+    // 「指向目录的软链」当成普通文件交给 readFileSync，直接 EISDIR 崩掉整个门禁。
+    // pytest 的 --basetemp 就会留下 `<name>current -> <name>0` 这类软链。
+    if (entry.isSymbolicLink()) return [];
     const absolute = path.join(directory, entry.name);
     return entry.isDirectory() ? walk(absolute) : [absolute];
   });

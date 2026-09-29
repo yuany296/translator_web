@@ -74,6 +74,18 @@ test("管线与消息通道把漫画增量行接了起来", () => {
   assert.match(source("canonical/canonical-pipeline-factory/canonical-render.js"), /renderSettled: scope\.renderSettledTranslations/u);
   const pipeline = source("background/modules/ocr-pipeline.js");
   assert.match(pipeline, /const partialType = mode === "webpage" \? "WEBPAGE_TRANSLATION_PARTIAL" : "COMIC_TRANSLATION_PARTIAL";/u);
-  assert.match(pipeline, /mode === "webpage" \|\| mode === "comic" && !!taskId/u);
   assert.match(source("content/modules/reader-init.js"), /message\.type === "COMIC_TRANSLATION_PARTIAL"[\s\S]*applyComicPartialTranslations/u);
+});
+
+// 回归护栏：漫画曾经只要带 taskId 就走供应商流式请求，而那条路会返回被截尾的译文
+// （'好,马上' → '好,'；整句 → '游乐设施'），并覆盖了官方译文库里的完整版本。
+// 现在必须由内容脚本按用户开关显式带 streamPartials 才走流式。
+test("漫画流式请求必须由用户开关显式开启", () => {
+  const pipeline = source("background/modules/ocr-pipeline.js");
+  assert.match(pipeline, /const wantsPartialPush = mode === "webpage" \|\| mode === "comic" && message && message\.streamPartials === true && !!taskId;/u);
+  assert.doesNotMatch(pipeline, /mode === "comic" && !!taskId\) && !!/u);
+  assert.match(
+    source("content/modules/recognition-seam.js"),
+    /streamPartials: runtime\.comicStreamingEnabled === true,/u
+  );
 });

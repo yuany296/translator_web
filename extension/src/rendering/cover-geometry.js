@@ -154,6 +154,29 @@ export function resolveTiltRotationDeg(rotationDeg, polygons = [], scaleX = 1, s
   return 0;
 }
 
+/**
+ * 渲染倾角的几何自洽检查。
+ *
+ * 接近 ±90° 的倾角语义是「文字沿竖直方向排列」，而旋转 90° 会把宽高互换：
+ * 这种文字的包围盒**必然高大于宽**。若实际文字框明显更宽，这个角度只可能来自
+ * 判断失误的框——OCR 把高而窄的多行横排框当成竖排（`polygon_rotation_deg` 对
+ * 高框直接返回 ±90°）、或者跨分片接缝里被切开的碎片框。照它旋转就会把整块横排
+ * 译文转 90°，用户看到的正是「原图明明是横排，译文却变成竖排」。
+ *
+ * 因此：|倾角| ≥ 60° 且文字框更宽 → 该倾角不可信，按水平渲染。
+ * 真正的竖排（框高大于宽）与斜排 SFX（|倾角| < 60°）完全不受影响。
+ */
+export const RENDER_ROTATION_VERTICAL_MIN_DEG = 60;
+
+export function sanitizeRenderRotationDeg(rotation, boxWidth = 0, boxHeight = 0) {
+  const angle = Number(rotation) || 0;
+  if (Math.abs(angle) < RENDER_ROTATION_VERTICAL_MIN_DEG) return angle;
+  const width = Number(boxWidth) || 0;
+  const height = Number(boxHeight) || 0;
+  if (!(width > 0 && height > 0)) return angle;
+  return width > height ? 0 : angle;
+}
+
 /** 四边形相对坐标轴的倾斜角（折到 ±45°）：轴对齐矩形返回 0。 */
 export function polygonTiltDeg(points) {
   const normalized = normalizePoints(points, 4);

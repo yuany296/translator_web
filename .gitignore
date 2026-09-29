@@ -79,6 +79,9 @@ test-run.log
 test3_fails.txt
 tmp-ocr-bench-*.json
 tmp_pairing_tests/
+.pytest-tmp*/
+.nodetest-out*.txt
+.qa-*.txt
 
 # === Local data snapshots / design references (not source) ===
 glossary-restore-*.json

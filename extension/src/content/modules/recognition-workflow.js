@@ -50,7 +50,7 @@ export function installRecognitionWorkflow(runtime) {
       relaxed: options.relaxed === true,
       allowOffscreen: options.allowOffscreen === true
     })) {
-      if (runtime.IS_KAKAOPAGE_READER && runtime.state.autoTranslatePageEnabled && options.manual) {
+      if (runtime.IS_STRIP_TILE_READER && runtime.state.autoTranslatePageEnabled && options.manual) {
         runtime.scheduleAutoTranslateRetry(target);
       }
       return { ok: false, skipped: true, reason: "filtered as non-manga target" };
@@ -116,7 +116,7 @@ export function installRecognitionWorkflow(runtime) {
       const reason = runtime.getErrorMessage(error);
       runtime.clearKakaoLoadingOverlay(target);
       if (runtime.isScreenshotTargetNotVisibleError(reason)) {
-        if (runtime.IS_KAKAOPAGE_READER && runtime.state.autoTranslatePageEnabled) {
+        if (runtime.IS_STRIP_TILE_READER && runtime.state.autoTranslatePageEnabled) {
           runtime.scheduleAutoTranslateRetry(target);
         }
         return { ok: false, skipped: true, reason };

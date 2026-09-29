@@ -2,8 +2,8 @@
  * 点原文 → 打开/联动 Chrome 侧边栏「章节译文修订面板」，并定位到该段落。
  *
  * 监听挂在 document 捕获阶段且只读（不 preventDefault / 不 stopPropagation），
- * 因此不会影响 Kakao 阅读器自身的 tap 行为与文字选择。小说正文位于 shadow root
- * 内，document 级事件里 `event.target` 会被重定向到宿主元素，必须用
+ * 因此不会影响阅读器自身的 tap 行为与文字选择。KakaoPage 的小说正文位于 shadow
+ * root 内，document 级事件里 `event.target` 会被重定向到宿主元素，必须用
  * `event.composedPath()` 穿透才能拿到真正被点到的段落节点。
  *
  * 触发护栏（B-P0-1）必须全部满足，任一不满足就什么都不做——不打开、不滚动、
@@ -13,21 +13,33 @@
  *   3. 主键单击，且不带 Ctrl / Cmd / Shift / Alt
  *   4. 没有文本选区
  *   5. pointerdown → click 位移 ≤ 6px（不是拖动 / 划选）
- *   6. 命中 [data-p-id] 段落节点
+ *   6. 命中段落锚点（KakaoPage 页面自带的 data-p-id，或 RIDI 由我们盖章的
+ *      data-mt-novel-pid）
+ *
+ * 「这个站点有没有小说阅读器」必须在装配期就判定，所以名单来自
+ * shared/novel-hosts.js，而不是 runtime.IS_*_READER——那两个标志要到 state 阶段
+ * 才写入，装配期读到的永远是 undefined，监听从来没挂上过（接 RIDI 时才发现）。
+ *
+ * 手机版构建（IS_NOVEL_MOBILE）不安装此监听——手机版没有章节译文管理面板，
+ * 点击段落必须什么都不做；桌面版不受影响。
  */
+import { isNovelReaderHost } from "../../shared/novel-hosts.js";
+
 const MT_FOCUS_TAP_MOVE_PX = 6;
+const ANCHOR_ATTRIBUTES = ["data-p-id", "data-mt-novel-pid"];
 
 export function installNovelFocusClick(runtime) {
-  if (!runtime.IS_KAKAOPAGE_READER) return;
+  if (runtime.IS_NOVEL_MOBILE) return;
+  if (!isNovelReaderHost(globalThis.location?.hostname)) return;
 
   let pointerDown = null;
 
-  /** 从 composedPath 里找最内层的 [data-p-id] 段落节点（穿透 shadow DOM）。 */
+  /** 从 composedPath 里找最内层的段落锚点节点（穿透 shadow DOM）。 */
   function paragraphNodeFromEvent(event) {
     const path = typeof event.composedPath === "function" ? event.composedPath() : [];
     for (const node of path) {
-      if (!node || node.nodeType !== 1) continue;
-      if (node.getAttribute && node.getAttribute("data-p-id") != null) return node;
+      if (!node || node.nodeType !== 1 || !node.getAttribute) continue;
+      if (ANCHOR_ATTRIBUTES.some(attribute => node.getAttribute(attribute) != null)) return node;
     }
     return null;
   }
@@ -73,7 +85,7 @@ export function installNovelFocusClick(runtime) {
     const paragraphNode = paragraphNodeFromEvent(event);
     if (!passesGuards(event, { paragraphNode }).ok) return;
     const novelState = runtime.getNovelState?.();
-    const surface = novelState?.surface || runtime.findKakaoNovelSurface?.();
+    const surface = novelState?.surface || runtime.findNovelSurface?.();
     if (!surface) return;
     // 正向映射复用章节提取结果,绝不按 DOM 顺序自行推算序号。
     const itemId = runtime.findParagraphIdForNode?.(surface, paragraphNode);

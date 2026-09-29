@@ -19,10 +19,16 @@ export function installCleanMasks(runtime) {
   runtime.projectionsRequireCleanedImage = projectionsRequireCleanedImage;
 
   function projectionRequiresCleanedImage(projection) {
-    if (!projection || projection.active === false) return false;
+    if (!projection) return false;
     const role = String(projection.role || "");
     const cover = role === "cover" || role === "cover_only" || projection.coverOnly === true;
     if (!cover && projection.activeText !== true) return false;
+    // 注意：这里**不能**因为 projection.active === false 就返回 false。
+    // 清理图是"这一页"的图像产物：只要这一页上有复杂背景文字/遮罩，就需要它，
+    // 与这一页此刻是不是主投影、是不是当前可见页无关。原先的 active 门禁让遮罩
+    // 变成"看滚动时机"：分片在清理图落地前滚出视口（或在途时被标记为不可用），
+    // 之后每一轮都判成 no-complex-projection，那一页就永远没有 inpainted 遮罩——
+    // 现场表现正是"同一章里有些分片有清理图、有些没有"。
     const bgType = String(projection.visual && (projection.visual.bgType || projection.visual.bg_type) || projection.bubble && (projection.bubble.bg_type || projection.bubble.bgType) || projection.bgType || projection.bg_type || "").trim().toLowerCase();
     return bgType === "none";
   }

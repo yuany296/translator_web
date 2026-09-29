@@ -33,6 +33,10 @@ export function installReaderApi(runtime) {
     detectAdjacentPixelRisk: runtime.detectAdjacentKakaoPixelRisk,
     getTargetForPageId: runtime.getTargetForKakaoPageId,
     renderCanonicalProjections: runtime.renderCanonicalProjections,
+    // 清理图是异步产物：落在页上时覆盖层往往已经画好了，必须由 canonical 层
+    // 当场把它绑到那一页的 DOM 上，而不是等一次未必会发生的重渲染。
+    applyCleanedImageToPageOverlays: (pageId, cleanedImage) =>
+      runtime.applyCleanedImageToPageOverlays?.(pageId, cleanedImage),
     clearCanonicalProjection: target => runtime.clearRenderedTarget(target),
     computeTargetKey: runtime.computeTargetKey,
     getQuickSourceToken: runtime.getQuickSourceToken,
@@ -96,6 +100,16 @@ export function installReaderApi(runtime) {
       queuePendingKakaoAdjacency: runtime.queuePendingKakaoAdjacency,
       hasPendingKakaoAdjacency: runtime.hasPendingKakaoAdjacency,
       resolvePendingKakaoAdjacency: runtime.resolvePendingKakaoAdjacency,
+      refreshPreviousKakaoBoundary: runtime.refreshPreviousKakaoBoundary,
+      stripTileReader: runtime.IS_STRIP_TILE_READER === true,
+      shouldUseKakaoStitchedOcr: runtime.shouldUseKakaoStitchedOcr,
+      getCaptureRenderModes: () => ({
+        captureMode: runtime.state.captureMode,
+        renderMode: runtime.state.renderMode
+      }),
+      isBlankPlaceholderImage: runtime.isBlankPlaceholderImage,
+      resolveReadingOrderTop: runtime.resolveReadingOrderTop,
+      passesTargetFilter: runtime.passesTargetFilter,
       buildOcrMessageForPayload: runtime.buildOcrMessageForPayload,
       requestOcrForPayload: runtime.requestOcrForPayload,
       detachKakaoTargetForSourceChange: runtime.detachKakaoTargetForSourceChange,
@@ -131,9 +145,11 @@ export function installReaderApi(runtime) {
       normalizePretranslateMode: runtime.normalizePretranslateMode,
       buildManualTranslateFeedback: runtime.buildManualTranslateFeedback,
       buildNovelProgressView: runtime.buildNovelProgressView,
+      findNovelSurface: runtime.findNovelSurface,
       findKakaoNovelSurface: runtime.findKakaoNovelSurface,
-      extractKakaoNovelChapter: runtime.extractKakaoNovelChapter,
-      collectKakaoNovelImages: runtime.collectKakaoNovelImages,
+      findRidiNovelSurface: runtime.findRidiNovelSurface,
+      extractNovelChapter: runtime.extractNovelChapter,
+      collectNovelImages: runtime.collectNovelImages,
       isNovelContentImage: runtime.isNovelContentImage,
       isNovelImageTarget: runtime.isNovelImageTarget,
       getNovelImageResultKey: runtime.getNovelImageResultKey,

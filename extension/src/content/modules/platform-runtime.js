@@ -183,6 +183,8 @@ export function installPlatformRuntime(runtime) {
       runtime.state.novelProgressHideTimer = 0;
     }
     runtime.markInvalidated("destroy called");
+    // 每个内容容器一个图层：全部清掉，只留主层会剩下别片的覆盖层。
+    runtime.forEachOverlayLayer?.(layer => layer.remove());
     if (runtime.state.overlayLayer && runtime.state.overlayLayer.isConnected) {
       runtime.state.overlayLayer.remove();
     }

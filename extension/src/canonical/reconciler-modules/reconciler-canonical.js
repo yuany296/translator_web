@@ -139,32 +139,6 @@ export function installReconcilerCanonical(runtime) {
     return true;
   }
   runtime.canUnionComponents = canUnionComponents;
-  function relationBetweenSeamAndPage(seam, pageObservation, pageById) {
-    const continuation = runtime.seamPageContinuationRelation(seam, pageObservation, pageById);
-    if (!runtime.hasStrongTextRelation(seam.originalText, pageObservation.originalText) && !continuation) return 0;
-    let total = 0;
-    let matches = 0;
-    for (const pageId of pageObservation.pageIds) {
-      if (!seam.pageIds.includes(pageId)) continue;
-      const page = pageById.get(pageId);
-      const seamSpan = runtime.getSpan(seam, pageId);
-      const pageSpan = runtime.getSpan(pageObservation, pageId);
-      if (!page || !seamSpan || !pageSpan) continue;
-      if (!runtime.regionsCompatible(seam, seamSpan, pageObservation, pageSpan) &&
-          continuation?.pageId !== pageId) continue;
-      const seamBox = runtime.boxInNormalizedPage(seamSpan, page);
-      const pageBox = runtime.boxInNormalizedPage(pageSpan, page);
-      const overlap = runtime.overlapOverSmaller(seamBox, pageBox);
-      const center = runtime.horizontalRelation(seamBox, pageBox).centerScore;
-      if (overlap < 0.12 && center < 0.88) continue;
-      total += Math.max(overlap, center * 0.72);
-      matches += 1;
-    }
-    if (!matches) return 0;
-    const relationScore = runtime.clamp(total / matches * 0.78 + Math.max(runtime.textSimilarity(seam.originalText, pageObservation.originalText), continuation?.textScore || 0) * 0.22, 0, 1);
-    return Math.max(relationScore, continuation?.score || 0);
-  }
-  runtime.relationBetweenSeamAndPage = relationBetweenSeamAndPage;
   function canAttachSeamToComponent(seam, members, pageById) {
     const pageIds = Array.from(new Set([...seam.pageIds, ...members.flatMap(observation => observation.pageIds)]));
     const componentPages = pageIds.map(pageId => pageById.get(pageId)).filter(Boolean);
@@ -317,6 +291,14 @@ export function installReconcilerCanonical(runtime) {
   function chooseCanonicalText(memberObservations, componentEdges, pageIndex, pageById) {
     const pageObservations = memberObservations.filter(observation => observation.sourceType === "page").sort((left, right) => runtime.compareObservationsByPage(left, right, pageIndex));
     const seamCandidates = memberObservations.filter(runtime.isTrueCrossPageSeam).sort((left, right) => runtime.observationQuality(right) - runtime.observationQuality(left) || Array.from(right.originalText).length - Array.from(left.originalText).length || left.id.localeCompare(right.id));
+    // 整份接缝证据都进了这条 canonical：这份证据对「被劈开那一行」的读法是完整的
+    // （现场：`[지오의` + `초상화]` 是同一次复合图的左右两半），优先用它；页级读法更长时，
+    // 说明页级证据还带着这一行以外的内容（例如整个面板的其余行），保留页级读法。
+    const captureText = runtime.joinSeamCaptureMemberText(memberObservations, pageIndex);
+    if (captureText) {
+      const pageText = runtime.chooseDuplicateText(pageObservations);
+      return Array.from(runtime.normalizeComparableText(captureText)).length >= Array.from(runtime.normalizeComparableText(pageText)).length ? captureText : pageText;
+    }
     for (const seam of seamCandidates) {
       const expanded = runtime.expandSeamText(seam, pageObservations, pageById);
       if (Array.from(runtime.normalizeComparableText(expanded)).length >

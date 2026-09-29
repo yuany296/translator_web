@@ -125,12 +125,12 @@ export function installNovelCache(runtime) {
 
   async function analyzeNovelCacheStatus() {
     const state = runtime.getNovelState();
-    const surface = runtime.findKakaoNovelSurface();
+    const surface = runtime.findNovelSurface();
     if (!surface) {
       state.cacheStatus = "none";
       return { total: 0, hit: 0 };
     }
-    const chapter = runtime.extractKakaoNovelChapter(surface);
+    const chapter = runtime.extractNovelChapter(surface);
     if (!chapter) return { total: 0, hit: 0 };
     // 缓存覆盖必须按「屏」判定:KakaoPage 是分屏阅读,一章被拆成多屏,
     // 首屏命中完整缓存不代表后面几屏也有。此前只用章节 key,首屏判定一次后

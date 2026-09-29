@@ -156,7 +156,7 @@ function extractChapter(runtime, surface, chapterId) {
       scopeKey: "series:1", seriesId: "series", chapterId, chapterTitle: "작품 1화"
     })
   };
-  return runtime.extractKakaoNovelChapter(surface);
+  return runtime.extractNovelChapter(surface);
 }
 
 const PAGE_A_TEXT = [

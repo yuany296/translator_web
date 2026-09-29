@@ -68,7 +68,7 @@ function makeHarness({
       const item = paragraphs.find(candidate => candidate.node === node);
       if (item) renderOrder.push(item.id);
     },
-    findKakaoNovelSurface: () => chapter.surface,
+    findNovelSurface: () => chapter.surface,
     novelSurfaceSignature: () => signature,
     // 模仿 novel-renderer.js#reapplyNovelTranslations：按段落 id 在当前 surface 上重贴
     reapplyNovelTranslations: surface => {

@@ -1,3 +1,12 @@
+// 外观采样算法版本：sampleBubbleAppearance（扩展侧）与 sample_text_ink_color
+// （服务端）的墨色主色挑选口径变化时 bump。版本进入 OCR 缓存键，旧缓存里
+// "白描边劫持时代"采出的颜色随之整体失效，不会再被命中（缓存最长 7 天）。
+// v3：深色背景上的白描边对比度轻松过线，加白描边守卫（无彩近白 TOP 让位给
+// 彩色笔画桶）。v4：守卫候选判别尺改为「色度 + 与背景 RGB 距离 + 像素数」
+// （亮度对比度对中灰蓝背景上的渐变红字失效），并放宽 choose_readable 的
+// 彩色保留线（删除 ct ≥ 2.2 下限）。
+const APPEARANCE_SAMPLE_VERSION = 4;
+
 export function installOcrDispatch(runtime) {
   function canonicalizeCleanedMaskPolygon(points) {
     const rotateFromSmallestPoint = input => {
@@ -97,6 +106,7 @@ export function installOcrDispatch(runtime) {
       pageIds: request && request.pageIds || [],
       imageRevisionByPage: request && request.imageRevisionByPage || {},
       geometryVersion: runtime.LOCAL_OCR_GEOMETRY_VERSION,
+      appearanceSampleVersion: APPEARANCE_SAMPLE_VERSION,
       coordinateModelVersion: runtime.OCR_COORDINATE_MODEL_VERSION,
       imageMeta: {
         width: Number(request && request.imageMeta && request.imageMeta.width) || 0,

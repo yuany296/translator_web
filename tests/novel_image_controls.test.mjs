@@ -84,8 +84,8 @@ function makeWorkflowHarness() {
   const restored = [];
   const runtime = {
     getNovelState: () => state,
-    reconcileKakaoNovelReader: () => chapter.surface,
-    extractKakaoNovelChapter: () => chapter,
+    reconcileNovelReader: () => chapter.surface,
+    extractNovelChapter: () => chapter,
     resetNovelForChapter: () => {},
     isNovelContentImage: () => true,
     restoreEmbeddedForTarget: target => {

@@ -9,7 +9,7 @@ export function installScheduler(runtime) {
   }
   runtime.buildAheadTranslationOptions = buildAheadTranslationOptions;
   function getAheadTranslationTargets() {
-    const candidates = (runtime.IS_KAKAOPAGE_READER ? runtime.collectKakaopageManualTargetCandidates(true) : Array.from(document.querySelectorAll(runtime.TARGET_SELECTOR))).filter(target => runtime.isSupportedTarget(target) && target.isConnected).filter(target => runtime.IS_KAKAOPAGE_READER ? runtime.passesKakaoAheadTargetFilter(target) : runtime.passesTargetFilter(target, true, {
+    const candidates = (runtime.IS_STRIP_TILE_READER ? runtime.collectKakaopageManualTargetCandidates(true) : Array.from(document.querySelectorAll(runtime.TARGET_SELECTOR))).filter(target => runtime.isSupportedTarget(target) && target.isConnected).filter(target => runtime.IS_STRIP_TILE_READER ? runtime.passesKakaoAheadTargetFilter(target) : runtime.passesTargetFilter(target, true, {
       relaxed: true
     }));
     if (candidates.length === 0) {
@@ -87,7 +87,7 @@ export function installScheduler(runtime) {
   }
   runtime.passesKakaoAheadTargetFilter = passesKakaoAheadTargetFilter;
   function isKakaoShortPageQueueBlocked(target) {
-    if (!runtime.IS_KAKAOPAGE_READER || runtime.shouldUseKakaoCanonicalPipeline(target)) {
+    if (!runtime.IS_STRIP_TILE_READER || runtime.shouldUseKakaoCanonicalPipeline(target)) {
       return false;
     }
     const gate = runtime.KP.getShortPageAttachmentGate(runtime.state.kakaoStore, target);

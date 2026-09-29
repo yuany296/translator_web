@@ -154,7 +154,7 @@ export function installNovelRevisionPanel(runtime) {
   }
 
   async function buildChapterSnapshot() {
-    const chapter = runtime.extractKakaoNovelChapter(runtime.reconcileKakaoNovelReader());
+    const chapter = runtime.extractNovelChapter(runtime.reconcileNovelReader());
     if (!chapter) return { ok: false, error: "当前页面未识别为可管理的小说章节" };
     const state = runtime.getNovelState();
     const keys = chapter.paragraphs.map(item => recordKey(chapter, item));
@@ -180,7 +180,7 @@ export function installNovelRevisionPanel(runtime) {
   }
 
   function performAction(action, payload) {
-    const chapter = runtime.extractKakaoNovelChapter(runtime.reconcileKakaoNovelReader());
+    const chapter = runtime.extractNovelChapter(runtime.reconcileNovelReader());
     if (!chapter) throw new Error("当前页面未识别为可管理的小说章节");
     const item = findParagraph(chapter, payload?.itemId);
     if (!item) throw new Error("找不到指定段落");

@@ -25,6 +25,7 @@ import { installTranslationBlockBatch } from "./translation-block-batch.js";
 import { installTranslationCacheLookup } from "./translation-cache-lookup.js";
 import { installTranslationProvider } from "./translation-provider.js";
 import { installTranslationProviderStream } from "./translation-provider-stream.js";
+import { installTranslationDiagnostics } from "./translation-diagnostics.js";
 import { installTranslationHelpers } from "./translation-helpers.js";
 import { installTranslationCoalesce } from "./translation-coalesce.js";
 import { installTranslationUtils } from "./translation-utils.js";
@@ -41,6 +42,7 @@ import { installComicTranslationStore } from "./comic-translation-store.js";
 import { installPlatformCache } from "./platform-cache.js";
 import { installPlatformUtils } from "./platform-utils.js";
 import { installPlatformStorage } from "./platform-storage.js";
+import { installTranslationCacheGeneration } from "./translation-cache-generation.js";
 import { installBackgroundState } from "./background-state.js";
 import { installBootstrap } from "./bootstrap.js";
 
@@ -73,6 +75,7 @@ export const backgroundPhases = Object.freeze({
     installTranslationCacheLookup,
     installTranslationProvider,
     installTranslationProviderStream,
+    installTranslationDiagnostics,
     installTranslationHelpers,
     installTranslationCoalesce,
     installTranslationUtils,
@@ -88,7 +91,8 @@ export const backgroundPhases = Object.freeze({
     installTranslationTaskCancel,
     installWebpageTabController,
     installPlatformUtils,
-    installPlatformStorage
+    installPlatformStorage,
+    installTranslationCacheGeneration
   ]),
   state: Object.freeze([installBackgroundState]),
   startup: Object.freeze([installBootstrap])

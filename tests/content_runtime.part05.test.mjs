@@ -225,6 +225,19 @@ test("transparent backgrounds default to black text with a white outline", () =>
     textColor: "#123456",
     strokeColor: "#abcdef"
   });
+  // 只有采样到的背景色、没有文字色时，按对比度推导，而不是一律黑字。
+  assert.deepEqual({
+    ...runtime.__test.getBubbleRenderColors({ bg_color: "#101010" }, "none")
+  }, {
+    textColor: "#ffffff",
+    strokeColor: "#000000"
+  });
+  assert.deepEqual({
+    ...runtime.__test.getBubbleRenderColors({ bg_color: "#fafafa" }, "none")
+  }, {
+    textColor: "#000000",
+    strokeColor: "#ffffff"
+  });
 });
 test("complex-background outline uses the strengthened dynamic width", () => {
   assert.equal(runtime.__test.getDynamicStrokeWidth(20), 1.8);

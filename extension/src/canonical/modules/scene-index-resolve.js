@@ -202,6 +202,13 @@ export function installSceneIndexResolve(runtime) {
       const activePrimary = available.has(desiredPrimary) ? desiredPrimary : (geometries.find(item => available.has(item.pageId)) || geometries[0]).pageId;
       for (const item of geometries) {
         const role = item.pageId === activePrimary ? "primary" : "standby";
+        // 把该页几何上带的外观（bgType/textColor…）挂到投影上：清理图计划靠
+        // projectionRequiresCleanedImage 判断"复杂背景需要 inpainted 清理图"，
+        // 不带 visual/bg_type 时它恒为 false —— 页面级复杂背景（旁白/嵌字）
+        // 于是永远拿不到清理图，遮罩节点是透明的（接缝层有自己的计划所以有图）。
+        const geometryList = Array.isArray(item.geometry) ? item.geometry : [item.geometry];
+        const styled = geometryList.find(entry => entry && (entry.visual || entry.spanVisual)) || null;
+        const visual = styled ? styled.visual || styled.spanVisual || null : null;
         projections.push({
           canonicalId: canonical.id,
           revision: canonical.revision,
@@ -209,6 +216,8 @@ export function installSceneIndexResolve(runtime) {
           role,
           activeText: role === "primary",
           geometry: item.geometry,
+          visual,
+          bg_type: String(visual && (visual.bgType || visual.bg_type) || ""),
           original_text: canonical.originalText,
           translated_text: translation.translated_text,
           translation

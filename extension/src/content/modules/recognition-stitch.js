@@ -164,7 +164,9 @@ export function installRecognitionStitch(runtime) {
   }
   runtime.getDebugItemPercentWithImageSize = getDebugItemPercentWithImageSize;
   async function dedupeKakaoResultByPageCoordinates(result, target, targetKey, scopedTargetKey = targetKey) {
-    if (!runtime.IS_KAKAOPAGE_READER || !result || !Array.isArray(result.bubbles) || !targetKey) {
+    // 按页坐标的跨片去重对所有分片长条阅读器生效：同一句被相邻两片各识别一次时，
+    // 只留一份译文，否则接缝处会出现两枚重叠气泡（KakaoPage 与 RIDI 同理）。
+    if (!runtime.IS_STRIP_TILE_READER || !result || !Array.isArray(result.bubbles) || !targetKey) {
       return result;
     }
     return runtime.KP.dedupeKakaoResultByPageCoordinates({

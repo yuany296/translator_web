@@ -193,10 +193,32 @@ export function installOcrLines(runtime) {
     };
   }
   runtime.buildLocalPaddleLineGroup = buildLocalPaddleLineGroup;
-  function buildLocalPaddleParagraphGroups(lines) {
-    return runtime.buildConnectedLocalPaddleGroups(lines, runtime.shouldMergeLocalPaddleParagraphLines).flatMap(runtime.splitLocalPaddleParagraphGroup);
+  function buildLocalPaddleParagraphGroups(lines, options = {}) {
+    const groups = runtime.buildConnectedLocalPaddleGroups(lines, runtime.shouldMergeLocalPaddleParagraphLines).flatMap(runtime.splitLocalPaddleParagraphGroup);
+    const bandPx = Math.max(0, Number(options?.edgeLineBandPx) || 0);
+    const imageHeight = Math.max(0, Number(options?.imageHeight) || 0);
+    if (!(bandPx > 0 && imageHeight > 0)) return groups;
+    // 被页边界（分片接缝带）剪断的行从所属段落里摘出来单独成组：它有一半在邻页，接缝复合图
+    // 读到的那一行才有挂载位置；否则整段并成一块，同一行会出现页级残缺读法 + 接缝面两份覆盖。
+    // 摘除发生在分组之后：在连通图上断开会让同段邻行也各自成组。
+    return groups.flatMap(group => {
+      const cut = group.filter(line => runtime.isLocalPaddleEdgeCutLine(line, bandPx, imageHeight));
+      const rest = cut.length ? group.filter(line => !cut.includes(line)) : group;
+      return [...cut.map(line => [line]), ...(rest.length ? [rest] : [])];
+    }).sort((left, right) => runtime.compareLocalPaddleReadingOrder(left[0], right[0]));
   }
   runtime.buildLocalPaddleParagraphGroups = buildLocalPaddleParagraphGroups;
+  function isLocalPaddleEdgeCutLine(line, bandPx, imageHeight) {
+    const box = line && line.box;
+    if (!box || !(bandPx > 0 && imageHeight > 0) || !(Number(box.height) > 0)) return false;
+    const top = Number(box.top) || 0;
+    const height = Number(box.height) || 0;
+    // 「被切」= 框真的贴住画布边（笔画被剪断），不是「落在边缘带里」；容差按行高取，
+    // OCR 框常比笔画内缩一两像素。带内正常行仍留在原段落，否则整段会被拆成单行气泡。
+    const tolerance = Math.max(2, Math.min(bandPx, height * 0.08));
+    return top <= tolerance || top + height >= imageHeight - tolerance;
+  }
+  runtime.isLocalPaddleEdgeCutLine = isLocalPaddleEdgeCutLine;
   function splitLocalPaddleParagraphGroup(group) {
     const sorted = [...group].sort(runtime.compareLocalPaddleReadingOrder);
     if (sorted.length < 4) {

@@ -14,7 +14,10 @@ export function installOcrClustering(runtime) {
     // 接缝需要在分页线两侧逐行判定；预先合成整段会把正常的跨页两行扩成超高块。
     const paragraphGroups = options && options.preserveLineGroups === true
       ? lineGroups.map(line => [line])
-      : runtime.buildLocalPaddleParagraphGroups(lineGroups);
+      : runtime.buildLocalPaddleParagraphGroups(lineGroups, {
+        edgeLineBandPx: Number(options && options.edgeLineBandPx) || 0,
+        imageHeight: Number(imageSize && imageSize.height) || 0
+      });
     const clusters = paragraphGroups.map(group => group.flatMap(line => line.entries));
     // Detect region types for each cluster (chat/forum vs comic bubble)
     const clusterRegionTypes = runtime.inferLocalPaddleClusterRegionTypes(clusters);

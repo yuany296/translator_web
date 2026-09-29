@@ -19,7 +19,10 @@ if (existing && !existing.invalidated) {
   const runtime = Object.assign(Object.create(null), {
     KP: canonicalPipeline,
     KR: reconciler,
-    novelCore
+    novelCore,
+    // 必须在 contentPhases.functions 装配循环之前就位：
+    // installNovelFocusClick 据此跳过安装（手机版没有章节译文管理面板）。
+    IS_NOVEL_MOBILE: true
   });
   for (const install of contentPhases.functions) install(runtime);
   prepareContentRuntime(runtime);

@@ -185,11 +185,12 @@ export function installOcrPipeline(runtime) {
       requestItems.forEach(item => outcome.set(runtime.canonicalTranslationItemKey(item), { error }));
     }
     const taskId = String(message && message.taskId || "");
-    // 流式增量：模型每写完一行就把该行推回标签页提前渲染（慢模型整批要 20~30s）。
-    // 漫画同样支持，但只在 canonical 管线带 taskId 请求时才推（见 canonical-translate 的 renderSettled）。
+    // 漫画要由内容脚本显式带 streamPartials 才走流式请求：那条路给供应商请求加 `stream: true`，
+    // 实测返回过被截尾的译文（'好,马上' → '好,'），所以默认仍走整批 JSON。
     const sourceTextById = new Map(rawItems.map(item => [String(item && item.id || ""), String(item && item.original_text || "")]));
     const partialType = mode === "webpage" ? "WEBPAGE_TRANSLATION_PARTIAL" : "COMIC_TRANSLATION_PARTIAL";
-    const canPushPartial = (mode === "webpage" || mode === "comic" && !!taskId) && !!(sender && sender.tab && sender.tab.id)
+    const wantsPartialPush = mode === "webpage" || mode === "comic" && message && message.streamPartials === true && !!taskId;
+    const canPushPartial = wantsPartialPush && !!(sender && sender.tab && sender.tab.id)
       && typeof chrome !== "undefined" && !!chrome?.tabs?.sendMessage;
     const pushPartialRows = canPushPartial ? rows => {
       const payload = rows.map(row => ({
@@ -228,17 +229,18 @@ export function installOcrPipeline(runtime) {
       }) : new Map();
       const translateMs = Date.now() - translateStartedAt;
       requested.forEach((value, key) => outcome.set(key, value));
-      // 官方译文库提交（配置指纹往返 + HTTP + IndexedDB 写）不挡首屏：译文先返回给渲染，
-      // 提交失败会走 handleTranslateTextBlocks 里的 pending 队列，下次同步再补。
+      // 官方库提交不挡首屏：失败由 queuePendingTranslationOperation 落盘，下次同步再补。
+      // 顺序无风险：submitTranslationOperations 在 translation-service 里由 writeQueue 串行，
+      // 且各切片提交的是不同 recordKey。
       if (mode === "comic" && serviceOnline && !bypassOfficialLibrary) {
         void (async () => {
           const configFingerprint = await runtime.getTranslationConfigFingerprint("comic");
-          await runtime.commitOfficialComicTranslations(descriptors, outcome, configFingerprint);
+          const queued = await runtime.commitOfficialComicTranslations(descriptors, outcome, configFingerprint);
+          if (queued?.size) console.warn(`[MangaTranslator] official comic commit queued ${queued.size} record(s) for retry`);
         })().catch(error => {
           console.warn("[MangaTranslator] official comic translation commit failed:", runtime.getErrorMessage(error));
         });
       }
-      const pendingRecordKeys = new Set();
       const translations = [];
       const errors = [];
       items.forEach(item => {
@@ -262,8 +264,7 @@ export function installOcrPipeline(runtime) {
           translated_text: runtime.cleanDecorativeSymbols(row.translatedText),
           translationFingerprint: row.translationFingerprint,
           cached: row.cached === true,
-          pending: descriptors.some(descriptor => descriptor.item.id === item.id
-            && pendingRecordKeys.has(descriptor.recordKey))
+          pending: false // 提交已异步化：pending 语义见 docs/ocr-performance-report.md §17.7
         });
       });
       if (controller) runtime.unregisterTaskAbort(taskId, controller);

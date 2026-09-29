@@ -112,7 +112,17 @@ export function installCanonicalSeamOcr(runtime, scope) {
     Promise.resolve().then(() => scope.refreshCanonicalState({
       reason: "seam-evidence-complete",
       focusPageIds: pageIds
-    })).catch(error => {
+    })).then(() => {
+      // 合并完成后才看得到结果：上片最后一条与下片第一条是否仍是「同一句的两半」。
+      if (pageIds.length >= 2) {
+        scope.reportSeamSplits?.({
+          upperPageId: pageIds[0],
+          lowerPageId: pageIds[1],
+          reasons: terminal.reasons,
+          status: terminal.status
+        });
+      }
+    }).catch(error => {
       scope.trace("seam-refresh-error", null, {
         error: runtime.getErrorMessage(error),
         pageIds

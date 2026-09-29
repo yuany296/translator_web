@@ -1,3 +1,5 @@
+import { polygonRotationDeg } from "../../rendering/cover-geometry.js";
+
 export function installOcrItemFilter(runtime) {
   function shouldDropUnmergedLocalPaddleFragment(item, imageSize) {
     const box = runtime.getBaiduItemBox(item);
@@ -78,13 +80,9 @@ export function installOcrItemFilter(runtime) {
     if (!Array.isArray(polygon) || polygon.length < 2) {
       return 0;
     }
-    const toPoint = value => ({
-      x: Array.isArray(value) ? Number(value[0]) : Number(value && value.x),
-      y: Array.isArray(value) ? Number(value[1]) : Number(value && value.y)
-    });
-    const first = toPoint(polygon[0]);
-    const second = toPoint(polygon[1]);
-    const angle = Math.atan2(second.y - first.y, second.x - first.x) * 180 / Math.PI;
+    // 口径必须与渲染侧一致（最长边 + 轴对齐框一律 0）：只看首边时，从竖边起笔的
+    // 「高而窄」框会报出 ≈±90°，渲染侧会照它把横排译文整块转 90°。
+    const angle = polygonRotationDeg(polygon);
     return Number.isFinite(angle) ? runtime.normalizeRotationDegrees(angle) : 0;
   }
   runtime.inferLocalPaddlePolygonRotation = inferLocalPaddlePolygonRotation;
@@ -175,6 +173,9 @@ export function installOcrItemFilter(runtime) {
       ocrMode: runtime.normalizeOcrRequestMode(value.ocrMode),
       sourceToken: String(value.sourceToken || ""),
       fallbackReason: String(value.fallbackReason || ""),
+      // 分片长条阅读器的接缝带提示（整页请求才有）。它决定聚类要不要把「被页边界剪断的
+      // 行」从段落里摘出来，必须在白名单里透传：漏在这里就等于提示没发。
+      edgeLineBandPx: runtime.toNumber(value.edgeLineBandPx, 0),
       stitchAdmission: String(value.stitchAdmission || ""),
       stitchRejectionReason: String(value.stitchRejectionReason || ""),
       novelImage: value.novelImage === true,

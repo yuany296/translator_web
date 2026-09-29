@@ -1,4 +1,39 @@
 export function installCleanedArtifactPlan(runtime) {
+  function projectionKey(projection) {
+    return String(projection && (projection.projectionId || projection.id) ||
+      `${projection && projection.canonicalId || ""}|${projection && projection.role || ""}`);
+  }
+  /**
+   * 清理图要覆盖"即将渲染的投影"，而不是只覆盖未被子接缝接管的那一份。
+   *
+   * 渲染侧会把 fallback 投影并回页面（见 scene-canonical 的 fallbackPages），
+   * 而清理计划原先只看 plan 那一份：于是会出现"渲染画的是 bg_type=none 的透明遮罩、
+   * 清理计划却认为这一页不需要清理图"的分叉，那一页就永远没有 inpainted 遮罩。
+   * 这里把两份按 projectionId 取并集，页面要画什么就为它要什么清理图。
+   */
+  function mergeCleanedArtifactProjectionSource(planProjections, fallbackProjections) {
+    const merged = new Map();
+    const put = source => {
+      const entries = source instanceof Map ? source : new Map();
+      for (const [pageId, projections] of entries) {
+        const key = String(pageId);
+        const list = merged.get(key) || [];
+        const known = new Set(list.map(projectionKey));
+        for (const projection of Array.isArray(projections) ? projections : []) {
+          const itemKey = projectionKey(projection);
+          if (known.has(itemKey)) continue;
+          known.add(itemKey);
+          list.push(projection);
+        }
+        merged.set(key, list);
+      }
+    };
+    put(planProjections);
+    put(fallbackProjections);
+    return merged;
+  }
+  runtime.mergeCleanedArtifactProjectionSource = mergeCleanedArtifactProjectionSource;
+
   function buildCleanedArtifactProjectionPlan(projectionsByPage, seamSurfaceIndex) {
     const planned = new Map([...(projectionsByPage instanceof Map ? projectionsByPage : new Map())]
       .map(([pageId, projections]) => [String(pageId), [...(Array.isArray(projections) ? projections : [])]]));

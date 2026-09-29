@@ -31,6 +31,8 @@ test("译文按原文片段比例复刻行内加粗段(混排段落不再整段�
     assert.ok(translated.includes(strongs[0].textContent), "加粗内容必须是译文的连续片段");
     assert.equal(strongs[0].getAttribute("data-p-id"), null,
       "镜像壳不能带 data-p-id,否则会被当成段落");
+    assert.equal(strongs[0].getAttribute("data-mt-novel-pid"), null,
+      "RIDI 侧盖章的锚点同样不能进镜像,否则会留下重复锚点");
     assert.ok(translation.childNodes[0].textContent.length > 0,
       "加粗段要落在中间:前后都还有普通文字");
     assert.ok(translation.childNodes.at(-1).textContent.length > 0);

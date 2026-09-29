@@ -33,8 +33,9 @@ const DESKTOP_NOVEL_ARTICLE_FIELDS = Object.freeze([
   "novelStreamConcurrency", "novelChunkChars", "novelRepairConcurrency"
 ]);
 
-// 桌面版网页正文翻译的速度旋钮（并发批数 / 每批段数 / 每批字符数）：手机版只翻 Kakao 小说，
-// 走的是 novel-batch.js 那条链路，这三个值（以及设置页那张「网页翻译速度」卡）对它完全不生效。
+// 桌面版网页正文翻译的速度旋钮（并发批数 / 每批段数 / 每批字符数）：手机版只翻
+// KakaoPage / RIDI 小说，走的是 novel-batch.js 那条链路，这三个值（以及设置页那张
+// 「网页翻译速度」卡）对它完全不生效。
 const DESKTOP_WEBPAGE_ARTICLE_FIELDS = Object.freeze([
   "webpageConcurrency", "webpageBatchItems", "webpageBatchChars"
 ]);
@@ -105,7 +106,7 @@ export function renameBrand(doc = globalThis.document) {
   const name = brand.querySelector("b");
   const subtitle = brand.querySelector("small");
   if (name) name.textContent = "小说翻译器";
-  if (subtitle) subtitle.textContent = "KakaoPage 手机版";
+  if (subtitle) subtitle.textContent = "KakaoPage / RIDI 手机版";
 }
 
 export function applyNovelMobileSettings(doc = globalThis.document, loc = globalThis.location) {

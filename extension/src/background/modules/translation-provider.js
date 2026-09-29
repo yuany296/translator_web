@@ -1,5 +1,6 @@
 import { createInflightEntry, subscribeInflight, cleanupInflight } from "./inflight-subscription.js";
 import languages from "../../shared/languages.js";
+import { shouldKeepPreviousTranslation, isImplausiblyShort } from "../../shared/translation-shrink.js";
 export function buildWebpageTranslationPromptBody(rows, glossaryPrompt = "", targetLanguage = "zh-CN") {
   return [
     `Translate each text block into ${languages.describeTargetLanguage(targetLanguage)}. Keep the original meaning; do not add information not present in the source.`,
@@ -125,14 +126,39 @@ export function installTranslationProvider(runtime) {
             }
             // LLM 偶发丢掉对话引号:按原文引号对做确定性兜底后再缓存。
             const restored = runtime.restoreDialogueQuotes(entry.item.original_text, translatedText);
-            cacheWrites.push([entry.cacheKey, {
-              translatedText: restored,
-              translationFingerprint: entry.translationFingerprint
-            }]);
+            // 明显变短的自动译文（供应商截尾）不覆盖同源已有的完整译文：当次渲染也用回旧值。
+            const previous = entry.cached && typeof entry.cached.translatedText === "string" ? entry.cached.translatedText.trim() : "";
+            const keepPrevious = shouldKeepPreviousTranslation({
+              source: entry.item.original_text, candidate: restored, previous
+            });
+            // 没有旧值可比时（首次译文）同样要拦住截尾：37 字符原句回 4 个字这种事
+            // 一旦写进缓存就会赖满整个 TTL，之后所有「与旧值比较」的护栏都失效。
+            const suspectTruncation = !keepPrevious && isImplausiblyShort({
+              source: entry.item.original_text, candidate: restored
+            });
+            if (keepPrevious) {
+              console.warn("[MangaTranslator] translation shrank suspiciously; keeping previous:", {
+                source: String(entry.item.original_text || "").slice(0, 40),
+                candidate: restored.slice(0, 40),
+                previous: previous.slice(0, 40)
+              });
+            } else if (suspectTruncation) {
+              console.warn("[MangaTranslator] translation looks truncated; not cached:", {
+                source: String(entry.item.original_text || "").slice(0, 40),
+                candidate: restored.slice(0, 40)
+              });
+            }
+            const settledText = keepPrevious ? previous : restored;
+            if (!keepPrevious && !suspectTruncation) {
+              cacheWrites.push([entry.cacheKey, {
+                translatedText: settledText,
+                translationFingerprint: entry.translationFingerprint
+              }]);
+            }
             entry.inflight.resolve({
-              translatedText: restored,
+              translatedText: settledText,
               translationFingerprint: entry.translationFingerprint,
-              cached: false
+              cached: keepPrevious
             });
           }
           // 缓存写入不挡渲染：先resolve（渲染立刻开始），写入在后台一次批量完成。
@@ -220,16 +246,40 @@ export function installTranslationProvider(runtime) {
       const streamed = await runtime.streamCanonicalTranslationBatch({ endpoint, apiKey, body, signal, onRow });
       if (streamed) return streamed;
     }
-    let payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body, undefined, { signal });
+    let payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body, undefined, { signal, includeResponseMeta: true });
     if (!payload) {
       const fallbackBody = {
         ...body
       };
       delete fallbackBody.response_format;
-      payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, fallbackBody, undefined, { signal });
+      payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, fallbackBody, undefined, { signal, includeResponseMeta: true });
     }
-    const parsed = runtime.parseModelJson(runtime.extractOpenAIMessageText(payload).trim());
-    return parsed && Array.isArray(parsed.translations) ? parsed.translations : [];
+    // `includeResponseMeta` 时返回 `{content, responseMeta}`：finish_reason 是判断
+    // 「模型是不是被 max_tokens 截断」的直接证据，跟流式快照一起留档。
+    const responseMeta = payload && typeof payload === "object" && payload.responseMeta ? payload.responseMeta : null;
+    const content = responseMeta ? payload.content : payload;
+    const parsed = runtime.parseModelJson(runtime.extractOpenAIMessageText(content).trim());
+    const rows = parsed && Array.isArray(parsed.translations) ? parsed.translations : [];
+    runtime.recordTranslationSnapshot?.({
+      at: Date.now(),
+      kind: "batch",
+      endpointHost: (() => {
+        try {
+          return new URL(String(endpoint || "")).host;
+        } catch {
+          return String(endpoint || "").slice(0, 80);
+        }
+      })(),
+      model: String(body.model || ""),
+      streamed: false,
+      finishReason: String(responseMeta && responseMeta.finishReason || "").slice(0, 40),
+      itemCount: items.length,
+      returnedRows: rows.length,
+      parsedOk: Boolean(parsed && Array.isArray(parsed.translations)),
+      outcome: "parsed",
+      error: ""
+    });
+    return rows;
   }
   runtime.requestOpenAICompatibleCanonicalTranslationBatch = requestOpenAICompatibleCanonicalTranslationBatch;
 

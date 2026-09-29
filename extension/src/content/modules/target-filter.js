@@ -5,6 +5,15 @@ export function installTargetFilter(runtime) {
     if (!runtime.isSupportedTarget(target) || !target.isConnected) {
       return false;
     }
+    // 懒加载空白占位图不是漫画页：放它进队列会白跑一次 OCR，还会因 data URL
+    // 完全相同而把所有占位图塌缩成同一个 pageId。仍然允许它被 registerTarget
+    // 观察到（源变化时的句柄/覆盖层清理依赖那条路径）。
+    if (runtime.isBlankPlaceholderImage(target)) {
+      runtime.debugTargetFilter("blank placeholder image", {
+        src: (target.currentSrc || target.src || '').slice(0, 60)
+      });
+      return false;
+    }
     if (runtime.isNovelImageTarget(target)) {
       if (target instanceof HTMLImageElement && !target.complete) return false;
       const novelRect = target.getBoundingClientRect();
@@ -30,8 +39,8 @@ export function installTargetFilter(runtime) {
     const widthLimit = manual ? runtime.MANUAL_MIN_WIDTH : runtime.AUTO_MIN_WIDTH;
     const heightLimit = manual ? runtime.MANUAL_MIN_HEIGHT : runtime.AUTO_MIN_HEIGHT;
     const effectiveWidthLimit = relaxed ? Math.max(90, Math.min(widthLimit, 100)) : widthLimit;
-    // KakaoPage: accept thin strips so they can be stitched into neighbors
-    const stripMinHeight = runtime.IS_KAKAOPAGE_READER ? runtime.KAKAO_THIN_STRIP_MIN_HEIGHT : 0;
+    // KakaoPage/RIDI: accept thin strips so they can be stitched into neighbors
+    const stripMinHeight = runtime.IS_STRIP_TILE_READER ? runtime.KAKAO_THIN_STRIP_MIN_HEIGHT : 0;
     const effectiveHeightLimit = runtime.shouldUseKakaoCanonicalPipeline(target) ? stripMinHeight : relaxed ? Math.max(90, Math.min(heightLimit, 100)) : Math.max(stripMinHeight, heightLimit);
     if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
       runtime.debugTargetFilter("rect too small", {
@@ -42,8 +51,11 @@ export function installTargetFilter(runtime) {
       });
       return false;
     }
-    if (runtime.IS_KAKAOPAGE_READER && !runtime.passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen)) {
-      runtime.debugTargetFilter("KakaoPage geometry rejected", {
+    // 分片长条阅读器（KakaoPage、RIDI）用低可见面积阈值：分片会被 DOM 回收、
+    // 多数时候只露出一部分，按整页门槛会把正在滚动经过的分片丢掉（只有 Kakao 站名
+    // 生效时，RIDI 的分片要露出 8000px² 才受理）。
+    if (runtime.IS_STRIP_TILE_READER && !runtime.passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen)) {
+      runtime.debugTargetFilter("strip tile geometry rejected", {
         src: (target.currentSrc || target.src || '').slice(0, 60),
         rect: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
         manual,
@@ -52,9 +64,9 @@ export function installTargetFilter(runtime) {
       return false;
     }
     const ratio = rect.height / rect.width;
-    // KakaoPage: accept thin strips (down to ~0.01 ratio) so they aren't dropped.
+    // KakaoPage/RIDI: accept thin strips (down to ~0.01 ratio) so they aren't dropped.
     // The KakaoPage geometry check already handles per-mode visibility thresholds.
-    const effectiveMinRatio = runtime.IS_KAKAOPAGE_READER ? 0.01 : relaxed ? 0.10 : runtime.AUTO_MIN_RATIO;
+    const effectiveMinRatio = runtime.IS_STRIP_TILE_READER ? 0.01 : relaxed ? 0.10 : runtime.AUTO_MIN_RATIO;
     const maxRatio = relaxed ? 20 : 14;
     if (ratio < effectiveMinRatio || ratio > maxRatio) {
       runtime.debugTargetFilter("aspect ratio out of bounds", {

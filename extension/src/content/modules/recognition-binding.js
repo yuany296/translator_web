@@ -155,6 +155,25 @@ export function installRecognitionBinding(runtime) {
     return pageId;
   }
   runtime.restoreKnownKakaoPageHandle = restoreKnownKakaoPageHandle;
+  /**
+   * RIDI 这类「一图多页」分片阅读器的滚回恢复：dataset.mtLastTranslatedKey 只
+   * 记得「最后一次翻译的页」（computeTargetKey 按 src URL 派生），img 原地换回
+   * 旧分片后标记永不匹配，recoverRenderedTargets 的标记门槛会结构性跳过恢复。
+   * 这里按当前 sourceToken 从 kakaoStore 重发现页 handle：唯一匹配且
+   * imageRevision 已就绪 → 重新绑定（restore 内部触发投影刷新：reconcile 复用
+   * 已有 OCR 证据、已结算译文直接重投影，不跑 OCR、无闪烁）。仅对「当前无页
+   * 绑定且无已结算标记」的滚回特征生效 —— 绑定健康的在册 pending 页、标记
+   * 匹配的正常页都原样返回 ""，恢复扫描落回原有分支（一图一页阅读器零改动）。
+   */
+  function rediscoverRolledBackKakaoPage(target) {
+    if (!target || !runtime.shouldUseKakaoCanonicalPipeline(target) || !runtime.kakaoCanonicalPipeline) return "";
+    if (runtime.state.kakaoPageIdByTarget.get(target)) return "";
+    const targetKey = runtime.computeTargetKey(target);
+    const scopedTargetKey = runtime.buildTargetSourceCacheKey(targetKey, runtime.getQuickSourceToken(target));
+    if (runtime.hasSettledTranslatedMarker(target, targetKey, scopedTargetKey)) return "";
+    return runtime.restoreKnownKakaoPageHandle(target);
+  }
+  runtime.rediscoverRolledBackKakaoPage = rediscoverRolledBackKakaoPage;
   function isCurrentKakaoPageBinding(target, pageId, handle, boundRevision, boundTargets) {
     return !!(target && target.isConnected !== false && pageId && handle && handle.target === target && String(boundRevision || "") === String(handle.imageRevision || "") && boundTargets && typeof boundTargets.has === "function" && boundTargets.has(target));
   }

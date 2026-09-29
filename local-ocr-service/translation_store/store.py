@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .schema import SCHEMA_VERSION, initialize_schema
+from .shrink_guard import should_keep_existing_active
 
 
 class TranslationConflict(RuntimeError):
@@ -179,7 +180,7 @@ class TranslationStore:
             return concurrent
         return connection.execute("SELECT * FROM translation_records WHERE id=?", (record_id,)).fetchone()
 
-    def _create_version(self, connection, row, operation: dict[str, Any], payload: dict[str, Any]):
+    def _create_version(self, connection, row, operation: dict[str, Any], payload: dict[str, Any], activate: bool = True):
         translated = _text(payload.get("translatedText"))
         if not translated.strip():
             raise ValueError("translatedText is required")
@@ -193,6 +194,8 @@ class TranslationStore:
              _text(payload.get("revisionInstruction"), 4000),
              1 if payload.get("pinned") is True else 0, now),
         )
+        if not activate:
+            return
         change_seq = self._next_change_seq(connection)
         connection.execute(
             "UPDATE translation_records SET active_version_id=?,record_revision=record_revision+1," 
@@ -206,9 +209,17 @@ class TranslationStore:
         if kind in {"commit_translation", "edit"}:
             row = self._ensure_record(connection, operation, payload)
             self._check_revision(row, operation)
+            source = payload.get("source") or ("manual" if kind == "edit" else "api")
+            had_active = bool(_text(row["active_version_id"], 80))
+            keep_active, reason = should_keep_existing_active(connection, row, source, payload)
+            # 明显变短的自动译文只进历史，不覆盖启用版本（见 shrink_guard 的说明）。
+            # 首次译文没有旧值可比时同理：拦截「长原文只回几个字」的候选，不让它成为启用版本。
             self._create_version(connection, row, operation, {
-                **payload, "source": payload.get("source") or ("manual" if kind == "edit" else "api")
-            })
+                **payload, "source": source
+            }, activate=not keep_active)
+            if keep_active:
+                label = "kept previous translation" if had_active else "refused implausibly short translation"
+                print(f'[translation-store] {label}: {reason}', flush=True)
         else:
             row = self._record_by_identity(connection, operation)
             if row is None:

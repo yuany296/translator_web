@@ -341,7 +341,9 @@ export function installLifecycleBubble(runtime) {
     if (runtime.state.invalidated) {
       return;
     }
-    if (runtime.state.overlaysById.size > 0) {
+    // 只有跨页（接缝）覆盖层时同样要驱动逐帧同步：滚动期间两层必须同一拍，
+    // 否则接缝层会停在旧位置、等下一次事件才回到文字处。
+    if (runtime.state.overlaysById.size > 0 || (runtime.hasCrossPageOverlays && runtime.hasCrossPageOverlays())) {
       for (const overlayState of runtime.state.overlaysById.values()) {
         runtime.syncOverlayPosition(overlayState);
       }

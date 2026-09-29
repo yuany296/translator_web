@@ -1,6 +1,6 @@
 export function installSceneDispatch(runtime) {
   async function renderTranslationResult(target, targetKey, result, payload, options = {}) {
-    if (runtime.ENABLE_PIPELINE_TRACE && runtime.IS_KAKAOPAGE_READER) {
+    if (runtime.ENABLE_PIPELINE_TRACE && runtime.IS_STRIP_TILE_READER) {
       const renderable = runtime.isKakaopageTargetStillRenderable(target);
       if (!renderable.ok) {
         console.debug("[MangaTranslator][KakaoPage] overlay hidden (target outside viewport, auto-shows on scroll-back):", renderable.reason);

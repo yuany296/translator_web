@@ -19,8 +19,11 @@ export function installSeamResiduals(runtime) {
     const aboveGap = winnerBox.y - (residualBox.y + residualBox.h);
     const belowGap = residualBox.y - (winnerBox.y + winnerBox.h);
     const maxGap = minHeight * 0.55;
-    // OCR 相邻行的框常有几像素重叠,允许最多重叠较矮行的四分之一。
-    const minGap = -minHeight * 0.25;
+    // OCR 相邻行的框常有几像素重叠，允许最多重叠较矮行的四成。现场（RIDI 分片面板）：
+    // 被分片剪断的标题行框高 7.42%、紧邻的正文行组框从 5.2% 起，两者重叠 2.2% =
+    // 较矮行高的 0.30 —— 旧上限 0.25 差 0.05 就把同一面板的相邻行挡在吸收之外，
+    // 于是同一块内容分成「接缝面 + 页级气泡」两份覆盖。
+    const minGap = -minHeight * 0.4;
     const adjacent = (aboveGap >= minGap && aboveGap <= maxGap) ||
       (belowGap >= minGap && belowGap <= maxGap);
     if (!adjacent) return false;

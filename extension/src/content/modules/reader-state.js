@@ -1,9 +1,23 @@
+import {
+  isKakaoReaderHost, isRidiReaderHost, isNovelReaderHost
+} from "../../shared/novel-hosts.js";
+
 export function installReaderState(runtime) {
   const IS_PIXIV_COMIC_VIEWER = /(^|\.)comic\.pixiv\.net$/i.test(location.hostname) && /^\/viewer\/stories\/\d+/i.test(location.pathname);
   runtime.IS_PIXIV_COMIC_VIEWER = IS_PIXIV_COMIC_VIEWER;
-  const IS_KAKAOPAGE_READER = /(^|\.)page\.kakao\.com$/i.test(location.hostname) || /(^|\.)kakaopage\.com$/i.test(location.hostname) || /(^|\.)page\.kakaocdn\.net$/i.test(location.hostname);
+  const IS_KAKAOPAGE_READER = isKakaoReaderHost(location.hostname);
   runtime.IS_KAKAOPAGE_READER = IS_KAKAOPAGE_READER;
-  const TARGET_SELECTOR = runtime.IS_PIXIV_COMIC_VIEWER || runtime.IS_KAKAOPAGE_READER ? "img, canvas, [id^='page-'], [style*='background-image']" : "img, canvas";
+  const IS_RIDI_READER = isRidiReaderHost(location.hostname);
+  runtime.IS_RIDI_READER = IS_RIDI_READER;
+  // 「有没有小说阅读器」与「是哪一家」分开：RIDI 同一路径既可能是漫画也可能是小说，
+  // 小说正文实际找不找得到由 findNovelSurface() 决定，这里只回答站点有没有这个能力。
+  const IS_NOVEL_READER = isNovelReaderHost(location.hostname);
+  runtime.IS_NOVEL_READER = IS_NOVEL_READER;
+  // 分片长条阅读器（站点提示里声明 tiledStrip：KakaoPage、RIDI）走同一条链路：
+  // 目标选择器、并发槽位、接缝能力都不再按站点名分叉，RIDI 直接复用 KakaoPage 这一套。
+  const IS_STRIP_TILE_READER = runtime.IS_STRIP_TILE_READER === true || IS_KAKAOPAGE_READER;
+  runtime.IS_STRIP_TILE_READER = IS_STRIP_TILE_READER;
+  const TARGET_SELECTOR = runtime.IS_PIXIV_COMIC_VIEWER || IS_STRIP_TILE_READER ? "img, canvas, [id^='page-'], [style*='background-image']" : "img, canvas";
   runtime.TARGET_SELECTOR = TARGET_SELECTOR;
   const PIXIV_PAGE_ID_RE = /^page-\d+$/;
   runtime.PIXIV_PAGE_ID_RE = PIXIV_PAGE_ID_RE;
@@ -21,13 +35,13 @@ export function installReaderState(runtime) {
   runtime.MANUAL_MIN_HEIGHT = MANUAL_MIN_HEIGHT;
   const MAX_MANUAL_TARGETS = 4;
   runtime.MAX_MANUAL_TARGETS = MAX_MANUAL_TARGETS;
-  const MAX_PARALLEL_TRANSLATIONS = runtime.IS_KAKAOPAGE_READER ? 6 : 3;
+  const MAX_PARALLEL_TRANSLATIONS = runtime.IS_STRIP_TILE_READER ? 6 : 3;
   runtime.MAX_PARALLEL_TRANSLATIONS = MAX_PARALLEL_TRANSLATIONS;
   // 这里曾经把 Kakao 的可见保留槽位设成「全部 - 1」，也就是领先任务同时只允许 1 个在途，
   // 理由是当时本地 OCR 服务用一把全局锁串行处理所有请求，多个领先页会把正文挤到队尾。
   // 该锁已经不存在（只剩推理槽位，实测 queueWait p95 ≈ 230ms），一个在途的领先任务
   // 追不上滚动速度（单片 10~20s vs 3~5s/片）。现在保留 3 个槽位给可见页，领先可用 3 个。
-  const VISIBLE_TRANSLATION_RESERVED_SLOTS = runtime.IS_KAKAOPAGE_READER ? 3 : 0;
+  const VISIBLE_TRANSLATION_RESERVED_SLOTS = runtime.IS_STRIP_TILE_READER ? 3 : 0;
   runtime.VISIBLE_TRANSLATION_RESERVED_SLOTS = VISIBLE_TRANSLATION_RESERVED_SLOTS;
   const MANUAL_PARALLEL_TRANSLATIONS = 3;
   runtime.MANUAL_PARALLEL_TRANSLATIONS = MANUAL_PARALLEL_TRANSLATIONS;

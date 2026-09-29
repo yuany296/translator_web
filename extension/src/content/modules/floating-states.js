@@ -51,7 +51,7 @@ function disabledState(id, reason) {
 function buildNovelState(ctx = {}) {
   const enabled = ctx.enabled !== false && !ctx.invalidated;
   if (!enabled) return disabledState("novel", "扩展已停用或页面上下文已失效");
-  if (!ctx.kakaoReader) return disabledState("novel", "当前页面未识别为 Kakao 小说页面");
+  if (!ctx.novelReader) return disabledState("novel", "当前页面不是已支持的小说阅读页面");
   if (!ctx.surfaceFound) {
     if (ctx.surfaceSettled !== true) {
       return { id: "novel", availability: "detecting", availabilityReason: "", phase: "idle", displayMode: "original", cacheCoverage: "none" };

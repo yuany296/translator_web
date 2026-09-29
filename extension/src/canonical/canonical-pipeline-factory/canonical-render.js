@@ -256,6 +256,7 @@ export function installCanonicalRender(runtime, scope) {
     processAdjacentPairs: scope.processAdjacentPairs,
     processSeamPair: scope.processSeamPair,
     onAdjacentTargetAvailable: scope.onAdjacentTargetAvailable,
+    requestMissingPageMask: scope.requestMissingPageMask,
     CanonicalPhase: runtime.CanonicalPhase
   });
 }

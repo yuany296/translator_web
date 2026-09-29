@@ -28,11 +28,11 @@ function getTranslatableParagraphs(runtime, chapter) {
  * 必须按**当前** surface 重贴一遍，不能只依赖 applyChunk 里那次渲染：段落节点是在点击那一刻
  * 抓取的，而 LLM 要十几秒才回来，KakaoPage 的虚拟滚动/EPUB 重渲染完全可能在这中间把节点换掉。
  * 换掉之后 renderNovelTranslation 写进的是脱离文档的旧节点 —— 译文进了 state 和缓存、进度显示
- * 完成，页面上却还是韩文。reconcileKakaoNovelReader 会把 state.surface 刷成当前宿主，
+ * 完成，页面上却还是韩文。reconcileNovelReader 会把 state.surface 刷成当前宿主，
  * reapplyNovelTranslations 再按段落 id 找活节点重贴。
  */
 function revealTranslations(runtime, chapter) {
-  const surface = runtime.reconcileKakaoNovelReader?.() || runtime.findKakaoNovelSurface?.() || chapter.surface;
+  const surface = runtime.reconcileNovelReader?.() || runtime.findNovelSurface?.() || chapter.surface;
   runtime.reapplyNovelTranslations?.(surface);
   runtime.setNovelTranslationVisibility(true);
   return surface;
@@ -126,9 +126,9 @@ function installNovelChapterFlow(runtime) {
   }
 
   async function translateNovelChapter(options = {}) {
-    const surface = runtime.reconcileKakaoNovelReader();
-    const chapter = runtime.extractKakaoNovelChapter(surface);
-    if (!chapter) return { ok: false, unavailable: true, error: "当前页面不是可识别的 Kakao 小说章节" };
+    const surface = runtime.reconcileNovelReader();
+    const chapter = runtime.extractNovelChapter(surface);
+    if (!chapter) return { ok: false, unavailable: true, error: "当前页面不是可识别的小说章节" };
     const state = runtime.getNovelState();
     runtime.resetNovelForChapter(chapter, state);
     if (state.textStatus === NOVEL_STATUS_WORKING) return { ok: true, reused: true };
@@ -163,7 +163,7 @@ function installNovelChapterFlow(runtime) {
     const state = runtime.getNovelState();
     if (state.textStatus !== "complete" && state.textStatus !== "partial") return { skipped: true };
     if (state.screenContinueTask) return { skipped: true, inFlight: true };
-    const chapter = runtime.extractKakaoNovelChapter(surface);
+    const chapter = runtime.extractNovelChapter(surface);
     if (!chapter) return { skipped: true };
     runtime.resetNovelForChapter(chapter, state);
     const items = getTranslatableParagraphs(runtime, chapter);

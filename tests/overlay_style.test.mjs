@@ -72,13 +72,16 @@ test("悬浮球直接显示翻译成功和失败反馈", () => {
   assert.doesNotMatch(css, /\.mt-floating-ball-wrap:hover \.mt-(novel|webpage)-progress-panel/);
 });
 
-test("Kakao 覆盖层使用页面坐标系跟随原图滚动", () => {
+test("覆盖层挂在滚动容器内并用页内坐标跟随原图", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
-  const layerRule = css.match(/\.mt-overlay-layer\.mt-overlay-document-flow\s*\{([^}]+)\}/)?.[1] ?? "";
-  const rootRule = css.match(/\.mt-overlay-layer\.mt-overlay-document-flow\s+\.mt-overlay-root\s*\{([^}]+)\}/)?.[1] ?? "";
+  const layerRule = css.match(/(?:^|\n)\.mt-overlay-layer\s*\{([^}]+)\}/)?.[1] ?? "";
+  const rootRule = css.match(/(?:^|\n)\.mt-overlay-root\s*\{([^}]+)\}/)?.[1] ?? "";
 
   assert.match(layerRule, /position:\s*absolute/);
   assert.match(rootRule, /position:\s*absolute/);
+  // 两种覆盖层不再分家：不允许再有 fixed 的页面坐标层。
+  assert.doesNotMatch(css, /\.mt-overlay-layer\s*\{[^}]*position:\s*fixed/);
+  assert.doesNotMatch(css, /\.mt-overlay-root\s*\{[^}]*position:\s*fixed/);
 });
 
 test("cross-page overlay uses one unclipped reading-area root and segmented covers", () => {
@@ -132,6 +135,29 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   assert.match(css, /\.mt-bubble\.mt-text-layer\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
   assert.match(css, /\.mt-bubble\.mt-cover-only\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
   assert.match(lifecycleBubble, /if\s*\(!coverOnly\s*&&\s*!options\.textOnly\s*&&\s*bgType\s*===\s*"solid"[\s\S]*?fillDiv\.className\s*=\s*"mt-fill-tilted"/);
+});
+
+test("覆盖层文字排版与宿主页面样式隔离（RIDI 的元素级规则不得漏进来）", () => {
+  const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
+  // RIDI 的页面样式里有 `h1,…,div,label,a,li,… { font-size:13px; font-family:Pretendard…;
+  // line-height:1em; letter-spacing:-.03em; color:#333 }`。元素选择器优先级虽低，却高于
+  // 继承，于是译文实测被钉成 13px/#333/Pretendard，且字号拟合探针里同样是 13px，
+  // 溢出永远测不出来。因此 .mt-bubble-content 必须显式声明这些属性的继承/默认值。
+  const contentRule = css.match(/\.mt-bubble-content\s*\{([^}]+)\}/)?.[1] ?? "";
+  assert.match(contentRule, /font-family:\s*inherit/);
+  assert.match(contentRule, /font-size:\s*inherit/);
+  assert.match(contentRule, /font-weight:\s*inherit/);
+  assert.match(contentRule, /color:\s*inherit/);
+  assert.match(contentRule, /letter-spacing:\s*normal/);
+  assert.match(contentRule, /line-height:\s*1\.18/);
+
+  // 同一类泄漏也发生在覆盖层其它文字容器上：统一在隔离块里钉住字距/字形/大小写。
+  const isolation = css.match(/宿主页面文字样式隔离[\s\S]*?\*\/([\s\S]*?)\n\}/)?.[1] ?? "";
+  assert.match(isolation, /\.mt-bubble-content/);
+  assert.match(isolation, /\.mt-bubble,/);
+  assert.match(isolation, /\.mt-loading-card/);
+  assert.match(isolation, /letter-spacing:\s*normal/);
+  assert.match(isolation, /text-transform:\s*none/);
 });
 
 test("overlay bubbles always anchor at the source text block center and center their text", () => {

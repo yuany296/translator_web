@@ -33,7 +33,7 @@ function makeParagraph(pid, text) {
 
 function makeRuntime() {
   const paragraphs = [makeParagraph(0, "첫 문단입니다"), makeParagraph(1, "둘째 문단입니다")];
-  // Kakao 小说正文在 shadow root 里（findKakaoNovelSurface 要求 host.shadowRoot）
+  // Kakao 小说正文在 shadow root 里（findNovelSurface 要求 host.shadowRoot）
   const shadowRoot = {
     querySelectorAll: selector => (String(selector) === "[data-p-id]" ? paragraphs : [])
   };
@@ -84,7 +84,7 @@ test("换章时取消上一章在途的流式请求，避免它在界面上「�
   state.translations.set("0@aaaa0001", "旧译文");
   harness.setChapterId("200");
 
-  harness.runtime.reconcileKakaoNovelReader();
+  harness.runtime.reconcileNovelReader();
 
   assert.deepEqual(harness.cancelled, ["novel-old-task"], "旧任务的内容侧流必须被取消");
   assert.equal(harness.messages.some(message => message.type === "CANCEL_TRANSLATION_TASK"
@@ -100,7 +100,7 @@ test("同一章内的重新渲染不会误取消正在进行的任务", () => {
   state.chapterKey = "book:100";
   state.taskId = "novel-running";
   state.textStatus = "working";
-  harness.runtime.reconcileKakaoNovelReader();
+  harness.runtime.reconcileNovelReader();
   assert.deepEqual(harness.cancelled, [], "没换章就不能取消在途任务");
   assert.equal(state.taskId, "novel-running");
   assert.equal(state.textStatus, "working");

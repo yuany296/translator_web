@@ -16,8 +16,12 @@
  * 一行译文必须「成对出现且紧跟右花括号」才算完整：
  *   `...,"translated_text":"abc"}` —— 只写到 `"abc` 的残行不匹配，
  * 否则会把下一行的开头误当成本行译文。两种键序都接受。
+ *
+ * 只导出源串：正则必须**每个 extractor 一把**。带 g 的正则把匹配位置存在自己身上
+ * （lastIndex），Kakao 下最多 6 个批次并发流式，共用一把正则会让两个批次互相踩游标，
+ * 出现重复行或漏行（漏行的表现就是译文缺项/被更早的残值覆盖）。
  */
-const ROW_PATTERN = /"id"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"translated_text"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}|"translated_text"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"id"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}/gu;
+const ROW_PATTERN_SOURCE = "\"id\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"\\s*,\\s*\"translated_text\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"\\s*\\}|\"translated_text\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"\\s*,\\s*\"id\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"\\s*\\}";
 
 /** 还原 JSON 字符串里的转义（\n、\" 等）；解析失败时退回原样。 */
 export function decodeJsonString(value) {
@@ -34,6 +38,7 @@ export function decodeJsonString(value) {
  */
 export function createTranslationRowExtractor() {
   let cursor = 0;
+  const pattern = new RegExp(ROW_PATTERN_SOURCE, "gu");
   return {
     get cursor() {
       return cursor;
@@ -41,8 +46,8 @@ export function createTranslationRowExtractor() {
     push(text) {
       const source = String(text || "");
       const rows = [];
-      ROW_PATTERN.lastIndex = cursor;
-      let match = ROW_PATTERN.exec(source);
+      pattern.lastIndex = cursor;
+      let match = pattern.exec(source);
       while (match) {
         const idFirst = match[1] !== undefined;
         rows.push({
@@ -50,8 +55,8 @@ export function createTranslationRowExtractor() {
           translated_text: decodeJsonString(idFirst ? match[2] : match[3])
         });
         cursor = match.index + match[0].length;
-        ROW_PATTERN.lastIndex = cursor;
-        match = ROW_PATTERN.exec(source);
+        pattern.lastIndex = cursor;
+        match = pattern.exec(source);
       }
       return rows;
     }

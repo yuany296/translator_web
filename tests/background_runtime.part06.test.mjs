@@ -323,7 +323,7 @@ test("concurrent canonical fingerprints share one external request and warm cach
   assert.equal(first.translations[0].translationFingerprint, second.translations[0].translationFingerprint);
   assert.equal(warm.translations[0].cached, true);
   assert.equal(externalCalls, 1);
-  assert.ok(Object.keys(stored).some(key => key.startsWith("mt_cache_v22:translation:")));
+  assert.ok(Object.keys(stored).some(key => key.startsWith("mt_cache_v29:translation:")));
 });
 test("OpenAI-compatible text translation aborts a stalled fetch within its request deadline", async () => {
   const originalFetch = context.fetch;

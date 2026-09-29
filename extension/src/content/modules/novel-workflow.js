@@ -187,8 +187,8 @@ export function installNovelWorkflow(runtime) {
   }
 
   async function translateNovelChapter(options = {}) {
-    const surface = runtime.reconcileKakaoNovelReader();
-    const chapter = runtime.extractKakaoNovelChapter(surface);
+    const surface = runtime.reconcileNovelReader();
+    const chapter = runtime.extractNovelChapter(surface);
     if (!chapter) return { ok: false, unavailable: true, error: "当前页面不是可识别的 Kakao 小说章节" };
     const state = runtime.getNovelState();
     resetForChapter(chapter, state);
@@ -245,7 +245,7 @@ export function installNovelWorkflow(runtime) {
     const state = runtime.getNovelState();
     if (state.textStatus !== "complete" && state.textStatus !== "partial") return { skipped: true };
     if (state.screenContinueTask) return { skipped: true, inFlight: true };
-    const chapter = runtime.extractKakaoNovelChapter(surface);
+    const chapter = runtime.extractNovelChapter(surface);
     if (!chapter) return { skipped: true };
     resetForChapter(chapter, state);
     const items = getTranslatableParagraphs(chapter);

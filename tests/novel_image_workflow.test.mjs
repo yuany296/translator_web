@@ -17,7 +17,7 @@ function createHarness(overrides = {}) {
   const calls = [];
   const runtime = {
     getNovelState: () => state,
-    extractKakaoNovelChapter: () => ({ images: [{ target }] }),
+    extractNovelChapter: () => ({ images: [{ target }] }),
     ...overrides
   };
   installNovelImageWorkflow(runtime);
@@ -94,7 +94,7 @@ test("resume stops after the auto-retry cap to avoid endless loops", () => {
 
 test("resume does nothing when the chapter has no images", () => {
   const harness = createHarness({
-    extractKakaoNovelChapter: () => ({ images: [] })
+    extractNovelChapter: () => ({ images: [] })
   });
   harness.runtime.resumeNovelImagesIfIdle();
   assert.equal(harness.calls.length, 0);

@@ -375,7 +375,10 @@ def test_visual_region_analysis_rejects_patterned_effect_background() -> None:
     assert regions == []
     assert items[0]["region_id"] == ""
     assert items[0]["region_type"] == "effect_text"
-    assert server.relative_luminance(items[0]["text_color"]) < 0.02
+    # v4 起 choose_readable_text_colors 保留彩色墨色（chroma >= 40，不再要求
+    # 对比度 >= 2.2）：图案蓝 #335577 的桶中心 #3c546c（chroma 48）被保留为
+    # 文字色，可读性由必渲染的白描边保证；region 拒绝语义不变（仍是 effect_text）。
+    assert server.color_chroma(items[0]["text_color"]) >= 40
     assert items[0]["stroke_color"] == "#ffffff"
 
 def test_visual_region_analysis_prefers_near_scale_when_far_metrics_fail(

@@ -1,4 +1,5 @@
 import { polygonRotationDeg, resolveTiltRotationDeg } from "../../rendering/cover-geometry.js";
+import { relativeLuminance, resolveBubbleRenderColors } from "../../rendering/bubble-colors.js";
 
 export function installTargetResolve(runtime) {
   function resolveBackgroundImageUrl(target) {
@@ -49,7 +50,9 @@ export function installTargetResolve(runtime) {
     if (runtime.IS_PIXIV_COMIC_VIEWER) {
       return runtime.PIXIV_PAGE_ID_RE.test(target.id || "");
     }
-    if (!runtime.IS_KAKAOPAGE_READER) {
+    // 分片长条阅读器（KakaoPage、RIDI）共用同一判据：data/blob 背景图就是页面分片，
+    // http 背景图仍只认 Kakao CDN（其余站点的装饰图不参与）。
+    if (!runtime.IS_STRIP_TILE_READER) {
       return false;
     }
     if (runtime.isDataUrl(imageUrl) || runtime.isBlobUrl(imageUrl)) {
@@ -306,10 +309,7 @@ export function installTargetResolve(runtime) {
   }
   runtime.normalizeRegionPolygon = normalizeRegionPolygon;
   function getBubbleRenderColors(bubble, bgType) {
-    return {
-      textColor: runtime.normalizeCssColor(bubble && bubble.text_color, bgType === "none" ? "#000000" : "#111827"),
-      strokeColor: runtime.normalizeCssColor(bubble && bubble.stroke_color, "#ffffff")
-    };
+    return resolveBubbleRenderColors(bubble, bgType, runtime.normalizeCssColor);
   }
   runtime.getBubbleRenderColors = getBubbleRenderColors;
   function normalizeCssColor(value, fallback) {

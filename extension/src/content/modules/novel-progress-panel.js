@@ -79,7 +79,7 @@ export function installNovelProgressPanel(runtime) {
   runtime.createNovelProgressPanel = createNovelProgressPanel;
 
   function hasVisiblePendingParagraph() {
-    const surface = runtime.getNovelState().surface || runtime.findKakaoNovelSurface();
+    const surface = runtime.getNovelState().surface || runtime.findNovelSurface();
     return !!surface?.paragraphs?.some(node => {
       if (node.querySelector?.(":scope > .mt-novel-translation")) return false;
       const rect = node.getBoundingClientRect?.();

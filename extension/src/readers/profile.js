@@ -25,6 +25,9 @@ export function detectReaderProfile(documentValue = globalThis.document, locatio
   return Object.freeze({
     type, siteHint: hint.id, targetSelector: hint.selector,
     scrollDirection: type === "continuous-strip" || type === "virtualized-strip" ? "vertical" : "unknown",
-    virtualized: type === "virtualized-strip"
+    virtualized: type === "virtualized-strip",
+    // 分片长条能力只由站点提示声明，不由启发式 type 推导：任意「竖排图片列」的站点
+    // 不该白付接缝 OCR 成本，而真正的分片站点只需在 site-hints 里加一条声明。
+    tiledStrip: hint.tiledStrip === true
   });
 }

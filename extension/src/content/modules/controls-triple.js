@@ -17,11 +17,11 @@ export function installControlsTriple(runtime) {
 
   function buildNovelContext() {
     const novel = runtime.getNovelState();
-    const surface = novel.surface || runtime.findKakaoNovelSurface();
+    const surface = novel.surface || runtime.findNovelSurface();
     return {
       enabled: runtime.state.enabled,
       invalidated: runtime.state.invalidated,
-      kakaoReader: !!runtime.IS_KAKAOPAGE_READER,
+      novelReader: !!runtime.IS_NOVEL_READER,
       surfaceFound: !!surface,
       surfaceSettled: runtime.state.novelSurfaceSettled !== false,
       textStatus: novel.textStatus,
@@ -237,8 +237,8 @@ export function installControlsTriple(runtime) {
 
   function maybeAnalyzeNovelCache() {
     const novel = runtime.getNovelState();
-    if (runtime.analyzeNovelCacheStatus && runtime.IS_KAKAOPAGE_READER &&
-      novel.textStatus === "idle" && !novel.cacheAnalysisPending && runtime.findKakaoNovelSurface()) {
+    if (runtime.analyzeNovelCacheStatus && runtime.IS_NOVEL_READER &&
+      novel.textStatus === "idle" && !novel.cacheAnalysisPending && runtime.findNovelSurface()) {
       novel.cacheAnalysisPending = true;
       void runtime.analyzeNovelCacheStatus().finally(() => {
         novel.cacheAnalysisPending = false;

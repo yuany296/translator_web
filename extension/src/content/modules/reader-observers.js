@@ -43,7 +43,11 @@ export function installReaderObservers(runtime) {
         runtime.detachKakaoTargetForSourceChange(target);
       }
       const oldTranslatedKey = target.dataset.mtLastTranslatedKey || "";
-      if (oldTranslatedKey) {
+      // canonical（一图多页分片阅读器）下保留按 URL 隔离的缓存条目：滚回旧分片时
+      // localResultCache/payloadCache 是「免 OCR 即时重投影」的数据源，无条件删除
+      // 会让滚回永远走完整重翻（RIDI 回滚译文消失的断点之一，见
+      // tests/ridi_rollback_recovery.test.mjs）。非 canonical 行为不变。
+      if (oldTranslatedKey && !canonicalTarget) {
         runtime.state.payloadCacheByTargetKey.delete(oldTranslatedKey);
         runtime.state.localResultCache.delete(oldTranslatedKey);
       }
@@ -68,6 +72,13 @@ export function installReaderObservers(runtime) {
     }
     target.dataset.mtSourceToken = sourceToken;
     if (!oldSourceToken || oldSourceToken === sourceToken) {
+      runtime.restoreKnownKakaoPageHandle(target);
+    } else if (canonicalTarget) {
+      // 一图多页分片阅读器（RIDI）原地换回旧分片：按新 sourceToken 唯一匹配
+      // 已有页 handle 并重新绑定（restoreKnownKakaoPageHandle 内部做唯一匹配 +
+      // imageRevision 校验，多义/revision 不符时安全跳过），滚回的旧页立即恢复
+      // canonical 绑定 —— 之后 executeCanonicalTarget 的 hasReusableKakaoPageOcr
+      // 命中即可走 runCached 免 OCR 重投影。
       runtime.restoreKnownKakaoPageHandle(target);
     }
     const isNewObservation = !runtime.state.observedTargets.has(target);
@@ -116,7 +127,9 @@ export function installReaderObservers(runtime) {
         runtime.queuePageAutoTranslate(target);
       }
     }
-    if (runtime.IS_KAKAOPAGE_READER && target instanceof HTMLImageElement && target.complete && sourceToken) {
+    // 分片长条阅读器（KakaoPage、RIDI）都要建立邻页关系，接缝管线才可能跑到：
+    // 分片边界由站点按固定尺寸切出，跨边界台词只有靠接缝 OCR 才能完整识别与遮盖。
+    if (runtime.IS_STRIP_TILE_READER && target instanceof HTMLImageElement && target.complete && sourceToken) {
       runtime.refreshPreviousKakaoBoundary(target, sourceToken);
     }
     if (isNewObservation || oldSourceToken !== sourceToken) {
@@ -206,7 +219,9 @@ export function installReaderObservers(runtime) {
       }
       if (mutation.type === "childList") {
         mutation.removedNodes.forEach(node => {
-          if (node === runtime.state.overlayLayer || node === runtime.state.floatingBallWrap) {
+          // 覆盖层按宿主分层，被移除的可能是任意一层（不只是 state.overlayLayer 指向的那层）。
+          if (node === runtime.state.overlayLayer || node === runtime.state.floatingBallWrap ||
+            node instanceof Element && node.classList.contains("mt-overlay-layer")) {
             shouldRepairUi = true;
           }
           if (node instanceof Element && !node.closest("[data-manga-translator-overlay]")) {

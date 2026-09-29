@@ -124,8 +124,8 @@ function makeScreenHarness(overrides = {}) {
   const scheduled = [];
   const runtime = {
     getNovelState: () => state,
-    reconcileKakaoNovelReader: () => surface,
-    extractKakaoNovelChapter: () => {
+    reconcileNovelReader: () => surface,
+    extractNovelChapter: () => {
       extractCalls += 1;
       return chapter;
     },

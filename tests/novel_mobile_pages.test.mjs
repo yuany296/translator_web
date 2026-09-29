@@ -158,7 +158,7 @@ test("设置页：改写标题与品牌，注入手机版样式表", () => {
   applyNovelMobileSettings(doc, { hash: "" });
   assert.equal(doc.title, "小说翻译器 · 管理中心");
   assert.equal(brandName.textContent, "小说翻译器");
-  assert.equal(brandSubtitle.textContent, "KakaoPage 手机版");
+  assert.equal(brandSubtitle.textContent, "KakaoPage / RIDI 手机版");
   assert.equal(doc.links.length, 1);
   assert.equal(doc.links[0].href, "novel-mobile.css");
 });
@@ -189,6 +189,6 @@ test("快捷弹窗：藏掉漫画可视区翻译、章节管理与网页/OCR 参
   assert.equal(manageChapterBtn.style.display, "none");
   assert.equal(doc.title, "小说翻译器");
   assert.equal(title.textContent, "小说翻译器");
-  assert.equal(eyebrow.textContent, "KAKAOPAGE NOVEL");
+  assert.equal(eyebrow.textContent, "KAKAO / RIDI NOVEL");
   assert.equal(hint.textContent, "小说与翻译服务共用");
 });

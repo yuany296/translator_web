@@ -7,6 +7,9 @@
  */
 export function installTranslationCacheLookup(runtime) {
   async function lookupCanonicalTranslationCache({ items, force = false, fingerprintArgs = {} } = {}) {
+    // 退役代次的键必须在任何命中之前清掉，否则事故期写入的截尾值仍会被读出来
+    // （命中就渲染、不再请求模型）。幂等且只扫一次，失败也不挡翻译。
+    void runtime.pruneRetiredTranslationCache?.();
     const list = Array.isArray(items) ? items : [];
     const entries = list.map(item => {
       const translationFingerprint = runtime.buildCanonicalTranslationFingerprint({

@@ -158,7 +158,7 @@ export function makeRuntime(state, extra = {}) {
   return {
     state: { displayMode: "translated" },
     getNovelState: () => state,
-    findKakaoNovelSurface: () => state.surface || null,
+    findNovelSurface: () => state.surface || null,
     isNovelParagraphLeaf: node => /^(?:P|DIV|H[1-6])$/u.test(String(node?.tagName || "")),
     ...extra
   };

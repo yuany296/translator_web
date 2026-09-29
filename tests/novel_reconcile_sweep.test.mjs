@@ -7,13 +7,14 @@ function makeNovelReaderHarness(overrides = {}) {
   const runtime = {
     state: { invalidated: false },
     IS_KAKAOPAGE_READER: true,
+    IS_NOVEL_READER: true,
     updateFloatingBallState: () => {},
     ...overrides
   };
   installNovelReader(runtime);
   const state = runtime.getNovelState();
   let reconcileCalls = 0;
-  runtime.reconcileKakaoNovelReader = () => {
+  runtime.reconcileNovelReader = () => {
     reconcileCalls += 1;
     return state.surface;
   };
@@ -22,17 +23,17 @@ function makeNovelReaderHarness(overrides = {}) {
 
 test("stale sweep re-reconciles when the surface root was replaced by zoom", () => {
   const harness = makeNovelReaderHarness();
-  harness.state.surface = { root: { isConnected: false } };
+  harness.state.surface = { observeTarget: { isConnected: false }, root: { isConnected: false } };
   harness.state.chapterKey = "book:chapter";
-  harness.runtime.reconcileKakaoNovelIfStale();
+  harness.runtime.reconcileNovelIfStale();
   assert.equal(harness.reconcileCalls(), 1);
 });
 
 test("stale sweep is a no-op while the surface root stays connected", () => {
   const harness = makeNovelReaderHarness();
-  harness.state.surface = { root: { isConnected: true } };
+  harness.state.surface = { observeTarget: { isConnected: true }, root: { isConnected: true } };
   harness.state.chapterKey = "book:chapter";
-  harness.runtime.reconcileKakaoNovelIfStale();
+  harness.runtime.reconcileNovelIfStale();
   assert.equal(harness.reconcileCalls(), 0);
 });
 
@@ -40,22 +41,22 @@ test("stale sweep re-reconciles when a translated chapter lost its surface", () 
   const harness = makeNovelReaderHarness();
   harness.state.surface = null;
   harness.state.chapterKey = "book:chapter";
-  harness.runtime.reconcileKakaoNovelIfStale();
+  harness.runtime.reconcileNovelIfStale();
   assert.equal(harness.reconcileCalls(), 1);
 });
 
 test("stale sweep skips untranslated pages and invalidated contexts", () => {
   const harness = makeNovelReaderHarness();
-  harness.runtime.reconcileKakaoNovelIfStale();
+  harness.runtime.reconcileNovelIfStale();
   assert.equal(harness.reconcileCalls(), 0);
   harness.state.chapterKey = "book:chapter";
-  harness.state.surface = { root: { isConnected: false } };
+  harness.state.surface = { observeTarget: { isConnected: false }, root: { isConnected: false } };
   harness.runtime.state.invalidated = true;
-  harness.runtime.reconcileKakaoNovelIfStale();
+  harness.runtime.reconcileNovelIfStale();
   assert.equal(harness.reconcileCalls(), 0);
   harness.runtime.state.invalidated = false;
-  harness.runtime.IS_KAKAOPAGE_READER = false;
-  harness.runtime.reconcileKakaoNovelIfStale();
+  harness.runtime.IS_NOVEL_READER = false;
+  harness.runtime.reconcileNovelIfStale();
   assert.equal(harness.reconcileCalls(), 0);
 });
 
@@ -88,8 +89,8 @@ function makeWorkflowToggleHarness() {
   const visibility = [];
   const runtime = {
     getNovelState: () => state,
-    reconcileKakaoNovelReader: () => chapter.surface,
-    extractKakaoNovelChapter: () => chapter,
+    reconcileNovelReader: () => chapter.surface,
+    extractNovelChapter: () => chapter,
     reapplyNovelTranslations: () => {},
     setNovelTranslationVisibility: value => {
       visibility.push(value);

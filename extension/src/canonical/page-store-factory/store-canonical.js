@@ -197,6 +197,16 @@ export function installStoreCanonical(runtime, scope) {
       scope.inflightJobs.set(jobKey, promise);
       return promise;
     },
+    getInflightJob(jobKey) {
+      return scope.inflightJobs.get(String(jobKey || "")) || null;
+    },
+    /** 最近一次清理图计划的判定结果（诊断用：复杂背景旁白有没有拿到 inpainted 遮罩）。 */
+    setCleanedArtifactReport(report) {
+      scope.cleanedArtifactReport = Array.isArray(report) ? Object.freeze(report.map(item => Object.freeze({ ...item }))) : Object.freeze([]);
+    },
+    getCleanedArtifactReport() {
+      return Array.isArray(scope.cleanedArtifactReport) ? scope.cleanedArtifactReport : [];
+    },
     /* ---- 工具 ---- */
 
     /** 重置所有状态（用于测试或扩展热重载） */

@@ -19,6 +19,26 @@ function sceneMeasure(runtime) {
   };
 }
 
+/**
+ * 把最近一次清理图判定结果写到 <html data-mt-mask-report>。
+ *
+ * 复杂背景（旁白/嵌字）的遮罩只有一个来源：inpainted 清理图。它拿不到时页面是透明的，
+ * 光看 DOM 分不出"卡在哪一步"——这里把逐页原因（no-complex-projection / no-payload /
+ * inflight / cooldown / request / cached，以及算出来的掩膜数）留在 DOM 上，
+ * 主世界控制台和隔离世界都能读。
+ */
+function publishMaskReport(runtime) {
+  try {
+    const store = runtime.state && runtime.state.kakaoStore;
+    const report = store && typeof store.getCleanedArtifactReport === "function"
+      ? store.getCleanedArtifactReport() : [];
+    const root = globalThis.document && globalThis.document.documentElement;
+    if (root && root.dataset) root.dataset.mtMaskReport = JSON.stringify(report);
+  } catch {
+    // 诊断属性只是便利设施，失败不影响渲染
+  }
+}
+
 function buildProjectionScenes(runtime, input) {
   const pages = runtime.normalizeProjectionPages(input);
   const scenes = new Map();
@@ -48,6 +68,9 @@ function buildProjectionScenes(runtime, input) {
 export function prepareContentRuntime(runtime) {
   runtime.readerProfile = detectReaderProfile();
   runtime.TARGET_SELECTOR = runtime.readerProfile.targetSelector;
+  // 分片长条阅读器能力（KakaoPage / RIDI）：必须在 state 阶段安装 reader-state 之前定好，
+  // 那里的并发槽位常量在安装期就据此取值。
+  runtime.IS_STRIP_TILE_READER = runtime.readerProfile.tiledStrip === true;
   runtime.RUNTIME_FEATURE_VERSION = "reader-canonical-scene-v2";
   runtime.shouldUseKakaoCanonicalPipeline = (target) => Boolean(
     target && runtime.isSupportedTarget(target)
@@ -66,6 +89,7 @@ export function prepareContentRuntime(runtime) {
   const renderCanonical = runtime.renderCanonicalProjections;
   runtime.renderCanonicalProjections = (input = {}) => {
     runtime.renderScenesByPage = buildProjectionScenes(runtime, input);
+    publishMaskReport(runtime);
     return renderCanonical(input);
   };
 

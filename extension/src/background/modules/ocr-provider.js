@@ -1,3 +1,5 @@
+import { applySampledBubbleColors } from "../../rendering/bubble-colors.js";
+
 export function installOcrProvider(runtime) {
   function collectSourceImageOcrPayload(payload, cropImageSize, imageMeta) {
     if (!payload || !imageMeta || imageMeta.stitch || imageMeta.coordinateSpace !== "source-image-v1" || !imageMeta.sourceImageId || imageMeta.sourceWidth <= 0 || imageMeta.sourceHeight <= 0 || imageMeta.targetCssWidth <= 0 || imageMeta.targetCssHeight <= 0) {
@@ -182,7 +184,8 @@ export function installOcrProvider(runtime) {
     // 不在此处用 isOcrItemOwnedByStitch 过滤，避免按单行中心误拆跨页框。
     const clustered = runtime.clusterLocalPaddleWords(words, ocrImageSize, imageAnalysis, debug, ocrDebug, {
       preserveLineGroups: options?.preserveLineGroups === true ||
-        (Array.isArray(imageMeta && imageMeta.pageSpans) && imageMeta.pageSpans.length === 2)
+        (Array.isArray(imageMeta && imageMeta.pageSpans) && imageMeta.pageSpans.length === 2),
+      edgeLineBandPx: Number(imageMeta && imageMeta.edgeLineBandPx) || 0
     });
     // Stitch ownership filtering is now handled exclusively by content.js mapKakaoStitchedResult()
     if (imageMeta && imageMeta.stitch) {
@@ -205,6 +208,12 @@ export function installOcrProvider(runtime) {
         serviceCounts: payload && payload.counts ? payload.counts : null,
         debugPaths: payload && payload.debug ? payload.debug : null
       });
+    }
+    // 本地服务已经按原图采样过文字/描边色；这里的兜底只补"仍然缺色"的条目
+    // （其它 provider、缓存条目、合并后的候选），避免渲染层退回写死的黑字白边。
+    const sampledColors = applySampledBubbleColors(clustered, imageAnalysis);
+    if (debug && sampledColors > 0) {
+      console.debug("[MangaTranslator][OCR chain] sampled bubble colors from source image:", sampledColors);
     }
     return clustered;
   }

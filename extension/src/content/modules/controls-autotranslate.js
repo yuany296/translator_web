@@ -21,7 +21,9 @@ export function installControlsAutotranslate(runtime) {
     if (target.dataset.mtLastTranslatedKey === targetKey || target.dataset.mtLastTranslatedKey === scopedTargetKey || target.dataset.mtNoTextKey === targetKey || target.dataset.mtNoTextKey === scopedTargetKey) {
       return;
     }
-    if (runtime.IS_KAKAOPAGE_READER && !runtime.isTranslationRecoveryDue(target)) {
+    // 分片长条阅读器：同一个分片会随滚动反复进入视口，重译请求按 RECOVERY_REQUEST_GAP_MS
+    // 节流（配合下方写入的 mtRecoveryReqAt），避免排队空转。KakaoPage 与 RIDI 同口径。
+    if (runtime.IS_STRIP_TILE_READER && !runtime.isTranslationRecoveryDue(target)) {
       return;
     }
     if (!runtime.passesTargetFilter(target, true)) {
@@ -39,10 +41,10 @@ export function installControlsAutotranslate(runtime) {
       runtime.tracePipeline("skipped", target, {
         skipReason: "filterFail"
       });
-      // KakaoPage: IntersectionObserver fires early (8% visible) but geometry check
+      // KakaoPage/RIDI: IntersectionObserver fires early (8% visible) but geometry check
       // needs more (180px+ visible). Schedule retry so scroll-into-view images
       // don't get stuck untranslated.
-      if (runtime.IS_KAKAOPAGE_READER) {
+      if (runtime.IS_STRIP_TILE_READER) {
         runtime.scheduleAutoTranslateRetry(target);
       }
       return;
@@ -50,7 +52,7 @@ export function installControlsAutotranslate(runtime) {
     if (runtime.isScreenshotCaptureMode() && !runtime.getVisibleViewportRect(target)) {
       return;
     }
-    if (runtime.IS_KAKAOPAGE_READER) {
+    if (runtime.IS_STRIP_TILE_READER) {
       target.dataset.mtRecoveryReqAt = String(Date.now());
     }
     runtime.queueTranslate(target, {
@@ -60,7 +62,7 @@ export function installControlsAutotranslate(runtime) {
   }
   runtime.queuePageAutoTranslate = queuePageAutoTranslate;
   function maybeQueueKakaoShortPageAttachmentOwner(target, options = {}) {
-    if (!runtime.IS_KAKAOPAGE_READER || runtime.shouldUseKakaoCanonicalPipeline(target) || !runtime.isKakaoEpisodeImageTarget(target) || runtime.state.captureMode !== runtime.CAPTURE_MODE_DIRECT || runtime.state.renderMode !== runtime.RENDER_MODE_OVERLAY || !(target instanceof HTMLImageElement) || !target.complete) {
+    if (!runtime.IS_STRIP_TILE_READER || runtime.shouldUseKakaoCanonicalPipeline(target) || !runtime.isKakaoEpisodeImageTarget(target) || runtime.state.captureMode !== runtime.CAPTURE_MODE_DIRECT || runtime.state.renderMode !== runtime.RENDER_MODE_OVERLAY || !(target instanceof HTMLImageElement) || !target.complete) {
       return false;
     }
     const attachment = runtime.findKakaoShortPageAttachmentOwner(target);
@@ -125,7 +127,7 @@ export function installControlsAutotranslate(runtime) {
     // 仅释放未被 owner stitch 结果覆盖的短页。
     // 若 owner 结果中已有短页气泡（stitch_attached_short_page），说明短页文字已通过
     // 拼接 OCR 翻译并渲染在 owner overlay 上，无需再独立翻译，避免出现重复译文。
-    if (!runtime.IS_KAKAOPAGE_READER || !payload || runtime.hasAttachedShortPageBubble(result)) {
+    if (!runtime.IS_STRIP_TILE_READER || !payload || runtime.hasAttachedShortPageBubble(result)) {
       return 0;
     }
     const attachedShortPageKeys = Array.isArray(payload.attachedShortPageKeys) ? payload.attachedShortPageKeys.filter(Boolean) : [];
@@ -181,7 +183,7 @@ export function installControlsAutotranslate(runtime) {
       target,
       area: runtime.getVisibleArea(target.getBoundingClientRect())
     })).sort((left, right) => right.area - left.area).map(item => item.target);
-    if (runtime.IS_KAKAOPAGE_READER) {
+    if (runtime.IS_STRIP_TILE_READER) {
       console.info("[MangaTranslator][KakaoPage] visible OCR targets", targets.slice(0, includeLimit ? limit : 6).map(target => {
         const rect = target.getBoundingClientRect();
         const url = target instanceof HTMLImageElement ? runtime.resolveImageUrl(target) : "";
@@ -202,7 +204,9 @@ export function installControlsAutotranslate(runtime) {
   }
   runtime.collectVisibleTargets = collectVisibleTargets;
   function getManualTargetCandidates(relaxed) {
-    if (runtime.IS_KAKAOPAGE_READER) {
+    // 分片长条阅读器：手工/可见翻译同样用完整候选集（分片容器、viewer/page 类名、
+    // 背景图节点都在里面），RIDI 的 DOM 回收后 class 名比裸 img 选择器更可靠。
+    if (runtime.IS_STRIP_TILE_READER) {
       return runtime.collectKakaopageManualTargetCandidates(relaxed);
     }
     if (!runtime.IS_CMOA_SPEED_READER || relaxed) {
@@ -257,7 +261,10 @@ export function installControlsAutotranslate(runtime) {
       if (!(rect.width >= 1 && rect.height >= 1)) {
         return false;
       }
-
+      // 懒加载空白占位图不能当作邻页候选：否则接缝会配到一张空页上。
+      if (runtime.isBlankPlaceholderImage(target)) {
+        return false;
+      }
       // Visibility check: skip hidden elements
       try {
         const style = window.getComputedStyle(target);

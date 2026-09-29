@@ -125,6 +125,17 @@ export function installRecognitionSeam(runtime) {
     const sourceType = context.sourceType === "seam" ? "seam" : "page";
     const pageIds = Array.isArray(context.pageIds) ? context.pageIds.map(String) : [];
     const imageRevisionByPage = context.imageRevisionByPage && typeof context.imageRevisionByPage === "object" ? context.imageRevisionByPage : {};
+    // 分片页的接缝带提示：只在分片长条阅读器的整页请求上带。把「有没有带上、值是多少」
+    // 写到 DOM，接缝行为不对时能一眼分出「提示没发」还是「后台没用」。
+    const edgeLineBandPx = sourceType === "page" && runtime.IS_STRIP_TILE_READER && Number(payload && payload.width) > 0
+      ? runtime.calculateKakaoSeamCaptureBandHeight(payload.width, payload.width) : 0;
+    if (sourceType === "page") {
+      const hint = { strip: runtime.IS_STRIP_TILE_READER === true, width: Number(payload && payload.width) || 0, band: edgeLineBandPx };
+      console.debug("[MangaTranslator][ocr-hint]", hint);
+      if (globalThis.document && document.documentElement && document.documentElement.dataset) {
+        document.documentElement.dataset.mtOcrHint = JSON.stringify(hint);
+      }
+    }
     return {
       type: "OCR_DATA_URL",
       dataUrl: payload && payload.dataUrl,
@@ -146,7 +157,8 @@ export function installRecognitionSeam(runtime) {
         pageIds,
         imageRevisionByPage,
         pageSpans: payload && payload.pageSpans || context.imageMeta && context.imageMeta.pageSpans || null,
-        seam: payload && payload.seam || null
+        seam: payload && payload.seam || null,
+        ...(edgeLineBandPx > 0 ? { edgeLineBandPx } : {})
       }
     };
   }
@@ -262,6 +274,9 @@ export function installRecognitionSeam(runtime) {
         targetLanguage,
         items: groupItems,
         taskId: String(context.taskId || ""),
+        // 只有用户显式打开漫画流式渲染时，才让后台走供应商流式请求；
+        // 默认走整批 JSON（流式会给请求加 stream: true，实测会拿到被截尾的译文）。
+        streamPartials: runtime.comicStreamingEnabled === true,
         ...(translationOptions ? { translationOptions } : {})
       }).catch(error => ({ ok: false, error: runtime.getErrorMessage(error), errors: [{ error: runtime.getErrorMessage(error) }] }))
     ));
@@ -303,7 +318,10 @@ export function installRecognitionSeam(runtime) {
   }
   runtime.requestCanonicalTranslations = requestCanonicalTranslations;
   function shouldUseKakaoStitchedOcr(target, payload) {
-    return runtime.IS_KAKAOPAGE_READER && runtime.state.captureMode === runtime.CAPTURE_MODE_DIRECT && runtime.state.renderMode === runtime.RENDER_MODE_OVERLAY && target instanceof HTMLImageElement && payload && payload.kakaoOverlapCrop !== true && runtime.isDataUrl(payload.dataUrl);
+    // 分片长条阅读器（KakaoPage、RIDI）都要拼接邻片上下文再 OCR：分片边界由站点按固定
+    // 尺寸切出，跨边界的一行字单独看只剩半行，拼接后 OCR 才拿得到完整句子。
+    // 这里曾经只认 Kakao 站名，RIDI 于是永远退回单图 OCR（接缝文字缺半行的根因）。
+    return runtime.IS_STRIP_TILE_READER && runtime.state.captureMode === runtime.CAPTURE_MODE_DIRECT && runtime.state.renderMode === runtime.RENDER_MODE_OVERLAY && target instanceof HTMLImageElement && payload && payload.kakaoOverlapCrop !== true && runtime.isDataUrl(payload.dataUrl);
   }
   runtime.shouldUseKakaoStitchedOcr = shouldUseKakaoStitchedOcr;
   async function buildKakaoStitchedPayload(target, ownerPayload) {

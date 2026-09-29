@@ -20,19 +20,27 @@ translator/
 │   ├── src/                   # ESM source (background, content, popup, …)
 │   │   ├── background/        # Service worker: message routing, OCR/translation providers, cache
 │   │   ├── canonical/         # Canonical pipeline, reconciler, page store, projection
-│   │   ├── config/            # Configuration schema & store (OCR / translation / runtime)
+│   │   ├── config/            # Configuration schema & store (OCR / translation / runtime / extractions)
 │   │   ├── content/           # Content script: reader runtime, scheduler, capture, scene, renderer
 │   │   ├── geometry/          # Homography & transform helpers
 │   │   ├── glossary/          # Glossary management UI
 │   │   ├── layout/            # Crop-local layout & placement geometry
+│   │   ├── novel-mobile/      # Novel-mode mobile build (separate bundle + manifest)
 │   │   ├── popup/             # Popup UI controller
-│   │   ├── readers/           # Reader profile detection & site hints (Kakao, Pixiv, CMOA)
+│   │   ├── quick-popup/       # In-page quick settings popup
+│   │   ├── readers/           # Reader profile detection & site hints (KakaoPage, RIDI, Pixiv, CMOA)
 │   │   ├── recognition/       # Geometry contracts (DetectedTextRegion, RecognizedTextRegion, etc.)
 │   │   ├── rendering/         # RenderScene, DOM renderer, embedded (canvas) renderer
-│   │   └── shared/            # Shared utilities, glossary core, term discovery core
+│   │   ├── settings/          # Options page (services, vendors, local service reachability)
+│   │   ├── shared/            # Shared utilities, glossary core, term discovery core, hashes, constants
+│   │   ├── sidepanel/         # Chapter-revision side panel
+│   │   └── translations/      # Official translation library UI
 │   └── public/                # Static assets: manifest.json, HTML, CSS
 ├── dist/extension/            # Build output — loaded by Chrome
+├── dist/novel-mobile/         # Mobile novel-mode build output (separate manifest)
 ├── local-ocr-service/         # Python PaddleOCR service + glossary store
+│   ├── glossary_store/        # SQLite glossary (schema v6)
+│   ├── translation_store/     # SQLite official translation library (schema v5)
 │   └── ocr_service/pipeline/  # Detect/Crop/Recognize/Appearance orchestration
 ├── scripts/                   # Build, test runners, linting, line-length gate
 ├── tests/                     # Node & Python tests
@@ -115,10 +123,12 @@ normalizeConfig → validate → checkHealth → translateBatch → fingerprint
 
 ## Glossary
 
-- Global glossary with source→target mappings injected into translation prompts
-- Managed via the glossary page (`chrome://extensions` → Options)
+- Glossary entries map source→target and are injected into translation prompts. Entries live in named
+  **libraries** (max 50) and are scoped per-work or globally; a library switch gates its whole entry set
+  out of prompts, and a library's "apply URLs" gate which pages it applies to.
+- Managed via the glossary page (`chrome://extensions` → Options → 术语表)
 - Term discovery: automatic extraction of Korean/English proper nouns from OCR results
-- Max 500 entries; import/export as JSON or CSV
+- Max 500 entries **per library**; import accepts JSON, CSV, or a SQLite glossary `.db/.sqlite`; export is JSON or CSV
 
 ## Verification
 
@@ -133,13 +143,16 @@ npm run test:python     # Python test suite
 
 ## Key Design Decisions
 
-- **Immutable crop geometry**: `DetectedTextRegion` contains source polygon, crop transform, and line thickness. `RecognizedTextRegion` only adds text/confidence — it never rewrites geometry.
+- **Immutable crop geometry**: `DetectedTextRegion` contains source polygon, crop transform, and line thickness. `RecognizedTextRegion` only adds text/confidence — it never rewrites geometry. (These frozen constructors live in `recognition/contracts.js` and are currently exercised by the contract test only; the shipped pipeline assembles its geometry in `rendering/scene-builder.js`.)
 - **OCR grouping**: `SemanticTextBlock` references `memberRegionIds` only. Grouped axis-aligned boxes must not overwrite original polygons.
 - **Placement**: Translation text is measured and wrapped in crop-local coordinates, then mapped back through the saved crop→source homography.
 - **Italic handling**: Layout width uses text axis length, height uses normal thickness. `fontHeight` uses the median member `lineThickness` as the cap.
-- **Overflow**: Deleted `expandBubbleForTextOverflow`. Translation length never changes placement geometry. Overlays must not exceed reliable bubble bounds or crop union. Unfit text is marked `layout_unfit` and the original text is preserved.
+- **Overflow**: `expandBubbleForTextOverflow` still exists (`content/modules/lifecycle-font-fit.js`) and is used
+  when fitting text — but its "expansion" is bounded by the bubble: translation length never changes placement
+  geometry, overlays must not exceed reliable bubble bounds or crop union, and unfit text is marked
+  `layout_unfit` while the original text is preserved.
 - **RenderScene**: Unified scene model with `page`/`composite` surfaces and `cover`/`text`/`debug`/`loading` layers. DOM and embedded (canvas) renderers consume the same placement geometry and font size.
-- **Reader profiles**: Auto-detected (`independent-media`, `continuous-strip`, `virtualized-strip`, `canvas-reader`). Kakao, Pixiv, CMOA provide site hints for profile weighting and selectors.
+- **Reader profiles**: Auto-detected (`independent-media`, `continuous-strip`, `virtualized-strip`, `canvas-reader`). KakaoPage, RIDI, Pixiv, CMOA provide site hints for profile weighting and selectors; RIDI also runs in novel mode (same host list as the reader detection, see `shared/novel-hosts.js`).
 
 ## Debugging
 

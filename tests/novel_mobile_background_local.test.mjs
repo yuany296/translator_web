@@ -6,7 +6,7 @@ import termDiscoveryCore from "../extension/src/shared/term-discovery.js";
 // 手机版后台覆盖层的行为测试：用假 runtime 直接驱动覆盖后的函数，
 // 不依赖任何构建产物，也不碰 chrome.*。
 function makeRuntime(overrides = {}) {
-  const calls = { saved: [], queued: [], merged: [], synced: [], offline: [], stored: [] };
+  const calls = { saved: [], queued: [], merged: [], offline: [], stored: [] };
   let storedRecord = null;
   const status = { state: "unknown", engine: "", error: "" };
   const runtime = {
@@ -37,7 +37,6 @@ function makeRuntime(overrides = {}) {
       calls.merged.push({ prepared, payload, options });
       return { ok: true, added: 1 };
     },
-    syncPendingCandidates: async () => calls.synced.push("sync"),
     storageSet: async value => calls.stored.push(value),
     storageGet: async () => ({}),
     sendOpenAICompatibleTranslationRequest: async () => ({ content: "[]" }),
@@ -137,7 +136,6 @@ test("本地服务状态、流式端口、章节管理面板都直接报「本�
   assert.equal(runtime.handleTranslationStreamPort({}), false);
   const panel = await runtime.openNovelManageUi({}, "");
   assert.equal(panel.ok, false);
-  assert.equal(await runtime.isGlossaryServerMode(), "");
   assert.deepEqual((await runtime.queryTranslationService(["a"])).records, []);
   assert.deepEqual((await runtime.submitTranslationOperations([{}])).results, []);
   assert.equal((await runtime.getTranslationVersions("x")).ok, false);

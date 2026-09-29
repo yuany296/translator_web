@@ -123,7 +123,6 @@ export function applyBackgroundLocal(runtime) {
 
   // ── 术语提取：改直连 LLM ──
   installTermExtractLlm(runtime);
-  runtime.isGlossaryServerMode = async () => "";
   runtime.probeTermExtractor = async () => {
     if (await hasExtractionLlm(runtime)) {
       runtime.markTermExtractorOnline("llm");
@@ -187,7 +186,6 @@ export function applyBackgroundLocal(runtime) {
     const partial = payload.partial && typeof payload.partial === "object" ? payload.partial : null;
     const covered = partial && Array.isArray(partial.coveredBlockIds) ? partial.coveredBlockIds : null;
     const merged = await runtime.mergeDiscovery(prepared, payload, covered ? { processedBlockIds: covered } : {});
-    await runtime.syncPendingCandidates(prepared, payload);
     const returned = Array.isArray(payload.candidates) ? payload.candidates.length : 0;
     if (partial && Number(partial.failedChunks) > 0) {
       await reportCore.recordTermDiscoveryOutcome(runtime, {

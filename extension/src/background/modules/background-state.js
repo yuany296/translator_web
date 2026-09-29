@@ -8,25 +8,19 @@ export function installBackgroundState(runtime) {
     glossaryLegacy: runtime.glossaryCore.LEGACY_STORAGE_KEY,
     glossaryPending: runtime.termDiscoveryCore.PENDING_STORAGE_KEY,
     glossaryIgnored: runtime.termDiscoveryCore.IGNORED_STORAGE_KEY,
-    glossaryStorage: "mt_glossary_storage",
     // 最近一次整章术语提取的结果（成功/跳过/失败+原因）：术语没收集到时，界面要能说出为什么。
     termDiscoveryLast: "mt_term_discovery_last_v1"
   };
   runtime.STORAGE_KEYS = STORAGE_KEYS;
+  /**
+   * 后台唯一的"兜底默认值"表：**只放 `ocr-item-filter.js#getDefaultOcrTuning` 真正读取的键**。
+   *
+   * 这里曾经另抄了一份 provider/apiKey/baseUrl/采集与渲染模式等默认值，与
+   * `config/schema.js` 各说各话（例如 provider 这里是 `baidu`、那边是 `local_paddle`），
+   * 而那份拷贝没有任何读取方 —— 第二份"默认值"只会误导人。完整默认值以
+   * `config/schema.js` 的 DEFAULT_* 为准。
+   */
   const DEFAULT_SETTINGS = {
-    provider: "baidu",
-    model: "deepseek-chat",
-    apiKey: "",
-    baseUrl: "",
-    baiduApiKey: "",
-    baiduSecretKey: "",
-    localOcrBaseUrl: "http://127.0.0.1:8765",
-    localOcrLang: "auto",
-    localOcrMode: "fast",
-    localOcrDetThresh: 0.3,
-    localOcrDetBoxThresh: 0.6,
-    localOcrDetUnclipRatio: 1.2,
-    localOcrDebug: false,
     ocrConfidenceThreshold: 0.72,
     ocrMinBoxArea: 36,
     ocrMaxBoxArea: 0.35,
@@ -36,22 +30,11 @@ export function installBackgroundState(runtime) {
     ocrMergeLineGap: 1.65,
     ocrNovelImageMergeLines: false,
     overwriteFontScale: 1,
-    overwriteCoverPadding: 1.2,
+    // 覆盖范围默认 0：遮罩贴合识别到的文字框、不外扩（与 config/schema.js 的默认值一致）。
+    // 这里曾经写 1.2，于是"读不到配置"的兜底路径会与用户看到的默认行为不一致。
+    overwriteCoverPadding: 0,
     debugOverlayMode: "final",
-    overwritePreviewMode: "full",
-    visionOcrApiKey: "",
-    visionOcrBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    visionOcrModel: "qwen-vl-ocr-latest",
-    visionOcrEnabled: false,
-    enabled: true,
-    showBall: true,
-    captureMode: "direct",
-    renderMode: "overlay",
-    pretranslateMode: "manual",
-    ignoreSimplifiedChinese: false,
-    termDiscoveryEnabled: true,
-    floatingSide: "right",
-    floatingYRatio: 0.72
+    overwritePreviewMode: "full"
   };
   runtime.DEFAULT_SETTINGS = DEFAULT_SETTINGS;
   const PROVIDERS = {

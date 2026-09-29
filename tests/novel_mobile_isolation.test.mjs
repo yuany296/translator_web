@@ -121,7 +121,7 @@ test("手机版覆盖层消费的 runtime 助手都还在（上游改名会让�
     assert.ok(contentLocal.includes(expression), `content-local.js 缺少 ${expression}`);
   });
   const backgroundLocal = read("extension/src/novel-mobile/background-local.js");
-  ["runtime.prepareDiscovery", "runtime.mergeDiscovery", "runtime.syncPendingCandidates"].forEach(expression => {
+  ["runtime.prepareDiscovery", "runtime.mergeDiscovery"].forEach(expression => {
     assert.ok(backgroundLocal.includes(expression), `background-local.js 缺少 ${expression}`);
   });
 });

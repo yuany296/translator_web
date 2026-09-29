@@ -31,18 +31,6 @@ export function installTermDiscovery(runtime) {
       await runtime.storageSet({
         [runtime.STORAGE_KEYS.glossaryIgnored]: ignored
       });
-      // 服务端同步
-      try {
-        const serverUrl = await runtime.isGlossaryServerMode();
-        if (serverUrl) {
-          await runtime.callGlossaryApi(serverUrl, "/glossary/ignored/restore", {
-            method: "POST",
-            body: JSON.stringify({
-              source: message.source
-            })
-          }).catch(() => {});
-        }
-      } catch (_) {}
       return {
         ok: true
       };
@@ -93,20 +81,6 @@ export function installTermDiscovery(runtime) {
         [runtime.STORAGE_KEYS.glossaryPending]: next.store,
         [runtime.STORAGE_KEYS.glossaryIgnored]: next.ignored
       });
-      // 服务端同步（global 时逐条）
-      try {
-        const serverUrl = await runtime.isGlossaryServerMode();
-        if (serverUrl && scope === "global") {
-          for (const entry of entries) {
-            await runtime.callGlossaryApi(serverUrl, "/glossary/pending/ignore", {
-              method: "POST",
-              body: JSON.stringify({
-                source: entry.source
-              })
-            }).catch(() => {});
-          }
-        }
-      } catch (_) {}
       return {
         ok: true,
         removed: next.removed,
@@ -141,20 +115,6 @@ export function installTermDiscovery(runtime) {
         [runtime.STORAGE_KEYS.glossaryPending]: store,
         [runtime.STORAGE_KEYS.glossaryIgnored]: ignored
       });
-      // 服务端同步（全局忽略）
-      try {
-        const serverUrl = await runtime.isGlossaryServerMode();
-        if (serverUrl) {
-          for (const source of newlyIgnored) {
-            await runtime.callGlossaryApi(serverUrl, "/glossary/pending/ignore", {
-              method: "POST",
-              body: JSON.stringify({
-                source
-              })
-            }).catch(() => {});
-          }
-        }
-      } catch (_) {}
     }
     return {
       store,
@@ -337,13 +297,4 @@ export function installTermDiscovery(runtime) {
     }
   }
   runtime.callGlossaryApi = callGlossaryApi;
-  async function isGlossaryServerMode() {
-    const [configuration, stored] = await Promise.all([
-      runtime.loadConfiguration(), runtime.storageGet([runtime.STORAGE_KEYS.glossaryStorage])
-    ]);
-    return stored[runtime.STORAGE_KEYS.glossaryStorage] === "server"
-      ? configuration.ocr.localPaddle.baseUrl
-      : "";
-  }
-  runtime.isGlossaryServerMode = isGlossaryServerMode;
 }

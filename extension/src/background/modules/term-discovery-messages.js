@@ -264,18 +264,6 @@ export function installTermDiscoveryMessages(runtime) {
         [runtime.STORAGE_KEYS.glossaryPending]: next.store,
         [runtime.STORAGE_KEYS.glossaryIgnored]: next.ignored
       });
-      // 服务端同步
-      try {
-        const serverUrl = await runtime.isGlossaryServerMode();
-        if (serverUrl && message.scope === "global") {
-          await runtime.callGlossaryApi(serverUrl, "/glossary/pending/ignore", {
-            method: "POST",
-            body: JSON.stringify({
-              source: message.source
-            })
-          }).catch(() => {});
-        }
-      } catch (_) {}
       return {
         ok: true,
         pendingCount: runtime.termDiscoveryCore.getPendingCount(next.store)

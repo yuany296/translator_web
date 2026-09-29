@@ -168,32 +168,6 @@ export function installTermDiscoveryExtract(runtime) {
     });
   }
   runtime.mergeDiscovery = mergeDiscovery;
-  /** 服务端同步待确认候选：不排队、尽力而为，失败不影响本地结果。 */
-  async function syncPendingCandidates(prepared, payload) {
-    if (!payload || !Array.isArray(payload.candidates) || payload.candidates.length === 0) {
-      return;
-    }
-    try {
-      const serverUrl = await runtime.isGlossaryServerMode();
-      if (!serverUrl) {
-        return;
-      }
-      for (const candidate of payload.candidates) {
-        await runtime.callGlossaryApi(serverUrl, "/glossary/pending", {
-          method: "POST",
-          body: JSON.stringify({
-            source: candidate.source,
-            kind: candidate.kind || "proper_noun",
-            score: candidate.score || 0,
-            evidence_ids: candidate.evidenceIds || [],
-            chapter_key: prepared.pageUrl,
-            library_id: prepared.libraryId
-          })
-        }).catch(() => {});
-      }
-    } catch (_) {}
-  }
-  runtime.syncPendingCandidates = syncPendingCandidates;
   /**
    * 记下最近一次自动提取的结果。
    *
@@ -254,7 +228,6 @@ export function installTermDiscoveryExtract(runtime) {
         ? extraction.payload.dropped
         : null
     });
-    await syncPendingCandidates(prepared, extraction.payload);
     return merged;
   }
   runtime.runTermDiscovery = runTermDiscovery;

@@ -1,12 +1,15 @@
 export function installNovelImagePanel(runtime) {
-  function getNovelImageResultKey(target, index = 0) {
+  function getNovelImageResultKey(target, index = 0, surface = null) {
     const assigned = String(target?.dataset?.mtNovelResultKey || "");
     if (assigned) return assigned;
     const source = String(
       target?.dataset?.name || target?.getAttribute?.("data-src") ||
       target?.currentSrc || target?.src || ""
     );
-    const paragraphId = String(target?.getAttribute?.("data-p-id") || "");
+    // 锚点属性由 surface 决定，拿不到 surface 时由 novel-paragraph 的兜底读两个属性：
+    // 这里曾经硬编码 data-p-id，在 RIDI（锚点是我们盖的 data-mt-novel-pid）上恒为空串，
+    // 图像结果键因此丢掉段落身份。
+    const paragraphId = String(runtime.novelAnchorValueOf?.(target, surface) || "");
     return `novel-image-${runtime.hashSourceIdentity(`${location.href}|${paragraphId}|${index}|${source}`)}`;
   }
   runtime.getNovelImageResultKey = getNovelImageResultKey;
@@ -146,7 +149,7 @@ export function installNovelImagePanel(runtime) {
       embeddedDataUrl,
       targetKey: String(embedded?.targetKey || ""),
       bubbleCount: Number(embedded?.bubbleCount || 0),
-      paragraphId: String(item.target.getAttribute?.("data-p-id") || "")
+      paragraphId: String(runtime.novelAnchorValueOf?.(item.target) || "")
     };
     state.imageResults.set(key, summary);
     renderNovelImagePanel(runtime.shouldOpenNovelImagePanel(
@@ -166,7 +169,7 @@ export function installNovelImagePanel(runtime) {
     [...content.querySelectorAll("img")].filter(target =>
       runtime.isNovelContentImage?.(target)
     ).forEach((target, index) => {
-      const key = runtime.getNovelImageResultKey(target, index);
+      const key = runtime.getNovelImageResultKey(target, index, surface);
       const summary = state.imageResults.get(key);
       target.dataset.mtNovelResultKey = key;
       if (!summary?.embeddedDataUrl || !runtime.isDataUrl(summary.embeddedDataUrl)) return;

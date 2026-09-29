@@ -1,4 +1,5 @@
 import { installNovelInlineFormat } from "./novel-inline-format.js";
+import { NOVEL_PAGE_ANCHOR_ATTRIBUTE } from "./novel-paragraph.js";
 
 const NOVEL_SHADOW_STYLES = [
   "[data-p-id] .mt-novel-source[hidden],",
@@ -71,7 +72,8 @@ export function installNovelRenderer(runtime) {
     // 锚点属性由 surface 决定（Kakao 页面自带 data-p-id、RIDI 我们盖章的
     // data-mt-novel-pid），这里不硬编码属性名。
     const { pid, ordinal } = splitParagraphId(id);
-    const attribute = runtime.novelAnchorAttribute?.(surface) || "data-p-id";
+    const attribute = runtime.novelAnchorAttribute
+      ? runtime.novelAnchorAttribute(surface) : NOVEL_PAGE_ANCHOR_ATTRIBUTE;
     const escaped = globalThis.CSS?.escape ? CSS.escape(pid) : String(pid).replace(/["\\]/gu, "\\$&");
     const matches = surface?.root?.querySelectorAll?.(`[${attribute}="${escaped}"]`) || [];
     // 序号必须与 extractNovelChapter 用同一套判据算出来:那里排除了

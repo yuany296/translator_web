@@ -13,6 +13,10 @@ import sharedUtils from "../../shared/utils.js";
 const PAGE_ANCHOR_ATTRIBUTE = "data-p-id";
 const STAMP_ANCHOR_ATTRIBUTE = "data-mt-novel-pid";
 
+// 只读消费方（如 novel-renderer 在 runtime 未装段落模块时）需要静态拿到这个默认属性名，
+// 而不是自己写死字符串。
+export { PAGE_ANCHOR_ATTRIBUTE as NOVEL_PAGE_ANCHOR_ATTRIBUTE };
+
 export function installNovelParagraphs(runtime) {
   runtime.NOVEL_PAGE_ANCHOR_ATTRIBUTE = PAGE_ANCHOR_ATTRIBUTE;
   runtime.NOVEL_STAMP_ANCHOR_ATTRIBUTE = STAMP_ANCHOR_ATTRIBUTE;
@@ -21,6 +25,24 @@ export function installNovelParagraphs(runtime) {
     return String(surface && surface.anchorAttribute || PAGE_ANCHOR_ATTRIBUTE);
   }
   runtime.novelAnchorAttribute = novelAnchorAttribute;
+
+  /**
+   * 从一个节点上读出段落锚点值 —— 消费方**不要**自己硬编码属性名。
+   *
+   * `surface` 已知时用它的 anchorAttribute；不知道 surface 时按「页面自带 → 我们盖章」
+   * 的顺序两个都试（`novel-anchor-value` 这一层就是为了兜住"拿不到 surface"的调用点，
+   * 例如图像结果键、面板摘要）。硬编码 data-p-id 的写法在 RIDI 上永远拿到空串：
+   * 那里的锚点是我们自己盖的 data-mt-novel-pid，于是图像结果键丢了段落身份。
+   */
+  function novelAnchorValueOf(node, surface = null) {
+    const preferred = novelAnchorAttribute(surface);
+    const direct = node?.getAttribute?.(preferred);
+    if (direct != null) return String(direct);
+    const alternate = preferred === PAGE_ANCHOR_ATTRIBUTE ? STAMP_ANCHOR_ATTRIBUTE : PAGE_ANCHOR_ATTRIBUTE;
+    const fallback = node?.getAttribute?.(alternate);
+    return fallback == null ? "" : String(fallback);
+  }
+  runtime.novelAnchorValueOf = novelAnchorValueOf;
 
   function isNovelParagraphNode(node, attribute = PAGE_ANCHOR_ATTRIBUTE) {
     return !!node && /^(?:H[1-6]|P|DIV)$/u.test(String(node.tagName || "")) &&

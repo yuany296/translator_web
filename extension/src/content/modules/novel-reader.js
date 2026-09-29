@@ -118,7 +118,7 @@ export function installNovelReader(runtime) {
     return images.filter(isNovelContentImage).map((target, index) => {
       target.dataset.mtNovelImage = "true";
       const context = findImageTextContext(target, paragraphs);
-      const resultKey = runtime.getNovelImageResultKey(target, index);
+      const resultKey = runtime.getNovelImageResultKey(target, index, surface);
       const contextId = resultKey;
       target.dataset.mtNovelResultKey = resultKey;
       target.dataset.mtNovelContextId = contextId;

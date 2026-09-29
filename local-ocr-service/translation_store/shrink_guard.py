@@ -5,9 +5,10 @@
 这是内容质量回归，不该由用户发现。这里在写入之前拦一道：自动（api）译文明显短于
 同一记录的当前启用版本时，只把它记进历史，不设为启用版本。
 
-还有第二道：**首次**写入没有旧值可比（37 字符原句回 4 个字），必须按「长得离谱的
-原文只回了几个字」单独拦一次，否则截尾值会成为启用版本，之后所有基于旧值的比较
-都失效。
+还有第二道：**「长得离谱的原文只回了几个字」与有没有旧值无关**。首次写入没有旧值
+可比（37 字符原句回 4 个字），但有旧值时同样拦——旧值本身可能就是上一轮的截尾值，
+拿它当基准去比"短了 60%"是比不出来的。客户端（shared/translation-shrink.js）对同一
+形状一律拒绝写缓存，服务端也必须一律不设启用版本，两端判据才是同一套。
 
 只拦「自动 + 明显更短/明显不成比例」：手动版本永远优先，更短的手动/置顶结果不受影响。
 用 `TRANSLATION_SHRINK_GUARD=0` 可以整体关闭。
@@ -49,24 +50,24 @@ def is_implausibly_short(candidate: Any, source: Any) -> bool:
 
 
 def should_keep_existing_active(connection: Any, record: Any, candidate_source: str, payload: dict[str, Any]) -> tuple[bool, str]:
-    """返回 (是否保留旧版本/不启用候选, 原因)。"""
+    """返回 (是否保留现有启用版本/不启用候选, 原因)。"""
     if not guard_enabled():
         return False, "guard disabled"
     if text(candidate_source, 32) == "manual" or payload.get("pinned") is True:
         return False, "manual or pinned"
     candidate = text(payload.get("translatedText"))
     source_text = text(payload.get("rawSourceText")) or text(record["raw_source_text"])
+    # 判据 (b)：与有没有旧版本无关。客户端对同一形状一律拒绝写缓存
+    # （extension/src/shared/translation-shrink.js），服务端也必须一律不设启用版本。
+    if is_implausibly_short(candidate, source_text):
+        return True, f"candidate {len(candidate.strip())} chars vs source {len(source_text.strip())} chars (implausibly short)"
     existing_id = text(record["active_version_id"], 80)
     if not existing_id:
-        if is_implausibly_short(candidate, source_text):
-            return True, f"candidate {len(candidate.strip())} chars vs source {len(source_text.strip())} chars (no previous version)"
         return False, "no existing active version"
     existing = connection.execute(
         "SELECT translated_text, source FROM translation_versions WHERE id=?", (existing_id,)
     ).fetchone()
     if existing is None:
-        if is_implausibly_short(candidate, source_text):
-            return True, f"candidate {len(candidate.strip())} chars vs source {len(source_text.strip())} chars (existing version missing)"
         return False, "existing version missing"
     if text(existing["source"], 32) == "manual":
         return False, "existing is manual"

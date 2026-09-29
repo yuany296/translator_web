@@ -88,6 +88,27 @@ test("canonical 结算路径会拦截尾值", () => {
   assert.match(source, /if \(!keepPrevious && !suspectTruncation\)/u);
 });
 
+// 判据 (b) 的效果容易写错：它**只拒绝写缓存**，当次渲染仍然用新值（首次译文没有
+// 更好的值可用）。模块头注释曾经声称「当次渲染也不会用上被截尾的值」，与代码相反；
+// 这里把两条判据各自的归宿钉住，注释再漂就会被抓到。
+test("两条判据各自的归宿与注释一致：(a) 用回旧值，(b) 只拒绝写缓存", () => {
+  const provider = readFileSync(
+    new URL("../extension/src/background/modules/translation-provider.js", import.meta.url), "utf8"
+  );
+  const shrink = readFileSync(
+    new URL("../extension/src/shared/translation-shrink.js", import.meta.url), "utf8"
+  );
+
+  // (a) 命中 → settledText 走 previous
+  assert.match(provider, /const settledText = keepPrevious \? previous : restored;/u);
+  // (b) 命中 → 不写缓存，但 resolve 的仍是 restored（新值）
+  assert.match(provider, /if \(!keepPrevious && !suspectTruncation\) \{\s*cacheWrites\.push/u);
+  assert.match(provider, /translatedText: settledText,/u);
+  // 注释必须把这层区别说出来
+  assert.match(shrink, /只拒绝写缓存/u);
+  assert.match(shrink, /与有没有旧值无关/u);
+});
+
 // 并发流式批次曾经共用一把带 g 的正则，互相踩 lastIndex 会导致重复/漏行。
 test("两个并发提取器互不影响游标", () => {
   const first = createTranslationRowExtractor();

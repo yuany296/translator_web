@@ -145,3 +145,43 @@ def test_first_reasonable_translation_is_activated(tmp_path, monkeypatch):
     short = TranslationStore(str(tmp_path / "translations-2.db"))
     commit(short, "op-1", payload("你好", source="안녕하세요"))
     assert active_text(short) == "你好"
+
+
+def test_implausibly_short_candidate_is_not_activated_even_with_a_previous_version(
+    tmp_path, monkeypatch
+):
+    """有旧版本时同样要拦「原文很长、只回几个字」。
+
+    旧值本身可能就是上一轮的截尾值，拿它当 60% 基准是比不出来的：这条以前会落到
+    「没短到 60% → 允许替换」的分支，把截尾值设成启用版本。
+    """
+    monkeypatch.delenv("TRANSLATION_SHRINK_GUARD", raising=False)
+    store = TranslationStore(str(tmp_path / "translations.db"))
+
+    previous = "听说游乐设施"  # 6 字：自身不算「不成比例」，所以能正常启用
+    commit(store, "op-1", payload(previous))
+    assert active_text(store) == previous
+
+    commit(store, "op-2", payload(TRUNCATED))  # 37 字原文回 4 字，且没短到旧值的 60%
+    assert active_text(store) == previous, "不成比例的候选不得成为启用版本"
+    assert TRUNCATED in version_texts(store), "候选仍要留在历史里便于排查"
+
+
+def test_implausibly_short_candidate_does_not_overwrite_a_manual_version(tmp_path, monkeypatch):
+    """旧值是人工编辑时也一样：截尾值不得顶掉人工译文。"""
+    monkeypatch.delenv("TRANSLATION_SHRINK_GUARD", raising=False)
+    store = TranslationStore(str(tmp_path / "translations.db"))
+
+    manual = "听说游乐设施指南里包含这个主题公园的相关内容。"
+    store.apply_operation({
+        "operationId": "op-1",
+        "type": "edit",
+        "recordKey": "record-key-1",
+        "payload": payload(manual, kind="manual"),
+        "createdAt": 1,
+    })
+    assert active_text(store) == manual
+
+    commit(store, "op-2", payload(TRUNCATED))
+    assert active_text(store) == manual, "人工译文必须守住"
+    assert TRUNCATED in version_texts(store)

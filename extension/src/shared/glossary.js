@@ -1,4 +1,5 @@
 import libraryCore from "./glossary-library.js";
+import languages from "./languages.js";
 
 const STORAGE_KEY = "mt_glossary_v2";
 const LEGACY_STORAGE_KEY = "mt_glossary_v1";
@@ -63,8 +64,14 @@ function normalizeGlossaryEntry(value, index = 0, libraries = null) {
   }
   const scopeKey = normalizeScopeKey(value.workId || value.scopeKey);
   const scope = ["work", "series"].includes(value.scope) && scopeKey ? "work" : "global";
-  const sourceLanguage = String(value.sourceLanguage || value.src_lng || "ko").slice(0, 24);
-  const targetLanguage = String(value.targetLanguage || value.tgt_lng || "zh-CN").slice(0, 24);
+  // 语言码一律折回规范短码：本地服务会把 `ja` 升格成 `ja-JP` 落库并原样回传，
+  // 不折回来就会在 getEnabledEntries 的严格相等比较里把整库词条滤掉。
+  const sourceLanguage = languages.canonicalSourceLanguage(
+    String(value.sourceLanguage || value.src_lng || "ko")
+  ).slice(0, 24) || "ko";
+  const targetLanguage = languages.canonicalTargetLanguage(
+    String(value.targetLanguage || value.tgtLng || value.tgt_lng || "zh-CN")
+  ).slice(0, 24) || "zh-CN";
   const libraryId = resolveLibraryId(value, libraries);
   const fallbackId = `term-${index}-${hashString(`${sourceLanguage}\u0000${targetLanguage}\u0000${libraryId}\u0000${scope}\u0000${scopeKey}\u0000${source}\u0000${target}`)}`;
   return {
@@ -118,8 +125,10 @@ function getLibraryOrder(value) {
 }
 function getEnabledEntries(value, context = null) {
   const scopeKey = normalizeScopeKey(context && context.scopeKey);
-  const sourceLanguage = String(context && context.sourceLanguage || "");
-  const targetLanguage = String(context && context.targetLanguage || "");
+  // 两侧都折回规范短码再比较：词条侧走 normalizeEntry 已折过一次，这里再折一次是
+  // 兜底（历史存档、服务端直接塞进来的行都可能在 entries 之外绕过 normalizeEntry）。
+  const sourceLanguage = languages.canonicalSourceLanguage(context && context.sourceLanguage || "");
+  const targetLanguage = languages.canonicalTargetLanguage(context && context.targetLanguage || "");
   const pageUrl = String(context && context.pageUrl || "");
   const normalized = normalizeGlossary(value);
   const enabledLibraries = new Set(
@@ -131,8 +140,10 @@ function getEnabledEntries(value, context = null) {
   const entries = normalized.entries.filter(entry => entry.enabled
     && enabledLibraries.has(entry.libraryId)
     && (entry.scope === "global" || scopeKey && entry.scope === "work" && entry.scopeKey === scopeKey)
-    && (!sourceLanguage || sourceLanguage === "auto" || entry.sourceLanguage === sourceLanguage)
-    && (!targetLanguage || entry.targetLanguage === targetLanguage));
+    && (!sourceLanguage || sourceLanguage === "auto"
+      || languages.canonicalSourceLanguage(entry.sourceLanguage) === sourceLanguage)
+    && (!targetLanguage
+      || languages.canonicalTargetLanguage(entry.targetLanguage) === targetLanguage));
   const effective = new Map();
   // 同级术语按库顺序决定优先级：靠前的库覆盖靠后的库，所以先写入靠后的库。
   const ranked = [...entries].sort((left, right) =>

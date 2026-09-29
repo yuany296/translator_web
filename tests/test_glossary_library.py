@@ -51,6 +51,27 @@ def test_library_apply_urls_survive_the_server_roundtrip(tmp_path: Path) -> None
     assert database.get_library("novel-1")["applyUrls"] == []
 
 
+def test_target_language_codes_are_upgraded_and_round_trip(tmp_path: Path) -> None:
+    """扩展侧发短码 ja，服务端升格成 ja-JP 落库并原样回传；折回短码由扩展侧负责。
+
+    这是跨端契约的一端：extension/src/shared/languages.js 的别名表必须能把这里
+    产出的 ja-JP / ko-KR / en-US 折回 ja / ko / en（同步断言见
+    tests/glossary_language_codes.test.mjs）。不做归一，扩展侧的严格相等比较会
+    把这些词条整库滤掉。
+    """
+    database = GlossaryDB(str(tmp_path / "target-lang.db"))
+    entry = database.upsert_entry("지오", "地奥", tgt_lng="ja", src_lng="ko")
+    assert entry["targetLanguage"] == "ja-JP"
+    assert entry["tgtLng"] == "ja-JP"
+    assert entry["tgt_lng"] == "ja-JP"
+
+    # 身份键用的是升格后的值：同一条短码再写一次不得产生第二行
+    again = database.upsert_entry("지오", "地奥", tgt_lng="ja-JP", src_lng="ko")
+    assert again["id"] == entry["id"]
+    assert len(database.get_entries(tgt_lng="ja")) == 1
+    assert len(database.get_entries(tgt_lng="ja-JP")) == 1
+
+
 def test_library_urls_normalize_query_hash_and_trailing_slash() -> None:
     urls = normalize_library_urls([
         "https://page.kakao.com/content/69299983/?tab=episodes#list",

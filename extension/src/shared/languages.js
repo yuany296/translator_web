@@ -10,16 +10,48 @@ const LANGUAGE_NAMES = Object.freeze({
   "zh-TW": "Traditional Chinese"
 });
 
-function normalizeLanguage(value, fallback, allowed) {
+/**
+ * 语言码别名表：同一门语言的方言化写法收敛到规范短码。
+ *
+ * 这张表是**跨端契约**：本地服务 `glossary_store/common.py#normalize_tgt_lng` 会把
+ * `ja` 升格成 `ja-JP` 落库并原样回传，所以扩展侧读入与比较时必须能折回 `ja`，
+ * 否则 `entry.targetLanguage === targetLanguage` 永远不成立
+ * （历史 bug：日语/韩语/英语目标下，同步过的词条整库被静默滤掉）。
+ */
+const LANGUAGE_ALIASES = Object.freeze({
+  korean: "ko", "ko-KR": "ko", ko_KR: "ko",
+  japan: "ja", japanese: "ja", "ja-JP": "ja", ja_JP: "ja",
+  english: "en", "en-US": "en", en_US: "en",
+  zh: "zh-CN", ch: "zh-CN", "zh-Hans": "zh-CN", zh_CN: "zh-CN",
+  chinese_cht: "zh-TW", "zh-Hant": "zh-TW", zh_TW: "zh-TW"
+});
+// 查表用小写键：`zh-CN` 与 `zh-cn`、`ja-JP` 与 `ja-jp` 必须落到同一个值。
+// 先播规范码自身的恒等映射，别名表覆盖在其上。
+const LANGUAGE_ALIAS_LOOKUP = new Map([
+  ...[...SOURCE_LANGUAGES, ...TARGET_LANGUAGES].map(code => [code.toLowerCase(), code]),
+  ...Object.entries(LANGUAGE_ALIASES).map(([key, value]) => [key.toLowerCase(), value])
+]);
+
+/**
+ * 只做别名映射，**不套 fallback**：无法识别的码原样返回。
+ * 不能复用 normalizeLanguage —— 它会把未知码回落成 zh-CN，
+ * 于是「未知语言的词条」会去匹配中文请求。
+ */
+function canonicalLanguage(value) {
   const raw = String(value || "").trim();
-  const aliases = {
-    korean: "ko", "ko-KR": "ko", ko_KR: "ko",
-    japan: "ja", japanese: "ja", "ja-JP": "ja", ja_JP: "ja",
-    english: "en", "en-US": "en", en_US: "en",
-    zh: "zh-CN", ch: "zh-CN", "zh-Hans": "zh-CN", zh_CN: "zh-CN",
-    chinese_cht: "zh-TW", "zh-Hant": "zh-TW", zh_TW: "zh-TW"
-  };
-  const normalized = aliases[raw] || raw;
+  return LANGUAGE_ALIAS_LOOKUP.get(raw.toLowerCase()) || raw;
+}
+
+function canonicalSourceLanguage(value) {
+  return canonicalLanguage(value);
+}
+
+function canonicalTargetLanguage(value) {
+  return canonicalLanguage(value);
+}
+
+function normalizeLanguage(value, fallback, allowed) {
+  const normalized = canonicalLanguage(value);
   return allowed.includes(normalized) ? normalized : fallback;
 }
 
@@ -101,6 +133,9 @@ export default Object.freeze({
   SOURCE_LANGUAGES,
   TARGET_LANGUAGES,
   LANGUAGE_NAMES,
+  LANGUAGE_ALIASES,
+  canonicalSourceLanguage,
+  canonicalTargetLanguage,
   normalizeSourceLanguage,
   normalizeTargetLanguage,
   languageName,

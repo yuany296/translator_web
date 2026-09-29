@@ -31,7 +31,7 @@ npm run test:python    # Python test suite —— 同上
 Reader Profile → Detect → Crop OCR → Observation → Canonical → Translation → Crop-local Layout → RenderScene → Renderer
 ```
 
-- **extension/src/**：按域组织的 ESM 源码，共 21 个域目录 —— `background`(+`providers`)、`canonical`、`config`、`content`、`geometry`、`glossary`、`layout`、`novel-mobile`（手机小说版，独立构建）、`popup`、`quick-popup`、`readers`、`recognition`、`rendering`、`settings`、`shared`、`sidepanel`、`translations`
+- **extension/src/**：按域组织的 ESM 源码，共 17 个域目录 —— `background`(+`providers`)、`canonical`、`config`、`content`、`geometry`、`glossary`、`layout`、`novel-mobile`（手机小说版，独立构建）、`popup`、`quick-popup`、`readers`、`recognition`、`rendering`、`settings`、`shared`、`sidepanel`、`translations`
 - **extension/public/**：静态资源（manifest.json、popup.html、glossary.html、settings.html、styles.css）
 - **dist/extension/**：桌面版构建输出（Chrome 加载它）；**dist/novel-mobile/** 是手机小说版的独立产物
 - **local-ocr-service/**：Python PaddleOCR 服务（`ocr_service/` 包 + `server.py`），另含 `glossary_store/`（SQLite 术语库）与 `translation_store/`（SQLite 译文库）

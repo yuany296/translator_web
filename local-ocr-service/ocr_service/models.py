@@ -44,6 +44,9 @@ class TermExtractionUpstream(BaseModel):
 class TermExtractionRequest(BaseModel):
     blocks: list[TermExtractionBlock] = Field(default_factory=list, max_length=500)
     mode: str = "balanced"
+    # 仅为兼容旧客户端（手机版旧包 / 旧桌面版）而保留：启发式与 LLM 两条分支都不读它。
+    # 新客户端不再发送该字段——它曾经是"把术语库全量、且未过库开关/生效网址/语言/作用域过滤地
+    # 发出去"的唯一载荷，删掉发送端是为了不让未过滤的术语流出。
     user_terms: list[str] = Field(default_factory=list, max_length=200)
     upstream: TermExtractionUpstream | None = None
     target_language: str = "zh-CN"

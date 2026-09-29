@@ -1,3 +1,5 @@
+import { seamBandHeight } from "../../shared/seam-band.js";
+
 export function installRecognitionBinding(runtime) {
   function unbindKakaoTargetFromPage(target) {
     if (!target) return;
@@ -270,9 +272,9 @@ export function installRecognitionBinding(runtime) {
   }
   runtime.hasKakaoFragmentStructureRisk = hasKakaoFragmentStructureRisk;
   function calculateKakaoSeamCaptureBandHeight(widthA, widthB, requestedHeight = 0) {
-    const defaultHeight = Math.min(Number(widthA) || 0, Number(widthB) || 0) * runtime.KAKAO_SEAM_CAPTURE_WIDTH_RATIO;
-    const value = Number(requestedHeight) || defaultHeight;
-    return Math.max(runtime.KAKAO_SEAM_CAPTURE_MIN_PX, Math.min(runtime.KAKAO_SEAM_CAPTURE_MAX_PX, Math.round(value)));
+    // 接缝带几何只有一份定义（shared/seam-band.js）：原先这里与 canonical 两侧
+    // 各写一遍同样的比例与夹取，改一处漏一处就会让两边的接缝带错位。
+    return seamBandHeight(Math.min(Number(widthA) || 0, Number(widthB) || 0), requestedHeight);
   }
   runtime.calculateKakaoSeamCaptureBandHeight = calculateKakaoSeamCaptureBandHeight;
 

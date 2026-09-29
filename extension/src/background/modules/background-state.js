@@ -1,4 +1,5 @@
 import { OCR_COORDINATE_MODEL_VERSION, OCR_GEOMETRY_VERSION, TRANSLATION_PROMPT_VERSION, WEBPAGE_TRANSLATION_PROMPT_VERSION } from "../../config/versions.js";
+import { IMAGE_MAX_SIDE } from "../../shared/shared-constants.js";
 
 export function installBackgroundState(runtime) {
   const CONTENT_SCRIPT_FILES = Object.freeze(["kakao-reconciler.js", "kakao-pipeline.js", "content.js"]);
@@ -92,7 +93,6 @@ export function installBackgroundState(runtime) {
   runtime.TAB_STATUS_TTL_MS = TAB_STATUS_TTL_MS;
   const MAX_BUBBLES = 400;
   runtime.MAX_BUBBLES = MAX_BUBBLES;
-  const IMAGE_MAX_SIDE = 1536;
   runtime.IMAGE_MAX_SIDE = IMAGE_MAX_SIDE;
   const IMAGE_JPEG_QUALITY = 0.82;
   runtime.IMAGE_JPEG_QUALITY = IMAGE_JPEG_QUALITY;

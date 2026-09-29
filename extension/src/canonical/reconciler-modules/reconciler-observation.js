@@ -1,3 +1,5 @@
+import { seamBandHeight } from "../../shared/seam-band.js";
+
 export function installReconcilerObservation(runtime) {
   function clamp(value, min, max) {
     const number = Number(value);
@@ -279,7 +281,8 @@ export function installReconcilerObservation(runtime) {
   }
   runtime.sortPages = sortPages;
   function calculateSeamBandHeight(pageAWidth, pageBWidth) {
-    return runtime.clamp(Math.round(Math.min(Number(pageAWidth) || 0, Number(pageBWidth) || 0) * runtime.SEAM_BAND_WIDTH_RATIO), runtime.SEAM_BAND_MIN_PX, runtime.SEAM_BAND_MAX_PX);
+    // 接缝带几何只有一份定义（shared/seam-band.js），内容侧的抓取带高用同一个函数。
+    return seamBandHeight(Math.min(Number(pageAWidth) || 0, Number(pageBWidth) || 0));
   }
   runtime.calculateSeamBandHeight = calculateSeamBandHeight;
   function buildSeamPairKey(pageA, pageB) {

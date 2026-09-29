@@ -1,3 +1,5 @@
+import { hashString36 } from "./stable-hash.js";
+
 const DEFAULT_LIBRARY_ID = "default";
 const DEFAULT_LIBRARY_NAME = "默认术语库";
 const MAX_LIBRARIES = 50;
@@ -274,13 +276,7 @@ function matchLibraryByUrl(libraries, pageUrl) {
 }
 
 function hashString(value) {
-  const text = String(value || "");
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
+  return hashString36(value);
 }
 
 export default Object.freeze({

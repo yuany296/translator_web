@@ -12,7 +12,7 @@ export function installPlatformCache(runtime) {
   async function handleGetCacheStats() {
     try {
       const store = await runtime.storageGet(null);
-      const cacheKeys = Object.keys(store).filter(runtime.isTranslationCacheKey);
+      const cacheKeys = Object.keys(store).filter(runtime.isManagedCacheKey);
       let aliveCount = 0;
       let staleCount = 0;
       let bytes = 0;
@@ -50,7 +50,7 @@ export function installPlatformCache(runtime) {
   async function handleClearCache() {
     try {
       const store = await runtime.storageGet(null);
-      const cacheKeys = Object.keys(store).filter(runtime.isTranslationCacheKey);
+      const cacheKeys = Object.keys(store).filter(runtime.isManagedCacheKey);
       if (cacheKeys.length > 0) {
         await runtime.storageRemove(cacheKeys);
       }
@@ -263,12 +263,12 @@ export function installPlatformCache(runtime) {
     }
     try {
       const store = await runtime.storageGet(null);
-      const cacheKeys = Object.keys(store).filter(runtime.isTranslationCacheKey);
+      const cacheKeys = Object.keys(store).filter(runtime.isManagedCacheKey);
       if (cacheKeys.length > 0) {
         await runtime.storageRemove(cacheKeys);
       }
       await runtime.storageSet(payload);
-      console.info(`[MangaTranslator] Storage quota recovered by clearing ${cacheKeys.length} translation cache entries.`);
+      console.info(`[MangaTranslator] Storage quota recovered by clearing ${cacheKeys.length} cached entries.`);
       return true;
     } catch (error) {
       console.warn("[MangaTranslator] Batch cache write failed after quota recovery.", error);
@@ -294,12 +294,12 @@ export function installPlatformCache(runtime) {
     }
     try {
       const store = await runtime.storageGet(null);
-      const cacheKeys = Object.keys(store).filter(runtime.isTranslationCacheKey);
+      const cacheKeys = Object.keys(store).filter(runtime.isManagedCacheKey);
       if (cacheKeys.length > 0) {
         await runtime.storageRemove(cacheKeys);
       }
       await runtime.storageSet(entry);
-      console.info(`[MangaTranslator] Storage quota recovered by clearing ${cacheKeys.length} translation cache entries.`);
+      console.info(`[MangaTranslator] Storage quota recovered by clearing ${cacheKeys.length} cached entries.`);
       return true;
     } catch (error) {
       // 缓存是可选加速层，即使单条结果仍然过大，也不能让已完成的翻译失败。
@@ -308,10 +308,16 @@ export function installPlatformCache(runtime) {
     }
   }
   runtime.setCache = setCache;
-  function isTranslationCacheKey(key) {
+  /**
+   * 是否属于"我们托管的缓存键"。判据是 `mt_cache_v<N>:` 这个**代次前缀族**，
+   * 因此它同时覆盖 OCR 缓存（`v28:ocr:`）、小说缓存（`v23:novel*`）与译文缓存 ——
+   * 配额兜底清理时本来就该腾所有能重建的缓存，这里不做区分是**有意**的。
+   * 名字不要再叫 isTranslationCacheKey：那会让调用方以为 OCR 缓存不会被清掉。
+   */
+  function isManagedCacheKey(key) {
     return runtime.TRANSLATION_CACHE_KEY_RE.test(String(key || ""));
   }
-  runtime.isTranslationCacheKey = isTranslationCacheKey;
+  runtime.isManagedCacheKey = isManagedCacheKey;
   function isStorageQuotaError(error) {
     return /quota|kQuotaBytes/i.test(runtime.getErrorMessage(error));
   }

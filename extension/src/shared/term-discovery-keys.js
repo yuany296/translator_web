@@ -1,3 +1,5 @@
+import { hashString36 } from "./stable-hash.js";
+
 const SCHEMA_VERSION = 1;
 
 /** 章节身份：去掉片段但保留查询串（`?episode=9` 属于不同章节）。 */
@@ -47,13 +49,7 @@ function clampNumber(value, min, max, fallback) {
 }
 
 function hashString(value) {
-  const text = String(value || "");
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
+  return hashString36(value);
 }
 
 export default Object.freeze({

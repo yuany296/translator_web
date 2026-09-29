@@ -28,7 +28,11 @@ export function installTermDiscoveryExtract(runtime) {
     return running;
   }
   runtime.enqueueTermExtraction = enqueueExtraction;
-  function discoveryRequestBody(configuration, store, blocks, upstream) {
+  // 请求体只带原文块：以前这里还塞过 user_terms（把 configuration.glossary.entries
+  // 全量、且**未**过库开关/生效网址/语言/作用域过滤地发出去），而本地服务的启发式
+  // 与 LLM 两条分支都不读它（models.py 仍保留该字段只为兼容旧客户端）。删掉的是
+  // 全系统唯一一份"未过滤术语载荷"。
+  function discoveryRequestBody(configuration, blocks, upstream) {
     return {
       mode: "balanced",
       blocks: blocks.map(block => ({
@@ -36,12 +40,6 @@ export function installTermDiscoveryExtract(runtime) {
         text: block.originalText,
         translatedText: block.translatedText
       })),
-      user_terms: [
-        ...configuration.glossary.entries.map(entry => entry.source),
-        ...store.chapters.flatMap(chapter => chapter.candidates)
-          .filter(candidate => candidate.kind === "person")
-          .map(candidate => candidate.source)
-      ].slice(0, 200),
       upstream,
       target_language: String(configuration.translation.targetLanguage || "zh-CN")
     };
@@ -98,7 +96,7 @@ export function installTermDiscoveryExtract(runtime) {
         blocks,
         llmMode: Boolean(upstream.baseUrl),
         baseUrl: runtime.sanitizeLocalOcrBaseUrl(configuration.ocr.localPaddle.baseUrl),
-        requestBody: discoveryRequestBody(configuration, autoIgnored.store, blocks, upstream)
+        requestBody: discoveryRequestBody(configuration, blocks, upstream)
       };
     });
   }

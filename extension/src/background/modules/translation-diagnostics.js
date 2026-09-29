@@ -6,14 +6,16 @@
  * 最终解析、`finish_reason` 都留档（最近 20 次），并提供一个用**当前已配置服务商**跑的
  * A/B 入口，用来回答「流式到底能不能用」。
  */
+import { SHRINK_RATIO } from "../../shared/translation-shrink.js";
+
 const MAX_SNAPSHOTS = 20;
 const DEFAULT_AB_ITEMS = Object.freeze([
   "어트랙션 안내에는 이 테마파크 관련 내용이 담겨 있다고 하더군요.",
   "좋아, 바로",
   "이 판타지 트레인은 다크라이드입니다."
 ]);
-/** 与 shared/translation-shrink.js 的判据同源：整批更短到 60% 以下算可疑。 */
-const A_B_SHRINK_RATIO = 0.6;
+/** 与 shared/translation-shrink.js 的判据同源：整批更短到 60% 以下算可疑（阈值只在那份常量里定义）。 */
+const A_B_SHRINK_RATIO = SHRINK_RATIO;
 const A_B_MIN_ROUNDS = 20;
 
 export function installTranslationDiagnostics(runtime) {

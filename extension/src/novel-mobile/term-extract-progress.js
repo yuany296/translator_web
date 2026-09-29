@@ -8,6 +8,7 @@
  * 「这一段覆盖了哪些块」用于决定哪些段落算「已处理」：只有真的跑出结果的分段覆盖的块
  * 才允许标记，否则失败分段里的术语会被永久跳过（用户看到的「漏术语」）。
  */
+import { hashString36 } from "../shared/stable-hash.js";
 
 /**
  * 这一段覆盖了哪些块：块原文出现在这一段里就算。
@@ -83,15 +84,9 @@ function runKeyOf(runtime, fullText) {
   return `mt_term_extract_run_v1:${runtime.hashSourceIdentity?.(fullText) || hashString(fullText)}`;
 }
 
-/** 与 term-discovery-keys / runtime.hashSourceIdentity 无关的兜底哈希（FNV-1a）。 */
+/** 与 term-discovery-keys / runtime.hashSourceIdentity 无关的兜底哈希（FNV-1a，base36）。 */
 function hashString(value) {
-  const text = String(value || "");
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
+  return hashString36(value);
 }
 
 /** 读回本次运行已完成的段：`{ [chunkIndex]: candidates }`。 */

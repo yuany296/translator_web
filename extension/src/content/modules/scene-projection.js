@@ -1,3 +1,5 @@
+import { normalizeProjectionRole } from "../../shared/projection-role.js";
+
 export function installSceneProjection(runtime) {
   async function renderKakaoPipelineResult({
     target,
@@ -73,7 +75,8 @@ export function installSceneProjection(runtime) {
     const geometry = Array.isArray(rawGeometry) ? rawGeometry[0] || {} : rawGeometry;
     const visual = projection && projection.visual || source.visual || {};
     const rawRole = String(projection && projection.role || source.projection_role || "text_primary");
-    const role = rawRole === "primary" ? "text_primary" : rawRole === "standby" && projection && projection.coverOnly === true ? "cover_only" : rawRole === "standby" ? "text_standby" : rawRole === "cover" ? "cover_only" : rawRole;
+    // role 归一只有一份定义（shared/projection-role.js），与 scene-canonical 用同一套映射。
+    const role = normalizeProjectionRole(rawRole, projection && projection.coverOnly);
     const originalText = String(projection && (projection.originalText || projection.original_text) || source.originalText || source.original_text || "");
     const translatedText = String(projection && (projection.translatedText || projection.translated_text) || source.translatedText || source.translated_text || "");
     return {

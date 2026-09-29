@@ -3,6 +3,7 @@ import {
 } from "../config/schema.js";
 import languages from "../shared/languages.js";
 import { detectReaderProfile } from "../readers/profile.js";
+import { isCoverProjection } from "../shared/projection-role.js";
 import { applyDomTextLayer, renderDomScene } from "../rendering/dom-renderer.js";
 import { renderEmbeddedScene } from "../rendering/embedded-renderer.js";
 import { buildBubbleTextLayer, buildRenderSceneForBubbles } from "../rendering/scene-builder.js";
@@ -52,8 +53,9 @@ function buildProjectionScenes(runtime, input) {
     };
     const bubbles = projections.filter((projection) => {
       const role = String(projection.role || "text_primary");
-      const coverOnly = role === "cover" || role === "cover_only" || projection.coverOnly === true;
-      if (coverOnly) return projection.active !== false;
+      // 遮罩判据只有一份定义（shared/projection-role.js）：以前这里与 scene-canonical
+      // 各写一遍，两处一旦分叉，同一块内容会既被当遮罩又被选去做文字渲染。
+      if (isCoverProjection(projection)) return projection.active !== false;
       if (typeof projection.activeText === "boolean") return projection.activeText;
       return projection.active !== false && role !== "standby" && role !== "text_standby";
     }).map(runtime.projectionToRendererBubble);
@@ -71,7 +73,12 @@ export function prepareContentRuntime(runtime) {
   // 分片长条阅读器能力（KakaoPage / RIDI）：必须在 state 阶段安装 reader-state 之前定好，
   // 那里的并发槽位常量在安装期就据此取值。
   runtime.IS_STRIP_TILE_READER = runtime.readerProfile.tiledStrip === true;
-  runtime.RUNTIME_FEATURE_VERSION = "reader-canonical-scene-v2";
+  // 分片长条（canonical）链路的**唯一**判定：只看目标本身能不能翻译
+  // （`<img>` / `<canvas>` / 背景图容器，且不是扩展自己画的覆盖层，见 isSupportedTarget）。
+  //
+  // 这里曾经存在第二份"严格版"实现（另外要求 IS_STRIP_TILE_READER + 直接采集 +
+  // 覆盖层渲染），装在 recognition-payload 的 functions 阶段，必然被这一份覆盖，
+  // 已删除。现行行为**不**按采集/渲染模式收窄；若要恢复那三道闸门，属于有意的行为变更。
   runtime.shouldUseKakaoCanonicalPipeline = (target) => Boolean(
     target && runtime.isSupportedTarget(target)
   );

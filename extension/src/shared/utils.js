@@ -1,4 +1,5 @@
 // ── 数值 ──
+import { hashString16 } from "./stable-hash.js";
 
 /** 钳制 value 到 [min, max] 范围 */
 function clamp(value, min, max) {
@@ -36,15 +37,8 @@ function stableSerialize(value) {
   return JSON.stringify(value ?? null);
 }
 
-/** FNV-1a 32-bit 哈希，输出 8 位 hex */
-function hashString(input) {
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
-  }
-  return (hash >>> 0).toString(16);
-}
+/** FNV-1a 32-bit 哈希，输出 8 位 hex（共享实现见 shared/stable-hash.js#hashString16） */
+const hashString = hashString16;
 
 /** 128-bit 稳定哈希，用于避免大量缓存 key 的碰撞 */
 function stableHash128(input) {

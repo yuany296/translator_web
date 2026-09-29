@@ -11,7 +11,9 @@ export function createRenderLayer(value) {
   if (!Object.values(LAYER_TYPES).includes(value?.type)) throw new TypeError(`Unknown render layer type: ${value?.type}`);
   const id = String(value.id || "").trim();
   if (!id) throw new TypeError("Render layer id is required");
-  if (value.type === LAYER_TYPES.TEXT && !value.layout) throw new TypeError("Text layer requires immutable layout");
+  // 只校验 layout 存在；**不**冻结它（geometry/appearance/content/diagnostic 会冻结）。
+  // 文案不要声称 immutable —— layout 里嵌着 placement 的活引用，冻结会让渲染期写入抛错。
+  if (value.type === LAYER_TYPES.TEXT && !value.layout) throw new TypeError("Text layer requires a layout");
   return Object.freeze({
     id, type: value.type, canonicalId: String(value.canonicalId || ""),
     active: value.active !== false, geometry: immutableGeometry(value.geometry),

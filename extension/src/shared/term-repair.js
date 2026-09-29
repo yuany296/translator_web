@@ -31,16 +31,11 @@ const HANGUL_SYLLABLE_RE = /[\uac00-\ud7af]/u;
 const HANGUL_TERM_RE = /^[\uac00-\ud7af]+$/u;
 const LATIN_LETTER_OR_DIGIT_RE = /[a-z0-9]/iu;
 
-// 与 shared/glossary.js#HANGUL_TAIL_TOKENS 同一份语言事实（常用助词 + 称呼后缀）。
-// 测试会拿 glossaryCore.matchesSourceTerm 逐条校验，保证这里不会和共享实现漂移。
-const HANGUL_PARTICLE_TAILS = Object.freeze([
-  "이라도", "이라고", "이었다", "이고", "이며", "이랑", "이나", "이면", "이야",
-  "에서", "에게", "한테", "부터", "까지", "마다", "보다", "처럼", "라도", "밖에",
-  "조차", "마저", "커녕", "라고", "였다", "으로", "께서", "하고", "이다",
-  "이", "가", "은", "는", "을", "를", "의", "에", "께", "로", "와", "과", "도",
-  "만", "나", "면", "랑", "야",
-  "님", "씨", "군", "양"
-]);
+// 与 shared/glossary.js#HANGUL_TAIL_TOKENS 是**同一份语言事实**（常用助词 + 称呼后缀）：
+// 这里不再抄一份逐字相同的数据，直接复用共享定义 —— 两份数据只要漏改一处，
+// 就会出现「某些尾巴在修复路径认得出、在匹配路径认不出」这种漂移。
+// 测试用的是 glossaryCore.matchesSourceTerm，复用后天然一致。
+const HANGUL_PARTICLE_TAILS = glossaryCore.HANGUL_TAIL_TOKENS;
 
 function isHangulLetter(character) {
   return Boolean(character) && HANGUL_SYLLABLE_RE.test(character);

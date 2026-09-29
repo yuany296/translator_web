@@ -1,5 +1,6 @@
 import libraryCore from "./glossary-library.js";
 import languages from "./languages.js";
+import { hashString36 } from "./stable-hash.js";
 
 const STORAGE_KEY = "mt_glossary_v2";
 const LEGACY_STORAGE_KEY = "mt_glossary_v1";
@@ -14,7 +15,8 @@ const HANGUL_SYLLABLE_RE = /[\uac00-\ud7af]/u;
 const HANGUL_TERM_RE = /^[\uac00-\ud7af]+$/u;
 // 韩文术语后允许跟随的成分：常见助词 + 姓名称呼后缀(님/씨/군/양/께서)。
 // 匹配时链式剥离(如 님이、씨는、양이)，长 token 优先，防止"이"抢先吃掉"이었다"。
-const HANGUL_TAIL_TOKENS = Object.freeze([
+// **这份数据是唯一定义**：shared/term-repair.js 直接复用它（不要在那里再抄一份）。
+export const HANGUL_TAIL_TOKENS = Object.freeze([
   "이라도", "이라고", "이었다", "이고", "이며", "이랑", "이나", "이면", "이야",
   "에서", "에게", "한테", "부터", "까지", "마다", "보다", "처럼", "라도", "밖에",
   "조차", "마저", "커녕", "라고", "였다", "으로", "께서", "하고", "이다",
@@ -237,13 +239,7 @@ function getFingerprint(value, context = null) {
   return `g4-${hashString(JSON.stringify(rows))}`;
 }
 function hashString(value) {
-  const text = String(value || "");
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
+  return hashString36(value);
 }
 export default Object.freeze({
   STORAGE_KEY,
@@ -255,6 +251,7 @@ export default Object.freeze({
   MAX_SOURCE_LENGTH,
   MAX_TARGET_LENGTH,
   MAX_NOTE_LENGTH,
+  HANGUL_TAIL_TOKENS,
   DEFAULT_LIBRARY_ID: libraryCore.DEFAULT_LIBRARY_ID,
   MAX_LIBRARIES: libraryCore.MAX_LIBRARIES,
   normalizeGlossary,

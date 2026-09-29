@@ -1,3 +1,5 @@
+import { hashString16 } from "../../shared/stable-hash.js";
+
 export function installPlatformUtils(runtime) {
   function sanitizeLocalOcrBaseUrl(value) {
     const normalized = String(value || "").trim().replace(/\/+$/u, "");
@@ -43,14 +45,8 @@ export function installPlatformUtils(runtime) {
   runtime.toNumber = toNumber;
   runtime.clamp = (value, min, max) => Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
 
-  function hashString(input) {
-    let hash = 2166136261;
-    for (let index = 0; index < input.length; index += 1) {
-      hash ^= input.charCodeAt(index);
-      hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
-    }
-    return (hash >>> 0).toString(16);
-  }
+  /** FNV-1a 32-bit，hex 输出（共享实现见 shared/stable-hash.js#hashString16 —— 别换成 base36 那份，缓存键会全变） */
+  const hashString = hashString16;
   runtime.hashString = hashString;
 
   function stableHash128(input) {

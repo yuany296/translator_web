@@ -1,3 +1,5 @@
+import { isCoverProjection, normalizeProjectionRole } from "../../shared/projection-role.js";
+
 export function installSceneCanonical(runtime) {
   async function renderCanonicalProjections(input = {}) {
     const pages = runtime.normalizeProjectionPages(input);
@@ -204,14 +206,11 @@ export function installSceneCanonical(runtime) {
 }
 
 function isCover(projection) {
-  return projection?.role === "cover" || projection?.role === "cover_only" || projection?.coverOnly === true;
+  return isCoverProjection(projection);
 }
 
 function isActiveProjection(projection, activeProjectionIds) {
-  const rawRole = String(projection?.role || "text_primary");
-  const role = rawRole === "primary" ? "text_primary" :
-    rawRole === "standby" && projection?.coverOnly === true ? "cover_only" :
-      rawRole === "standby" ? "text_standby" : rawRole === "cover" ? "cover_only" : rawRole;
+  const role = normalizeProjectionRole(projection?.role, projection?.coverOnly);
   if (role === "cover_only") return projection?.active !== false;
   if (typeof projection?.activeText === "boolean") return projection.activeText;
   return activeProjectionIds.has(String(projection?.projectionId || projection?.id || ""));
@@ -221,8 +220,9 @@ function selectActiveProjectionIds(runtime, pages, handledCanonicalIds) {
   const candidatesByCanonical = new Map();
   for (const [pageId, projections] of pages.entries()) {
     for (const projection of projections) {
-      const rawRole = String(projection?.role || "text_primary");
-      const role = rawRole === "primary" ? "text_primary" : rawRole === "standby" ? "text_standby" : rawRole;
+      // 与 isActiveProjection 用同一份 role 归一：以前这里少了 coverOnly 分支，
+      // 于是 standby+coverOnly 的投影被当成文字候选选进来（同一块既当遮罩又当文字）。
+      const role = normalizeProjectionRole(projection?.role, projection?.coverOnly);
       const canonicalId = String(projection?.canonicalId || projection?.groupId || projection?.id || "");
       if (!["text_primary", "text_standby"].includes(role) || !canonicalId ||
           handledCanonicalIds.has(canonicalId) || !runtime.getTargetForKakaoPageId(pageId)) continue;

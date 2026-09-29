@@ -42,8 +42,8 @@ export function installCapturePayload(runtime) {
     }
     let imageFetchError = null;
     if (runtime.isHttpUrl(imageUrl)) {
-      // Pass page URL as referrer so background fetch can set the Referer header.
-      // Kakao CDNs check Referer for hotlink protection.
+      // Pass page URL as referrer so background fetch can set the Referer header (Kakao CDNs check it).
+      // 分片长条目标还要 preserveSize：切片边界得像素级对齐才能拼回完整台词。
       try {
         const fetched = await runtime.sendRuntimeMessage({
           type: "FETCH_IMAGE_DATA_URL",

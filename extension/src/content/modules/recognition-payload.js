@@ -108,11 +108,6 @@ export function installRecognitionPayload(runtime) {
     return token ? `${base}|src:${runtime.hashSourceIdentity(token)}` : base;
   }
   runtime.buildTargetSourceCacheKey = buildTargetSourceCacheKey;
-  function shouldUseKakaoCanonicalPipeline(target) {
-    // 分片长条阅读器共用 canonical 链路（KakaoPage、RIDI），不再看站点名。
-    return !!(runtime.IS_STRIP_TILE_READER && runtime.state.captureMode === runtime.CAPTURE_MODE_DIRECT && runtime.state.renderMode === runtime.RENDER_MODE_OVERLAY && target instanceof HTMLImageElement);
-  }
-  runtime.shouldUseKakaoCanonicalPipeline = shouldUseKakaoCanonicalPipeline;
   function isKakaoEpisodeImageTarget(target) {
     if (!(target instanceof HTMLImageElement) || typeof target.getBoundingClientRect !== "function") {
       return false;

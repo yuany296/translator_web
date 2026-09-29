@@ -1,3 +1,5 @@
+import { hasTraditionalOnlyChar } from "./traditional-chinese.js";
+
 const SOURCE_LANGUAGES = Object.freeze(["auto", "ko", "ja", "en", "zh-CN", "zh-TW"]);
 const TARGET_LANGUAGES = Object.freeze(["zh-CN", "zh-TW", "en", "ja", "ko"]);
 
@@ -122,8 +124,10 @@ function resolveSourceLanguage(configured, text = "", recognized = "") {
   if (/[\uac00-\ud7af]/u.test(value)) return "ko";
   if (/[\u3040-\u30ff]/u.test(value)) return "ja";
   if (/[\u3400-\u9fff]/u.test(value)) {
-    const traditional = /[這個們為與還來說時會裡後發國門體學書車開關點]/u.test(value);
-    return traditional ? "zh-TW" : "zh-CN";
+    // 繁体专用字集合的唯一定义在 shared/traditional-chinese.js：以前这里另有一份
+    // 18 字小表，于是「含 嗎/沒/見/問/聽 的文本」在语言判定里被当成 zh-CN，
+    // 在手机版字形兜底里却被当成繁体 —— 同一个问题两个答案。
+    return hasTraditionalOnlyChar(value) ? "zh-TW" : "zh-CN";
   }
   if (/[a-z]/iu.test(value)) return "en";
   return "auto";

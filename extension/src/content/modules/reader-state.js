@@ -1,6 +1,7 @@
 import {
   isKakaoReaderHost, isRidiReaderHost, isNovelReaderHost
 } from "../../shared/novel-hosts.js";
+import { IMAGE_MAX_SIDE } from "../../shared/shared-constants.js";
 
 export function installReaderState(runtime) {
   const IS_PIXIV_COMIC_VIEWER = /(^|\.)comic\.pixiv\.net$/i.test(location.hostname) && /^\/viewer\/stories\/\d+/i.test(location.pathname);
@@ -69,7 +70,7 @@ export function installReaderState(runtime) {
   runtime.RECOVERY_REQUEST_GAP_MS = RECOVERY_REQUEST_GAP_MS;
   const MAX_RECOVERY_TARGETS = 10;
   runtime.MAX_RECOVERY_TARGETS = MAX_RECOVERY_TARGETS;
-  const IMAGE_MAX_SIDE = 1536;
+  // 与后台采集共用一个数（shared/shared-constants.js）：两边不一致会导致裁图尺寸错位。
   runtime.IMAGE_MAX_SIDE = IMAGE_MAX_SIDE;
   const IMAGE_JPEG_QUALITY = 0.82;
   runtime.IMAGE_JPEG_QUALITY = IMAGE_JPEG_QUALITY;
@@ -87,12 +88,6 @@ export function installReaderState(runtime) {
   runtime.KAKAO_CANONICAL_TARGET_LANGUAGE = KAKAO_CANONICAL_TARGET_LANGUAGE;
   const KAKAO_CANONICAL_SOURCE_LANGUAGE = "auto";
   runtime.KAKAO_CANONICAL_SOURCE_LANGUAGE = KAKAO_CANONICAL_SOURCE_LANGUAGE;
-  const KAKAO_SEAM_CAPTURE_WIDTH_RATIO = 0.15;
-  runtime.KAKAO_SEAM_CAPTURE_WIDTH_RATIO = KAKAO_SEAM_CAPTURE_WIDTH_RATIO;
-  const KAKAO_SEAM_CAPTURE_MIN_PX = 64;
-  runtime.KAKAO_SEAM_CAPTURE_MIN_PX = KAKAO_SEAM_CAPTURE_MIN_PX;
-  const KAKAO_SEAM_CAPTURE_MAX_PX = 96;
-  runtime.KAKAO_SEAM_CAPTURE_MAX_PX = KAKAO_SEAM_CAPTURE_MAX_PX;
   const KAKAO_AUTH_QUERY_PARAM_RE = /^(?:signature|credential|expires|policy|token|key-pair-id|x-amz-(?:algorithm|credential|date|expires|security-token|signature|signedheaders))$/i;
   runtime.KAKAO_AUTH_QUERY_PARAM_RE = KAKAO_AUTH_QUERY_PARAM_RE;
   const {
@@ -109,7 +104,10 @@ export function installReaderState(runtime) {
   runtime.RUNTIME_OWNER_ATTRIBUTE = RUNTIME_OWNER_ATTRIBUTE;
   const RUNTIME_FEATURE_ATTRIBUTE = "data-manga-translator-feature-version";
   runtime.RUNTIME_FEATURE_ATTRIBUTE = RUNTIME_FEATURE_ATTRIBUTE;
-  const RUNTIME_FEATURE_VERSION = "kakao-canonical-v1";
+  // 运行时特征版本号的**唯一真源**（属性名与值放在一起，避免两处各写一份）。
+  // 原先 content/configure.js 的 prepare 阶段也写过一份 "reader-canonical-scene-v2"，
+  // 但 state 阶段装在本模块之后，那份永远被这里覆盖 —— 真正盖到 DOM 上的从来是旧值。
+  const RUNTIME_FEATURE_VERSION = "reader-canonical-scene-v2";
   runtime.RUNTIME_FEATURE_VERSION = RUNTIME_FEATURE_VERSION;
   const MAX_EMBEDDED_IMAGE_CACHE = 40;
   runtime.MAX_EMBEDDED_IMAGE_CACHE = MAX_EMBEDDED_IMAGE_CACHE;

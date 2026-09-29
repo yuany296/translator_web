@@ -1,3 +1,5 @@
+import { MT_NOVEL_PANEL_HELLO, MT_NOVEL_PANEL_PORT } from "../../shared/shared-constants.js";
+
 export function installBootstrap(runtime) {
   // 控制台助手：`__mtOcrTimings()`、`__mtCacheAudit()`、`__mtTranslationSnapshots()` / `__mtStreamAb()`。
   // 它们都只是只读取证入口，必须在装配完成后显式挂上——installer 里定义函数不会自动暴露到控制台。
@@ -45,13 +47,13 @@ export function installBootstrap(runtime) {
    * 侧栏页面无法从 port.sender 拿到 windowId（扩展页面没有 sender.tab），
    * 因此由侧栏连上后先发一条 hello 报上自己的 windowId。
    */
-  const MT_NOVEL_PANEL_PORT = "mt-manage-panel";
+  // port 名与握手消息类型来自 shared/shared-constants.js：侧栏那边必须用同一份字符串。
   const novelPanelPorts = new Map();
 
   chrome.runtime.onConnect?.addListener(port => {
     if (!port || port.name !== MT_NOVEL_PANEL_PORT) return;
     port.onMessage.addListener(message => {
-      if (!message || message.type !== "mt-manage-panel-hello") return;
+      if (!message || message.type !== MT_NOVEL_PANEL_HELLO) return;
       const key = Number.isInteger(message.windowId) ? message.windowId : 0;
       let bucket = novelPanelPorts.get(key);
       if (!bucket) {

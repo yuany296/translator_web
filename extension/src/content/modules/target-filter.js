@@ -41,6 +41,8 @@ export function installTargetFilter(runtime) {
     const effectiveWidthLimit = relaxed ? Math.max(90, Math.min(widthLimit, 100)) : widthLimit;
     // KakaoPage/RIDI: accept thin strips so they can be stitched into neighbors
     const stripMinHeight = runtime.IS_STRIP_TILE_READER ? runtime.KAKAO_THIN_STRIP_MIN_HEIGHT : 0;
+    // 分片长条判定（定义在 content/configure.js）：为真即按"长条切片"对待 —— 更矮的条
+    // 也收（下面用 stripMinHeight 而不是常规高度门限），因为切缝两侧要靠接缝 OCR 拼回完整台词。
     const effectiveHeightLimit = runtime.shouldUseKakaoCanonicalPipeline(target) ? stripMinHeight : relaxed ? Math.max(90, Math.min(heightLimit, 100)) : Math.max(stripMinHeight, heightLimit);
     if (rect.width < effectiveWidthLimit || rect.height < effectiveHeightLimit) {
       runtime.debugTargetFilter("rect too small", {
@@ -90,6 +92,7 @@ export function installTargetFilter(runtime) {
   runtime.passesTargetFilter = passesTargetFilter;
   function passesKakaopageTargetGeometry(target, rect, manual, relaxed, allowOffscreen = false) {
     if (!allowOffscreen) {
+      // 分片长条目标按"部分可视也要收"处理：虚拟滚动下长图常常只露出一截。
       const canonicalTarget = runtime.shouldUseKakaoCanonicalPipeline(target);
       const visibleArea = runtime.getVisibleArea(rect);
       const visibleRect = runtime.getVisibleViewportRect(target);

@@ -62,6 +62,9 @@ export function installControlsAutotranslate(runtime) {
   }
   runtime.queuePageAutoTranslate = queuePageAutoTranslate;
   function maybeQueueKakaoShortPageAttachmentOwner(target, options = {}) {
+    // 这里的判定比共享的 shouldUseKakaoCanonicalPipeline（content/configure.js，只看目标类型）
+    // 更严：还要"分片长条站 + 直接采集 + 覆盖层渲染 + 已加载完的 <img>"。
+    // 那些是本路径自己的前置条件（短页挂载只在这种配置下成立），不是共享判定的一部分。
     if (!runtime.IS_STRIP_TILE_READER || runtime.shouldUseKakaoCanonicalPipeline(target) || !runtime.isKakaoEpisodeImageTarget(target) || runtime.state.captureMode !== runtime.CAPTURE_MODE_DIRECT || runtime.state.renderMode !== runtime.RENDER_MODE_OVERLAY || !(target instanceof HTMLImageElement) || !target.complete) {
       return false;
     }

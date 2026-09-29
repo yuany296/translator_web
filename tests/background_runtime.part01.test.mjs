@@ -348,9 +348,12 @@ test("offline term discovery cools down without surfacing a translation failure"
   assert.equal(fetchCount, 1);
 });
 test("translation cache cleanup recognizes old cache versions and quota errors", () => {
-  assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v2:abc"), true);
-  assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_cache_v4:def"), true);
-  assert.equal(context.__backgroundTest.isTranslationCacheKey("mt_api_key"), false);
+  // 判据是「代次前缀族」，**有意**把 OCR / 小说缓存也算进来（配额兜底要腾所有可重建的缓存），
+  // 所以名字是 isManagedCacheKey 而不是 isTranslationCacheKey。
+  assert.equal(context.__backgroundTest.isManagedCacheKey("mt_cache_v2:abc"), true);
+  assert.equal(context.__backgroundTest.isManagedCacheKey("mt_cache_v4:def"), true);
+  assert.equal(context.__backgroundTest.isManagedCacheKey("mt_cache_v28:ocr:abc"), true);
+  assert.equal(context.__backgroundTest.isManagedCacheKey("mt_api_key"), false);
   assert.match(context.__backgroundTest.buildCacheKey({
     dataUrl: ""
   }), /^mt_cache_v21:/);

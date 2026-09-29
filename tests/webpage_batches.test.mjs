@@ -4,14 +4,19 @@ import {
   buildWebpageBatches, completePartialWebpageBatch, isUsableWebpageTranslation,
   runWebpageBatchQueue, WEBPAGE_BATCH_LIMITS
 } from "../extension/src/content/modules/webpage-batches.js";
+import { WEBPAGE_SPEED_DEFAULTS } from "../extension/src/shared/webpage-speed.js";
 
-test("webpage batches respect both the 24-item and approximate 1600-character limits", () => {
+test("webpage batches respect both the item-count and approximate character limits", () => {
   const items = Array.from({ length: 50 }, (_, index) => `item-${index}`);
-  const byCount = buildWebpageBatches(items);
+  // 显式传 limits：这里验的是切批逻辑本身，不该被默认值变动牵着走
+  const byCount = buildWebpageBatches(items, { maxItems: 24 });
   assert.deepEqual(byCount.map(batch => batch.length), [24, 24, 2]);
-  const byChars = buildWebpageBatches(["a".repeat(1000), "b".repeat(700), "short"]);
+  const byChars = buildWebpageBatches(["a".repeat(1000), "b".repeat(700), "short"], { maxChars: 1600 });
   assert.deepEqual(byChars.map(batch => batch.length), [1, 2]);
   assert.equal(WEBPAGE_BATCH_LIMITS.concurrency, 2);
+  // 不传 limits 时的兜底与网页速度默认值同源（只有一份数字）
+  assert.equal(WEBPAGE_BATCH_LIMITS.maxItems, WEBPAGE_SPEED_DEFAULTS.batchItems);
+  assert.equal(WEBPAGE_BATCH_LIMITS.maxChars, WEBPAGE_SPEED_DEFAULTS.batchChars);
 });
 
 test("webpage queue never exceeds concurrency two and continues after a failed batch", async () => {

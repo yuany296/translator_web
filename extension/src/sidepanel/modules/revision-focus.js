@@ -1,3 +1,5 @@
+import { MT_NOVEL_PANEL_HELLO, MT_NOVEL_PANEL_PORT } from "../../shared/shared-constants.js";
+
 /**
  * 侧边栏「章节译文修订面板」的定位控制器。
  *
@@ -13,7 +15,6 @@
 const MT_FOCUS_HIGHLIGHT_MS = 3000;
 const MT_FOCUS_SCROLL_SUPPRESS_MS = 700;
 const MT_FOCUS_RECORD_TTL_MS = 60000;
-const MT_NOVEL_PANEL_PORT = "mt-manage-panel";
 const FOCUS_MESSAGE_TYPE = "FOCUS_NOVEL_REVISION_ITEM";
 
 function prefersReducedMotion() {
@@ -148,7 +149,7 @@ export function installRevisionFocus(panel) {
   try {
     const port = chrome.runtime.connect({ name: MT_NOVEL_PANEL_PORT });
     chrome.windows.getCurrent().then(win => {
-      port.postMessage({ type: "mt-manage-panel-hello", windowId: win && win.id });
+      port.postMessage({ type: MT_NOVEL_PANEL_HELLO, windowId: win && win.id });
     }).catch(() => {});
   } catch {
     // 端口不可用时退化为仅 storage 路径；background 会多调一次 sidePanel.open。

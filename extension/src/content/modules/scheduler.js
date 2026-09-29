@@ -87,7 +87,7 @@ export function installScheduler(runtime) {
   }
   runtime.passesKakaoAheadTargetFilter = passesKakaoAheadTargetFilter;
   function isKakaoShortPageQueueBlocked(target) {
-    if (!runtime.IS_STRIP_TILE_READER || runtime.shouldUseKakaoCanonicalPipeline(target)) {
+    if (!runtime.IS_STRIP_TILE_READER || runtime.shouldUseKakaoCanonicalPipeline(target)) { // 走分片长条链路的目标由接缝机制负责，不受短页排队闸门约束
       return false;
     }
     const gate = runtime.KP.getShortPageAttachmentGate(runtime.state.kakaoStore, target);

@@ -1,3 +1,5 @@
+import { seamBandHeight } from "../../shared/seam-band.js";
+
 export function installSceneIndexBuilder(runtime) {
   function buildSeamRenderSurfaceIndex(activeStore, options = {}) {
     const byPage = new Map();
@@ -307,7 +309,8 @@ export function installSceneIndexBuilder(runtime) {
       return reconciler.calculateSeamBandHeight(widthA, widthB);
     }
     const width = Math.max(1, Math.min(Number(widthA) || 1, Number(widthB) || 1));
-    return runtime.clamp(Math.round(width * runtime.KAKAO_SEAM_HEIGHT_WIDTH_RATIO), runtime.KAKAO_SEAM_HEIGHT_MIN_PX, runtime.KAKAO_SEAM_HEIGHT_MAX_PX);
+    // 接缝带几何只有一份定义（shared/seam-band.js）：这里只是 reconciler API 缺失时的兜底。
+    return seamBandHeight(width);
   }
   runtime.calculateCanonicalSeamHeight = calculateCanonicalSeamHeight;
   function buildCanonicalPairKey(pageA, pageB) {

@@ -55,6 +55,10 @@ function looksLikeCode(text) {
 // simplified-only marker. 韩文夹汉字 / 日文汉字+假名 / 繁体中文 / 含拉丁字母的
 // 混合文本都不会因为"出现了汉字"而被误跳过。
 const SIMPLIFIED_MARKERS = "这们个吗还从没见问说听读写干办东买车卖师医电书门开国时间岁点钟号机网页视发边对请让进过长头里关现儿么";
+// 注意：这里问的是**不同的问题** —— 不是"这段是繁体吗"（那是 shared/traditional-chinese.js
+// 里那份「繁体专用字」的职责），而是"这段明显是简体吗"。它必须更保守：命中就跳过该节点
+// （不翻译），所以故意把 與/並/來/戶/後/無/聽 这些"简繁都可能出现"的字也算进 markers，
+// 宁可少跳过、也不要误跳过一段其实该翻的文本。
 const TRADITIONAL_MARKERS = "們這個嗎還從沒見問說聽讀寫幹辦東買車賣師醫電書門開國時間歲點鐘號機網頁視發邊對請讓進過長頭裏裡關現兒麼與並來戶後無聽";
 
 function looksSimplifiedChinese(text) {

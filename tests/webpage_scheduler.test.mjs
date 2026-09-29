@@ -233,6 +233,10 @@ test("scroll promotes an unsent P2 segment to P0 before it is sent", async () =>
   const runtime = makeRuntime();
   const session = runtime.getOrCreateWebpageSession("https://example.com/page", 1);
   runtime.getWebpageState().session = session;
+  // 车道数必须显式钉住：默认值来自 shared/webpage-speed.js 的"快速档"（5 路），
+  // 而这条用例的场景是「所有车道都被视口占满、远处的 P2 只能排队」——
+  // 车道一多，far 会被空出来的车道立刻发出去，前提就不成立了。
+  runtime.state.webpageConcurrency = 3;
   // 暂停 API：第一批只含 P0，far 保持未发送（必须在入队前替换 stub）
   const blockers = [];
   runtime.translateWebpageBatchWithRetry = async (keys) => {
@@ -324,7 +328,8 @@ test("pure-background queue uses all lanes for P2/P3 batches", async () => {
     inflight -= 1;
     return { ok: true, partial: false, translations: new Map(keys.map(k => [k, "译"])), errors: [] };
   };
-  // 72 个后台段 = 32 + 32 + 8，占满三路
+  // 72 个后台段 = 32 + 32 + 8（lane-2/3 每批 32 段）→ 恰好 3 个批次；
+  // 并发上限取「车道数」与「批次数」的较小者。
   const entries = [];
   for (let i = 0; i < 72; i += 1) entries.push(makeEntry(makeNode(`bg-${i}`, 5000 + i * 40), `bg-${i}`));
   await runtime.enqueueWebpageSegments(session, entries, "background", 1);

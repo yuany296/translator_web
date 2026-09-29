@@ -1,5 +1,9 @@
-const MAX_BATCH_ITEMS = 24;
-const MAX_BATCH_CHARS = 1600;
+import { WEBPAGE_SPEED_DEFAULTS } from "../../shared/webpage-speed.js";
+
+// 不传 limits 时的兜底：与网页速度默认值同源（真正的档位折算在
+// webpage-scheduler-config.js）。队列级并发是独立旋钮，不随速度档位变。
+const MAX_BATCH_ITEMS = WEBPAGE_SPEED_DEFAULTS.batchItems;
+const MAX_BATCH_CHARS = WEBPAGE_SPEED_DEFAULTS.batchChars;
 const MAX_CONCURRENCY = 2;
 const PARTIAL_RETRY_CONCURRENCY = 4;
 

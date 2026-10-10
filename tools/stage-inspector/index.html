@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>阶段检视台 · Manga Translator</title>
+<style>
+  :root { color-scheme: light; --line: #d4d4d8; --ink: #18181b; --dim: #52525b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--ink); background: #f4f4f5; }
+  header { background: #1f2937; color: #fff; padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+  header h1 { font-size: 14px; margin: 0; }
+  header .pill { font-size: 12px; padding: 1px 8px; border-radius: 10px; background: #374151; }
+  header .pill.ok { background: #15803d; } header .pill.bad { background: #b91c1c; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 14px; background: #fff; border-bottom: 1px solid var(--line); }
+  .bar label { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--dim); }
+  input[type=number] { width: 68px; } input[type=text] { width: 120px; }
+  button { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); background: #fff; border-radius: 4px; cursor: pointer; }
+  button:hover { border-color: #a1a1aa; } button.primary { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+  .layout { display: grid; grid-template-columns: minmax(380px, 1fr) minmax(420px, 520px); align-items: start; }
+  .viewer { position: sticky; top: 0; max-height: 100vh; overflow: auto; background: #fff; border-right: 1px solid var(--line); padding: 10px; }
+  .stage { position: relative; transform-origin: top left; }
+  .stage img { display: block; width: 100%; height: auto; }
+  .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .stage svg polygon { vector-effect: non-scaling-stroke; cursor: pointer; }
+  .stage svg polygon.sel { stroke-width: 3.5; }
+  .legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin: 0 0 8px; font-size: 12px; }
+  .legend label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; user-select: none; }
+  .legend i { width: 12px; height: 12px; display: inline-block; border-radius: 2px; border: 2px solid currentColor; }
+  aside { padding: 10px 14px 40px; }
+  h2 { font-size: 13px; margin: 14px 0 5px; padding-bottom: 3px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 3px 5px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+  th { background: #f3f4f6; font-weight: 600; position: sticky; top: 0; }
+  tr.pick { cursor: pointer; } tr.pick:hover { background: #eff6ff; } tr.sel { background: #dbeafe; }
+  td.num { font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
+  .scroll { max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+  .note { font-size: 12px; color: var(--dim); background: #fffbeb; border-left: 3px solid #f59e0b; padding: 6px 8px; margin: 8px 0; }
+  .detail { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; font-size: 12px; }
+  .detail img { max-width: 100%; border: 1px solid var(--line); background: #fff; }
+  .drop-zone { border: 2px dashed #a1a1aa; border-radius: 6px; padding: 14px; text-align: center; color: var(--dim); font-size: 12px; background: #fafafa; }
+  .drop-zone.over { border-color: #1d4ed8; background: #eff6ff; color: #1d4ed8; }
+  .err { color: #b91c1c; font-size: 12px; }
+  .chip { display: inline-block; padding: 0 5px; border-radius: 3px; background: #eef2ff; color: #3730a3; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>阶段检视台</h1>
+  <span class="pill" id="pillService">服务：检查中…</span>
+  <span class="pill" id="pillBundle">bundle：…</span>
+  <span class="pill" id="pillNumbers">尚未分析</span>
+</header>
+
+<div class="bar">
+  <label>语言
+    <select id="lang"><option value="japan">japan</option><option value="korean">korean</option><option value="auto">auto</option></select>
+  </label>
+  <label>模式
+    <select id="mode"><option value="fast">fast</option><option value="enhanced">enhanced</option></select>
+  </label>
+  <label>识别下限 <input type="number" id="floor" value="0.4" step="0.05" min="0" max="1"></label>
+  <label>置信度阈值 <input type="number" id="confidenceThreshold" value="0.72" step="0.01" min="0" max="1"></label>
+  <label>最小面积 <input type="number" id="minBoxArea" value="36" step="1" min="0"></label>
+  <label>最大面积比 <input type="number" id="maxBoxArea" value="0.35" step="0.01" min="0.001" max="1"></label>
+  <label>最小宽 <input type="number" id="minBoxWidth" value="6" step="1" min="0"></label>
+  <label>最小高 <input type="number" id="minBoxHeight" value="6" step="1" min="0"></label>
+  <label>最大宽高比 <input type="number" id="maxAspectRatio" value="18" step="1" min="1"></label>
+  <label>合并行距 <input type="number" id="mergeLineGap" value="2.2" step="0.05" min="0.2" max="8"></label>
+  <button id="applyTuning">只重跑阶段（不重跑 OCR）</button>
+  <button id="exportMd">导出摘要 MD</button>
+  <button id="exportJson">导出阶段 JSON</button>
+</div>
+
+<div class="layout">
+  <div class="viewer">
+    <div class="drop-zone" id="dropZone">把漫画整页图片拖到这里（或点击选择）→ 跑一次 OCR 并逐阶段展示</div>
+    <input type="file" id="fileInput" accept="image/*" hidden>
+    <div class="legend" id="legend"></div>
+    <div class="stage" id="stage">
+      <img id="pageImage" alt="page">
+      <svg id="overlay"></svg>
+    </div>
+    <div class="bar" style="border:0;background:transparent;padding:6px 0">
+      <label>缩放 <input type="range" id="zoom" min="100" max="400" value="100" step="10"></label>
+      <span class="err" id="error"></span>
+    </div>
+  </div>
+
+  <aside>
+    <h2>线上快照 <span class="chip" id="snapCount">0</span></h2>
+    <div class="note">这些是本地 OCR 服务在 <code>debug:true</code> 时写下的**线上真实页面**（<code>.local-data/debug</code>）。选一个即可回放，不重跑 OCR、不花钱。</div>
+    <div class="scroll" style="max-height:180px"><table><tbody id="snapshotRows"></tbody></table></div>
+
+    <h2>各阶段结果</h2>
+    <table><tbody id="summaryRows"></tbody></table>
+
+    <h2>选中详情</h2>
+    <div class="detail" id="detail"><div class="num">—</div><div>点画布上的框，或点下面的表格行</div></div>
+
+    <h2>每条检测的结局 <span class="chip" id="detCount">0</span></h2>
+    <div class="bar" style="border:0;background:transparent;padding:0 0 6px">
+      <label><input type="checkbox" id="onlyDropped"> 只看被丢弃的</label>
+      <label><input type="checkbox" id="onlyRuby"> 只看ルビ</label>
+    </div>
+    <div class="scroll" style="max-height:340px">
+      <table><thead><tr><th>#</th><th>文本</th><th>分数</th><th>细</th><th>结局</th></tr></thead><tbody id="detRows"></tbody></table>
+    </div>
+
+    <h2>合并后的文本块 <span class="chip" id="blockCount">0</span></h2>
+    <div class="scroll" style="max-height:260px">
+      <table><thead><tr><th>#</th><th>原文</th><th>区域/实底</th><th>列</th><th>位置</th></tr></thead><tbody id="blockRows"></tbody></table>
+    </div>
+
+    <h2>被丢弃的东西与原因 <span class="chip" id="dropCount">0</span></h2>
+    <div class="scroll" style="max-height:220px">
+      <table><thead><tr><th>原因</th><th>文本</th><th>分数</th></tr></thead><tbody id="dropRows"></tbody></table>
+    </div>
+
+    <h2>⑧ 送进翻译模型的原文 <span class="chip" id="inputCount">0</span></h2>
+    <div class="note">聚类出来的文本带换行（竖排一列一行），但 observation 层会用
+      <code>normalizeTranslationSourceText</code>（NFKC + 空白折成一个空格）归一，
+      canonical 与翻译提示词拿到的都是**归一后**那一份 —— 所以换行不会进模型，但会留下一个空格。
+      译文里的换行同样会被折掉；页面上看到的分行是我们自己排版加的。</div>
+    <div class="scroll" style="max-height:220px">
+      <table><thead><tr><th>id</th><th>聚类文本（带换行）</th><th>实际送进模型</th></tr></thead><tbody id="inputRows"></tbody></table>
+    </div>
+    <div class="bar" style="border:0;background:transparent;padding:4px 0">
+      <button id="copyInput">复制 Input JSON（提示词里那一行）</button>
+    </div>
+
+    <h2>⑦ 服务端实底采样区 <span class="chip" id="regionCount">0</span></h2>
+    <div class="note">这是服务端判定「实底（纯色遮）」时逐块采样的容器矩形（实测 15/15 都是 4 点矩形、矩形度 0.99），
+      <strong>一个文字容器一块</strong>：一个两列气泡会拿到两块互相重叠的矩形，所以它看起来比气泡小、也不贴合气泡轮廓。
+      想看「气泡级别的框」请看 ⑥（那才是扩展实际拿去遮罩的范围）。</div>
+    <div class="scroll" style="max-height:200px">
+      <table><thead><tr><th>id</th><th>类型</th><th>底色</th><th>置信</th><th>其中文本</th></tr></thead><tbody id="regionRows"></tbody></table>
+    </div>
+
+    <p class="note">
+      阶段回放跑的是 <code>dist/test/background.iife.js</code>（<code>npm run build</code> 的产物）——
+      结果筛选、ルビ过滤、聚类合并与线上是同一份代码。已知近似：Node 里没有
+      <code>createImageBitmap</code>/<code>OffscreenCanvas</code>，扩展侧兜底取色与吃像素的聚类判据不生效，
+      块的<strong>边界</strong>可能与线上略有差别（<strong>文本</strong>与丢弃原因不受影响）。
+    </p>
+  </aside>
+</div>
+
+<script>
+const LAYERS = [
+  ["detections", "① 全部检测", "#ff4d4f", "1", ""],
+  ["belowFloor", "② 识别下限丢弃", "#8c8c8c", "1", "4 3"],
+  ["arrivals", "③ 到达结果筛选", "#13c2c2", "1", ""],
+  ["filterDrops", "④ 结果筛选丢弃", "#fa8c16", "1.5", "5 3"],
+  ["rubyDrops", "⑤ ルビ丢弃", "#a855f7", "1.5", "2 2"],
+  ["merged", "⑥ 合并后的文本块（= 实际要遮的范围）", "#1677ff", "2", ""],
+  ["regions", "⑦ 服务端实底采样区（逐文字容器，不是气泡轮廓）", "#52c41a", "1.5", ""]
+];
+const REASON_LABELS = {
+  "low-confidence": "分数不足（低分例外也没放行）",
+  "too-small-area": "面积太小",
+  "too-large-area": "面积太大",
+  "too-small-dimension": "宽或高太小",
+  "bad-aspect-ratio": "宽高比异常",
+  "symbol-only": "只有符号",
+  "mojibake-short-fragment": "短乱码碎片",
+  "weak-script-confidence": "脚本字符置信度太弱",
+  "ruby-annotation": "ルビ（振り仮名）注音",
+  "empty-text-or-box": "空文本/空框",
+  "ignored-simplified-chinese": "简体中文（按设置忽略）"
+};
+const NS = "http://www.w3.org/2000/svg";
+// 默认只开「被丢掉的（④⑤）+ 活下来的（⑥）」三层：第一眼要看到的就是这两个结论。
+// ①检测/②识别下限/③到达/⑦区域默认关掉，勾上即可逐层叠加（否则满屏标签看不清）。
+const DEFAULT_LAYERS = { detections: false, belowFloor: false, arrivals: false, filterDrops: true, rubyDrops: true, merged: true, regions: false };
+const state = { payload: null, stages: null, stem: "", artifacts: { crops: [] }, layers: { ...DEFAULT_LAYERS }, selected: null, filter: { onlyDropped: false, onlyRuby: false } };
+
+const $ = (id) => document.getElementById(id);
+
+function tuningFromForm() {
+  const numeric = ["confidenceThreshold", "minBoxArea", "maxBoxArea", "minBoxWidth", "minBoxHeight", "maxAspectRatio", "mergeLineGap"];
+  const tuning = {};
+  for (const key of numeric) tuning[key] = Number($(key).value);
+  return tuning;
+}
+function fmt(value, digits = 1) { return Number(value).toFixed(digits); }
+function pointsOf(polygon) { return polygon.map(p => `${p.x},${p.y}`).join(" "); }
+function boundsOfPoints(polygon) {
+  const xs = polygon.map(p => p.x), ys = polygon.map(p => p.y);
+  return { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
+}
+function escapeHtml(text) { return String(text == null ? "" : text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const text = await response.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = { error: text }; }
+  if (!response.ok) throw new Error((body && (body.error || body.detail)) || `HTTP ${response.status}`);
+  return { body, response };
+}
+
+/* ── 图例与图层 ── */
+function renderLegend() {
+  $("legend").innerHTML = LAYERS.map(([key, label, color, width, dash]) => `
+    <label><input type="checkbox" data-layer="${key}" ${state.layers[key] ? "checked" : ""}>
+    <i style="color:${color};${dash ? `border-style:dashed;` : ""}"></i>${label}</label>`).join("");
+  for (const input of document.querySelectorAll("input[data-layer]")) {
+    input.addEventListener("change", () => { state.layers[input.dataset.layer] = input.checked; renderOverlay(); });
+  }
+}
+
+/* ── 画布 ── */
+function layerGroups() {
+  const stages = state.stages;
+  const detections = stages.detections.map(item => ({ key: `d${item.index}`, polygon: item.polygon, label: `${item.text} · ${fmt(item.score, 3)} · ${item.outcome}` }));
+  const filterDrops = stages.drops.filter(item => item.reason !== "ruby-annotation")
+    .map((item, index) => ({ key: `f${index}`, polygon: item.polygon, label: `${item.text} · ${fmt(item.score, 3)} · ${REASON_LABELS[item.reason] || item.reason}` }));
+  const rubyDrops = stages.drops.filter(item => item.reason === "ruby-annotation")
+    .map((item, index) => ({ key: `r${index}`, polygon: item.polygon, label: `ルビ「${item.text}」→ 注在「${item.rubyHostText}」· 粗细比 ${fmt(item.rubyGlyphRatio, 2)}` }));
+  const merged = stages.merged.map(item => ({ key: `m${item.index}`, polygon: item.polygon, label: item.text.replace(/\n/g, "⏎").slice(0, 40) }));
+  const regions = stages.regions.map(item => ({ key: `g${item.id}`, polygon: item.polygon, label: `${item.id.replace(/^region-/u, "R")} ${item.type} ${item.bgColor || ""}`.trim() }));
+  return {
+    detections,
+    belowFloor: detections.filter(item => item.key.startsWith("d") && stages.detections[Number(item.key.slice(1))].belowFloor),
+    arrivals: stages.arrivals.map((item, index) => ({ key: `a${index}`, polygon: item.polygon, label: `${item.text} · ${fmt(item.score, 3)}` })),
+    filterDrops,
+    rubyDrops,
+    merged,
+    regions
+  };
+}
+function renderTranslationInput() {
+  const rows = state.stages.translationInput || [];
+  $("inputCount").textContent = String(rows.length);
+  $("inputRows").innerHTML = rows.map(row => `
+    <tr class="${state.selected === `m${Number(row.id.slice(1))}` ? "sel" : ""}">
+      <td class="num">${escapeHtml(row.id)}</td>
+      <td>${escapeHtml(row.clusterText).replace(/\n/g, "<br>")}</td>
+      <td>${escapeHtml(row.sentText)}${row.changedByNormalization ? ` <span class="chip">换行→空格</span>` : ""}</td>
+    </tr>`).join("");
+}
+function renderOverlay() {
+  const svg = $("overlay");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  if (!state.stages) return;
+  const groups = layerGroups();
+  for (const [key, label, color, width, dash] of LAYERS) {
+    if (!state.layers[key]) continue;
+    const group = document.createElementNS(NS, "g");
+    group.dataset.layer = key;
+    for (const [index, item] of groups[key].entries()) {
+      const polygon = document.createElementNS(NS, "polygon");
+      polygon.setAttribute("points", pointsOf(item.polygon));
+      polygon.setAttribute("fill", key === "regions" ? "rgba(82,196,26,0.10)" : "none");
+      polygon.setAttribute("stroke", color);
+      polygon.setAttribute("stroke-width", state.selected === item.key ? Number(width) + 2 : width);
+      if (dash) polygon.setAttribute("stroke-dasharray", dash);
+      if (state.selected === item.key) polygon.classList.add("sel");
+      polygon.dataset.key = item.key;
+      const title = document.createElementNS(NS, "title");
+      title.textContent = item.label;
+      polygon.appendChild(title);
+      polygon.addEventListener("click", () => select(item.key));
+      group.appendChild(polygon);
+      // 被丢弃的碎片常常只有几个像素（1×3、11×44 这种），描边在屏幕上几乎看不见 ——
+      // 给「小到看不见」的框补一个固定的方块标记，否则用户会说「这一层没有框」。
+      const bounds = boundsOfPoints(item.polygon);
+      const markerSize = 8;
+      if (Math.min(bounds.right - bounds.left, bounds.bottom - bounds.top) < 6) {
+        const marker = document.createElementNS(NS, "rect");
+        const centerX = (bounds.left + bounds.right) / 2;
+        const centerY = (bounds.top + bounds.bottom) / 2;
+        marker.setAttribute("x", centerX - markerSize / 2);
+        marker.setAttribute("y", centerY - markerSize / 2);
+        marker.setAttribute("width", markerSize);
+        marker.setAttribute("height", markerSize);
+        marker.setAttribute("fill", "none");
+        marker.setAttribute("stroke", color);
+        marker.setAttribute("stroke-width", state.selected === item.key ? 3 : 1.5);
+        marker.setAttribute("vector-effect", "non-scaling-stroke");
+        marker.dataset.key = item.key;
+        marker.addEventListener("click", () => select(item.key));
+        group.appendChild(marker);
+      }
+      if (item.label && key !== "detections" && key !== "arrivals") {
+        // 标签锚点与分道：密集区域（一页角落十几条噪声碎片）里若都从同一个点起画，
+        // 文字会叠成一团看不清 —— 按序号轮换 5 条轨道，并把锚点换成包围盒左上角
+        // （旋转四边形的 polygon[0] 可能在底部，直接用它会跳位）。
+        const lane = index % 5;
+        const text = document.createElementNS(NS, "text");
+        text.setAttribute("x", bounds.left);
+        text.setAttribute("y", Math.max(10, bounds.top - 3 - lane * 11));
+        text.setAttribute("fill", color);
+        text.setAttribute("font-size", key === "merged" ? "13" : "11");
+        text.setAttribute("font-family", "monospace");
+        text.setAttribute("paint-order", "stroke");
+        text.setAttribute("stroke", "#fff");
+        text.setAttribute("stroke-width", "2.5");
+        text.textContent = item.label;
+        group.appendChild(text);
+      }
+    }
+    svg.appendChild(group);
+  }
+}
+
+/* ── 表格 ── */
+function renderSummary() {
+  const stages = state.stages;
+  const belowFloor = stages.detections.filter(item => item.belowFloor).length;
+  const ruby = stages.drops.filter(item => item.reason === "ruby-annotation");
+  const filterDrops = stages.drops.filter(item => item.reason !== "ruby-annotation");
+  const rows = [
+    ["① 检测", stages.detections.length, "服务端检测到的一切文字框"],
+    ["② 识别下限丢弃", belowFloor, "分数低于下限，识别本身不可信"],
+    ["③ 到达结果筛选", stages.arrivals.length, "扩展真正拿到的一批"],
+    ["④ 结果筛选丢弃", filterDrops.length, "低分例外：目标语言文字 + 面积正常才放行"],
+    ["⑤ ルビ丢弃", ruby.length, "全假名 + 比整页中位字号细 + 紧贴含汉字邻居"],
+    ["⑥ 合并成块", stages.merged.length, "同气泡多列按自右向左、列内自上而下拼成一句（气泡级范围）"],
+    ["⑦ 服务端实底采样区", stages.regions.length, "serverside：逐文字容器一块的实底采样矩形，不是气泡轮廓"]
+  ];
+  $("summaryRows").innerHTML = rows.map(([name, count, note]) => `<tr><td>${name}</td><td class="num">${count}</td><td>${note}</td></tr>`).join("");
+  $("pillNumbers").textContent = `检测 ${stages.detections.length} → 到达 ${stages.arrivals.length} → 丢 ${stages.drops.length} → 块 ${stages.merged.length}`;
+}
+function renderDetections() {
+  const stages = state.stages;
+  $("detCount").textContent = String(stages.detections.length);
+  const rows = stages.detections.filter(item => {
+    if (state.filter.onlyDropped && !(item.belowFloor || item.kind === "filter" || item.kind === "ruby")) return false;
+    if (state.filter.onlyRuby && item.kind !== "ruby") return false;
+    return true;
+  });
+  $("detRows").innerHTML = rows.map(item => `
+    <tr class="pick ${state.selected === `d${item.index}` ? "sel" : ""}" data-key="d${item.index}">
+      <td class="num">${item.index}</td>
+      <td>${escapeHtml(item.text)}</td>
+      <td class="num">${fmt(item.score, 3)}</td>
+      <td class="num">${item.thickness}</td>
+      <td>${escapeHtml(item.outcome)}</td>
+    </tr>`).join("");
+  bindRows();
+}
+function renderBlocks() {
+  $("blockCount").textContent = String(state.stages.merged.length);
+  $("blockRows").innerHTML = state.stages.merged.map(item => `
+    <tr class="pick ${state.selected === `m${item.index}` ? "sel" : ""}" data-key="m${item.index}">
+      <td class="num">${item.index}</td>
+      <td>${escapeHtml(item.text).replace(/\n/g, "<br>")}</td>
+      <td>${escapeHtml(item.regionType)}${item.background ? ` / ${escapeHtml(item.background)}` : ""}</td>
+      <td class="num">${item.lines}</td>
+      <td class="num">${Math.round(item.box.left)},${Math.round(item.box.top)} ${Math.round(item.box.width)}×${Math.round(item.box.height)}</td>
+    </tr>`).join("");
+  bindRows();
+}
+function renderDrops() {
+  $("dropCount").textContent = String(state.stages.drops.length);
+  $("dropRows").innerHTML = state.stages.drops.map((item, index) => {
+    const key = item.reason === "ruby-annotation"
+      ? `r${state.stages.drops.filter((entry, i) => entry.reason === "ruby-annotation" && i <= index).length - 1}`
+      : `f${state.stages.drops.filter((entry, i) => entry.reason !== "ruby-annotation" && i <= index).length - 1}`;
+    return `<tr class="pick ${state.selected === key ? "sel" : ""}" data-key="${key}">
+      <td>${escapeHtml(REASON_LABELS[item.reason] || item.reason)}</td>
+      <td>${escapeHtml(item.text)}${item.rubyHostText ? ` <span class="chip">→ ${escapeHtml(item.rubyHostText)}</span>` : ""}</td>
+      <td class="num">${fmt(item.score, 3)}</td>
+    </tr>`;
+  }).join("");
+  bindRows();
+}
+function renderRegions() {
+  $("regionCount").textContent = String(state.stages.regions.length);
+  $("regionRows").innerHTML = state.stages.regions.map(item => `
+    <tr class="pick ${state.selected === `g${item.id}` ? "sel" : ""}" data-key="g${item.id}">
+      <td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.type)}</td>
+      <td>${escapeHtml(item.bgColor || "—")}</td><td class="num">${fmt(item.confidence, 2)}</td>
+      <td>${escapeHtml(item.texts.join(" / "))}</td>
+    </tr>`).join("");
+  bindRows();
+}
+function bindRows() {
+  for (const row of document.querySelectorAll("tr.pick")) {
+    row.addEventListener("click", () => select(row.dataset.key));
+  }
+}
+
+/* ── 选中详情 ── */
+function select(key) {
+  state.selected = key;
+  renderOverlay();
+  renderDetail();
+  renderDetections(); renderBlocks(); renderDrops(); renderRegions();
+}
+function cropForDetection(index) {
+  const suffix = `-${String(index).padStart(3, "0")}.png`;
+  const rel = (state.artifacts.crops || []).find(name => name.endsWith(suffix));
+  return rel ? `/api/artifact?rel=${encodeURIComponent(rel)}` : "";
+}
+function renderDetail() {
+  const box = $("detail");
+  const key = state.selected;
+  if (!key || !state.stages) { box.innerHTML = `<div class="num">—</div><div>点画布上的框，或点下面的表格行</div>`; return; }
+  const kind = key[0];
+  const stages = state.stages;
+  let rows = [];
+  let crop = "";
+  let rect = null;
+  if (kind === "d") {
+    const item = stages.detections[Number(key.slice(1))];
+    rows = [["检测 #", item.index], ["文本", item.text], ["分数", fmt(item.score, 3)], ["短边", `${item.thickness}px`],
+      ["结局", item.outcome], ["位置", `${Math.round(item.box.left)},${Math.round(item.box.top)} ${Math.round(item.box.width)}×${Math.round(item.box.height)}`]];
+    crop = cropForDetection(item.index);
+    rect = item.box;
+  } else if (kind === "a") {
+    const item = stages.arrivals[Number(key.slice(1))];
+    rows = [["文本", item.text], ["分数", fmt(item.score, 3)], ["区域类型", item.regionType], ["底色", item.bgColor || "—"], ["区域置信", fmt(item.regionConfidence, 3)]];
+    rect = item.box;
+  } else if (kind === "f" || kind === "r") {
+    const list = stages.drops.filter(item => (item.reason === "ruby-annotation") === (kind === "r"));
+    const item = list[Number(key.slice(1))];
+    if (item) {
+      rows = [["文本", item.text], ["原因", REASON_LABELS[item.reason] || item.reason], ["分数", fmt(item.score, 3)],
+        ...(item.rubyHostText ? [["ルビ宿主", item.rubyHostText], ["粗细比", fmt(item.rubyGlyphRatio, 2)]] : [])];
+      rect = item.box;
+    }
+  } else if (kind === "m") {
+    const item = stages.merged[Number(key.slice(1))];
+    rows = [["#", item.index], ["原文", item.text.replace(/\n/g, " / ")], ["区域/实底", `${item.regionType}${item.background ? ` / ${item.background}` : ""}`],
+      ["列数", item.lines], ["字号", `${item.fontHeight}px`], ["置信", fmt(item.confidence, 3)],
+      ["位置（屏幕轴）", `${Math.round(item.box.left)},${Math.round(item.box.top)} ${Math.round(item.box.width)}×${Math.round(item.box.height)}`]];
+    if (item.textAxisBox) {
+      // 合并块的 location 是**文字轴**几何：竖排时宽高与屏幕互换，看位置必须看屏幕轴那一行。
+      rows.push(["位置（文字轴，原始）", `${Math.round(item.textAxisBox.left)},${Math.round(item.textAxisBox.top)} ${Math.round(item.textAxisBox.width)}×${Math.round(item.textAxisBox.height)}`]);
+    }
+    rows.push(["区域 id", item.regionIds.join(", ") || "—"]);
+    rect = item.box;
+  } else if (kind === "g") {
+    const item = stages.regions.find(entry => `g${entry.id}` === key);
+    if (item) {
+      rows = [["id", item.id], ["类型", item.type], ["底色", item.bgColor || "—"], ["置信", fmt(item.confidence, 2)], ["其中文本", item.texts.join(" / ")]];
+      rect = item.box;
+    }
+  }
+  box.innerHTML = `<div class="num">${escapeHtml(String((rows[0] && rows[0][1]) ?? "—"))}</div>
+    <div>${rows.slice(1).map(([name, value]) => `<div><strong>${escapeHtml(name)}</strong>：${escapeHtml(String(value))}</div>`).join("")}
+    ${rect ? `<div style="margin-top:6px">原图对应区域（最近邻放大）：<br><canvas id="detailCrop" width="240" height="180" style="border:1px solid var(--line);background:#fff"></canvas></div>` : ""}
+    ${crop ? `<div style="margin-top:6px">服务端送给识别器的裁剪图：<br><img src="${crop}" alt="crop"></div>` : ""}</div>`;
+  if (rect) drawDetailCrop(rect);
+}
+
+/** 没有服务端裁剪图时的兜底：直接把页面图按检测框裁一块放大，看笔画/噪声用最近邻。 */
+function drawDetailCrop(rect) {
+  const canvas = $("detailCrop");
+  const image = $("pageImage");
+  if (!canvas || !image || !image.naturalWidth) return;
+  const ctx = canvas.getContext("2d");
+  const pad = Math.max(6, Math.min(rect.width, rect.height) * 0.3);
+  const sx = Math.max(0, rect.left - pad);
+  const sy = Math.max(0, rect.top - pad);
+  const sw = Math.max(1, Math.min(image.naturalWidth - sx, rect.width + pad * 2));
+  const sh = Math.max(1, Math.min(image.naturalHeight - sy, rect.height + pad * 2));
+  const scale = Math.min(canvas.width / sw, canvas.height / sh);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+  const dw = sw * scale;
+  const dh = sh * scale;
+  ctx.drawImage(image, sx, sy, sw, sh, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+}
+
+/* ── 数据入口 ── */
+function applyStages(stages) {
+  state.stages = stages;
+  // 关键：给 SVG 设 viewBox = 图片的**源像素**尺寸。
+  // 少了它，SVG 的用户单位就是元素自身的 CSS 像素，而我的坐标是源图像素
+  // （979×1324 的图被显示成上千 CSS px 宽），于是框会随距离越漂越远 ——
+  // 症状就是「框框的位置有问题」。preserveAspectRatio=none 保证容器与图片等比时严丝合缝。
+  const svg = $("overlay");
+  if (stages.imageSize && stages.imageSize.width) {
+    svg.setAttribute("viewBox", `0 0 ${stages.imageSize.width} ${stages.imageSize.height}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+  }
+  renderSummary(); renderDetections(); renderBlocks(); renderDrops(); renderRegions(); renderTranslationInput(); renderOverlay(); renderDetail();
+}
+async function rerunStages() {
+  if (!state.payload) { $("error").textContent = "还没有 OCR 结果：先拖入图片或选一个线上快照。"; return; }
+  $("error").textContent = "重跑阶段…";
+  try {
+    const { body } = await api("/api/stages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: state.payload, tuning: tuningFromForm() }) });
+    applyStages(body.stages);
+    $("error").textContent = "";
+  } catch (error) { $("error").textContent = String(error.message || error); }
+}
+async function loadImage(file) {
+  $("error").textContent = "读图…";
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("读图失败"));
+    reader.readAsDataURL(file);
+  });
+  $("pageImage").src = dataUrl;
+  $("error").textContent = "请求 OCR（服务端要跑检测+识别，稍等）…";
+  try {
+    const { body, response } = await api("/api/ocr", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ image: dataUrl, lang: $("lang").value, mode: $("mode").value, textRecScoreThresh: Number($("floor").value) })
+    });
+    state.payload = body;
+    state.stem = response.headers.get("x-debug-stem") || "";
+    state.artifacts = await refreshArtifacts();
+    $("error").textContent = "跑阶段回放…";
+    await rerunStages();
+  } catch (error) { $("error").textContent = String(error.message || error); }
+}
+async function refreshArtifacts() {
+  if (!state.stem) return { crops: [] };
+  try {
+    const { body } = await api(`/api/artifacts?stem=${encodeURIComponent(state.stem)}`);
+    return body;
+  } catch { return { crops: [] }; }
+}
+async function loadSnapshots() {
+  try {
+    $("snapshotRows").innerHTML = `<tr><td>载入历史快照清单…（目录里可能上千份，稍等）</td></tr>`;
+    const { body } = await api("/api/snapshots");
+    const list = body.snapshots || [];
+    $("snapCount").textContent = body.total && body.total > list.length ? `${list.length}/${body.total}` : String(list.length);
+    $("snapshotRows").innerHTML = list.map(item => `
+      <tr class="pick" data-stem="${escapeHtml(item.stem)}">
+        <td>${escapeHtml(item.stem)}</td>
+        <td class="num">${item.mtime.replace("T", " ").slice(5, 16)}</td>
+        <td class="num">${item.counts ? `${item.counts.paddle_raw_items ?? "?"}→${item.counts.filtered_items ?? "?"}` : (item.hasResult ? "JSON 无 counts" : "无 JSON")}</td>
+      </tr>`).join("") || `<tr><td>还没有快照：服务在 <code>debug:true</code> 时才会写产物</td></tr>`;
+    for (const row of $("snapshotRows").querySelectorAll("tr[data-stem]")) {
+      row.addEventListener("click", () => loadSnapshot(row.dataset.stem));
+    }
+  } catch (error) { $("error").textContent = String(error.message || error); }
+}
+async function loadSnapshot(stem) {
+  $("error").textContent = `读快照 ${stem}…`;
+  try {
+    const { body } = await api(`/api/snapshot?stem=${encodeURIComponent(stem)}`);
+    state.payload = body.payload;
+    state.stem = body.stem;
+    state.artifacts = body.artifacts || { crops: [] };
+    $("pageImage").src = body.artifacts && body.artifacts.pluginInput
+      ? `/api/artifact?rel=${encodeURIComponent(body.artifacts.pluginInput)}`
+      : "";
+    await rerunStages();
+    $("error").textContent = "";
+  } catch (error) { $("error").textContent = String(error.message || error); }
+}
+async function loadMeta() {
+  try {
+    const { body } = await api("/api/meta");
+    const service = body.service || {};
+    const ok = service.ok === true;
+    $("pillService").textContent = ok ? `服务：${service.device || "ok"} · ${service.ocrGeometryVersion || ""}` : `服务不可达：${service.error || "未启动"}`;
+    $("pillService").className = `pill ${ok ? "ok" : "bad"}`;
+    const bundle = body.bundle || {};
+    $("pillBundle").textContent = bundle.present ? `bundle：${bundle.geometryVersion} · ${bundle.mtime.slice(0, 16).replace("T", " ")}` : `bundle 缺失：${bundle.hint || ""}`;
+    $("pillBundle").className = `pill ${bundle.present ? "ok" : "bad"}`;
+  } catch (error) {
+    $("pillService").textContent = `服务器错误：${error.message}`;
+    $("pillService").className = "pill bad";
+  }
+}
+
+/* ── 导出 ── */
+function summaryMarkdown() {
+  const stages = state.stages;
+  const lines = [`# 阶段检视台摘要`, ``, `- 图片：${state.stem || "(未命名)"} · ${stages.imageSize.width}×${stages.imageSize.height}`,
+    `- 参数：置信度阈值 ${stages.tuning.confidenceThreshold} / 最小面积 ${stages.tuning.minBoxArea} / 最大宽高比 ${stages.tuning.maxAspectRatio} / 合并行距 ${stages.tuning.mergeLineGap}`, ``,
+    `## 各阶段`, ``, `| 阶段 | 数量 |`, `| --- | --- |`,
+    `| ① 检测 | ${stages.detections.length} |`, `| ② 识别下限丢弃 | ${stages.detections.filter(i => i.belowFloor).length} |`,
+    `| ③ 到达结果筛选 | ${stages.arrivals.length} |`, `| ④ 结果筛选丢弃 | ${stages.drops.filter(i => i.reason !== "ruby-annotation").length} |`,
+    `| ⑤ ルビ丢弃 | ${stages.drops.filter(i => i.reason === "ruby-annotation").length} |`, `| ⑥ 合并块 | ${stages.merged.length} |`,
+    `| ⑦ 服务端区域 | ${stages.regions.length} |`, ``, `## 合并后的文本块（送去翻译的原文）`, ``, `| # | 原文 | 区域/实底 | 列 |`, `| --- | --- | --- | --- |`];
+  for (const block of stages.merged) {
+    lines.push(`| ${block.index} | ${block.text.replace(/\n/g, " / ")} | ${block.regionType}${block.background ? ` / ${block.background}` : ""} | ${block.lines} |`);
+  }
+  lines.push(``, `## ⑧ 送进翻译模型的原文（聚类文本 → 归一后）`, ``, `| id | 聚类文本 | 实际送进模型 |`, `| --- | --- | --- |`);
+  for (const row of stages.translationInput || []) {
+    lines.push(`| ${row.id} | ${row.clusterText.replace(/\n/g, " / ")} | ${row.sentText} |`);
+  }
+  lines.push(``, `## 被丢弃的东西`, ``, `| 原因 | 文本 | 分数 |`, `| --- | --- | --- |`);
+  for (const drop of stages.drops) {
+    lines.push(`| ${REASON_LABELS[drop.reason] || drop.reason} | ${drop.text}${drop.rubyHostText ? ` → ${drop.rubyHostText}` : ""} | ${drop.score.toFixed(3)} |`);
+  }
+  lines.push(``, `## 服务端区域`, ``, `| id | 类型 | 底色 | 置信 | 文本 |`, `| --- | --- | --- | --- | --- |`);
+  for (const region of stages.regions) {
+    lines.push(`| ${region.id} | ${region.type} | ${region.bgColor || "—"} | ${region.confidence.toFixed(2)} | ${region.texts.join(" / ")} |`);
+  }
+  return lines.join("\n");
+}
+function download(name, text, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url; anchor.download = name; anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ── 绑定 ── */
+renderLegend();
+$("dropZone").addEventListener("click", () => $("fileInput").click());
+$("fileInput").addEventListener("change", () => { if ($("fileInput").files[0]) void loadImage($("fileInput").files[0]); });
+for (const event of ["dragover", "dragenter"]) {
+  $("dropZone").addEventListener(event, (e) => { e.preventDefault(); $("dropZone").classList.add("over"); });
+}
+for (const event of ["dragleave", "drop"]) {
+  $("dropZone").addEventListener(event, (e) => { e.preventDefault(); $("dropZone").classList.remove("over"); });
+}
+$("dropZone").addEventListener("drop", (e) => { const file = e.dataTransfer.files[0]; if (file) void loadImage(file); });
+$("applyTuning").addEventListener("click", () => void rerunStages());
+$("onlyDropped").addEventListener("change", (e) => { state.filter.onlyDropped = e.target.checked; renderDetections(); });
+$("onlyRuby").addEventListener("change", (e) => { state.filter.onlyRuby = e.target.checked; renderDetections(); });
+$("zoom").addEventListener("input", (e) => { $("stage").style.transform = `scale(${Number(e.target.value) / 100})`; });
+$("exportMd").addEventListener("click", () => { if (state.stages) download(`stage-summary-${state.stem || "page"}.md`, summaryMarkdown(), "text/markdown"); });
+$("copyInput").addEventListener("click", async () => {
+  if (!state.stages) return;
+  const rows = (state.stages.translationInput || []).map(row => ({ id: row.id, text: row.sentText }));
+  const text = JSON.stringify(rows);
+  try {
+    await navigator.clipboard.writeText(text);
+    $("error").textContent = `已复制 ${rows.length} 条 Input JSON`;
+    setTimeout(() => { if ($("error").textContent.startsWith("已复制")) $("error").textContent = ""; }, 2500);
+  } catch (error) {
+    $("error").textContent = `复制失败（${error.message}）；内容：${text.slice(0, 200)}`;
+  }
+});
+$("exportJson").addEventListener("click", () => { if (state.stages) download(`stage-${state.stem || "page"}.json`, JSON.stringify({ stem: state.stem, stages: state.stages }, null, 1), "application/json"); });
+
+void loadMeta();
+void loadSnapshots();
+</script>
+</body>
+</html>

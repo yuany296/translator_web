@@ -1,5 +1,23 @@
 # Manga OCR Compare Workbench
 
+## ⚠️ 先读这条：这个页面必须从本地调试服务器打开
+
+本地 OCR 服务的 CORS 白名单只允许扩展来源
+（`local-ocr-service/ocr_service/dependencies.py` → `EXTENSION_ORIGIN_PATTERN = ^chrome-extension://[a-p]{32}$`）。
+所以：
+
+- 用 `file://` 直接打开（旧 `run_ocr_debug_tool.bat` 的做法）时，页面里对
+  `http://127.0.0.1:8765/ocr` 的请求会被浏览器拦掉，报 `Failed to fetch` —— **跑不出任何结果**。
+- 正确做法：跑 `run_ocr_debug_tool.bat`（它会启动 `tools/stage-inspector/serve.mjs` 再打开
+  <http://127.0.0.1:8099/ocr-debug-tool/index.html>），并把页面里的 **`serviceUrl` 改成
+  `http://127.0.0.1:8099`**。反代会把 `/ocr`、`/health`、`/debug-background`、`/ocr/timings`
+  原样转到 8765，页面因此与服务器同源，不再有 CORS 问题。
+- 更想看「每个阶段分别发生了什么」的话，用新的
+  [阶段检视台](../stage-inspector/README.md)（`http://127.0.0.1:8099/stage-inspector/`）：它跑的是
+  `dist/test/background.iife.js` 里的**真代码**做结果筛选/ルビ过滤/聚类，而本页面自带的
+  `dropReason`/`mergeItems`（见 `index.html` 里 `processOcrPayload`）是**另写的一份**实现，
+  两者可能不一致 —— 比较参数用它，判断线上行为用阶段检视台。
+
 ## 背景判定可视化调参工作台
 
 更新日期：2026-06-21

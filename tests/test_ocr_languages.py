@@ -14,7 +14,7 @@ import server
 @pytest.mark.parametrize(
     ("language", "model"),
     [
-        ("japan", "japan_PP-OCRv3_mobile_rec"),
+        ("japan", "PP-OCRv5_server_rec"),
         ("korean", "korean_PP-OCRv5_mobile_rec"),
         ("en", "en_PP-OCRv5_mobile_rec"),
         ("ch", "PP-OCRv5_server_rec"),

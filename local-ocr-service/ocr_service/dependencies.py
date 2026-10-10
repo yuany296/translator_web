@@ -90,7 +90,7 @@ values = {
     "SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE": 0.78,
     "VERTICAL_ORIENTATION_TIE_MARGIN": 0.08,
     "VERTICAL_CROP_MIN_ASPECT_RATIO": 1.4,
-    "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v5",
+    "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v6",
     # /ocr/timings 保留的最近请求数（分阶段 p50/p95）。
     "OCR_TIMINGS_WINDOW": 200,
     "DEBUG_DIR": DATA_ROOT / "debug-ocr",

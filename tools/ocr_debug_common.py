@@ -68,10 +68,12 @@ def build_predict_kwargs(params: dict[str, float]) -> dict[str, Any]:
 
 
 def get_recognition_model_name(lang: str) -> str:
+    # 与 local-ocr-service/ocr_service/pipeline/paddle_provider.py 的同名函数保持一致：
+    # 日文必须走 PP-OCRv5（v3 mobile 在竖排漫画台词上只得 0.2~0.3 分）。
     if lang == "korean":
         return "korean_PP-OCRv5_mobile_rec"
     if lang == "japan":
-        return "japan_PP-OCRv3_mobile_rec"
+        return "PP-OCRv5_server_rec"
     return "PP-OCRv5_mobile_rec"
 
 

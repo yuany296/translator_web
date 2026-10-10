@@ -39,7 +39,13 @@ def get_recognition_model_name(lang: str) -> str:
     if lang == 'korean':
         return 'korean_PP-OCRv5_mobile_rec'
     if lang == 'japan':
-        return 'japan_PP-OCRv3_mobile_rec'
+        # 日文不能用 japan_PP-OCRv3_mobile_rec：它在竖排漫画台词上会整行崩掉。
+        # 实测同一块 CMOA 裁图（人眼可读「殺すモノをきっ」）：v3 mobile 无论原始/摆正/加白边/
+        # 反色/2x 都只有 0.21~0.34 分并吐「桜すでくを」「成すでくでらの」，v5 是 0.95~0.99。
+        # 横排同样 v5 更准（0.981→1.000，モ→毛 的那个错没了）。v5 是 PP-OCRv5 统一模型，
+        # 保留日文字形（戦/図/訳/弁/悪/圧/郷 逐字正确，不会写成简体），源文与缓存身份不受影响；
+        # 它与 ch 共用同一个模型文件，不额外占磁盘。
+        return 'PP-OCRv5_server_rec'
     if lang == 'en':
         return 'en_PP-OCRv5_mobile_rec'
     if lang in {'ch', 'chinese_cht'}:

@@ -90,7 +90,10 @@ values = {
     "SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE": 0.78,
     "VERTICAL_ORIENTATION_TIE_MARGIN": 0.08,
     "VERTICAL_CROP_MIN_ASPECT_RATIO": 1.4,
-    "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v7",
+    # v7：实底容器的采样留边单位改成字形尺寸（appearance_regions.solid_sampling_reference）。
+    # v6：日文识别模型换到 PP-OCRv5（见 paddle_provider.get_recognition_model_name）。
+    # 与 extension/src/config/versions.js 的 OCR_GEOMETRY_VERSION 必须逐字相同。
+    "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v8",
     # /ocr/timings 保留的最近请求数（分阶段 p50/p95）。
     "OCR_TIMINGS_WINDOW": 200,
     "DEBUG_DIR": DATA_ROOT / "debug-ocr",

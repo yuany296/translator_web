@@ -178,6 +178,9 @@ export function installOcrProvider(runtime) {
       ocrDebug.rawItems = debugSourceItems.map((item, index) => runtime.toDebugOcrItem(item, index, ocrImageSize, "raw"));
     }
     let words = sourceItems.map(item => runtime.normalizeLocalPaddleOcrItem(item, ocrImageSize)).filter(Boolean).filter((item, index) => runtime.keepOrTraceOcrWord(item, ocrImageSize, ocrTuning, ocrDebug, index, "local_paddle"));
+    // ルビ（振り仮名）必须在**聚类之前**整条丢掉：并进正文会把一句正常台词翻成乱码
+    // （「あしたもと」+「明日地元」→「明日元,明天是本地。」），留着又会各自多一个气泡。
+    words = runtime.filterRubyAnnotationWords(words, ocrImageSize, ocrDebug, "local_paddle");
     words = await runtime.repairLowConfidenceLocalPaddleWordsWithVision(words, dataUrl, ocrImageSize, visionOcrOptions, debug);
     const imageAnalysis = await runtime.analyzeLocalOcrImage(dataUrl, ocrImageSize);
     // 跨图窗口聚类全部 OCR 行；归属判断统一由 content.js 在 mapKakaoStitchedResult() 中处理。

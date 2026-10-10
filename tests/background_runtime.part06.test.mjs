@@ -482,7 +482,7 @@ test("local OCR forwards the cleaned-image artifact flag to the service", async 
     restoreAuth();
   }
   assert.equal(requestBodies.length, 4);
-  assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-appearance-layout-v7");
+  assert.equal(requestBodies[0].ocr_geometry_version, "detect-crop-recognize-appearance-layout-v8");
   assert.equal(requestBodies[0].return_cleaned_image, false);
   assert.equal(requestBodies[0].cleaned_mask_token, "");
   assert.equal(requestBodies[1].return_cleaned_image, true);

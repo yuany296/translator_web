@@ -1,3 +1,8 @@
+import { OCR_RECOGNITION_SCORE_FLOOR } from "../../shared/shared-constants.js";
+
+/** 低分例外要求的面积占比（相对整张识别图）。 */
+const LOW_CONFIDENCE_MIN_AREA_RATIO = 0.0012;
+
 export function installOcrCandidates(runtime) {
   function summarizeOcrConfidence(items) {
     let minimum = 1;
@@ -76,7 +81,19 @@ export function installOcrCandidates(runtime) {
     const aspectRatio = Math.max(box.width / Math.max(1, box.height), box.height / Math.max(1, box.width));
     const reliableShortSpeechBubble = runtime.isReliableShortSpeechBubbleItem(item);
     if (!reliableShortSpeechBubble && confidence > 0 && confidence < Number(tuning.confidenceThreshold || 0)) {
-      if (!meaningfulText || confidence < 0.4 || areaRatio < 0.0012) {
+      // 低分条目的唯一放行例外。三条同时成立才放行：
+      //  - 分数仍在识别硬下限之上（低于它连识别本身都不可信）；
+      //  - 是实打实的目标语言文字（`isReliableMeaningfulShortOcrText`：数字/拉丁/带 ?、� 的
+      //    一律不算 —— 「14」「2el」「$x{}$」这类正是低分区的主要噪声）；
+      //  - 面积正常（相对整图 ≥0.0012）。
+      // **不按字数卡**：韩文单音节台词（「그」「네」）本来就是一整行，日文也有「え」「ま」这种
+      // 一字台词，按长度丢会误删真台词（`background_runtime.part07` 钉过这条行为）。
+      // 竖排漫画台词带ルビ时整行平均分会被ルビ拖低（实测同页不带ルビ的行 0.92~0.99，
+      // 「鉄パイプか」0.705、「帰ないと」0.711），这类行正文是清晰的、必须翻。
+      if (!meaningfulText || confidence < OCR_RECOGNITION_SCORE_FLOOR || areaRatio < LOW_CONFIDENCE_MIN_AREA_RATIO) {
+        return "low-confidence";
+      }
+      if (!runtime.isReliableMeaningfulShortOcrText(text)) {
         return "low-confidence";
       }
     }

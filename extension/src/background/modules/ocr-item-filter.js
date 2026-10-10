@@ -1,4 +1,5 @@
 import { polygonRotationDeg } from "../../rendering/cover-geometry.js";
+import { OCR_RECOGNITION_SCORE_FLOOR } from "../../shared/shared-constants.js";
 
 export function installOcrItemFilter(runtime) {
   function shouldDropUnmergedLocalPaddleFragment(item, imageSize) {
@@ -218,7 +219,13 @@ export function installOcrItemFilter(runtime) {
       text_det_thresh: runtime.clampNumber(settings.localOcrDetThresh, 0.01, 0.99, runtime.DEFAULT_LOCAL_OCR_DET_THRESH),
       text_det_box_thresh: runtime.clampNumber(settings.localOcrDetBoxThresh, 0.01, 0.99, runtime.DEFAULT_LOCAL_OCR_DET_BOX_THRESH),
       text_det_unclip_ratio: runtime.clampNumber(settings.localOcrDetUnclipRatio, 1, 5, runtime.DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO),
-      text_rec_score_thresh: runtime.clampNumber(settings.ocrConfidenceThreshold, 0, 1, 0)
+      // 识别阶段的硬切只能用硬下限，**不能**用用户的结果筛选阈值：服务端拿它把分数不够的
+      // 识别结果整条删掉，而竖排长句的分数是整行平均分（默认阈值 0.72 会删掉 0.70 的清晰
+      // 台词，症状「明明挺清晰却没被翻译」）。用户阈值仍由结果筛选那条路径生效。
+      text_rec_score_thresh: Math.min(
+        runtime.clampNumber(settings.ocrConfidenceThreshold, 0, 1, 0),
+        OCR_RECOGNITION_SCORE_FLOOR
+      )
     };
   }
   runtime.getLocalOcrParams = getLocalOcrParams;

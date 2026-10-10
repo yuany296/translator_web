@@ -18,6 +18,7 @@ import { installOcrRegions } from "./ocr-regions.js";
 import { installOcrClusterGeometry } from "./ocr-cluster-geometry.js";
 import { installOcrDisplayGeometry } from "./ocr-display-geometry.js";
 import { installOcrItemFilter } from "./ocr-item-filter.js";
+import { installOcrRuby } from "./ocr-ruby.js";
 import { installOcrCandidates } from "./ocr-candidates.js";
 import { installBaiduProvider } from "./baidu-provider.js";
 import { installBaiduResults } from "./baidu-results.js";
@@ -68,6 +69,7 @@ export const backgroundPhases = Object.freeze({
     installOcrClusterGeometry,
     installOcrDisplayGeometry,
     installOcrItemFilter,
+    installOcrRuby,
     installOcrCandidates,
     installBaiduProvider,
     installBaiduResults,

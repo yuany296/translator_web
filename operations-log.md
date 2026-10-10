@@ -1,5 +1,239 @@
 # Operations Log
 
+## 2026-10-10（续4）— 检视台第二批问题：④⑤「没有框」是真 bug；⑦ 不是位置错是语义不同
+
+- 用户两条反馈：**「第七步服务端的 bubble 位置感觉没修」**、**「4 和 5 步的结果没有框」**。
+- ④⑤ 没有框 = **真 bug**：结果筛选/ルビ丢弃的条目来自 `createOcrDebugSession` 的 `filterReasons`，
+  里头的 `item` 是 `toDebugOcrItem()` 的产物 —— 它的 `polygon` 是**百分比**坐标（`x/imgW*100`），
+  而 `rawBox` 才是像素。我按像素直接画，于是整层框被挤到左上角（实测第一个框画成了 `20,7 1×3`，
+  真实位置是 `193,91 11×44`）。修复：`stage-core.mjs` 新增 `debugPolygonToPixels()`，把百分比换回像素；
+  修完第一个结果筛选框 = `193,91,11,44`（与像素框逐位一致），ルビ框也落到 `659,603` 这种真实位置。
+  另外给「小到看不见」的框（最短边 < 6px）补一个固定尺寸的方块标记兜底。
+- ⑦ 不是位置错：把服务端 region 框与检测框画在同一张原图上逐块比对（`tmp-cmoa/probe_region_align.py`），
+  绿框正好各包一列 —— region-1 `[197,75,35,153]` 恰好框住检测 #61 `[202,86,26,131]`。
+  服务端的 `regions` **全部是 4 点矩形**（15/15，矩形度 ≥0.99），语义是「逐文字容器的**实底采样区**」，
+  不是气泡轮廓；一个两列气泡会拿到两块互相重叠的矩形，所以看起来「不贴气泡」。UI 侧改名并加说明：
+  「⑦ 服务端实底采样区（逐文字容器，不是气泡轮廓）」，并指明想看气泡级范围看 ⑥。
+  另一条同样可能的原因：**标签页是修 viewBox 之前打开的**（服务器重启不刷新已打开的标签页），
+  那种情况下所有框（含 ⑦）都还是旧的偏移状态 —— 需要刷新页面。
+- 验证：`tests/stage_core.test.mjs` 增加不变量（被丢弃条目的多边形包围盒必须等于其像素框、且不能是百分比量级）；
+  `npm run verify` 全绿（1669 Node + 159 Python + 行数门禁 + lint）。
+
+
+## 2026-10-10（续3）— 「回车会不会进翻译」：不进模型，但会被折成**一个空格**
+
+- 用户看着检视台里带 `\n` 的合并文本问：翻译时会不会去掉回车（他感觉有回车机翻会很怪）。
+- 实测（真实那一页 17 个块，同一份真代码）：聚类输出里 **11 个块带 `\n`**（竖排一列一行），
+  但经过 `normalizeTranslationSourceText`（`seam-handling.js:387`，NFKC + `\s+ → " "`）之后
+  **带换行的 0/17**；`アンゼルなら\n問う題` → `アンゼルなら 問う題`。调用链：
+  observation 构建（`observation-results.js:160`）→ canonical 原样带走（`canonical-translate.js:211`）
+  → 提示词 `{id, text: item.original_text}`（`translation-provider.js:345`）。提示词里另有一句兜底
+  「一个 input 可能含多行 OCR，要整体理解、不要逐行机翻」。
+- 反向也成立：模型**返回**的 `translated_text` 走同一个归一化（`translation-provider.js:117`），
+  所以译文里的换行也进不来；页面上看到的分行是**我们自己的排版**（`white-space: pre-line` + 布局换行），
+  不是模型给的换行 —— 「模型吐回车把排版搞乱」这条不成立。
+- 但用户的直觉方向对：**折成空格**对日韩文本是错的连接方式（CJK 不用空格分词）。而且内部不一致 ——
+  canonical 拼片段用 `join("")`（`reconciler-fragment-groups.js:225`），只有 OCR→observation 这个入口用空格；
+  这个空格会同时进入送模型的原文、术语发现输入、术语库/翻译指纹。**待用户确认后**改成按字符集决定连接符
+  （含假名/汉字 → `""`，含韩文或纯拉丁 → 保留空格）；代价是翻译缓存键与术语指纹变化（旧条目自然失配、
+  不投毒，OCR 缓存不受影响）。
+- 顺手把「模型到底读到什么」做成可见的：检视台新增 **⑧ 送进翻译模型的原文** 面板（聚类文本 vs 归一后文本、
+  `换行→空格` 标记、`复制 Input JSON` 按钮），导出的 Markdown 摘要也带上这张表；
+  `tests/stage_core.test.mjs` 增加不变量（送模型的文本必须无换行、无连续空白；多行块必须被标记为已归一化）。
+
+
+## 2026-10-10（续2）— 检视台「框框的位置不对」：SVG 少了 viewBox + 合并块位置用了文字轴几何
+
+- 用户反馈：**看起来框框的位置有问题**。查出两个独立原因（一个画错、一个算错）：
+  1. `index.html` 的 `<svg id="overlay">` **没有 viewBox**。我的多边形坐标是**源图像素**（979×1324），而没有 viewBox 时 SVG 的用户单位是元素自身的 CSS 像素（这一页被显示成 1136px 宽），于是框按 1.0 而不是 1.16 的比例落位，**越往右下漂得越多**（右下角实测差约 100px）。修复：`applyStages()` 里设 `viewBox="0 0 W H"` + `preserveAspectRatio="none"`；修完用 `getBoundingClientRect` 与「源坐标 × 图片缩放」逐点比对，三类图层（合并块/结果筛选丢弃/ルビ）delta 全是 `0,0,0,0`。
+  2. 合并块的「位置」取的是 `location/rawBox`，而那是**文字轴**几何（竖排时宽高与屏幕正好互换：一个两列气泡 rawBox=137×61，屏幕上的四边形是 58×132）。画框用的是 polygon 所以看着对，但**表格里的位置**与**「最近邻放大」裁图**都落到了错的区域。修复：`stage-core.mjs` 里合并块的 `box` 改为多边形的**屏幕轴包围盒**，文字轴原值保留为 `textAxisBox`，详情面板两行都显示（并注明哪个是原始值）。
+- 顺带两处可读性修正：标签按序号轮换 5 条轨道（密集角落里十几条噪声碎片的原因文字原本叠成一团），锚点从 `polygon[0]` 换成包围盒左上角（旋转四边形的 `polygon[0]` 可能在底部，直接用它标签会跳位）。
+- 验证：`tests/stage_core.test.mjs` 增加一条不变量 —— 合并块 `box` 必须等于其多边形包围盒，且两列竖排块的屏幕轴必然「窄而高」、文字轴「宽而扁」；`npm run verify` 全绿（1667 Node + 159 Python + 行数门禁 + lint）。
+
+
+## 2026-10-10（续）— 「阶段检视台」：把每个阶段摊在一个本地网页上（不在插件里显示）
+
+- 用户诉求：**不要在插件里展示中间结果，要一个新平台**（软件或新网页）逐阶段看，看完再提建议；并问「之前是不是有个可视化网页，在哪」。
+- 勘查结论（都在浏览器里实测过，不是推测）：
+  - 既有页面是 `tools/ocr-debug-tool/index.html`（Manga OCR Compare Workbench）+ `debug_background_workbench.html`，启动脚本 `run_ocr_debug_tool.bat` / `run_background_workbench.bat`，说明在同目录 README。
+  - **但它们今天根本发不出 OCR 请求**：服务端 CORS 白名单只允许扩展来源（`dependencies.py#EXTENSION_ORIGIN_PATTERN = ^chrome-extension://[a-p]{32}$`，用在 `api.py` 的 CORSMiddleware）。实测从 `file://`（`Origin: null`）以及从 `http://127.0.0.1:8099` 直接 fetch `http://127.0.0.1:8765/health` 都是 `TypeError: Failed to fetch`。也就是说「双击 bat 直接打开 index.html」这条路从来没通过。
+  - 另外它页面里的 Raw/Filtered/Merged 是**另写一份**过滤/合并实现（`index.html#processOcrPayload` 里的 `dropReason`/`mergeItems`），与线上代码是两份、会漂移。
+- 做法：新增 `tools/stage-inspector/`，**生产代码零改动**（`extension/` 与 `local-ocr-service/` 一行没动）：
+  - `serve.mjs`：只监听 127.0.0.1 的本地调试服务器 = 静态（`tools/`）+ **同源反代**（白名单 `/ocr` `/health` `/ocr/timings` `/debug-background`）+ 阶段回放 API + 线上快照/产物读取（白名单根 `.local-data/debug`，规范化后校验前缀，防目录穿越）。**没有**去放宽服务端 CORS —— `Origin: null` 必须继续挡着，否则任意网页里的 sandbox iframe 都能读本地术语库/译文库。
+  - `stage-core.mjs`：阶段回放核心 —— 把 `dist/test/background.iife.js`（`npm run build` 产物）载进 `node:vm`，用**线上同一份** `keepOrTraceOcrWord` / `filterRubyAnnotationWords` / `buildLocalPaddleBubbleItems` 算阶段（不再有第二份实现）；同时保留 CLI 出一次性静态 HTML。
+  - `index.html`：图层开关 ①检测 ②识别下限 ③到达结果筛选 ④结果筛选丢弃 ⑤ルビ ⑥合并块 ⑦服务端区域，颜色固定、可叠加；「每条检测的结局」主表 + 合并块/丢弃/区域三张表；选中一条即显示**服务端送给识别器的裁剪图**（`slice_crops/slice-<stem>-NNN.png`），没有裁剪图时用最近邻放大原图兜底；参数面板改 `confidenceThreshold` 等 → **只重跑阶段、不重跑 OCR**；导出 Markdown 摘要 / 阶段 JSON；「线上快照」列表直接读服务写下的真实页面（不花钱）。
+  - `run_stage_inspector.bat` + 新增 `tools/README.md`（工具索引，直接回答「之前那个网页在哪」）+ 两个既有 bat/README 的 CORS 说明（把 `serviceUrl` 填成 `http://127.0.0.1:8099` 即可复活旧工具）。
+- 真机验证（`tmp-cmoa/page139.png`，979×1324，服务 v8）：检测 71 → 识别下限丢 14 → 到达 57 → 结果筛选丢 16 → ルビ丢 4 → 合并 17 块 → 区域 15 个；把阈值 0.72 改到 0.60 后（只重跑阶段）结果筛选丢 16→11、ルビ 4→6、块 17→19；选中检测后裁剪图（14×27）与最近邻放大视图都正常。
+- 顺带记录一个服务端命名坑：`debug_id` 为空时 `orchestrator` 用时间戳命名 `plugin_input/vis/result_json`，而 `crop_recognition` 里的裁剪图退回 `safe_debug_stem('')` → `ocr-<pid>-<tid>` 命名，两批产物对不上，检视台按 stem 找不到裁剪图。工具与 `tmp-cmoa/run_page_ocr.py` 现在都显式带 `debug_id`。
+- 测试：`tests/stage_core.test.mjs`（6 例：各阶段计数与丢因、ルビ连同宿主、竖排读序合并、调阈值真的改变丢弃数、bundle 缺失给「先 npm run build」提示、导出面断言）。
+
+
+## 2026-10-10 — 日漫两问：汉字旁的小字（ルビ）与「明明很清晰却没被翻译」
+
+- 用户三句话：①**有些文字识别不到，明明看起来还挺清晰的**；②**日漫这些旁边的小字是什么，为什么有那么多，应该怎么进行排版，或者是不是应该忽略，还是用别的 OCR 比较好**；③「太麻烦就算了，反正我不看日漫，因为太贵了」。
+- 先把「旁边的小字」查清楚 —— 它有两个来源，**都不是译文**：
+  - **上次诊断时我打开的「OCR 调试」叠层**（`localPaddle.debug`）：`raw-N [OCR 87.8%] | …` 标签，实测一页 312 条 raw + 108 条 block，铺满整页，看起来就是一行行小字。它只是识别中间结果。已拆成 `content/modules/ocr-debug-overlay.js`（原在 `renderer-overlay.js` 里，那支文件本来就到 409/400 行），并让它在画框之外**自带一条自我说明横幅**（`.mt-debug-badge`：「OCR 调试层：下面的 raw/block 标签是识别中间结果，不是译文 · 关闭：设置 → OCR 调试」）—— 它长得像台词正是用户无法判断的原因。**用户侧的处置：在 设置页 / 悬浮菜单 里关掉「OCR 调试」**。
+  - **ルビ（振り仮名）**：日漫在汉字旁用小一号假名注音（縦書き在汉字列右侧、横書き在汉字上方），PaddleOCR 把那一列小字当成**独立文本行**检测出来。这是真问题：它既各自成气泡（「为什么有那么多」），又会被聚类拼进正文 —— 实测「あしたもと」+「明日日地元」被拼成一行，译文「明日元,明天是本地。」，一句正常台词变成乱码。
+- **两件事其实是同一个成因**：用服务自己写的 `slice_crops` 放大看，「鉄パイプか」0.705、「帰ないと」0.711 两条正文清清楚楚，但**汉字旁边就压着ルビ（てつ／かえ）**；同一页不带ルビ的行是 0.92~0.99。ルビ把整行的**平均**识别分拖到了默认阈值 0.72 下方。
+- 于是「识别阶段」和「结果筛选」两条线都要动：
+  - 服务端 `crop_recognition._run_slice_ocr_pipeline` 拿 `text_rec_score_thresh` **硬切** `items`，而这个字段以前送的正是**用户的结果筛选阈值**（默认 0.72）→ 0.70 出头的清晰台词在识别阶段就被删了，扩展侧那条「低分但行是完整的」例外根本没机会生效。改成送**识别硬下限** `shared/shared-constants.js#OCR_RECOGNITION_SCORE_FLOOR = 0.4`（同一常量也是结果筛选那条例外的门槛，一处定义两处用），用户阈值仍然只由结果筛选生效。
+  - 结果筛选那条例外同时收紧：只放行「目标语言文字（`isReliableMeaningfulShortOcrText`，数字/拉丁/带 `?`、`�` 的一律不算）+ 面积占比 ≥0.0012」。用真实 6 页 212 条原始识别回放：旧行为会丢、新行为放行的条目从 23 条（只按 `meaningfulText` 判）收紧到 **16 条**，其中「鉄パイプか／帰ないと／終わったら／隠し持てる」是正文，其余是同一行的碎片。**没有按字数卡** —— 一开始加了「≥4 字」，立刻被既有用例打回：韩文单音节台词（「그」，webtoon 常见）就是一行、日文也有「え」「ま」这类一字台词，按长度丢会误删真台词（`tests/background_runtime.part07.test.mjs` 钉着这条）。
+  - 新增 `background/modules/ocr-ruby.js#filterRubyAnnotationWords`，在**聚类之前**把ルビ整条丢掉（不并进正文、也不各自成气泡）。四条判据同时成立才认：①文本全假名；②比**整页同向条目的中位粗细**细（≤0.8）；③紧挨着一个更粗、且**含汉字**的邻居（间距 ≤ 自身粗细×1.6，竖排比左/右、横排比上/下）；④沿文字轴重合 ≥60%。**只看「比邻居细」会误伤** —— 邻居可能是聚类后的多列块（「それなら」对「私王来時」比值 0.55，两条都是真台词），页内中位数才是「正常字号」的判准。真实数据回放：11 条命中，逐条核对全是ルビ/ルビ碎片。
+- 换代次 v7 → **v8**（服务端返回的 `items` 内容变了，而 OCR 缓存键里只看得到用户阈值），扩展侧 `config/versions.js` 与服务端 `dependencies.py` 两侧逐字同步，两处固定字面值的测试同步。
+- 代价与取舍（写清楚）：一页多出约 1.5 条低分条目参与翻译（6 页共 9 条），换来「清晰台词不再被吞」。**误删真台词比留着ルビ严重得多**，所以ルビ判据刻意保守：拿不准就不动。
+- 已知没解决：ルビ压在汉字上导致识别分天然偏低是模型层面的问题（要根治得在 crop 阶段把ルビ切掉，风险更大）；白字黑底／贴网点的气泡仍走清理图，擦痕依旧。用户说了「太麻烦就算了」，所以到此为止，没有再动 detect/crop。
+- 验证：新增 `tests/ocr_ruby_filter.test.mjs`（8 例，夹具坐标全部取自真实整页 OCR）、`tests/ocr_recognition_floor.test.mjs`（3 例：硬下限口径 + 低分例外只放行够长的目标语言文字 + 达标条目不受影响）；`tests/overlay_style.test.mjs` 增加调试横幅与拆分后模块的断言；真实数据回放脚本留在 `tmp-cmoa/verify_ruby_real.mjs` 与 `tmp-cmoa/verify_floor_real.mjs`。
+
+
+## 2026-10-09 — 清理图「只覆盖了一部分」：±90° 被当成倾斜去旋转文字框
+
+- 用户反馈：**清理图大小不对，感觉现在是只覆盖了有翻译文字的地方**。我先把「关掉文字层只留遮罩」截了一张图：擦痕是一条条**横跨分格**的横带，竖排日文原文只被擦掉一小截、其余照旧露着 —— 横带就是线索。
+- 根因在共享几何 `rendering/cover-geometry.js#resolveCoverQuad`：`rotation_deg` 接近 ±90° 时它的语义是**竖排（文字沿竖直方向排列）**，不是「歪了」。服务端 `polygon_rotation_deg` 对高而窄的框（竖排台词的每一列都是这种框）一律给 ±90°，而文字四边形本身是轴对齐的 —— 它就是那一列的准确范围。旧代码把这种角度当倾斜处理，`rotateBoxQuad(polygonBox, ±90)` 把 96×225 的竖列转成 225×96 的横条。
+- 修复只有一处：`rotationTilted` 增加上界 `Math.abs(rotation) < RENDER_ROTATION_VERTICAL_MIN_DEG`（60°，复用渲染侧 `sanitizeRenderRotationDeg` 已有的同一常量与同一语义）。于是 ±90° 走「polygon 轴对齐就直接用它」，横排/斜排 SFX 的行为逐字不变。这一处同时修好四条路径（DOM 遮罩、清理遮罩、嵌入式画布、场景文字层）—— 它们本来就共用这一个函数。
+- 保留的例外：**没有 polygon 时** box 是文字轴几何，旋转 ±90° 恰好得到屏幕盒子，所以 `else` 分支的旋转必须留着（有测试钉住）。
+- 验证：新增 `tests/cleaned_mask_tilt.test.mjs` 两例（竖排投影产出竖长遮罩且与 `resolveCoverQuad` 同源、无 polygon 时仍旋转成竖框）；`npm run verify` 全绿。
+
+## 2026-10-09 — 纯白气泡背景不干净：实底采样的留边单位拿成了「列长」
+
+- 用户第二个要求：**纯粹的白色气泡框可以直接用 solid 而不是用清理图，清理图会导致背景不纯净**。
+- 先量清楚「为什么这些白气泡没被判成实底」：写探针直接调服务内部 `measure_solid_background_scale`，逐块打印 near/far 两道采样门的指标与阈值。真实一页 19 行里**只有 1 行**判成实底，其余全部 `region_type=effect_text`、`bg_color` 为空 → 扩展侧 `bg_type=none` → 改用清理图。
+- 根因：`detect_solid_region_for_box` 用 `line_height`（item box 的高）当 `vertical_reference` 决定上下留边。横排时它 ≈ 字高没问题；**竖排的一「行」是一整列**，实测列长 192px → near 采样区上下各外扩 0.35×192≈67px，直接越出气泡采到插画，每次都被「内部跨界离群」这道结构门拒掉。
+- 修复：新增 `solid_sampling_reference(text_polygons, scale)` —— 取每个文字框**短边**（横排 = 行高、竖排 = 字宽、斜排 = 笔画厚度）的中位数当留边单位；拿不到多边形时返回 0，调用方沿用原来的 `line_height`（所以无 polygon 的旧行为与既有测试逐字不变）。同一页实底容器从 **1 个变成 6 个**，7/19 行拿到 `speech_bubble` + `#ffffff`。
+- 仍然漏掉的那些（白底黑字贴在插画上、白字黑底气泡）不再硬调阈值，改由扩展侧**量到的**平底色兜底：`bubble-colors.js#sampleBubbleAppearance` 多返回一个 `bgCoverage`（外圈有多少像素贴着中位色），`applySampledBubbleColors` 在「服务没判出实底容器 + 环内一致率 ≥ 0.92 + 亮度 ≥ 0.72」时把 `adaptiveBackground` 升级成 `solid`。亮度门槛与服务端 `classify_solid_region_type` 的 `bright_background` 同口径；**环不够均匀就什么都不做**（平涂一块网点/渐变会把插画糊成色块，这条底线不能破）。
+- 换识别/外观判定要换代次：`OCR_GEOMETRY_VERSION` / `OCR_GEOMETRY_CONTRACT_VERSION` v6 → **v7**（实底判定与清理图都进 OCR 结果，不换的话浏览器仍读回旧的 `bg_type=none`），两侧逐字同步，两处固定字面值的测试同步更新。
+- 验证：新增 Python 两例（`solid_sampling_reference` 的短边口径；`detect_solid_region_for_box` 对竖排列传 40 而不是 300）与 `tests/bubble_colors.test.mjs` 三例（均匀亮色环升级成实底 / 不均匀或深底不升级 / 服务端已判实底的不改写）；服务重启后 `/health` 报 v7，真实整页探针复查容器数 1 → 6。
+
+## 2026-10-02（续）— 思考开关挪进配置档案，并让术语提取一起关掉
+
+- 用户两个要求：① 开关要放在**新建/编辑配置、填密钥那张卡片**里，不要挂在外面；② 问术语提取是否也该关思考。
+  两件事其实是一件事：**思考模式本来就是「这一套配置」的属性**（换服务商就得跟着换），放进配置档案条目后，
+  共用这套配置库的三个服务（翻译 / 整章术语提取 / 句子级提取）自动一起生效，不用再各配一遍。
+- 存储位置：`normalizeVendorEntry()` 保留 `thinkingMode`（`config/vendors.js`）。下发路径两条 ——
+  翻译走 `applyVendorEntry()`；两个提取小节走 `overlayVendorEntry()`（`resolveExtractionConfig()` 在
+  「跟随翻译服务」时把翻译那份带过去）。提取小节自己也有 `thinkingMode` 默认值，但指向配置条目时
+  `withVendor()` 会把它清成 `auto`——小节不再留第二份，否则「删掉配置后残留旧值」会变成静默行为差异。
+- 术语提取也要关：一句「翻译是机械任务」同样成立——提取就是「读整章、吐 JSON 数组」，
+  而且它按章跑，思考浪费的是整章级别的输出。四处调用点全部接入：
+  - 句子级提取两个入口（选中文字 / 整句）在 `term-context-extract.js`：字段进 body，回落走统一助手。
+  - 整章提取桌面版：字段算好放进 `upstream.thinking`，本地服务只转发（`models.py` 加
+    `thinking: dict`，`api_handlers.py` 只放行两个已知键，`term_extractor.py` **只**转发不自己判断参数名）。
+  - 整章提取手机版：`term-extract-llm.js` 同样从 `upstream.thinking` 取，回落走统一助手。
+- Python 侧同样带一次剥参重试：不重试的话整条整章提取会在每个分段上先失败一次，
+  用户看到的就是「术语一条都收不到」。判据与 JS 侧一致 —— 只有报错**点名**了那两个参数才剥。
+- 又踩了一次行数门禁，记在案（这已经是本项目第三次因为门禁触发抽取）：
+  - `vendor-ui.js` 加一个表单字段要 5 行，而它当时 397/400 —— 把纯函数 `nextCopyName` 抽成
+    `settings/vendor-names.js`（顺带可单测），腾出位置。
+  - `term_extractor.py` 一度到 402 —— 去掉 `_post_chunk` 辅助函数、改成 `for attempt in range(2)` 的小循环。
+- 测试：`thinking_mode.test.mjs` 里那三个「面板上控件」的用例换成「向导里有控件 + 三个调用点都接上 +
+  两条 Python 链路只转发」；`translation_vendor_wizard.test.mjs` 补「新建回默认 / 编辑回填 / 复制带走 /
+  脏值收敛」；`translation_vendors.test.mjs` 补条目字段与两条下发路径；`term_extract_llm.test.mjs`
+  补「整章提取照抄配置里的思考字段」。
+- 一次测试脚手架教训：`term_extract_llm.test.mjs` 原来只桩住网络那一步，而「剥字段重试」现在是产品代码
+  （`translation-utils.js`）。改成先 `installTranslationUtils(runtime)` 装真实实现、再用 `Object.assign`
+  覆盖网络桩 —— 不能在测试里再写一份回落逻辑，那正是会漂的东西。
+- 验证通过：Node 1617/1617，Python 157 passed / 1 skipped，ESLint 与 Pylint 干净，`npm run verify` 全绿。
+- 仍未在真机确认：用户走的是 Hono + Cloudflare Workers 中转，**中转站是否原样转发这些参数还没验过**
+  （最坏情况是退化成服务商默认，翻译与提取都不受影响）。
+
+## 2026-10-02 — 小说的输出 token 是输入的 2.2 倍：思考模式默认开着，而我们从没发过任何思考参数
+
+- 用户给出 10 条账单（输入 1,574–2,694 / 输出 1,178–11,313，合计 23,818 → 53,292 = **2.24 倍**）。
+  关键不是倍数本身，而是**输入几乎相同、输出飘 2.8 倍**（2,416→4,530 与 2,454→11,313）：
+  结构性开销（JSON 外壳、固定指令）会给出稳定的比值，飘成这样只能是"每次生成量本身在变"。
+  第 7 行 1,574→1,178（0.75 倍）是唯一形状正常的一条，也正好是输入最低、没有术语前言的一条。
+- 逻辑上的判据：提示词里装着 system 规则 + 翻译指令 + 术语表 + 前后文 + 正文，**译文只是正文那一部分的重写**，
+  输出不可能长过整条提示词。仓库自己的成本模型（`novel-batch.js` 顶部注释）算的也是"输入 ~1250 / 输出 ~600"。
+- 取到用户抓的响应体：**存在 `reasoning_tokens`**。而全仓 grep `thinking` / `enable_thinking` /
+  `reasoning_effort` / `reasoning_content` **零匹配** —— DeepSeek（`deepseek-flash` / `v4-pro`）、
+  GLM 4.5+、Qwen3.5+ 的思考模式**默认就是开的**，于是思维链一直按输出 token 计费，用户没有关掉它的手段。
+  旁证：用户在思考模式下设了 `temperature: 0`，而 DeepSeek 文档写明**思考模式忽略 temperature**（不报错、不生效）。
+- 修复：新增「思考模式」开关（设置页 → 翻译服务），`auto` / `off` / `on`，**默认 `auto` = 一个参数都不发**
+  （升级前后的请求逐字一致，不改变任何已有用户的行为）。
+  - `shared/thinking-mode.js` 是唯一定义处：按服务商选 `thinking:{type}`（DeepSeek/GLM/火山）或
+    `enable_thinking`（千问/Ollama）；**认不准的一律两种都发** —— 中转站（one-api / new-api 这类）看不出背后挂的是哪家，
+    而这恰恰是自建小说翻译最常见的接法。
+  - 被拒时**只剥掉被拒的那一组**重发：`translation-utils.js#sendTranslationBodyWithFallbacks`。
+    两组合成一个信号的话，服务商不支持 `json_object` 时会连用户的「关闭思考」一起丢掉，那条设置就永远不生效。
+    端点被拒过一次就记下来，后续请求直接不发 —— 被拒的请求没有输出、不计费，但白等一个来回的延迟是实打实的。
+  - 三条翻译链路（小说整章 / 排版对齐 / canonical 批次）统一走这个助手，不再各抄一份回落。
+  - 本地服务的流式链路（`translation_stream.py`）**不自己判断参数名**，只转发扩展侧算好的字段；
+    上游不认时剥掉重发一次（不重试的话整条流式链路会在每个批次上先失败一次，白白退到渐进小批）。
+- **它不进任何缓存键**（小说块缓存键与 canonical 指纹里都没有）：思考模式只影响模型怎么想，不影响给定输入该产出什么译文，
+  所以来回切开关不会让已经翻好的内容重新计费。
+- 一次踩坑记在案：`configure.js#requestCanonicalTranslationBatch` 那个接缝一开始被我加上了
+  `runtime.buildOpenAICompatibleEndpoint` + `runtime.thinkingRequestFields` 两个运行时依赖，
+  `architecture_contracts.test.mjs` 的"最小 runtime"用例当场报 `not a function`。
+  改成在接缝里调**纯函数** `thinkingMode.thinkingBodyFields(...)`、端点记忆下沉到回落助手里，接缝回到"只读配置 + 转交"。
+- 测试：新增 `tests/thinking_mode.test.mjs`（15 例：取值收敛、按服务商选参数名、三组回落路径、限流不误记端点、
+  剥字段不改原对象、三条链路都带上了、开关不进缓存键、设置页选中即保存 / 失败回退）。
+- 用户环境上还有一件没处理的事：请求走的是 Hono + Cloudflare Workers 的中转网关，
+  **中转站会不会原样转发这个参数还没在真机上确认过**（已实现"被拒就剥掉重发"，最坏是退化成服务商默认）。
+- 验证通过：Node 1611/1611，Python 157 passed / 1 skipped，ESLint 与 Pylint 干净，
+  桌面版与手机版构建成功，`npm run verify` 全绿。
+
+## 2026-09-30（续 3）— 第二行没遮罩：接缝只读到一行、页级读到两行，而我把"按四边形裁"写成了硬规则
+
+- 用户反馈（重载后）：那句「在你准备好房间的时候」上方一行有遮罩、**下方一行没有**。
+- 真机取证（这次是**一次连接、之后复用**的 watcher 探针；Chrome 的远程调试服务器每个新客户端都要授权一次，反复连就是反复弹窗 —— 教训记在案）：
+  - 该句由跨页 overlay 渲染；遮罩段节点 `::before` 的 `background: #ffffff` 正常、`clip-path` = `polygon(3.61% 13.72%, 99.55% 13.72%, 99.55% 54.25%, 3.61% 54.25%)` —— **只盖住目标框上面约 40% 的一条带**。
+  - canonical 的几何：文字页有**两条** span —— 接缝 span（`textBox` = 自然坐标 y 30..90 = 只有第一行）与页级 span（`box` = y 10..157 = 两行都在）；`page_cover_boxes` 是两者的**并集**（两行 ✓），但 `bubble.polygon` 来自接缝观测 = **只有第一行**。
+  - 于是"按 `bubble.polygon` 裁"= 用第一行的四边形去裁两行的框 → 第二行被裁掉。把 DOM 的 clip 反算回自然坐标，正好等于接缝那一行的范围（30..90），与推断完全吻合。
+- 根因：上一轮我把 `applyCoverSegmentTilt` 的 `mustClip`（实底遮罩"无条件按四边形裁"）当成硬规则，而**裁剪的原始设计意图只服务「斜排原文」**：轴对齐文字的覆盖区域本来就等于这一页 OCR 给的框，再按一个更小的四边形裁只会砍掉同一气泡的其它行。同一轮修的坐标平移让 clip 第一次真的生效，于是这个隐患当场暴露。
+- 修复（`crosspage-cover.js`）：重新只按 `geometry.coverTilted`（斜排）裁剪；实底遮罩一律画 `page_cover_boxes` 里这一页的段矩形整块（有采样色就画，没采到色才透明）；保留上一轮的坐标平移（斜排裁剪是真的生效了，而不是"没裁"）。`mustClip` 参数删除。
+- 测试：`cross_page_overlay_dom.test.mjs` 改写实底用例（轴对齐 + 四边形只覆盖一行 → **整块矩形上色、不裁剪**）+ 把坐标平移用例改成斜排（`coverTilted: true`）才有意义；`overlay_style.test.mjs` 锁"裁剪只服务斜排"（断言 `if (!quad || !geometry.coverTilted)` 且不得再出现 `mustClip`）。
+- 通用教训：**"裁剪"是形状提示，不是覆盖范围的来源** —— 覆盖范围必须来自"这一页全部证据的并集"（`page_cover_boxes`），形状只能在它与证据一致时用来修剪边缘；把提示升格成硬规则就会拿局部证据砍掉整体。
+
+## 2026-09-30（续 2）— 真机连上看清了：跨页遮罩的裁剪是两套坐标系，加上我上一条"缺轮廓就透明"把原文漏了出来
+
+- 用户反馈：那句「在你准备好房间的时候」（原文 `네가 머물방을 준비할 동안`，`lezhin.com/ko/comic/gods_will/5`）现在**完全没有遮罩**，原文裸露。
+- 这次直接连上真机看（Chrome 154 的远程调试服务器 + `DevToolsActivePort` 里的 WS 端点；注意：**每建一个 CDP 客户端都会弹一次授权**，用户被弹了好几次 —— 排查时应合并成一次连接，别反复连）：
+  - 该句由**跨页 overlay** 渲染（`canonical_be3e6b94…` 被 seam surface 接管，两页的页级投影都是空数组），所以遮罩来自 `crosspage-cover.js`，不是页级 `::before`。
+  - 实测那个 `.mt-cover-segment`（在文字所在页）：`background: rgba(0,0,0,0) none`、`background-image: none`、`clip-path: none`、`data-cover-tilted="false"` —— 就是"没有遮罩"。
+  - 气泡数据齐全：seam 观测 `bgType: "solid"`、`bgColor: "#ffffff"`、`polygon`（文字四边形）、`regionPolygon`（气泡轮廓，y 36.84%→100% 跨过分页线）都在，**不是**"没颜色/没轮廓"。
+  - span 级新契约在真机上生效：上一页 `hasTextPixels: false`（textBox/fillBox 都是 null）、文字页 `true` ✓，且该页 `page_cover_boxes` 只剩文字页 ✓。
+- 根因（两条）：
+  1. **坐标系不一致（老 bug，被这次放大）**：`mapCompositePointToRoot` 返回 **root 坐标**，而 `updateCoverSegments` 传进 `applyCoverSegmentTilt` 的节点矩形是**覆盖层局部坐标**（相差覆盖层原点 max(0, outer.left/top)；现场 root≈3570 vs 局部 0~82）。于是映射点与节点矩形**永远不相交** → `clip-path` 恒为空：**斜排跨页遮罩从来没真正裁过**（`crosspage_cover_tilt` 的用例用的是恒等映射，所以一直没抓到）；实底遮罩则被我上一轮的新规则判成"裁不出来"。
+  2. **我上一轮的口径太硬**：`solidColor && solidOutline && clipped` → 缺任一条就 `transparent`。「缺轮廓就透明」在跨页这条路上是错的方向：段矩形本来就从 `page_cover_boxes` 按页映射出来，不会串页，把它置透明只会让原文裸露。
+- 修复：
+  - `crosspage-cover.js`：`applyCoverSegmentTilt` 增加 `context.offsetX/offsetY`（= `max(0, geometry.outer.left/top)`），映射点先平移到覆盖层局部坐标再与段矩形求交；`updateCoverSegments` 传入该偏移。
+  - 口径统一为一条：**量到颜色就必须遮住原文，形状尽力而为** —— DOM 侧（`lifecycle-bubble`）、跨页段（`crosspage-cover`）、嵌入式画布（`renderer-embed`）三处一致；只有**没采到采样色**时才透明（`.mt-fill-unbounded` / `background: transparent`），形状拿不到轮廓就退回本页自己的盒/段矩形。
+- 测试：`cross_page_overlay_dom.test.mjs` 的实底用例改写（没颜色→透明、有颜色无轮廓→按本页段矩形上色、有颜色有轮廓→裁剪上色、缺坐标映射→仍上色），并**新增**「必须先平移到覆盖层局部坐标」正反两例；`overlay_tilt.test.mjs`、`overlay_style.test.mjs` 同步新口径与坐标系断言。
+- 尚未处理（记一笔）：同一句在库里是**两条 canonical**（`canonical_f42c4ade…` 与 `canonical_be3e6b94…`，几何几乎相同）—— 这很可能就是"两个蓝框"的来源之一，值得单独查。
+- 通用教训：**跨模块传递坐标必须写清坐标系**（`*ToRoot` / 局部），否则 clip 这类"求交集"的逻辑会安静地恒空；以及**"宁可透明"只适用于"画出来一定是错的"情形**，形状不完美不等于该放弃遮盖。
+
+## 2026-09-30（续）— 那个「大的蓝框」：空壳 span 也进了文字框与遮罩框
+
+- 用户追问（口径正确）：设计上只有遮罩层（= 最终文字并集 + 覆盖范围外扩一点点）与译文层（文字并集内自适应），**为什么会出现一个大的蓝框**。
+- 取证：
+  1. 小蓝框 = 页级 OCR 的最终文字并集（`ocr-display-geometry.js#buildLocalPaddleDisplayBox` 注释："蓝框只围绕最终文字并集保留小幅留边；气泡区域只用于边界约束和背景判断"）。
+  2. 大蓝框 = **跨页 overlay 自己的外框**：`scene-crosspage.js:239` `outer = unionRects([...coverSegments, textBounds])`，蓝边来自 `styles.css:56` 的 `.mt-cross-page-debug::after`（`renderer-crosspage.js:142` 加类）。它必须同时装下「每一页的遮罩段」+「一个文字层」，所以只要上一页也有一条遮罩段，它就跨两页。
+  3. 上一页那条遮罩段的来路：`seam-handling.js#describeSeamOcrCandidate` 的 `visualCrossesBoundary`（**容器**跨边界 + 文字离边界不超过边缘窗口即算跨缝）让"文字全在下一页"的候选活了下来；`observation-results.js:226-233` 随后**故意**把这一页贡献扩成整个视觉容器（注释：页面贡献必须覆盖完整视觉容器，双页渲染面必需）。
+  4. 于是 `canonicalSeamPageBoxes` 的 `textBox || … || span.box` 兜底把空壳 span 也算进**文字框**（`projection-utils.js:37`），`cover` 同样带上它 —— 文字框被撑高、译文跟着偏移，遮罩段与调试外框一起跨页。
+- 修复（生产端显式声明 + 消费端只认显式 false）：
+  - `background/modules/observation-results.js`：span visual 新增 `hasTextPixels = Boolean(textBoxOnPage || polygonOnPage)`（文字框与文字四边形任一落在本页即算有文字；只在配置了 pageSpans 的分支写，普通页请求不写）。
+  - `canonical/reconciler-modules/reconciler-observation.js#normalizePageSpan`：三值透传（缺字段 → `null`，**不塌成 false**）。该字段不进 `observationIdentityPayload`，观测 id / canonical revision / 译文缓存键全部不变。
+  - `canonical/modules/projection-utils.js#canonicalSeamPageBoxes`：`hasTextPixels === false` 的 span 同时不进 `text` 与 `cover` —— 后者是 `buildCleanedArtifactProjectionPlan` 的清理掩膜来源，遮盖与擦除必须同进同退；并已核对 seam 擦除掩膜取的是文字/蓝框级并集（`buildSeamSurfaceBubble` 的 `box` 来自 `structuralBox || witnessBox`，两者都基于文字框），所以撤掉遮盖不会露出涂抹痕迹。
+  - `canonical/reconciler-modules/reconciler-projection-utils.js#pageCoverIsEligible`：**整页几何都被显式声明 false** 时不发 cover 投影（连带挡住 standby 补遮罩与该页清理掩膜）；未声明的一律按"可能有文字"处理 —— 这正是上次直接回退的那条闸门踩过的坑。
+- 测试：`seam_cut_line_evidence.test.mjs` +1（合成"容器跨缝、文字全在下片"的现场，断言上一页 `textBox: null` + `hasTextPixels: false`、下一页 true、普通页请求不带该字段）；`canonical_render_plan.test.mjs` +1（该页不进 text/cover，也不再要清理掩膜；带**对照组**证明不是"恰好落在捕获带内"）；`kakao_reconciler.part03.test.mjs` +2（三值契约、只有显式 false 才收窄 + 混合几何必须保守）；`cross_page_overlay_dom.test.mjs` +1（收窄后 overlay 只剩一个遮罩段、外框不再跨到上一页）。定向 144 例全绿。
+- 通用教训：**「空壳几何」必须在生产端打标，不能指望下游从几何反推** —— `textBox` 在归一化时被抹成 null，"确实没有"与"没记录"从此分不开（上次硬猜直接打掉正常遮罩）；以及 **`x || y || z` 式的兜底取值会把"没有"当成"有"**，跨页文字框就是这么被撑大的。
+
+## 2026-09-30 — 跨页实底气泡遮罩溢出：纯色补丁按包围盒画在上一页 + 没采样色时兜底纯白
+
+- 用户反馈（lezhin 页；`lezhin.com` 不在 `site-hints` 名单里，走通用 canonical 链路）：某个跨页气泡（气泡框跨分页线、**文字像素全在下一页**）在**上一页**顶部长出一条明显白色实底长条；同一处调试框显示文字框被撑大，白条是直角、不贴合弧形气泡轮廓。
+- 取证（读码定位，三条路径同一处缺陷）：
+  1. **逐页 DOM 覆盖层**：`lifecycle-cover.js#buildBubbleCoverProjection` 把 `region_polygon` 清成 `null` → `lifecycle-bubble.js` 写不出 `--mt-region-clip` → `.mt-bg-solid::before` 用 `clip-path: inset(0)` 铺满 `x/y/w/h` 包围盒。跨页气泡在上一页的几何恰好只剩矩形（`region_polygon` 是唯一还在的轮廓，文字四边形不与这一页画布相交）。
+  2. **跨页（接缝）遮罩段**：`crosspage-cover.js` 对 `bg_type=solid` 直接 `background = bg_color || "rgba(255,255,255,.96)"`，且只有斜排（`coverTilted`）才加 clip-path —— 轴对齐实底永远是**矩形**，没采到色时就是**纯白**。
+  3. 嵌入式画布 `renderer-embed.js` 同型：无轮廓时照画 `fillBox` 矩形、`bg_color || "#ffffff"`。
+- 修复（渲染层，一个口径：**轮廓 + 采样色缺一不可，缺了保持透明**）：
+  - `rendering/cover-geometry.js` 新增 `resolveSolidFillOutline(source)`：容器轮廓 `region_polygon` 优先、文字四边形 `polygon` 兜底，拿不到返回 `null`（三条路径共用这一处定义）。
+  - `lifecycle-cover.js`：覆盖投影**保留** `region_polygon`（`fill_box` 仍清空，避免与背景估计求并集把盒子撑大）。
+  - `lifecycle-bubble.js`：实底填充统一按轮廓写 `--mt-region-clip`；无轮廓或无 `#rrggbb` 采样色时加 `.mt-fill-unbounded`（`styles.css` 关掉 `::before` 与 `.mt-fill-tilted`）→ 透明；顺带删掉"横排 ≤2° 才写 clip"的第二条路径。
+  - `crosspage-cover.js`：实底遮罩段要求轮廓非空 + 采样色，并**无条件**按映射后的四边形裁剪（`applyCoverSegmentTilt(..., { mustClip })` 返回是否裁成功）；缺任一条 → `background: transparent`，纯白兜底删除。
+  - `renderer-embed.js`：画布实底同样要求轮廓 + 采样色，否则一个像素都不画。
+- 测试：`overlay_tilt.test.mjs` +4（DOM 轮廓/颜色缺一不可、容器轮廓优先、覆盖投影保留轮廓、画布实底不画）；`cross_page_overlay_dom.test.mjs` +1（跨页实底四种组合）；`overlay_style.test.mjs` 锁住"覆盖投影不得再清空 `region_polygon`"与新类名。全量 `npm run verify` 通过（Node 1589、Python 157+1 skipped、行数门禁、ESLint、构建）。
+- 未做（有意）：曾给 `reconciler-projection-utils.js#pageCoverIsEligible` 加「这一页没有文字像素就不发 cover」的闸门，但 `normalizePageSpan` 会把**所有** span 归一成 `textBox: null`，无法区分「没记」与「确实没有」，实测直接打掉正常的跨页 duplicate cover（`kakao_reconciler.part03` 立刻红）→ 回退。渲染层修好后这类 cover 已被裁剪 + 同色，不再产生可见白条。
+- 通用教训：**「没数据」与「数据为空」必须在契约层面分清**（`region_polygon` 被当成"没有"清掉，恰好清掉了唯一可信轮廓）；**兜底纯色永远比透明更糟** —— `.mt-bg-none` 早就写明"绝不画纯色补丁"，实底路径漏了同一条规矩。
+
 ## 2026-09-25（续 4）— 手机版点译文段落跳「找不到文件」：桌面专属回退撞上无拦截的旧包，装配期整段取消
 
 - 用户反馈：**手机上点击某个已翻译的段落 → 跳到「未找到文件」界面**。用户明确口径：**取消这个行为，不是给手机版补 sidepanel**。

@@ -271,6 +271,8 @@ export function installObservationResults(runtime) {
           y: runtime.quantizeObservationNumber((entry.pageBox.top + (runtime.clamp(point.y, entry.canvasBox.top, entry.canvasBox.top + entry.canvasBox.height) - entry.canvasBox.top) * scaleY) / entry.pageHeight * 100, 0.01)
         }));
       };
+      const textBoxOnPage = mapBoxToPage(textBox);
+      const polygonOnPage = mapPolygonToPage(candidate && candidate.polygon);
       spans.push({
         pageId: entry.pageId,
         box: {
@@ -281,10 +283,17 @@ export function installObservationResults(runtime) {
         },
         polygon: null,
         visual: {
-          textBox: mapBoxToPage(textBox),
+          textBox: textBoxOnPage,
           fillBox: mapBoxToPage(runtime.percentBoxToObservationPixelBox(candidate && candidate.fill_box, imageSize)),
-          polygon: mapPolygonToPage(candidate && candidate.polygon),
-          regionPolygon: mapPolygonToPage(candidate && candidate.region_polygon)
+          polygon: polygonOnPage,
+          regionPolygon: mapPolygonToPage(candidate && candidate.region_polygon),
+          // 这一页到底有没有「文字像素」：跨页气泡可能只有背景轮廓越过分页线、
+          // 文字像素全落在另一页（见上面的 rawBox 并集），此时这一页的贡献只是
+          // 一个空壳。canonical 层据此不给这一页发遮罩/投影 —— 但它在
+          // normalizePageSpan 里会被归一成 textBox: null，与「没记文字框」无法区分，
+          // 所以必须在这里显式声明。文字框与文字四边形任一落在本页即算有文字
+          // （比只看 textBox 保守，不会因为 clamp/容差把真文字判掉）。
+          hasTextPixels: Boolean(textBoxOnPage || polygonOnPage)
         },
         overlapRatio: runtime.quantizeObservationNumber(intersection.width * intersection.height / Math.max(1, rawBox.width * rawBox.height), 0.001)
       });

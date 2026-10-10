@@ -21,6 +21,14 @@ export function installProjectionUtils(runtime) {
       if (!observation) continue;
       for (const span of Array.isArray(observation?.pageSpans) ? observation.pageSpans : []) {
         const pageId = String(span?.pageId || "");
+        // 这一页没有文字像素（生产者显式声明）：整条跳过 —— 既不进文字框，也不进遮罩框。
+        // 跨页气泡的背景轮廓越过分页线、文字像素全在另一页时，这一页的 span 只是个
+        // 容器空壳：给它发遮罩就是把平色/补丁画在没有原文的地方（用户现场：上一页
+        // 顶部长出白色实底、跨页 overlay 的外框被撑到两页），把它算进文字框还会把
+        // 译文框整体撑高、译文跟着偏移。
+        // cover 同时是 buildCleanedArtifactProjectionPlan 的清理掩膜来源，两边必须一起
+        // 收窄，否则会出现「清理计划认为要擦、渲染却不画遮罩」的分叉。
+        if (span?.visual?.hasTextPixels === false) continue;
         const segment = segmentByPage.get(pageId);
         const width = Number(segment?.naturalWidth) || 0;
         const height = Number(segment?.naturalHeight) || 0;

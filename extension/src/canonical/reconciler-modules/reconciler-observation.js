@@ -208,7 +208,12 @@ export function installReconcilerObservation(runtime) {
         textBox: spanVisual.textBox ? runtime.normalizeBox(spanVisual.textBox) : null,
         fillBox: spanVisual.fillBox ? runtime.normalizeBox(spanVisual.fillBox) : null,
         polygon: runtime.normalizePolygon(spanVisual.polygon),
-        regionPolygon: runtime.normalizePolygon(spanVisual.regionPolygon)
+        regionPolygon: runtime.normalizePolygon(spanVisual.regionPolygon),
+        // 「这一页有没有文字像素」的三值：true/false 只由生产者（跨页几何映射）显式给出，
+        // 其余一律 null = 未声明。注意 textBox 在这里会被归一成 null，因此
+        // 「确实没有文字」与「没记文字框」只能靠这个字段区分 —— 消费端只认显式 false。
+        hasTextPixels: spanVisual.hasTextPixels === true ? true :
+          spanVisual.hasTextPixels === false ? false : null
       },
       overlapRatio: runtime.roundTo(runtime.clamp(span?.overlapRatio, 0, 1)),
       coordinateSpace: String(span?.coordinateSpace || span?.box?.coordinateSpace || "auto"),

@@ -310,3 +310,64 @@ test("对照：把左右两半当成两次独立证据（修复前的挂载口�
   const upperRight = Math.max(...merged.geometryByPage[UPPER].map(row => Number(row.box.left ?? row.box.x) + Number(row.box.width ?? row.box.w)));
   assert.ok(upperRight < 80, `独立证据下上片只该盖到左半，实际盖到 ${upperLeft}~${upperRight}%`);
 });
+
+/**
+ * 「气泡轮廓越过分页线、文字像素全在下一页」的现场（用户缺陷：上一页顶部长出一条白色实底）。
+ *
+ * 接缝复合图把气泡整体读成一个实底 speech_bubble：容器跨过边界，文字框只在下一片，
+ * 且离边界不超过边缘窗口 → `describeSeamOcrCandidate` 的 visualCrossesBoundary 判它跨缝、
+ * 于是 `buildObservationPageSpans` 会把这一页的贡献扩成**整个视觉容器**（建立双页渲染面
+ * 所必需）。代价是上一页拿到一个没有文字的空壳 span —— 这里必须显式声明
+ * `hasTextPixels: false`，canonical 层才不会给上一页发遮罩/投影。
+ */
+test("跨页气泡：文字像素不在上一页时，span 显式声明没有文字像素", () => {
+  const background = context.__backgroundTest;
+  const toPercentBox = box => ({
+    x: box.left / IMAGE_SIZE.width * 100,
+    y: box.top / IMAGE_SIZE.height * 100,
+    w: box.width / IMAGE_SIZE.width * 100,
+    h: box.height / IMAGE_SIZE.height * 100
+  });
+  const toPercentPolygon = box => [
+    { x: box.left / IMAGE_SIZE.width * 100, y: box.top / IMAGE_SIZE.height * 100 },
+    { x: (box.left + box.width) / IMAGE_SIZE.width * 100, y: box.top / IMAGE_SIZE.height * 100 },
+    { x: (box.left + box.width) / IMAGE_SIZE.width * 100, y: (box.top + box.height) / IMAGE_SIZE.height * 100 },
+    { x: box.left / IMAGE_SIZE.width * 100, y: (box.top + box.height) / IMAGE_SIZE.height * 100 }
+  ];
+  // 文字框整体落在下片（96~192），且离边界不超过边缘窗口；容器（44~182）跨过边界。
+  const textBox = { left: 256.4, top: 110, width: 385.2, height: 60 };
+  const regionBox = { left: 236, top: 44, width: 420, height: 138 };
+  const candidate = {
+    original_text: "지오의 초상화",
+    confidence: 0.99,
+    bg_type: "solid",
+    bg_color: "#ffffff",
+    region_id: "region-seam-1",
+    region_type: "speech_bubble",
+    rotation_deg: 0,
+    rawBox: textBox,
+    ...toPercentBox(textBox),
+    polygon: toPercentPolygon(textBox),
+    fill_box: toPercentBox(regionBox),
+    region_polygon: toPercentPolygon(regionBox)
+  };
+
+  const spans = background.buildObservationPageSpans(REQUEST, candidate, IMAGE_SIZE);
+  assert.equal(spans.length, 2);
+  const upperSpan = spans.find(span => span.pageId === UPPER);
+  const lowerSpan = spans.find(span => span.pageId === LOWER);
+  assert.ok(upperSpan.box.h > 0, "上一页仍需保留容器切片（双页渲染面靠它建立）");
+  assert.equal(upperSpan.visual.textBox, null, "文字框与上一页画布不相交");
+  assert.equal(upperSpan.visual.hasTextPixels, false, "上一页没有文字像素：必须显式声明");
+  assert.ok(upperSpan.visual.fillBox, "容器切片照发（只声明「没有文字」，不删几何）");
+  assert.equal(lowerSpan.visual.hasTextPixels, true);
+  assert.ok(lowerSpan.visual.textBox, "文字所在页必须有文字框");
+
+  // 普通页请求没有 pageSpans 元数据：整条 span 不带 visual（= 未声明），消费端不得据此收窄。
+  const pageSpans = background.buildObservationPageSpans({
+    sourceType: "page",
+    pageIds: [LOWER],
+    imageMeta: { sourceType: "page" }
+  }, candidate, IMAGE_SIZE);
+  assert.equal(pageSpans[0].visual, undefined);
+});

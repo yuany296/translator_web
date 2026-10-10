@@ -499,6 +499,74 @@ test("seam-only secondary geometry does not paint an orphan page cover", () => {
   assert.equal(upperProjections[0].coverEligible, false);
   assert.equal(projections.find(projection => projection.pageId === "lower").role, "primary");
 });
+test("span 级「有没有文字像素」是三值契约：只有显式 false 才允许收窄", () => {
+  const makeObservation = upperVisual => R.createObservation({
+    provider: "fixture-ocr",
+    captureId: `span-flag:${JSON.stringify(upperVisual)}`,
+    sourceType: "seam",
+    pageIds: ["a", "b"],
+    imageRevisionByPage: { a: "rev-a", b: "rev-b" },
+    pageSpans: [{
+      pageId: "a", box: { x: 20, y: 90, w: 60, h: 10 }, coordinateSpace: "percent", regionType: "dialogue", visual: upperVisual
+    }, {
+      pageId: "b", box: { x: 20, y: 0, w: 60, h: 10 }, coordinateSpace: "percent", regionType: "dialogue", visual: { hasTextPixels: true }
+    }],
+    originalText: "문장",
+    confidence: 0.9,
+    visual: { bgType: "none" }
+  });
+  // textBox 会被归一成 null，「确实没有文字」与「没记文字框」只能靠这个字段区分 —— 三值缺一不可。
+  assert.equal(makeObservation({}).pageSpans[0].visual.hasTextPixels, null, "未声明必须是 null，不能塌成 false");
+  assert.equal(makeObservation({ hasTextPixels: false }).pageSpans[0].visual.hasTextPixels, false);
+  assert.equal(makeObservation({ hasTextPixels: true }).pageSpans[0].visual.hasTextPixels, true);
+});
+
+test("只有显式声明没有文字像素的页才不发 cover 投影（未声明一律不动）", () => {
+  const upper = page("upper", 0);
+  const lower = page("lower", 1);
+  const geometry = upperSpanVisual => ({
+    id: `canonical-span-flag:${JSON.stringify(upperSpanVisual)}`,
+    revision: 1,
+    originalText: "complete dialogue",
+    geometryByPage: {
+      upper: [{
+        observationId: "span-upper", sourceType: "seam", confidence: 0.9,
+        box: { x: 28, y: 93, w: 44, h: 7 }, coordinateSpace: "percent",
+        spanVisual: upperSpanVisual, visual: { bgType: "none" }
+      }],
+      lower: [{
+        observationId: "span-lower", sourceType: "seam", confidence: 0.9,
+        box: { x: 29, y: 0, w: 43, h: 20 }, coordinateSpace: "percent",
+        spanVisual: { textBox: { x: 29, y: 0, w: 43, h: 20 }, hasTextPixels: true }, visual: { bgType: "none" }
+      }]
+    }
+  });
+  const projectionsFor = canonical => R.buildRenderProjections({
+    pages: [upper, lower], canonicals: [canonical],
+    translations: { [`${canonical.id}@1`]: "完整译文" }
+  }).filter(projection => projection.pageId === "upper");
+
+  const narrowed = projectionsFor(geometry({ textBox: null, hasTextPixels: false }));
+  assert.deepEqual(narrowed.map(projection => projection.role), ["standby"],
+    "上一页没有文字像素 → 不画实底 cover（它只会落在空白处）");
+  assert.equal(narrowed[0].coverEligible, false);
+
+  // 未声明（普通页 OCR / 旧观测 / stitch）一律按「可能有文字」处理：老行为原样。
+  assert.ok(projectionsFor(geometry({})).some(projection => projection.role === "cover"),
+    "未声明时不得收窄");
+  // 同页只要还有一条未被声明的几何，也不能收窄 —— 拿不准就多画一块，不能把正常遮罩打掉。
+  const mixed = geometry({ textBox: null, hasTextPixels: false });
+  mixed.geometryByPage = {
+    ...mixed.geometryByPage,
+    upper: [...mixed.geometryByPage.upper, {
+      observationId: "page-upper", sourceType: "page", confidence: 0.95,
+      box: { x: 28, y: 93, w: 44, h: 7 }, coordinateSpace: "percent", visual: { bgType: "none" }
+    }]
+  };
+  assert.ok(projectionsFor(mixed).some(projection => projection.role === "cover"),
+    "同页还有未声明几何时必须保守处理");
+});
+
 test("projection area ties select the earlier reading-order page", () => {
   const pages = [page("a", 0), page("b", 1)];
   const projections = R.buildRenderProjections({

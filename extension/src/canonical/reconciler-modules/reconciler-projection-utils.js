@@ -1,6 +1,35 @@
 export function installReconcilerProjectionUtils(runtime) {
+  /**
+   * 这一页的几何是不是**全都**显式声明了「没有文字像素」。
+   *
+   * 跨页气泡的背景轮廓越过分页线、文字像素全在另一页时，生产者会在 span 上写
+   * `hasTextPixels: false`（background/modules/observation-results.js）。这种页上的
+   * cover 只会落在没有原文的地方（用户现场：上一页顶部长出一条白色实底）。
+   *
+   * 收窄条件刻意严格：**每一条**几何都必须显式声明 false。`true` 与「没这个字段」
+   * （普通页 OCR、旧观测、stitch、fallback 几何）一律按「可能有文字」处理 ——
+   * canonical 层分不出「确实没有文字」与「没记文字框」（textBox 被归一成 null），
+   * 靠猜会把正常的跨页 duplicate cover 一起打掉。
+   */
+  function pageCoverHasNoTextEvidence(geometries) {
+    const values = Array.isArray(geometries) ? geometries : [];
+    let declaredNoText = false;
+    for (const geometry of values) {
+      if (!geometry) continue;
+      const spanVisual = geometry.spanVisual;
+      const declared = spanVisual && typeof spanVisual === "object" ? spanVisual.hasTextPixels : null;
+      if (declared === false) {
+        declaredNoText = true;
+        continue;
+      }
+      return false;
+    }
+    return declaredNoText;
+  }
+  runtime.pageCoverHasNoTextEvidence = pageCoverHasNoTextEvidence;
   function pageCoverIsEligible(geometries) {
     const values = Array.isArray(geometries) ? geometries : [];
+    if (pageCoverHasNoTextEvidence(values)) return false;
     if (values.some(geometry => geometry && geometry.sourceType !== "seam")) return true;
     const evidence = runtime.chooseProjectionEvidence(values);
     const visual = evidence && evidence.visual && typeof evidence.visual === "object" ? evidence.visual : {};

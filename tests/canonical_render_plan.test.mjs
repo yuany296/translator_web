@@ -602,6 +602,54 @@ test("projection plan removes only explicitly absorbed canonical ids", () => {
   assert.deepEqual(calls, [["retired-fragment", "whole"]]);
 });
 
+/**
+ * 「气泡轮廓越过分页线、文字像素全在下一页」：上一页的 span 只带 `hasTextPixels: false`
+ * 声明（生产者给的，见 background/modules/observation-results.js）。这种 span 不该进文字框、
+ * 也不该进遮罩框 —— 后者同时是 buildCleanedArtifactProjectionPlan 的清理掩膜来源。
+ * 对照组（同一几何、去掉声明）用来证明第一条不是因为盒子恰好落在捕获带内。
+ */
+test("上一页没有文字像素时：该页不进文字框/遮罩框，也不再为它要清理掩膜", () => {
+  const segments = [
+    { pageId: "a", sourceCrop: { x: 0, y: 900, w: 1000, h: 100 }, naturalWidth: 1000, naturalHeight: 1000 },
+    { pageId: "b", sourceCrop: { x: 0, y: 0, w: 1000, h: 100 }, naturalWidth: 1000, naturalHeight: 1000 }
+  ];
+  const buildSurface = upperHasTextPixels => {
+    const observations = new Map([["seam", {
+      id: "seam", sourceType: "seam", originalText: "진짜로!",
+      visual: { box: { x: 20, y: 40, w: 60, h: 30 }, bgType: "none" },
+      pageSpans: [{
+        pageId: "a", box: { x: 20, y: 88, w: 60, h: 8 },
+        visual: {
+          textBox: null, fillBox: { x: 20, y: 88, w: 60, h: 8 },
+          ...(upperHasTextPixels === undefined ? {} : { hasTextPixels: upperHasTextPixels })
+        }
+      }, {
+        pageId: "b", box: { x: 20, y: 0, w: 60, h: 16 },
+        visual: {
+          textBox: { x: 20, y: 0, w: 60, h: 16 }, fillBox: { x: 20, y: 0, w: 60, h: 16 },
+          hasTextPixels: true
+        }
+      }]
+    }]]);
+    const canonical = { id: "whole", revision: 1, originalText: "진짜로!", memberObservationIds: ["seam"] };
+    const bubble = P.buildSeamSurfaceBubble(canonical, { translated_text: "真的" },
+      [observations.get("seam")], 1000, 200, observations, segments);
+    return { bubble, index: { surfaces: [{ pageIds: ["a", "b"], segments, bubbles: [bubble] }] } };
+  };
+
+  const narrowed = buildSurface(false);
+  assert.deepEqual(narrowed.bubble.page_text_boxes.map(item => item.pageId), ["b"]);
+  assert.deepEqual(narrowed.bubble.page_cover_boxes.map(item => item.pageId), ["b"]);
+  const plan = P.buildCleanedArtifactProjectionPlan(new Map(), narrowed.index);
+  assert.equal(plan.has("a"), false, "不给没有文字像素的那一页要清理掩膜");
+
+  const control = buildSurface(undefined);
+  assert.deepEqual(control.bubble.page_cover_boxes.map(item => item.pageId), ["a", "b"],
+    "未声明（普通页 OCR / 旧观测）时不得收窄");
+  assert.ok(P.buildCleanedArtifactProjectionPlan(new Map(), control.index).has("a"),
+    "上一页的遮罩框确实落在捕获带之外 —— 对照组证明收窄真的起了作用");
+});
+
 test("cleaned artifact plan requests only page cover boxes outside the seam capture", () => {
   const index = {
     surfaces: [{

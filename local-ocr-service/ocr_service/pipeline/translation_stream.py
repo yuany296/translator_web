@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +15,14 @@ from term_extractor import _is_local_url
 
 MAX_MODEL_LINE = 256 * 1024
 HEARTBEAT_SECONDS = 15.0
+
+# 报错点名了思考参数才算「上游不认它」：限流、鉴权这类 4xx 不能让我们把用户的设置悄悄改掉。
+# 与扩展侧 translation-utils.js#shouldRetryWithoutThinkingFields 同一口径。
+_THINKING_FIELD_RE = re.compile(r"enable_thinking|reasoning_effort|thinking", re.IGNORECASE)
+
+
+class _UpstreamRejected(RuntimeError):
+    """上游 4xx：带原文，供调用方判断是不是「思考参数不被接受」，据此决定要不要剥掉重发。"""
 
 # 对话引号是内容不是格式。流式 NDJSON 下模型最容易把引号当格式吞掉，
 # 一旦丢了，扩展侧只能按"原文整段被引号包住"这一种情形做确定性兜底，
@@ -110,6 +119,32 @@ def _prompt(payload: runtime.TranslationStreamPayload) -> str:
     ])
 
 
+async def _stream_upstream(
+    client: httpx.AsyncClient, url: str, request_body: dict[str, Any], headers: dict[str, str],
+) -> AsyncIterator[str]:
+    """发一次上游流式请求，只吐出 content 增量；4xx 抛 _UpstreamRejected 带上原文。
+
+    拆出来是为了「思考参数被拒 → 剥掉重发一次」，见 _openai_content_chunks。
+    """
+    async with client.stream("POST", url, json=request_body, headers=headers) as response:
+        if response.status_code >= 400:
+            detail = (await response.aread()).decode("utf-8", "replace")[:1000]
+            raise _UpstreamRejected(f"upstream HTTP {response.status_code}: {detail}")
+        async for line in response.aiter_lines():
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                packet = json.loads(data)
+                content = packet.get("choices", [{}])[0].get("delta", {}).get("content", "")
+            except (ValueError, TypeError, IndexError, AttributeError):
+                continue
+            if content:
+                yield str(content)
+
+
 async def _openai_content_chunks(payload: runtime.TranslationStreamPayload) -> AsyncIterator[str]:
     provider = runtime._translation_stream_provider
     if callable(provider):
@@ -118,12 +153,19 @@ async def _openai_content_chunks(payload: runtime.TranslationStreamPayload) -> A
         return
     upstream = payload.upstream
     api_key = str(upstream.get("apiKey") or "")
-    request_body = {
+    # thinking / enable_thinking 由扩展侧算好（shared/thinking-mode.js 是唯一定义处），
+    # 这里只原样转发，不再按服务商判断该发哪个参数名。
+    thinking_fields = {
+        key: value for key, value in dict(upstream.get("thinking") or {}).items()
+        if key in {"thinking", "enable_thinking"}
+    }
+    request_body: dict[str, Any] = {
         "model": str(upstream.get("model") or ""), "temperature": 0, "stream": True,
         "messages": [
             {"role": "system", "content": "You are a literary translator. Return NDJSON only."},
             {"role": "user", "content": _prompt(payload)},
         ],
+        **thinking_fields,
     }
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -131,25 +173,21 @@ async def _openai_content_chunks(payload: runtime.TranslationStreamPayload) -> A
     timeout = httpx.Timeout(connect=15, read=None, write=30, pool=15)
     url = _endpoint(upstream.get("baseUrl"))
     async with httpx.AsyncClient(timeout=timeout, trust_env=not _is_local_url(url)) as client:
-        async with client.stream(
-            "POST", url, json=request_body, headers=headers,
-        ) as response:
-            if response.status_code >= 400:
-                detail = (await response.aread()).decode("utf-8", "replace")[:1000]
-                raise RuntimeError(f"upstream HTTP {response.status_code}: {detail}")
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data or data == "[DONE]":
-                    continue
-                try:
-                    packet = json.loads(data)
-                    content = packet.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                except (ValueError, TypeError, IndexError, AttributeError):
-                    continue
-                if content:
-                    yield str(content)
+        try:
+            async for content in _stream_upstream(client, url, request_body, headers):
+                yield content
+            return
+        except _UpstreamRejected as rejected:
+            # 上游不认思考参数：剥掉重发一次。被拒的请求没有输出、不计费，但用户等的是一个
+            # 来回。这里不重试的后果更糟 —— 整条流式链路会在每个批次上都失败一次。
+            # 与扩展侧 translation-utils.js#shouldRetryWithoutThinkingFields 同一口径：
+            # 只有报错确实点名了这两个参数才剥。
+            if not thinking_fields or not _THINKING_FIELD_RE.search(rejected.detail):
+                raise RuntimeError(str(rejected)) from None
+            request_body.pop("thinking", None)
+            request_body.pop("enable_thinking", None)
+        async for content in _stream_upstream(client, url, request_body, headers):
+            yield content
 
 
 async def _with_heartbeats(source: AsyncIterator[str]) -> AsyncIterator[str | None]:

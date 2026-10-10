@@ -1,4 +1,5 @@
 import sharedUtils from "../../shared/utils.js";
+import thinkingMode from "../../shared/thinking-mode.js";
 
 export function installTranslationUtils(runtime) {
   function getPercentBubbleGroupBox(group) {
@@ -178,6 +179,68 @@ export function installTranslationUtils(runtime) {
     return /response_format|unknown field|unsupported field/.test(text);
   }
   runtime.shouldRetryWithoutJsonResponseFormat = shouldRetryWithoutJsonResponseFormat;
+  // 思考参数与 JSON 模式这两组「可选字段」被服务商拒绝时各用各的信号往回传，调用方据此
+  // **只剥掉被拒的那一组**。合成同一个信号的话，服务商不支持 json_object 时会连用户的
+  // 「关闭思考」一起丢掉，那条设置就永远不生效了。
+  const retryWithoutThinkingFields = Object.freeze({ retryWithoutThinkingFields: true });
+  runtime.RETRY_WITHOUT_THINKING_FIELDS = retryWithoutThinkingFields;
+  const thinkingRejectedEndpoints = new Set();
+  /** 报错点名了思考参数才算数：普通 4xx（限流、鉴权）不能把用户的设置悄悄改掉。 */
+  function shouldRetryWithoutThinkingFields(body, endpoint, reason) {
+    const text = String(reason || "").toLowerCase();
+    if (!thinkingMode.hasThinkingFields(body) || !/enable_thinking|reasoning_effort|thinking/.test(text)) {
+      return false;
+    }
+    // 记住这个端点，否则每个请求都要先撞一次 400 —— 被拒的请求没有输出、不计费，
+    // 但白等一个来回的延迟是实打实的。
+    if (endpoint) thinkingRejectedEndpoints.add(String(endpoint));
+    return true;
+  }
+  runtime.shouldRetryWithoutThinkingFields = shouldRetryWithoutThinkingFields;
+  function stripThinkingFields(body) {
+    const next = { ...(body || {}) };
+    delete next.thinking;
+    delete next.enable_thinking;
+    return next;
+  }
+  runtime.stripThinkingFields = stripThinkingFields;
+  function stripJsonResponseFormat(body) {
+    const next = { ...(body || {}) };
+    delete next.response_format;
+    return next;
+  }
+  runtime.stripJsonResponseFormat = stripJsonResponseFormat;
+  /**
+   * 发一次翻译请求，可选字段被服务商拒了就**只剥掉被拒的那一组**重发（最多两次额外往返）。
+   *
+   * 调用方必须带 `includeResponseMeta: true`（下面按 `envelope.content` 判断空响应）。
+   * 三处翻译链路以前各自抄了一遍这个回落，现在只有这一份 —— 以前那份只会剥
+   * `response_format`，服务商不认思考参数时整条请求就白失败了。
+   *
+   * 端点记忆也放在这里：调用方只管把 `thinkingMode` 算成字段塞进 body，**不必**知道
+   * 这个端点拒过没有（configure.js 那个接缝因此不需要任何额外的 runtime 助手）。
+   */
+  async function sendTranslationBodyWithFallbacks(endpoint, apiKey, body, timeoutMs, options) {
+    // 这个端点拒过思考参数就直接不发：否则每个请求都要先撞一次 400，白等一个来回
+    let attemptBody = thinkingRejectedEndpoints.has(String(endpoint)) ? stripThinkingFields(body) : body;
+    let envelope = await runtime.sendOpenAICompatibleTranslationRequest(
+      endpoint, apiKey, attemptBody, timeoutMs, options
+    );
+    if (envelope === retryWithoutThinkingFields) {
+      attemptBody = stripThinkingFields(attemptBody);
+      envelope = await runtime.sendOpenAICompatibleTranslationRequest(
+        endpoint, apiKey, attemptBody, timeoutMs, options
+      );
+    }
+    if (envelope && envelope.content) return { envelope, usedJsonMode: true };
+    return {
+      envelope: await runtime.sendOpenAICompatibleTranslationRequest(
+        endpoint, apiKey, stripJsonResponseFormat(attemptBody), timeoutMs, options
+      ),
+      usedJsonMode: false
+    };
+  }
+  runtime.sendTranslationBodyWithFallbacks = sendTranslationBodyWithFallbacks;
   function toProviderError(payload, status, statusText, defaultMessage) {
     const messageFromPayload = payload && payload.error && payload.error.message || payload && payload.message || `${status} ${statusText}`;
     const error = new Error(`${defaultMessage}: ${messageFromPayload}`);

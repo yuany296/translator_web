@@ -1,4 +1,5 @@
 import llmProviders from "../../shared/llm-providers.js";
+import thinkingMode from "../../shared/thinking-mode.js";
 
 const PROMPT_VERSION = "kakao-novel-v5";
 const CACHE_PREFIX = "mt_cache_v23:novel:";
@@ -201,6 +202,7 @@ export function installNovelTranslation(runtime) {
     if (llmProviders.keyRequired(translation.provider) && !translation.apiKey) {
       throw new Error(`翻译 API Key 未配置：请在设置页「翻译服务」中为当前服务商（${llmProviders.providerLabel(translation.provider)}）填写密钥`);
     }
+    const endpoint = runtime.buildOpenAICompatibleEndpoint(translation.baseUrl);
     const body = {
       model: translation.model || runtime.DEFAULT_TRANSLATION_MODEL,
       temperature: 0,
@@ -211,21 +213,16 @@ export function installNovelTranslation(runtime) {
         role: "user",
         content: buildPrompt(items, context, glossary)
       }],
+      ...thinkingMode.thinkingBodyFields(translation.thinkingMode, translation.provider),
       response_format: { type: "json_object" }
     };
-    const endpoint = runtime.buildOpenAICompatibleEndpoint(translation.baseUrl);
     try {
-      let envelope = await runtime.sendOpenAICompatibleTranslationRequest(
+      // 思考参数 / json 模式被服务商拒了就按组剥掉重发（见 translation-utils.js）
+      const sent = await runtime.sendTranslationBodyWithFallbacks(
         endpoint, translation.apiKey, body, REQUEST_TIMEOUT_MS, { includeResponseMeta: true, signal }
       );
-      if (!envelope || !envelope.content) {
-        const fallback = { ...body };
-        delete fallback.response_format;
-        diagnostic.usedJsonMode = false;
-        envelope = await runtime.sendOpenAICompatibleTranslationRequest(
-          endpoint, translation.apiKey, fallback, REQUEST_TIMEOUT_MS, { includeResponseMeta: true, signal }
-        );
-      }
+      const envelope = sent.envelope;
+      if (!sent.usedJsonMode) diagnostic.usedJsonMode = false;
       const content = runtime.extractOpenAIMessageText(envelope && envelope.content);
       diagnostic.responseMeta = envelope && envelope.responseMeta || {};
       diagnostic.responseChars = content.length;

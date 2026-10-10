@@ -94,7 +94,7 @@ const IDS = [
   "vendorSelect", "vendorDialog", "vendorDialogTitle", "vendorStepProvider", "vendorStepForm",
   "vendorProviderList", "vendorName", "vendorProviderLabel", "vendorUrl", "vendorKey", "vendorKeyHint",
   "vendorModel", "vendorModelCustom", "vendorModelStatus", "vendorFetchModelsBtn", "vendorBackBtn",
-  "vendorSubmitBtn", "vendorFormError", "vendorStatus",
+  "vendorSubmitBtn", "vendorFormError", "vendorStatus", "vendorThinkingMode",
   "vendorManagerDialog", "vendorManagerRows", "vendorManagerEmpty", "vendorManagerError",
   "vendorManagerNewBtn", "vendorManagerCloseBtn",
   "vendorManageBtn", "termServiceManageBtn", "sentenceServiceManageBtn",
@@ -204,7 +204,7 @@ test("未通过校验时不发送保存消息,并给出中文提示", async () =
   assert.equal(nodes.vendorFormError.textContent, "请填写 Base URL");
 });
 
-test("命名后保存:提交厂商四要素并激活该配置", async () => {
+test("命名后保存:提交厂商四要素 + 思考模式并激活该配置", async () => {
   const { nodes, ui, state, sent } = setup();
   await ui.refresh();
   nodes.vendorNewBtn.dispatch("click");
@@ -215,7 +215,9 @@ test("命名后保存:提交厂商四要素并激活该配置", async () => {
   await settle();
   const saved = sent.find(message => message.type === "SAVE_TRANSLATION_VENDOR");
   assert.deepEqual(saved.entry, {
-    provider: "openai", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", apiKey: "sk-test"
+    provider: "openai", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", apiKey: "sk-test",
+    // 思考模式是条目自己的字段（翻译与两个提取服务共用这条配置）
+    thinkingMode: "auto"
   });
   assert.equal(state.active, "OpenAI 主力", "保存即激活");
   assert.equal(nodes.vendorCurrentName.textContent, "当前配置：OpenAI 主力");
@@ -263,8 +265,43 @@ test("编辑跳过选厂商步骤并回填条目,改名保存后删除旧条目"
     "改名不再靠「先存新名再删旧名」，否则会打断提取配置的引用");
 });
 
-test("向导建好配置后回调 onSaved，供提取行直接指派", async () => {
-  const { nodes, ui } = setup();
+test("思考模式跟着配置档案走：新建回默认、编辑回填、保存写进条目", async () => {
+  const { nodes, sent, state, ui } = setup({
+    vendors: {
+      甲: { provider: "custom", baseUrl: "https://relay.test", model: "m", apiKey: "k", thinkingMode: "off" }
+    },
+    active: "甲"
+  });
+  await ui.refresh();
+  // 新建：默认「跟随模型默认」，不能把上一次编辑留下的值带过来
+  ui.openWizard("create");
+  nodes.vendorProviderList.children.find(node => node.dataset.provider === "custom").dispatch("click");
+  assert.equal(nodes.vendorThinkingMode.value, "auto");
+  nodes.vendorName.value = "乙";
+  nodes.vendorUrl.value = "https://relay.test";
+  nodes.vendorModel.value = "m";
+  nodes.vendorThinkingMode.value = "off";
+  nodes.vendorSubmitBtn.dispatch("click");
+  await settle();
+  assert.equal(state.vendors["乙"].thinkingMode, "off", "思考模式要写进条目");
+  // 编辑：回填已保存的值
+  nodes.vendorManageBtn.dispatch("click");
+  managerRowButton(nodes, "乙", "edit").dispatch("click");
+  assert.equal(nodes.vendorThinkingMode.value, "off");
+  // 复制：也带过来（复制的是这一套配置）
+  nodes.vendorManageBtn.dispatch("click");
+  managerRowButton(nodes, "乙", "copy").dispatch("click");
+  assert.equal(nodes.vendorThinkingMode.value, "off");
+  // 脏值收敛：不认识的取值不能变成「悄悄发一个服务商不认的参数」
+  nodes.vendorThinkingMode.value = "胡说";
+  nodes.vendorName.value = "丙";
+  nodes.vendorSubmitBtn.dispatch("click");
+  await settle();
+  assert.equal(state.vendors["丙"].thinkingMode, "auto");
+  assert.ok(sent.some(message => message.type === "SAVE_TRANSLATION_VENDOR"));
+});
+
+test("向导建好配置后回调 onSaved，供提取行直接指派", async () => {  const { nodes, ui } = setup();
   const named = [];
   ui.openWizard("create", { onSaved: name => named.push(name) });
   nodes.vendorProviderList.children.find(node => node.dataset.provider === "deepseek").dispatch("click");

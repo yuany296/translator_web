@@ -139,6 +139,8 @@ const serviceSelection = installServiceSelection({
   requestCreate: prefix => vendorUi?.openWizard("create", { onSaved: name => serviceSelection.assign(prefix, name) })
 });
 
+/** 思考模式不再是这里的一行：它是配置档案条目的字段，随「新建/编辑配置」向导一起填。 */
+
 async function saveSection(section, nextValue) {
   const response = await send({ type: "SAVE_CONFIGURATION", section, value: nextValue });
   configuration[section] = response.value;

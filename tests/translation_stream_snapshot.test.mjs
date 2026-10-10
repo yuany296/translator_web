@@ -13,6 +13,7 @@ function makeRuntime() {
     getErrorMessage: error => String(error && error.message || error),
     toProviderError: (payload, status, statusText) => new Error(`${status} ${statusText}`),
     shouldRetryWithoutJsonResponseFormat: () => false,
+    shouldRetryWithoutThinkingFields: () => false,
     parseModelJson: text => JSON.parse(text),
     extractOpenAIMessageText: content => (typeof content === "string" ? content : "")
   };

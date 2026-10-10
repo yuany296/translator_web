@@ -39,6 +39,9 @@ class TermExtractionUpstream(BaseModel):
     baseUrl: str = ""
     model: str = ""
     apiKey: str = ""
+    # 思考字段由扩展侧算好（extension/src/shared/thinking-mode.js 是唯一定义处），这里只转发。
+    # 空 dict = 不干预，与服务商默认一致（也是升级前的行为）。
+    thinking: dict[str, Any] = Field(default_factory=dict)
 
 
 class TermExtractionRequest(BaseModel):

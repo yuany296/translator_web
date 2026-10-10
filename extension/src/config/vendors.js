@@ -25,14 +25,21 @@ const SECTION_NORMALIZERS = Object.freeze({
 
 export const DEFAULT_VENDOR_NAME = "默认配置";
 
-/** 校验/提取服务商条目:只保留服务商相关字段,并走与正式配置一致的归一化 */
+/**
+ * 校验/提取服务商条目:只保留服务商相关字段,并走与正式配置一致的归一化。
+ *
+ * `thinkingMode` 放条目而不是翻译小节：一个模型认不认思考参数、认哪个参数名，本来就是
+ * **这一套配置**的属性（换服务商就得跟着换）；放这里还能让翻译、整章提取、句子级提取
+ * 三个共用它的服务一起生效（见 overlayVendorEntry）。
+ */
 export function normalizeVendorEntry(value) {
   const normalized = normalizeTranslationConfig(value);
   return {
     provider: normalized.provider,
     baseUrl: normalized.baseUrl,
     model: normalized.model,
-    apiKey: normalized.apiKey
+    apiKey: normalized.apiKey,
+    thinkingMode: normalized.thinkingMode
   };
 }
 
@@ -55,7 +62,7 @@ export function normalizeVendorsState(raw) {
 
 /** 把命名配置套用到翻译配置上:只覆盖服务商字段,语言等其余字段保留。
  * 条目对其自身服务商的槽位有最终决定权——否则同服务商的旧槽位会一直压过
- * 新填的密钥/地址/模型,导致「改了配置不生效」。 */
+ * 新填的密钥/地址/模型,导致「改了配置不生效」。思考模式同理：它是这套配置自己的。 */
 export function applyVendorEntry(translation, entry) {
   const current = translation && typeof translation === "object" ? translation : {};
   const defined = normalizeVendorEntry(entry);
@@ -65,6 +72,7 @@ export function applyVendorEntry(translation, entry) {
     baseUrl: defined.baseUrl,
     model: defined.model,
     apiKey: defined.apiKey,
+    thinkingMode: defined.thinkingMode,
     baseUrls: { ...current.baseUrls, [defined.provider]: defined.baseUrl },
     models: { ...current.models, [defined.provider]: defined.model },
     apiKeys: { ...current.apiKeys, [defined.provider]: defined.apiKey }
@@ -72,7 +80,8 @@ export function applyVendorEntry(translation, entry) {
 }
 
 /** 把命名配置套用到提取小节上:只覆盖服务商字段,vendor/followTranslation 原样保留
- * （不能用 applyVendorEntry——它走翻译配置归一化,会把这两个字段洗掉）。 */
+ * （不能用 applyVendorEntry——它走翻译配置归一化,会把这两个字段洗掉）。
+ * thinkingMode 也一起下发：提取是机械任务，思考同样白花钱，没有理由让它跟翻译不一致。 */
 export function overlayVendorEntry(section, entry) {
   const current = section && typeof section === "object" ? section : {};
   const defined = normalizeVendorEntry(entry);
@@ -81,7 +90,8 @@ export function overlayVendorEntry(section, entry) {
     provider: defined.provider,
     baseUrl: defined.baseUrl,
     model: defined.model,
-    apiKey: defined.apiKey
+    apiKey: defined.apiKey,
+    thinkingMode: defined.thinkingMode
   };
 }
 
@@ -117,7 +127,9 @@ function withVendor(section, name, normalize) {
     baseUrl: "",
     apiKey: "",
     baseUrls: {},
-    apiKeys: {}
+    apiKeys: {},
+    // 思考模式也一样：它属于被引用的那条配置，小节自己不再留一份
+    thinkingMode: "auto"
   });
 }
 

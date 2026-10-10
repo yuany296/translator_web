@@ -2,13 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { installTermExtractLlm } from "../extension/src/novel-mobile/term-extract-llm.js";
 import { createMemoryProgressStore } from "../extension/src/novel-mobile/term-extract-progress.js";
+import { installTranslationUtils } from "../extension/src/background/modules/translation-utils.js";
 
 // 术语提取移植测试：对齐 local-ocr-service/term_extractor.py 的 LLM 分支。
 // 只桩住「网络那一步」，解析 / 校验 / 合并 / 证据块全部走真实实现。
 // 分段进度用一个每个 runtime 独享的存储桩：既隔离测试，又能验证断点续跑。
 function makeRuntime(replies, options = {}) {
   const requests = [];
-  const runtime = {
+  // 「可选字段被拒就剥掉重发」必须是产品代码：先把真实的回落助手装上，
+  // 再用下面的桩覆盖网络那一步（Object.assign 在 install 之后，桩说了算）。
+  const runtime = {};
+  installTranslationUtils(runtime);
+  Object.assign(runtime, {
     buildOpenAICompatibleEndpoint: base => `${String(base).replace(/\/+$/u, "")}/chat/completions`,
     sendOpenAICompatibleTranslationRequest: async (endpoint, apiKey, body) => {
       requests.push({ endpoint, apiKey, body });
@@ -26,7 +31,7 @@ function makeRuntime(replies, options = {}) {
     },
     getErrorMessage: error => String(error && error.message || error || ""),
     termExtractProgressStore: options.progressStore || createMemoryProgressStore()
-  };
+  });
   installTermExtractLlm(runtime);
   return { runtime, requests };
 }
@@ -311,4 +316,23 @@ test("模型不支持 JSON 模式时去掉 response_format 重试一次", async 
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[0].body.response_format, { type: "json_object" });
   assert.equal(requests[1].body.response_format, undefined);
+});
+
+test("整章提取照抄配置里的思考字段：翻译关掉思考，提取也一起关掉", async () => {
+  const { runtime, requests } = makeRuntime(['[]']);
+  await runtime.requestChapterTermExtraction(requestBody(
+    [{ id: "b1", text: "김성현이 말했다." }],
+    {
+      baseUrl: "https://relay.test/v1", model: "m", apiKey: "k",
+      thinking: { thinking: { type: "disabled" }, enable_thinking: false }
+    }
+  ));
+  // 扩展侧算好的字段原样进请求体（本地服务/手机都不自己判断参数名）
+  assert.deepEqual(requests[0].body.thinking, { type: "disabled" });
+  assert.equal(requests[0].body.enable_thinking, false);
+  // auto（不干预）时一个字段都不发
+  const plain = makeRuntime(['[]']);
+  await plain.runtime.requestChapterTermExtraction(requestBody([{ id: "b1", text: "김성현이 말했다." }]));
+  assert.equal("thinking" in plain.requests[0].body, false);
+  assert.equal("enable_thinking" in plain.requests[0].body, false);
 });

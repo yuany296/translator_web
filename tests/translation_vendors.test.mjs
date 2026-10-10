@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 import {
-  applyVendorEntry, normalizeVendorEntry, normalizeVendorsState
+  applyVendorEntry, normalizeVendorEntry, normalizeVendorsState, overlayVendorEntry
 } from "../extension/src/config/vendors.js";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -66,11 +66,28 @@ const hostArray = value => [...value];
 
 // ── 纯函数 ──
 
-test("normalizeVendorEntry 只保留服务商字段并归一化", () => {
+test("normalizeVendorEntry 只保留服务商字段与思考模式并归一化", () => {
   const entry = normalizeVendorEntry({ provider: "deepseek", baseUrl: "https://api.deepseek.com/", model: "deepseek-chat", apiKey: "k", sourceLanguage: "ja" });
-  assert.deepEqual(Object.keys(entry).sort(), ["apiKey", "baseUrl", "model", "provider"]);
+  assert.deepEqual(Object.keys(entry).sort(), ["apiKey", "baseUrl", "model", "provider", "thinkingMode"]);
   assert.equal(entry.baseUrl, "https://api.deepseek.com", "去掉尾部斜杠");
   assert.equal(entry.model, "deepseek-chat");
+  // 思考模式属于「这一套配置」：换服务商就得跟着换，所以它进条目；语言不属于，仍然留在翻译小节
+  assert.equal(entry.thinkingMode, "auto", "老条目没有这个字段 → 跟随模型默认");
+  assert.equal(normalizeVendorEntry({ provider: "deepseek", thinkingMode: "off" }).thinkingMode, "off");
+  assert.equal(normalizeVendorEntry({ provider: "deepseek", thinkingMode: "胡说" }).thinkingMode, "auto");
+});
+
+test("思考模式随配置档案下发：翻译与两个提取服务都拿到同一份", () => {
+  const entry = { provider: "custom", baseUrl: "https://relay.test", model: "m", apiKey: "k", thinkingMode: "off" };
+  assert.equal(applyVendorEntry({}, entry).thinkingMode, "off");
+  // 提取小节走 overlayVendorEntry：vendor/followTranslation 保留，思考模式跟着条目走
+  const section = overlayVendorEntry({ vendor: "甲", followTranslation: false, thinkingMode: "on" }, entry);
+  assert.equal(section.thinkingMode, "off");
+  assert.equal(section.vendor, "甲");
+  assert.equal(section.followTranslation, false);
+  // 反过来也必须成立：条目说跟随默认时，不能把小节自己留的旧值带出去
+  const inherited = overlayVendorEntry({ vendor: "甲" }, { ...entry, thinkingMode: "auto" });
+  assert.equal(inherited.thinkingMode, "auto");
 });
 
 test("normalizeVendorsState 过滤无效条目并剔除失效指针", () => {

@@ -1,4 +1,5 @@
 import llmProviders from "../../shared/llm-providers.js";
+import thinkingMode from "../../shared/thinking-mode.js";
 
 /**
  * 「让模型排版」:把原文的强调片段对到译文上。
@@ -107,23 +108,19 @@ export function installNovelEmphasis(runtime) {
     if (llmProviders.keyRequired(translation.provider) && !translation.apiKey) {
       throw new Error(`翻译 API Key 未配置：请在设置页「翻译服务」中为当前服务商（${llmProviders.providerLabel(translation.provider)}）填写密钥`);
     }
+    const endpoint = runtime.buildOpenAICompatibleEndpoint(translation.baseUrl);
     const body = {
       model: translation.model || runtime.DEFAULT_TRANSLATION_MODEL,
       temperature: 0,
       messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: buildPrompt(items) }],
+      ...thinkingMode.thinkingBodyFields(translation.thinkingMode, translation.provider),
       response_format: { type: "json_object" }
     };
-    const endpoint = runtime.buildOpenAICompatibleEndpoint(translation.baseUrl);
-    let envelope = await runtime.sendOpenAICompatibleTranslationRequest(
+    // 思考参数 / json 模式被服务商拒了就按组剥掉重发（见 translation-utils.js）
+    const sent = await runtime.sendTranslationBodyWithFallbacks(
       endpoint, translation.apiKey, body, REQUEST_TIMEOUT_MS, { includeResponseMeta: true }
     );
-    if (!envelope || !envelope.content) {
-      const fallback = { ...body };
-      delete fallback.response_format;
-      envelope = await runtime.sendOpenAICompatibleTranslationRequest(
-        endpoint, translation.apiKey, fallback, REQUEST_TIMEOUT_MS, { includeResponseMeta: true }
-      );
-    }
+    const envelope = sent.envelope;
     return runtime.parseModelJson(runtime.extractOpenAIMessageText(envelope && envelope.content));
   }
 

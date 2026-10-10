@@ -58,7 +58,9 @@ export function resolveExtractionConfig(configuration, sectionName) {
     provider: translation.provider || section.provider || "",
     baseUrl: translation.baseUrl || "",
     model: translation.model || section.model || "",
-    apiKey: translation.apiKey || ""
+    apiKey: translation.apiKey || "",
+    // 跟随翻译服务时思考模式也跟随：提取用的就是同一个后端，没有理由不一致
+    thinkingMode: translation.thinkingMode
   };
 }
 

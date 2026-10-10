@@ -90,9 +90,14 @@ test("现有源码里被覆盖的函数都通过 runtime 属性调用（覆盖�
     "extension/src/content/modules/novel-progressive-workflow.js": ["runtime.commitTranslationOperation("],
     "extension/src/background/configure.js": ["runtime.commitOrQueueTranslationOperation("],
     "extension/src/background/modules/bootstrap.js": ["runtime.handleTranslationStreamPort?.("],
-    // 手机版把术语从「硬约束」改成「模型判断」、并在请求出口补语言规则，靠的就是这几个晚绑定调用点
+    // 手机版把术语从「硬约束」改成「模型判断」、并在请求出口补语言规则，靠的就是这几个晚绑定调用点。
+    // 出口那个调用点现在在共享回落助手里（novel-translation.js 不再直接调 send）——
+    // 助手内部仍是晚绑定调用，覆盖层照样拦得到，但少了这条断言就没人看着了。
     "extension/src/background/modules/novel-translation.js": [
       "runtime.glossaryCore.buildPrompt(", "runtime.novelCore.validateTranslations(",
+      "runtime.sendTranslationBodyWithFallbacks("
+    ],
+    "extension/src/background/modules/translation-utils.js": [
       "runtime.sendOpenAICompatibleTranslationRequest("
     ],
     "extension/src/background/modules/messages.js": ["runtime.openNovelManageUi("],

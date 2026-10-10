@@ -1,4 +1,5 @@
 import { createNdjsonParser } from "../../shared/ndjson.js";
+import thinkingMode from "../../shared/thinking-mode.js";
 
 export const TRANSLATION_STREAM_PORT = "mt-translation-stream-v1";
 
@@ -67,7 +68,12 @@ export function installTranslationStream(runtime) {
       upstream: {
         apiKey: configuration.translation.apiKey,
         baseUrl: configuration.translation.baseUrl,
-        model: configuration.translation.model
+        model: configuration.translation.model,
+        // 思考字段在扩展侧就算好（shared/thinking-mode.js 是唯一定义处），本地服务只把它
+        // 原样拼进上游请求体 —— 两边各维护一份「哪个服务商认哪个参数名」的映射迟早会漂。
+        thinking: thinkingMode.thinkingBodyFields(
+          configuration.translation.thinkingMode, configuration.translation.provider
+        )
       }
     };
     const response = await fetch(`${baseUrl}/translations/stream`, {

@@ -1,10 +1,15 @@
 import llmProviders from "../shared/llm-providers.js";
+import { normalizeThinkingMode } from "../shared/thinking-mode.js";
+import { nextCopyName } from "./vendor-names.js";
 
 /**
  * 翻译「配置档案」面板与新建/编辑向导,对齐 Android 客户端配置页:
- * 新建配置 → 第一步选择服务商 → 第二步填 Base URL / API Key / Model → 命名 → 保存(即激活)。
+ * 新建配置 → 第一步选择服务商 → 第二步填 Base URL / API Key / Model / 思考模式 → 命名 → 保存(即激活)。
  * 新建时服务商处默认为空(不预选任何服务商),面板顶部的下拉切换已保存的命名配置,
  * 编辑跳过选择服务商步骤,删除后回落到剩余配置。
+ *
+ * 思考模式放在**条目里**而不是翻译小节：一个后端认不认思考参数是这套配置自己的属性，
+ * 而且放这里，翻译与两个术语提取服务（共用这套配置库）会一起生效。
  */
 const byId = id => document.getElementById(id);
 
@@ -44,6 +49,7 @@ export function installVendorUi({ reloadConfiguration }) {
   const modelCustom = byId("vendorModelCustom");
   const modelStatus = byId("vendorModelStatus");
   const fetchModelsBtn = byId("vendorFetchModelsBtn");
+  const thinkingSelect = byId("vendorThinkingMode");
   const backBtn = byId("vendorBackBtn");
   const submitBtn = byId("vendorSubmitBtn");
   const errorText = byId("vendorFormError");
@@ -164,17 +170,6 @@ export function installVendorUi({ reloadConfiguration }) {
     byId("vendorManagerDialog").showModal();
   }
 
-  /** 「X 副本」「X 副本 2」…… 复制配置时不撞名。 */
-  function nextCopyName(name) {
-    const base = `${name} 副本`;
-    if (!state.names.includes(base)) return base;
-    for (let index = 2; index < 100; index += 1) {
-      const candidate = `${base} ${index}`;
-      if (!state.names.includes(candidate)) return candidate;
-    }
-    return `${base} ${Date.now()}`;
-  }
-
   /** 删除一套配置：确认文案必须先说清「只删这套配置，翻译功能不受影响」，再点名会影响谁。 */
   async function removeVendor(name) {
     const used = (state.usage[name] || []).map(kind => USAGE_LABELS[kind] || kind);
@@ -225,6 +220,8 @@ export function installVendorUi({ reloadConfiguration }) {
     urlInput.value = saved.baseUrl || item?.baseUrl || "";
     keyInput.value = saved.apiKey || "";
     applyModelList([], saved.model || item?.defaultModel || "");
+    // 思考模式是条目自己的字段：编辑/复制时原样带过来，新建时在下面显式回「跟随默认」
+    thinkingSelect.value = normalizeThinkingMode(saved.thinkingMode);
     // 免密钥服务商(自定义/Ollama)只表示"不强制",不代表"不能填"。
     const hint = llmProviders.keyFieldHint(providerId);
     keyInput.disabled = false;
@@ -248,7 +245,7 @@ export function installVendorUi({ reloadConfiguration }) {
     } else if (options.copyFrom) {
       state.editName = "";
       const entry = state.entries[options.copyFrom] || {};
-      nameInput.value = nextCopyName(options.copyFrom);
+      nameInput.value = nextCopyName(state.names, options.copyFrom);
       applyProviderToForm(entry.provider || llmProviders.inferProviderId(entry.baseUrl), entry);
     } else {
       state.editName = "";
@@ -263,6 +260,7 @@ export function installVendorUi({ reloadConfiguration }) {
       keyInput.disabled = false;
       keyHint.textContent = "";
       modelStatus.textContent = "";
+      thinkingSelect.value = "auto";
     }
     renderWizard();
     dialog.showModal();
@@ -379,7 +377,8 @@ export function installVendorUi({ reloadConfiguration }) {
         provider: state.providerId,
         baseUrl: urlInput.value.trim(),
         model: selectModelValue(),
-        apiKey: keyInput.value.trim()
+        apiKey: keyInput.value.trim(),
+        thinkingMode: normalizeThinkingMode(thinkingSelect.value)
       };
       // 编辑时改名交给 originalName:后台会同步引用旧名的提取配置,不用先存新名再删旧名
       await send({ type: "SAVE_TRANSLATION_VENDOR", name, entry, originalName: original });

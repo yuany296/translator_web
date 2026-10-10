@@ -1,5 +1,6 @@
 import { resolveExtractionConfig } from "../../config/store.js";
 import reportCore from "../../shared/term-discovery-report.js";
+import thinkingMode from "../../shared/thinking-mode.js";
 
 /**
  * 整章术语提取：把「排队阶段」和「慢 HTTP 阶段」拆开。
@@ -86,7 +87,10 @@ export function installTermDiscoveryExtract(runtime) {
       const upstream = {
         baseUrl: String(termLlm.baseUrl || "").trim(),
         model: String(termLlm.model || "").trim(),
-        apiKey: String(termLlm.apiKey || "").trim()
+        apiKey: String(termLlm.apiKey || "").trim(),
+        // 思考字段在扩展侧算好（shared/thinking-mode.js 是唯一定义处），本地服务只原样拼进
+        // 上游请求体 —— 两边各写一份「哪个服务商认哪个参数名」的映射迟早会漂。
+        thinking: thinkingMode.thinkingBodyFields(termLlm.thinkingMode, termLlm.provider)
       };
       return {
         pageUrl,

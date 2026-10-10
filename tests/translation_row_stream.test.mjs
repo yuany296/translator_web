@@ -91,6 +91,8 @@ function makeRuntime() {
     getErrorMessage: error => String(error && error.message || error),
     toProviderError: (payload, status, statusText) => new Error(payload?.error?.message || `${status} ${statusText}`),
     shouldRetryWithoutJsonResponseFormat: reason => /response_format/u.test(String(reason)),
+    // 思考参数是另一组可选字段：这个用例的 body 里没有它，一律不拦
+    shouldRetryWithoutThinkingFields: () => false,
     extractOpenAIMessageText: payload => String(payload?.choices?.[0]?.message?.content || ""),
     parseModelJson: text => JSON.parse(text),
     isAbortError: error => !!(error && error.name === "AbortError")

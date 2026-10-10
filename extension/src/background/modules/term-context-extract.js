@@ -1,4 +1,5 @@
 import { resolveExtractionConfig } from "../../config/store.js";
+import thinkingMode from "../../shared/thinking-mode.js";
 
 const EXTRACT_TIMEOUT_MS = 60000;
 const SOURCE_TEXT_LIMIT = 4000;
@@ -57,7 +58,9 @@ function resolveSentenceService(configuration) {
     llm: {
       baseUrl: sentence.baseUrl,
       model: sentence.model,
-      apiKey: String(sentence.apiKey || "")
+      apiKey: String(sentence.apiKey || ""),
+      // 思考模式跟着这条配置（解析时由配置库条目下发，见 config/vendors.js#overlayVendorEntry）
+      thinkingFields: thinkingMode.thinkingBodyFields(sentence.thinkingMode, sentence.provider)
     },
     error: ""
   };
@@ -101,24 +104,18 @@ export function installTermContextExtract(runtime) {
         role: "user",
         content: buildExtractPrompt(sourceText, translatedText, selectedText, targetLanguage)
       }],
+      ...llm.thinkingFields,
       response_format: {
         type: "json_object"
       }
     };
     const endpoint = runtime.buildOpenAICompatibleEndpoint(llm.baseUrl);
     try {
-      let envelope = await runtime.sendOpenAICompatibleTranslationRequest(
+      // 思考参数 / json 模式被服务商拒了就按组剥掉重发（见 translation-utils.js）
+      const sent = await runtime.sendTranslationBodyWithFallbacks(
         endpoint, llm.apiKey, body, EXTRACT_TIMEOUT_MS, { includeResponseMeta: true }
       );
-      if (!envelope || !envelope.content) {
-        const fallback = {
-          ...body
-        };
-        delete fallback.response_format;
-        envelope = await runtime.sendOpenAICompatibleTranslationRequest(
-          endpoint, llm.apiKey, fallback, EXTRACT_TIMEOUT_MS, { includeResponseMeta: true }
-        );
-      }
+      const envelope = sent.envelope;
       const content = String(runtime.extractOpenAIMessageText(envelope && envelope.content) || "");
       const parsed = runtime.parseModelJson(content) || {};
       const term = String(parsed.term || "").normalize("NFKC").trim().slice(0, TERM_LIMIT);
@@ -171,24 +168,18 @@ export function installTermContextExtract(runtime) {
         role: "user",
         content: buildSentenceTermsPrompt(sourceText, translatedText, targetLanguage)
       }],
+      ...llm.thinkingFields,
       response_format: {
         type: "json_object"
       }
     };
     const endpoint = runtime.buildOpenAICompatibleEndpoint(llm.baseUrl);
     try {
-      let envelope = await runtime.sendOpenAICompatibleTranslationRequest(
+      // 思考参数 / json 模式被服务商拒了就按组剥掉重发（见 translation-utils.js）
+      const sent = await runtime.sendTranslationBodyWithFallbacks(
         endpoint, llm.apiKey, body, EXTRACT_TIMEOUT_MS, { includeResponseMeta: true }
       );
-      if (!envelope || !envelope.content) {
-        const fallback = {
-          ...body
-        };
-        delete fallback.response_format;
-        envelope = await runtime.sendOpenAICompatibleTranslationRequest(
-          endpoint, llm.apiKey, fallback, EXTRACT_TIMEOUT_MS, { includeResponseMeta: true }
-        );
-      }
+      const envelope = sent.envelope;
       const content = String(runtime.extractOpenAIMessageText(envelope && envelope.content) || "");
       const parsed = runtime.parseModelJson(content) || {};
       const terms = (Array.isArray(parsed.terms) ? parsed.terms : [])

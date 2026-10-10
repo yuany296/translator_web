@@ -114,6 +114,11 @@ export function installTranslationProviderStream(runtime) {
         const reason = runtime.getErrorMessage(runtime.toProviderError(
           payload, response.status, response.statusText, "OpenAI-compatible translation API error"
         ));
+        if (runtime.shouldRetryWithoutThinkingFields(body, endpoint, reason)) {
+          // 思考参数不被这个服务商接受：退回整批路径，由它剥掉这两组可选字段重发
+          snapshot.outcome = "fallback-thinking-fields";
+          return null;
+        }
         if (body.response_format && runtime.shouldRetryWithoutJsonResponseFormat(reason)) {
           snapshot.outcome = "fallback-response-format";
           return null;

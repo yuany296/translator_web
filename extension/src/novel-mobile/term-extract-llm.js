@@ -31,19 +31,16 @@ async function extractChunk(runtime, chunk, llm, targetLanguage, sourceText, sta
       { role: "system", content: SYSTEM_MESSAGE },
       { role: "user", content: buildChunkPrompt(chunk, targetLanguage) }
     ],
+    // 思考字段由调用方从配置里算好带进来（见 term-discovery-extract.js 的 upstream）
+    ...(llm.thinking || {}),
     response_format: { type: "json_object" }
   };
   const endpoint = runtime.buildOpenAICompatibleEndpoint(llm.baseUrl);
-  let envelope = await runtime.sendOpenAICompatibleTranslationRequest(
+  // 思考参数 / json 模式被服务商拒了就按组剥掉重发（见 background/modules/translation-utils.js）
+  const sent = await runtime.sendTranslationBodyWithFallbacks(
     endpoint, llm.apiKey, body, TERM_EXTRACT_TIMEOUT_MS, { includeResponseMeta: true }
   );
-  if (!envelope || !envelope.content) {
-    const fallback = { ...body };
-    delete fallback.response_format;
-    envelope = await runtime.sendOpenAICompatibleTranslationRequest(
-      endpoint, llm.apiKey, fallback, TERM_EXTRACT_TIMEOUT_MS, { includeResponseMeta: true }
-    );
-  }
+  const envelope = sent.envelope;
   const content = String(runtime.extractOpenAIMessageText(envelope && envelope.content) || "");
   return validateLlmOutput(runtime, content, sourceText, stats);
 }
@@ -70,7 +67,9 @@ export function installTermExtractLlm(runtime) {
       const llm = {
         baseUrl,
         model: String(upstream.model || "").trim(),
-        apiKey: String(upstream.apiKey || "").trim()
+        apiKey: String(upstream.apiKey || "").trim(),
+        // 与桌面版同形：思考字段由扩展侧算好放在 upstream.thinking（见 term-discovery-extract.js）
+        thinking: upstream.thinking && typeof upstream.thinking === "object" ? upstream.thinking : {}
       };
       const targetLanguage = String(body.target_language || "").trim() || "zh-CN";
 

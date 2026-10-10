@@ -75,7 +75,12 @@ function stubFetch(background) {
       state.resolvers.push(resolve);
     });
     if (state.signalHolder && state.signalHolder.aborted) throw new DOMException("aborted", "AbortError");
-    return JSON.stringify({ translations: [{ id: "canonical-request-0", translated_text: "译文" }] });
+    // 真实实现带 includeResponseMeta 时返回 {content, responseMeta}：canonical 链路按
+    // envelope.content 判定「空响应」，返回裸字符串会被当成空响应而多打一次请求。
+    return {
+      content: JSON.stringify({ translations: [{ id: "canonical-request-0", translated_text: "译文" }] }),
+      responseMeta: {}
+    };
   };
   state.releaseAll = () => {
     for (const resolve of state.resolvers.splice(0)) resolve();

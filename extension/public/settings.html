@@ -155,6 +155,7 @@
           </div>
 
           <p id="vendorFormError" class="vendor-form-error"></p>
+            <label>思考模式<select id="vendorThinkingMode"><option value="auto">跟随模型默认（不发送参数）</option><option value="off">关闭思考（省输出 token）</option><option value="on">开启思考</option></select><small>DeepSeek、GLM 4.5+、Qwen3.5+ 等模型的思考模式默认是开的，思维链也按输出 token 计费 —— 小说翻译关掉它通常能省掉大部分输出。关闭时按服务商发对应的参数（DeepSeek/GLM 发 thinking，千问发 enable_thinking，认不准的中转站两种都发）；翻译与两个术语提取服务都跟着这条配置走。</small></label>
           <div class="dialog-actions">
             <button id="vendorBackBtn" type="button" class="hidden">返回选服务商</button>
             <button id="vendorCancelBtn" type="button">取消</button>

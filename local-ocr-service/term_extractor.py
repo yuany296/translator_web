@@ -23,6 +23,9 @@ LLM_CONNECT_TIMEOUT = 10.0
 # 分段过大会让 8B 级模型脱轨（输出总结而非 JSON）；3000 字符 ≈ 800 tokens 稳定。
 LLM_MAX_CHUNK_CHARS = 3000
 LLM_CHUNK_OVERLAP = 200
+# 报错点名了思考参数才算「上游不认它」：限流、鉴权这类 4xx 不能让我们把用户的设置悄悄改掉。
+# 与 extension/src/background/modules/translation-utils.js 同一口径。
+THINKING_FIELD_RE = re.compile(r"enable_thinking|reasoning_effort|thinking", re.IGNORECASE)
 VALID_KINDS = {"person", "location", "organization", "title", "group", "latin_name", "latin_title"}
 # 字段名与 kind 取值的容错表 —— 必须与手机版
 # extension/src/novel-mobile/term-extract-prompt.js 的 FIELD_ALIASES / KIND_ALIASES /
@@ -161,9 +164,12 @@ def _chunk_prompt(chunk: str, target_language: str) -> str:
 
 def _llm_extract_chunk(chunk: str, base_url: str, model: str, api_key: str,
                        target_language: str, source_text: str = "",
-                       stats: dict[str, int] | None = None) -> list[dict[str, Any]]:
+                       stats: dict[str, int] | None = None,
+                       thinking: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     prompt = _chunk_prompt(chunk, target_language)
-    body = {
+    # thinking / enable_thinking 由扩展侧算好（shared/thinking-mode.js 是唯一定义处），这里只转发。
+    thinking_fields = {k: v for k, v in dict(thinking or {}).items() if k in {"thinking", "enable_thinking"}}
+    body: dict[str, Any] = {
         "model": _resolve_model(base_url, model),
         "temperature": 0,
         "stream": False,
@@ -171,21 +177,29 @@ def _llm_extract_chunk(chunk: str, base_url: str, model: str, api_key: str,
             {"role": "system", "content": "You are a web-novel terminology extractor. Return strict JSON only."},
             {"role": "user", "content": prompt},
         ],
+        **thinking_fields,
     }
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    try:
-        endpoint = _endpoint(base_url)
-        with httpx.Client(timeout=httpx.Timeout(connect=LLM_CONNECT_TIMEOUT, read=LLM_READ_TIMEOUT, write=30, pool=5), trust_env=not _is_local_url(endpoint)) as client:
-            response = client.post(endpoint, json=body, headers=headers)
-    except httpx.TimeoutException as exc:
-        raise RuntimeError("LLM 术语提取超时") from exc
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"LLM 术语提取请求失败：{exc}") from exc
-    if response.status_code >= 400:
-        detail = response.text[:300]
-        raise RuntimeError(f"LLM 服务 HTTP {response.status_code}: {detail}")
+    endpoint = _endpoint(base_url)
+    timeout = httpx.Timeout(connect=LLM_CONNECT_TIMEOUT, read=LLM_READ_TIMEOUT, write=30, pool=5)
+    for attempt in range(2):
+        try:
+            with httpx.Client(timeout=timeout, trust_env=not _is_local_url(endpoint)) as client:
+                response = client.post(endpoint, json=body, headers=headers)
+        except httpx.TimeoutException as exc:
+            raise RuntimeError("LLM 术语提取超时") from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"LLM 术语提取请求失败：{exc}") from exc
+        if response.status_code < 400:
+            break
+        # 上游不认思考参数就剥掉重发一次（被拒的请求没有输出、不计费）；否则照旧报错
+        if attempt == 0 and thinking_fields and THINKING_FIELD_RE.search(response.text[:300]):
+            body.pop("thinking", None)
+            body.pop("enable_thinking", None)
+            continue
+        raise RuntimeError(f"LLM 服务 HTTP {response.status_code}: {response.text[:300]}")
     try:
         data = response.json()
     except ValueError as exc:
@@ -318,6 +332,7 @@ def extract_term_candidates_llm_with_stats(
     model: str,
     api_key: str,
     target_language: str = "zh-CN",
+    thinking: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """同上，另外把「丢弃了多少条、为什么丢」带出来给扩展侧展示。
 
@@ -339,7 +354,7 @@ def extract_term_candidates_llm_with_stats(
     merged: dict[str, dict[str, Any]] = {}
     for chunk in _split_chunks(full_text):
         for candidate in _llm_extract_chunk(chunk, base_url, model, api_key, target_language,
-                                            source_text=original_text, stats=stats):
+                                            source_text=original_text, stats=stats, thinking=thinking):
             key = candidate["source"].casefold()
             current = merged.get(key)
             if current is None:
@@ -376,5 +391,6 @@ def extract_term_candidates_with_stats(
         return extract_term_candidates_llm_with_stats(
             blocks, base_url, str((upstream or {}).get("model") or ""),
             str((upstream or {}).get("apiKey") or ""), target_language,
+            thinking=dict((upstream or {}).get("thinking") or {}),
         )
     return extract_candidate_sentences(blocks), {}

@@ -46,6 +46,11 @@ async def extract_terms(payload: runtime.TermExtractionRequest) -> dict[str, run
         'baseUrl': (payload.upstream.baseUrl or '').strip() if payload.upstream else '',
         'model': (payload.upstream.model or '').strip() if payload.upstream else '',
         'apiKey': (payload.upstream.apiKey or '').strip() if payload.upstream else '',
+        # 只放行这两个已知参数名：空 dict = 不干预（扩展侧「跟随模型默认」时的取值）
+        'thinking': {
+            key: value for key, value in dict(payload.upstream.thinking or {}).items()
+            if key in {'thinking', 'enable_thinking'}
+        } if payload.upstream else {},
     }
     engine = 'ollama' if upstream['baseUrl'] else 'heuristic'
     candidates, dropped = await runtime.asyncio.to_thread(

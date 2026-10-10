@@ -4,6 +4,7 @@ import { createOcrProviders } from "./providers/ocr.js";
 import { createTranslationProviders } from "./providers/translation.js";
 import { OCR_COORDINATE_MODEL_VERSION, OCR_GEOMETRY_VERSION } from "../config/versions.js";
 import languages from "../shared/languages.js";
+import thinkingMode from "../shared/thinking-mode.js";
 
 /** 服务商配置操作统一包装:业务错误返回 {ok:false, error},避免消息通道断开 */
 async function runVendorOperation(operation) {
@@ -45,7 +46,13 @@ export function configureBackgroundRuntime(runtime) {
     const provider = translationProviders.get("openai_compatible");
     const error = provider.validate(config.translation);
     if (error) throw new Error(error);
-    return provider.translateBatch(args);
+    // 思考字段在这里算好（配置已经读过了，provider 侧再读一次就是白读一遍 storage）。
+    // 用的是纯函数，不依赖任何运行时助手 —— 这个接缝只做「读配置 + 转交」，
+    // 端点被拒时的记忆与重发都在 provider 侧的统一回落助手里。
+    return provider.translateBatch({
+      ...args,
+      thinkingFields: thinkingMode.thinkingBodyFields(config.translation.thinkingMode, config.translation.provider)
+    });
   };
 
   const handleLegacyMessage = runtime.handleMessage;

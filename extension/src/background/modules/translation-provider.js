@@ -223,6 +223,9 @@ export function installTranslationProvider(runtime) {
     glossary,
     mode = "comic",
     pageUrl = "",
+    // 思考字段由调用方（configure.js，那里已经读过一次配置）算好传进来：放进
+    // translationOptions 会被序列化进提示词、污染缓存键，所以单列一个参数。
+    thinkingFields = null,
     signal = null
   }) {
     if (runtime.backgroundTestHooks && typeof runtime.backgroundTestHooks.requestCanonicalTranslationBatch === "function") {
@@ -239,6 +242,7 @@ export function installTranslationProvider(runtime) {
         { role: "system", content: `You are a ${role}. Translate from ${sourceLanguage || "auto-detected source"} to ${targetLanguage || "zh-CN"}. Return JSON only and preserve every supplied id.` },
         { role: "user", content: [`Prompt version: ${promptVersion || (mode === "webpage" ? runtime.WEBPAGE_TRANSLATION_PROMPT_VERSION : runtime.CANONICAL_TRANSLATION_PROMPT_VERSION)}`, `Translation options: ${runtime.stableSerialize(translationOptions && typeof translationOptions === "object" ? translationOptions : {})}`, prompt].join("\n") }
       ],
+      ...(thinkingFields || {}),
       response_format: { type: "json_object" }
     };
     // 流式优先：模型每写完一行就交给 onRow 提前渲染；返回 null 表示不支持流式，走原来的整批请求
@@ -246,14 +250,11 @@ export function installTranslationProvider(runtime) {
       const streamed = await runtime.streamCanonicalTranslationBatch({ endpoint, apiKey, body, signal, onRow });
       if (streamed) return streamed;
     }
-    let payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, body, undefined, { signal, includeResponseMeta: true });
-    if (!payload) {
-      const fallbackBody = {
-        ...body
-      };
-      delete fallbackBody.response_format;
-      payload = await runtime.sendOpenAICompatibleTranslationRequest(endpoint, apiKey, fallbackBody, undefined, { signal, includeResponseMeta: true });
-    }
+    // 可选字段（思考参数 / json 模式）被拒时按组回退，见 translation-utils.js
+    const sent = await runtime.sendTranslationBodyWithFallbacks(
+      endpoint, apiKey, body, undefined, { signal, includeResponseMeta: true }
+    );
+    const payload = sent.envelope;
     // `includeResponseMeta` 时返回 `{content, responseMeta}`：finish_reason 是判断
     // 「模型是不是被 max_tokens 截断」的直接证据，跟流式快照一起留档。
     const responseMeta = payload && typeof payload === "object" && payload.responseMeta ? payload.responseMeta : null;
@@ -314,6 +315,10 @@ export function installTranslationProvider(runtime) {
     });
     if (!response.ok) {
       const reason = runtime.getErrorMessage(runtime.toProviderError(payload, response.status, response.statusText, "OpenAI-compatible translation API error"));
+      // 思考参数被拒：报错点名了它才算，且这个端点会被记下来（见 translation-utils.js）。
+      if (runtime.shouldRetryWithoutThinkingFields(body, endpoint, reason)) {
+        return runtime.RETRY_WITHOUT_THINKING_FIELDS;
+      }
       if (body.response_format && runtime.shouldRetryWithoutJsonResponseFormat(reason)) {
         return null;
       }

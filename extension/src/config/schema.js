@@ -1,5 +1,6 @@
 import languages from "../shared/languages.js";
 import llmProviders from "../shared/llm-providers.js";
+import { normalizeThinkingMode } from "../shared/thinking-mode.js";
 import { NOVEL_SPEED_DEFAULTS, clampNovelSpeed } from "../shared/novel-speed.js";
 import { WEBPAGE_SPEED_DEFAULTS, clampWebpageSpeed } from "../shared/webpage-speed.js";
 
@@ -38,18 +39,24 @@ export const DEFAULT_TRANSLATION_CONFIG = Object.freeze({
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-chat",
   sourceLanguage: "auto",
-  targetLanguage: "zh-CN"
+  targetLanguage: "zh-CN",
+  // 思考模式：auto = 不发送任何参数（与服务商默认一致，也是升级前的行为）。
+  // 选 off/on 才会往请求体里加 thinking / enable_thinking，见 shared/thinking-mode.js。
+  thinkingMode: "auto"
 });
 
 // 提取类配置只保留「用配置库里的哪一条」（vendor）与两个兼容字段：
 // followTranslation 供旧存档解析，旧的自有字段在迁移后清空即表示「没有可用 AI 服务」。
+// thinkingMode 由配置库条目下发（见 config/vendors.js#overlayVendorEntry）：提取也是机械任务，
+// 思考同样白花钱，所以它跟着用户选的那条配置走，不单独再给一个开关。
 export const DEFAULT_TERM_EXTRACTION_CONFIG = Object.freeze({
   provider: "",
   apiKey: "",
   baseUrl: "",
   model: "qwen2.5:7b",
   vendor: "",
-  followTranslation: true
+  followTranslation: true,
+  thinkingMode: "auto"
 });
 
 export const DEFAULT_SENTENCE_EXTRACTION_CONFIG = Object.freeze({
@@ -58,7 +65,8 @@ export const DEFAULT_SENTENCE_EXTRACTION_CONFIG = Object.freeze({
   baseUrl: "",
   model: "qwen2.5:7b",
   vendor: "",
-  followTranslation: true
+  followTranslation: true,
+  thinkingMode: "auto"
 });
 
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
@@ -160,7 +168,8 @@ export function normalizeTranslationConfig(value = {}) {
     apiKey: perProvider.apiKeys[provider] || perProvider.apiKeys.custom || "",
     apiKeys: perProvider.apiKeys,
     sourceLanguage,
-    targetLanguage
+    targetLanguage,
+    thinkingMode: normalizeThinkingMode(value.thinkingMode)
   };
 }
 
@@ -184,7 +193,8 @@ function normalizeLlmExtractionConfig(value = {}, defaults) {
     // 配置库条目名（mt_translation_vendors_v1）：有名字就用它那一条，空则用本节自有字段。
     vendor: text(value.vendor),
     // 未显式关掉就跟随翻译服务（老的存档没有这个字段 → 也跟随，省得再填一遍 Key）
-    followTranslation: value.followTranslation !== false
+    followTranslation: value.followTranslation !== false,
+    thinkingMode: normalizeThinkingMode(value.thinkingMode)
   };
 }
 

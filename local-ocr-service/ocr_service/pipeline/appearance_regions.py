@@ -137,6 +137,31 @@ def union_boxes(first: dict[str, runtime.Any], second: dict[str, runtime.Any]) -
 
 runtime.union_boxes = union_boxes
 
+def solid_sampling_reference(text_polygons: list[runtime.Any], scale: float) -> int:
+    """实底采样留边的**单位长度**：字形尺寸，不是文字框的长边。
+
+    竖排台词的「一行」是一整列：item box 的高度是**列长**（真实一页实测 192px）。拿它当
+    vertical_reference，near 采样区上下各外扩 0.35×192≈67px，直接越出气泡采到插画，
+    每次都撞上「内部跨界离群」这道结构门 —— 同一页 19 行里只有 1 行被判成实底，其余全部
+    退化成 bg_type=none（改用清理图），用户看到的就是「纯白气泡背景不干净」。
+    口径：取每个文字框**短边**的中位数（横排 = 行高，竖排 = 字宽，斜排 = 笔画厚度）；
+    拿不到多边形时返回 0，由调用方沿用原来的 line_height。
+    """
+    sides: list[float] = []
+    for polygon in text_polygons or []:
+        points = [(float(point[0]), float(point[1])) for point in polygon
+                  if isinstance(point, (list, tuple)) and len(point) >= 2]
+        if len(points) < 3:
+            continue
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        sides.append(min(max(xs) - min(xs), max(ys) - min(ys)))
+    if not sides:
+        return 0
+    return max(1, int(runtime.math.ceil(float(runtime.np.median(sides)) * scale)))
+
+runtime.solid_sampling_reference = solid_sampling_reference
+
 def detect_solid_region_for_box(image: runtime.Any, lab: runtime.Any, source_box: dict[str, runtime.Any], scale: float, text_polygons: list[runtime.Any] | None=None) -> dict[str, runtime.Any] | None:
     """近区必须通过；远区仅在指标通过时用于扩大纯色覆盖区域。"""
     image_height, image_width = image.shape[:2]
@@ -147,10 +172,11 @@ def detect_solid_region_for_box(image: runtime.Any, lab: runtime.Any, source_box
     if right - left < 4 or bottom - top < 4:
         return None
     line_height = max(1, int(runtime.math.ceil(float(source_box.get('line_height') or source_box.get('height') or 0) * scale)))
-    near = runtime.measure_solid_background_scale(lab, (left, top, right, bottom), 0.12, 0.35, text_polygons or [], scale, line_height)
+    reference = runtime.solid_sampling_reference(text_polygons or [], scale) or line_height
+    near = runtime.measure_solid_background_scale(lab, (left, top, right, bottom), 0.12, 0.35, text_polygons or [], scale, reference)
     if near is None:
         return None
-    far = runtime.measure_solid_background_scale(lab, (left, top, right, bottom), 0.28, 1.0, text_polygons or [], scale, line_height, enforce_thresholds=False)
+    far = runtime.measure_solid_background_scale(lab, (left, top, right, bottom), 0.28, 1.0, text_polygons or [], scale, reference, enforce_thresholds=False)
     if far is None:
         return None
     far_x, far_y, far_w, far_h = far['roi']

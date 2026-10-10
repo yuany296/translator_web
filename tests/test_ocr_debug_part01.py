@@ -91,7 +91,7 @@ def test_local_ocr_request_defaults_to_fast_mode() -> None:
     import server
 
     assert server.OcrRequest(image="placeholder").mode == "fast"
-    assert server.OCR_GEOMETRY_CONTRACT_VERSION == "detect-crop-recognize-appearance-layout-v6"
+    assert server.OCR_GEOMETRY_CONTRACT_VERSION == "detect-crop-recognize-appearance-layout-v7"
     extension_versions = (
         Path(__file__).resolve().parents[1] / "extension" / "src" / "config" / "versions.js"
     ).read_text(encoding="utf-8")
@@ -289,6 +289,58 @@ def test_visual_text_blocks_split_shifted_multirow_paragraphs() -> None:
     assert [len(block["items"]) for block in blocks] == [2, 3]
     assert "지하철" not in " ".join(item["text"] for item in blocks[0]["items"])
     assert "지하철" in " ".join(item["text"] for item in blocks[1]["items"])
+
+def test_solid_sampling_reference_uses_glyph_size_not_column_length() -> None:
+    """竖排台词的一「行」是一整列：留边单位必须取字形尺寸（短边），不是列长。
+
+    取列长（真实一页 192px）会让 near 采样区上下各外扩 0.35×192≈67px，越出气泡采到
+    插画 → 每次都撞上「内部跨界离群」→ 同一页 19 行只有 1 行判成实底，其余全部
+    退化成 bg_type=none（改用清理图），用户看到「纯白气泡背景不干净」。
+    """
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    column = [[100, 100], [100, 400], [140, 400], [140, 100]]        # 竖排一列 40x300
+    line = [[100, 100], [400, 100], [400, 145], [100, 145]]          # 横排一行 300x45
+    assert server.solid_sampling_reference([column], 1.0) == 40, "竖排取字宽"
+    assert server.solid_sampling_reference([line], 1.0) == 45, "横排取行高"
+    assert server.solid_sampling_reference([column, column, column], 1.0) == 40, "三列仍取字宽"
+    assert server.solid_sampling_reference([], 1.0) == 0, "没有多边形时交给调用方的 line_height"
+    assert server.solid_sampling_reference([column], 0.5) == 20, "按采样比例缩放"
+
+def test_solid_region_near_sampling_uses_glyph_reference_for_vertical_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    import server
+
+    if not server.CV2_AVAILABLE:
+        pytest.skip("OpenCV unavailable")
+    image = server.np.full((220, 360, 3), 250, dtype=server.np.uint8)
+    lab = server.cv2.cvtColor(image, server.cv2.COLOR_BGR2LAB)
+    vertical_references: list[int] = []
+
+    def measure(*args, **kwargs):
+        vertical_references.append(int(args[6]))
+        return {
+            "roi": (120, 60, 60, 160),
+            "median_bgr": server.np.asarray([250, 250, 250], dtype=server.np.uint8),
+            "lab_variance": 4.0,
+            "delta_e_p90": 5.0,
+            "dominant_coverage": 0.96,
+            "passes_thresholds": True,
+        }
+
+    monkeypatch.setattr(server, "measure_solid_background_scale", measure)
+    # 竖排一列：item box 高 300（列长）、宽 40（字宽），line_height 也是 300。
+    region = server.detect_solid_region_for_box(
+        image,
+        lab,
+        {"left": 100, "top": 60, "width": 40, "height": 300, "line_height": 300},
+        1.0,
+        [[[100, 60], [100, 360], [140, 360], [140, 60]]],
+    )
+
+    assert region is not None
+    assert vertical_references == [40, 40], "留边单位必须是字宽 40，不是列长 300"
 
 def test_solid_region_near_sampling_uses_line_height(monkeypatch: pytest.MonkeyPatch) -> None:
     import server

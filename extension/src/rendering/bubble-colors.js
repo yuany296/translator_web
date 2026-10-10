@@ -38,6 +38,13 @@ const STROKE_GUARD_COLOURED_CHROMA = 40;
 const STROKE_GUARD_MIN_BG_DISTANCE = 60;
 const STROKE_GUARD_TOTAL_INK_RATIO = 0.005;
 const STROKE_GUARD_TOP_COUNT_RATIO = 0.04;
+// 「外圈是不是一条均匀的平底色」的容忍距离（RGB 欧氏），与本地服务
+// SOLID_BACKGROUND_MAX_DELTA_E_P90 = 20（Lab）同一量级的保守取值。
+const BG_RING_UNIFORM_DISTANCE = 24;
+// 判成实底需要的环内一致率与最低亮度：亮度门槛沿用服务端 classify_solid_region_type
+// 的 bright_background（relative_luminance ≥ 0.72），两边对「亮底」是同一个口径。
+const BG_SOLID_MIN_COVERAGE = 0.92;
+const BG_SOLID_MIN_LUMINANCE = 0.72;
 
 export function normalizeHexColor(value) {
   const text = String(value || "").trim();
@@ -212,6 +219,11 @@ export function sampleBubbleAppearance(sample, box) {
     const values = ring.map(pixel => pixel[channel]).sort((a, b) => a - b);
     return values[Math.floor(values.length / 2)];
   });
+  // 环内一致率：有多少边框像素就贴着这个中位色。`applySampledBubbleColors` 用它判断
+  // 「外圈是一条平底色（白气泡）还是一片插画」—— 只有贴得够紧才允许画平涂。
+  const bgCoverage = ring.filter(pixel => Math.hypot(
+    pixel[0] - background[0], pixel[1] - background[1], pixel[2] - background[2]
+  ) <= BG_RING_UNIFORM_DISTANCE).length / ring.length;
   // 墨色：与背景距离足够的像素，按 24 级量化取主色
   const buckets = new Map();
   for (let y = top; y < bottom; y += 1) {
@@ -232,6 +244,7 @@ export function sampleBubbleAppearance(sample, box) {
     : null;
   return {
     bgColor: rgbToHex(background),
+    bgCoverage,
     inkColor: ink ? rgbToHex(ink) : ""
   };
 }
@@ -300,13 +313,25 @@ export function applySampledBubbleColors(items, imageAnalysis) {
     const needsText = !hasColor(item.text_color || item.textColor) || fallbackText;
     const needsStroke = !hasColor(item.stroke_color || item.strokeColor) || fallbackStroke;
     const needsBackground = !hasColor(item.bg_color || item.bgColor);
-    if (!needsText && !needsStroke && !needsBackground) return;
+    // 复杂背景条目即使颜色齐全也要走一遍：平底色升级（见下面 adaptiveBackground）
+    // 依赖采样结果，而它可能在上一次调用里才刚被补齐。
+    if (!needsText && !needsStroke && !needsBackground && !complexBackground) return;
     const appearance = sampleBubbleAppearance(sample, itemBox(item));
     if (!appearance || !appearance.bgColor) return;
     const colors = chooseReadableTextColors(appearance.inkColor, appearance.bgColor);
     if (needsBackground) {
       item.bg_color = appearance.bgColor;
       item.bgColor = appearance.bgColor;
+    }
+    // 「纯粹的白色气泡框直接用实底，别等清理图」：清理图是 inpaint 出来的，
+    // 白底上必然留下擦不干净的痕迹（用户看到的「背景不纯净」），而这类气泡本来就是
+    // 一块平底色。条件是**量到的**：文字框外圈一致率够高、且是亮底 ——
+    // 环不够均匀就什么都不做（平涂一块网点/渐变会把插画糊成色块，这条底线不能破）。
+    if (complexBackground && appearance.bgCoverage >= BG_SOLID_MIN_COVERAGE
+        && relativeLuminance(appearance.bgColor) >= BG_SOLID_MIN_LUMINANCE) {
+      item.adaptiveBackground = {
+        type: "solid", color: appearance.bgColor, confidence: Number(appearance.bgCoverage.toFixed(3))
+      };
     }
     if (needsText) {
       item.text_color = colors.textColor;

@@ -227,6 +227,44 @@ test("描边救援必须跟文字色配对：白字不得被配成白描边", ()
   assert.equal(items[0].strokeColor, "#000000", "camelCase 别名同步");
 });
 
+test("均匀亮色外圈直接升级成实底（白气泡不再靠清理图）", () => {
+  // 现场：CMOA 一页 19 行里只有 1 行被服务判成实底容器，其余全部 bg_type=none ——
+  // 白气泡于是拿 inpaint 出来的清理图当背景，擦过的地方永远不干净。
+  const flat = { box: box0() };
+  applySampledBubbleColors([flat], { sample: makeSample({ ink: [16, 16, 16] }) });
+  assert.deepEqual(flat.adaptiveBackground, { type: "solid", color: "#fafafa", confidence: 1 });
+  assert.equal(flat.bg_color, "#fafafa", "实底同时也把采样背景色写回，供渲染层推导文字色");
+});
+
+test("外圈不均匀或不是亮底时不许升级（继续用清理图）", () => {
+  // 网点/插画底：环内中位色是灰，一致率低 → 平涂会把插画糊成色块。
+  const noisy = makeSample({ ink: [16, 16, 16] });
+  for (let y = 0; y < noisy.height; y += 1) {
+    for (let x = 0; x < noisy.width; x += 1) {
+      const offset = (y * noisy.width + x) * 4;
+      const value = (x + y) % 2 === 0 ? 40 : 220;
+      noisy.data[offset] = value;
+      noisy.data[offset + 1] = value;
+      noisy.data[offset + 2] = value;
+    }
+  }
+  const narration = { box: box0() };
+  applySampledBubbleColors([narration], { sample: noisy });
+  assert.equal(narration.adaptiveBackground, undefined, "环不一致时必须保持 none");
+
+  // 深色均匀底：亮度门槛与服务端 classify_solid_region_type 的 bright_background 同口径，
+  // 扩展侧这次只做「白气泡」，深底交给服务端的容器判定。
+  const dark = { box: box0() };
+  applySampledBubbleColors([dark], { sample: makeSample({ background: [20, 20, 24], ink: [242, 242, 242] }) });
+  assert.equal(dark.adaptiveBackground, undefined, "深底不升级");
+});
+
+test("服务端已经判成实底的条目不被扩展侧改写", () => {
+  const item = { box: box0(), bg_type: "solid", adaptiveBackground: { type: "solid", color: "#112233", confidence: 0.9 } };
+  applySampledBubbleColors([item], { sample: makeSample({ ink: [16, 16, 16] }) });
+  assert.deepEqual(item.adaptiveBackground, { type: "solid", color: "#112233", confidence: 0.9 });
+});
+
 test("中灰蓝背景渐变红字白描边：红笔画胜出且被保留成红字白边", () => {
   // RIDI 第 8 话「30年前袭击地球的'地下城'正是」现场形态（真机取证：背景
   // #60778f 中灰蓝，红笔画与背景亮度几乎相同 ct 1.0~1.8，被 v2 的 ct≥2 全跳过；

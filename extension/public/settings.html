@@ -57,7 +57,7 @@
         <div id="localPaddleFields">
           <label>本地服务地址<input id="ocrBaseUrl" type="url" /></label>
           <div class="form-grid three"><label>检测阈值<input id="detThresh" type="number" min="0.01" max="0.99" step="0.01" /></label><label>文本框阈值<input id="detBoxThresh" type="number" min="0.01" max="0.99" step="0.01" /></label><label>扩张比例<input id="detUnclipRatio" type="number" min="1" max="5" step="0.1" /></label></div>
-          <label class="check-row"><input id="ocrDebug" type="checkbox" /><span>保存 OCR 调试信息</span></label>
+          <label class="check-row"><input id="ocrDebug" type="checkbox" /><span>保存 OCR 调试信息（并在页面上画出识别框与 raw/block 标签，那些标签不是译文）</span></label>
         </div>
         <div id="baiduFields" class="form-grid two hidden"><label>百度 API Key<input id="baiduAk" type="password" /></label><label>百度 Secret Key<input id="baiduSk" type="password" /></label></div>
       </article>

@@ -132,6 +132,23 @@
 .mt-debug-deduped { color: #22c55e; }
 .mt-debug-block { color: #38bdf8; border-width: 2px; }
 
+/* 调试层自我说明横幅：这些标签是识别中间结果，不是译文。
+   用户看着满屏 raw=/block= 小字时最难判断的正是这一点（现场提问原话）。 */
+.mt-debug-badge {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 42;
+  pointer-events: none;
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.82);
+  color: #ffd666;
+  font: 10px/1.35 monospace;
+  letter-spacing: normal;
+  font-style: normal;
+  text-transform: none;
+}
+
 .mt-debug-stage-block,
 .mt-debug-stage-duplicate,
 .mt-debug-stage-merged {

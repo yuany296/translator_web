@@ -13,6 +13,7 @@ import { installSceneCrossPage } from "./scene-crosspage.js";
 import { installSceneCanonical } from "./scene-canonical.js";
 import { installSceneDispatch } from "./scene-dispatch.js";
 import { installRendererOverlay } from "./renderer-overlay.js";
+import { installOcrDebugOverlay } from "./ocr-debug-overlay.js";
 import { installRendererMask } from "./renderer-mask.js";
 import { installRendererCover } from "./renderer-cover.js";
 import { installCrossPageCover } from "./crosspage-cover.js";
@@ -89,6 +90,7 @@ export const contentPhases = Object.freeze({
     installSceneCanonical,
     installSceneDispatch,
     installRendererOverlay,
+    installOcrDebugOverlay,
     // 清理图是异步落到页上的：装配它，canonical 层才能在 artifact 落地时
     // 立刻把遮罩绑到已存在的覆盖层上，而不是等一次未必会发生的重渲染。
     installRendererMask,

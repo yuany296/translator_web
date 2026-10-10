@@ -48,9 +48,19 @@ test("OCR 调试框不会参与页面命中测试", () => {
   assert.match(css, /\.mt-debug-block/);
 });
 
+test("OCR 调试层自带「这不是译文」的说明横幅", () => {
+  const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
+  const overlay = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "ocr-debug-overlay.js"), "utf8");
+  // 现场提问「日漫旁边这些是什么、为什么这么多」——标签必须自报家门，否则用户无法判断它是不是译文
+  assert.match(css, /\.mt-debug-badge\s*\{[\s\S]*?pointer-events:\s*none/);
+  assert.match(overlay, /badge\.className = "mt-debug-badge"/);
+  assert.match(overlay, /OCR 调试层：下面[\s\S]*?不是译文/);
+  assert.match(overlay, /if \(appended > 0\)/);
+});
+
 test("OCR 原始框与合并框的标签使用独立垂直轨道", () => {
   const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
-  const overlay = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "renderer-overlay.js"), "utf8");
+  const overlay = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "ocr-debug-overlay.js"), "utf8");
   assert.match(css, /bottom:\s*calc\(100% \+ var\(--mt-debug-label-lane,\s*0px\)\)/);
   assert.match(css, /\.mt-debug-stage-block,[\s\S]*?--mt-debug-label-lane:\s*14px/);
   assert.match(overlay, /labelDiv\.style\.left = `\$\{item\.polygon\[0\]\.x\}%`[\s\S]*?resolveBubblePolygonRotation\(item\.polygon,[\s\S]*?transformOrigin = "left bottom"/);

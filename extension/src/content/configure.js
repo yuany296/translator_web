@@ -131,6 +131,7 @@ export function prepareContentRuntime(runtime) {
     runtime.state.displayMode = config.displayMode;
     runtime.state.webpageDisplayMode = config.displayMode;
     runtime.state.novelDisplayMode = config.displayMode;
+    runtime.state.translationMode = config.translationMode;
     runtime.state.coverPadding = config.overwriteCoverPadding;
     runtime.state.sourceLanguage = translation.sourceLanguage;
     runtime.state.targetLanguage = translation.targetLanguage;
@@ -140,6 +141,12 @@ export function prepareContentRuntime(runtime) {
   };
   runtime.getConfiguredSourceLanguage = () => runtime.state.sourceLanguage || "auto";
   runtime.getTargetLanguage = () => runtime.state.targetLanguage || "zh-CN";
+  // 翻译模式的唯一判据：本页的临时选择优先于全局默认。请求侧（recognition-seam /
+  // recognition-stitch）与渲染侧（scene-dispatch 强制 overlay）都只读这两个函数，
+  // 不要各自去读 state.translationMode。
+  runtime.getEffectiveTranslationMode = () => runtime.state.translationModeOverride
+    || runtime.state.translationMode || "provider";
+  runtime.isOcrOnlyTranslation = () => runtime.getEffectiveTranslationMode() === "ocrOnly";
   runtime.resolveSourceLanguage = (value, recognized = "") => languages.resolveSourceLanguage(
     runtime.getConfiguredSourceLanguage(), value, recognized
   );
@@ -196,6 +203,9 @@ export function prepareContentRuntime(runtime) {
     const captureChanged = config.captureMode !== runtime.state.captureMode;
     const renderChanged = config.renderMode !== runtime.state.renderMode;
     const displayChanged = config.displayMode !== runtime.state.displayMode;
+    const translationModeChanged = config.translationMode !== runtime.state.translationMode;
+    // 在设置页改全局翻译模式是一次显式意图：本页的临时选择让位给新默认值。
+    if (translationModeChanged) runtime.state.translationModeOverride = null;
     Object.assign(runtime.state, { enabled: config.enabled, showFloatingBall: config.showBall,
       captureMode: config.captureMode, renderMode: config.renderMode,
       pretranslateMode: config.pretranslateMode, floatingSide: config.floatingSide,
@@ -208,7 +218,8 @@ export function prepareContentRuntime(runtime) {
       webpageBatchItems: config.webpageBatchItems,
       webpageBatchChars: config.webpageBatchChars,
       webpageConcurrency: config.webpageConcurrency,
-      webpageDisplayMode: config.displayMode, novelDisplayMode: config.displayMode });
+      webpageDisplayMode: config.displayMode, novelDisplayMode: config.displayMode,
+      translationMode: config.translationMode });
     // 切换到手动翻译时停止一切自动预翻译：关闭本页自动翻译、清空自动入队任务。
     // 自动模式间的切换（领先/连续）保留用户的悬浮球自动翻译状态。
     if (config.pretranslateMode === "manual") {
@@ -221,6 +232,8 @@ export function prepareContentRuntime(runtime) {
     runtime.setNovelTranslationVisibility?.(runtime.getNovelState?.().showTranslation !== false);
     if (captureChanged) runtime.state.payloadCacheByTargetKey.clear();
     if (captureChanged || renderChanged || displayChanged) runtime.clearAllRenderedTargets();
+    // 翻译模式变了：已经 settle 的译文（可能是直通值）必须丢掉，否则切回翻译会一直复用直通值。
+    if (translationModeChanged) runtime.invalidateComicTranslations?.();
     if (!config.enabled) runtime.state.autoTranslatePageEnabled = false;
     runtime.ensureExtensionUiMounted();
     if (config.enabled) {

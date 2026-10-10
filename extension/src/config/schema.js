@@ -71,6 +71,11 @@ export const DEFAULT_SENTENCE_EXTRACTION_CONFIG = Object.freeze({
 
 export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   enabled: true, showBall: true, captureMode: "direct", renderMode: "overlay",
+  // 翻译模式：provider = 交给翻译服务；ocrOnly = 只做 OCR 不翻译，覆盖层渲染识别到的原文，
+  // 由浏览器自带的页面翻译就地接手（省掉模型调用，代价是没有术语库、没有译文缓存与修订）。
+  // 注意它管的是「要不要翻」，与只管「显示什么」的 displayMode 是两件事：
+  // displayMode=bilingual 照样会请求模型。目前只有漫画链路会把它发到后台。
+  translationMode: "provider",
   pretranslateMode: "manual", ignoreSimplifiedChinese: false,
   // 领先预翻译预取的切片数（配合 VISIBLE_TRANSLATION_RESERVED_SLOTS 决定能否追上滚动）。
   pretranslateAheadCount: 6,
@@ -236,6 +241,7 @@ export function normalizeRuntimeConfig(value = {}) {
     showBall: value.showBall !== false,
     captureMode: value.captureMode === "screenshot" ? "screenshot" : "direct",
     renderMode: value.renderMode === "embedded" ? "embedded" : "overlay",
+    translationMode: value.translationMode === "ocrOnly" ? "ocrOnly" : "provider",
     pretranslateMode: ["ahead", "continuous"].includes(value.pretranslateMode) ? value.pretranslateMode : "manual",
     pretranslateAheadCount: numberIn(value.pretranslateAheadCount, 1, 12, DEFAULT_RUNTIME_CONFIG.pretranslateAheadCount),
     ignoreSimplifiedChinese: value.ignoreSimplifiedChinese === true,

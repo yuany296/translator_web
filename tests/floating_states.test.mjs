@@ -264,11 +264,18 @@ test("comic menu separates stop, hide overlay and clear overlay", () => {
   const running = states.buildComicMenuItems(states.buildComicState({ enabled: true, running: true, overlayVisible: true }));
   assert.deepEqual(running.map(item => item.id), [
     "translate-viewport", "start-continuous", "stop-continuous",
-    "show-overlay", "hide-overlay", "clear-overlay"
+    "show-overlay", "hide-overlay", "clear-overlay", "ocr-only-on"
   ]);
   assert.equal(running.find(item => item.id === "stop-continuous").disabled, false);
   assert.equal(running.find(item => item.id === "start-continuous").disabled, true);
   assert.equal(running.find(item => item.id === "hide-overlay").disabled, false);
+  // 「只 OCR 不翻译」项随生效模式翻转：默认 provider 时提供「改为仅识别」，
+  // 已是 ocrOnly 时提供「恢复模型翻译」（本页临时切换，见 content/configure.js）。
+  assert.equal(running.find(item => item.id === "ocr-only-on").disabled, false);
+  const ocrOnly = states.buildComicMenuItems(states.buildComicState({ enabled: true, translationMode: "ocrOnly" }));
+  assert.equal(ocrOnly.at(-1).id, "ocr-only-off");
+  assert.match(ocrOnly.at(-1).label, /恢复模型翻译/u);
+  assert.doesNotMatch(ocrOnly.map(item => item.id).join(","), /ocr-only-on/u);
   const hidden = states.buildComicMenuItems(states.buildComicState({ enabled: true, running: true, overlayVisible: false }));
   assert.equal(hidden.find(item => item.id === "show-overlay").disabled, false);
   assert.equal(hidden.find(item => item.id === "hide-overlay").disabled, true);

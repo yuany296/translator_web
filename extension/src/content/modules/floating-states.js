@@ -87,6 +87,8 @@ function buildComicState(ctx = {}) {
     displayMode: "original",
     cacheCoverage: "none",
     overlayVisibility: ctx.overlayVisible === false ? "hidden" : "visible",
+    // 生效的翻译模式（本页临时选择优先于全局默认）。
+    translationMode: ctx.translationMode === "ocrOnly" ? "ocrOnly" : "provider",
     automatic: ctx.pretranslateMode === "ahead" || ctx.pretranslateMode === "continuous"
   };
 }
@@ -260,13 +262,21 @@ function buildComicMenuItems(state = {}) {
   const running = state.phase === "running";
   const loading = state.phase === "loading";
   const overlayVisible = state.overlayVisibility !== "hidden";
+  const ocrOnly = state.translationMode === "ocrOnly";
   return [
     { id: "translate-viewport", label: "翻译当前视口", disabled: loading },
     { id: "start-continuous", label: "开始连续翻译", disabled: running || loading },
     { id: "stop-continuous", label: "停止连续翻译", disabled: !running },
     { id: "show-overlay", label: "显示译文覆盖层", disabled: overlayVisible },
     { id: "hide-overlay", label: "隐藏译文覆盖层", disabled: !overlayVisible },
-    { id: "clear-overlay", label: "清除当前页面覆盖层", disabled: false }
+    { id: "clear-overlay", label: "清除当前页面覆盖层", disabled: false },
+    // 只 OCR 不翻译（本页临时，不落盘）：覆盖层渲染识别到的原文，交给浏览器自带的
+    // 「翻译此页」就地翻它。省掉模型调用，代价是没有术语库、译文缓存与修订。
+    {
+      id: ocrOnly ? "ocr-only-off" : "ocr-only-on",
+      label: ocrOnly ? "恢复模型翻译（本页）" : "仅识别不翻译（本页）",
+      disabled: false
+    }
   ];
 }
 

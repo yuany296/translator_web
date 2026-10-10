@@ -40,7 +40,7 @@ export function installControlsTriple(runtime) {
       invalidated: runtime.state.invalidated,
       running: runtime.state.autoTranslatePageEnabled && runtime.state.enabled,
       working: runtime.state.comicWorking === true,
-      overlayVisible: runtime.getOverlayLayerVisibility?.() !== false, pretranslateMode: runtime.state.pretranslateMode
+      overlayVisible: runtime.getOverlayLayerVisibility?.() !== false, pretranslateMode: runtime.state.pretranslateMode, translationMode: runtime.getEffectiveTranslationMode?.() || "provider"
     };
   }
 
@@ -352,7 +352,7 @@ export function installControlsTriple(runtime) {
         runtime.showFloatingBallFeedback("已清除当前页面译文覆盖层", "info");
         return;
       default:
-        return;
+        return runtime.handleComicTranslationModeMenu?.(id);
     }
   }
 

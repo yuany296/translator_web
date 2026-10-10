@@ -72,16 +72,19 @@ export function installSceneDispatch(runtime) {
   }
   runtime.isKakaopageTargetStillRenderable = isKakaopageTargetStillRenderable;
   function isEmbeddedRenderMode() {
+    // 「只 OCR 不翻译」必须走 DOM 覆盖层：embedded/canvas 把文字画进像素，
+    // 浏览器自带的页面翻译看不到它，这个模式就白开了。
+    if (runtime.isOcrOnlyTranslation?.() === true) return false;
     return runtime.state.renderMode === runtime.RENDER_MODE_EMBEDDED;
   }
   runtime.isEmbeddedRenderMode = isEmbeddedRenderMode;
   function shouldUseEmbeddedRender(target) {
-    const novelImage = runtime.isNovelImageTarget?.(target) === true;
-    return (runtime.isEmbeddedRenderMode() || novelImage) && !runtime.isBackgroundImageTarget(target);
-  }
     // 整页合成目标没有**单个**可以替换的元素（一页的内容是多条瓦片 img），
     // 嵌入渲染无处落笔，一律走 DOM 覆盖层。
     if (runtime.isCompositePageTarget?.(target) === true) return false;
+    const novelImage = runtime.isNovelImageTarget?.(target) === true;
+    return (runtime.isEmbeddedRenderMode() || novelImage) && !runtime.isBackgroundImageTarget(target);
+  }
   runtime.shouldUseEmbeddedRender = shouldUseEmbeddedRender;
   function getExistingRenderedState(targetId) {
     return runtime.state.embeddedById.get(targetId) || runtime.state.overlaysById.get(targetId) || null;

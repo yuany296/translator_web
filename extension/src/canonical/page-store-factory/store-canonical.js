@@ -209,6 +209,30 @@ export function installStoreCanonical(runtime, scope) {
     },
     /* ---- 工具 ---- */
 
+    /**
+     * 丢弃所有已结算的译文，但保留 OCR 观测与 canonical —— 供「切换翻译模式」使用
+     * （provider ↔ ocrOnly）。
+     *
+     * 为什么必须丢掉而不是留着复用：ocrOnly 模式下的译文是**直通值**（translated_text
+     * 就是原文，指纹 passthrough_*）。若把它们留在库里，切回 provider 时
+     * `claimTranslations` 会因为 `attemptedTranslationKeys` 命中而直接跳过，
+     * 页面就会永远显示日文原文、再也不会请求真正的翻译。
+     * 反向同理：留着旧译文会让「已切换到不翻译」的页面继续显示旧译文，前后不一致。
+     *
+     * `projectionsByPage` 一并清掉，因为 projection 里烘进了 translated_text，
+     * 不清就会拿旧值重画。观测/canonical/页句柄都不动，所以不需要重新 OCR。
+     */
+    dropTranslations() {
+      scope.translationsByCanonicalRevision.clear();
+      scope.translationErrorsByCanonicalRevision.clear();
+      scope.pendingTranslationKeys.clear();
+      for (const waiter of scope.pendingTranslationWaiters.values()) waiter.resolve(false);
+      scope.pendingTranslationWaiters.clear();
+      scope.attemptedTranslationKeys.clear();
+      scope.edgeWaitStates.clear();
+      scope.projectionsByPage.clear();
+    },
+
     /** 重置所有状态（用于测试或扩展热重载） */
     reset() {
       scope.globalOcrEntries.clear();

@@ -251,6 +251,11 @@ export function installReaderState(runtime) {
     targetLanguage: "zh-CN",
     ocrLanguage: "auto",
     displayMode: "translated",
+    // 翻译模式（provider/ocrOnly）。translationMode 是**全局配置的默认值**；
+    // translationModeOverride 是本标签页在悬浮菜单里临时选的模式（不落盘）。
+    // 判定一律走 runtime.getEffectiveTranslationMode()，不要直接读这两个字段。
+    translationMode: "provider",
+    translationModeOverride: null,
     webpageDisplayMode: "translated",
     novelDisplayMode: "translated",
     floatingSide: "right",

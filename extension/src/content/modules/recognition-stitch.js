@@ -197,6 +197,8 @@ export function installRecognitionStitch(runtime) {
       const response = await runtime.sendRuntimeMessage({
         type: "TRANSLATE_TEXT_BLOCKS",
         sourceImageId: `${targetKey}|boundary-trim`,
+        // 与 recognition-seam 同口径：只 OCR 不翻译时不请求模型。
+        translationMode: runtime.getEffectiveTranslationMode?.() || "provider",
         items: [{
           id: String(bubble.block_id || bubble.id || "boundary-trimmed"),
           original_text: bubble.original_text,

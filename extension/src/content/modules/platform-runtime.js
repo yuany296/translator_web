@@ -162,6 +162,60 @@ export function installPlatformRuntime(runtime) {
     console.info("[MangaTranslator] context invalidated, waiting for reinjection:", reason);
   }
   runtime.markInvalidated = markInvalidated;
+  /**
+   * 让已产出的漫画译文立即失效并重跑一遍可见区。
+   *
+   * 为什么不能只清覆盖层：canonical store 里已经 settle 了 `translated_text`
+   * 与烘进 projection 的译文，`claimTranslations` 靠 `attemptedTranslationKeys`
+   * 把重复请求挡掉。不清库就会出现「切到不翻译仍显示旧译文」以及更糟的反向
+   * 「切回翻译却永远不复译」——store.dropTranslations() 的注释里有完整说明。
+   * OCR 观测与 canonical 不动，所以这一步不需要重新识别。
+   */
+  function invalidateComicTranslations() {
+    runtime.state.kakaoStore?.dropTranslations?.();
+    runtime.clearAllRenderedTargets();
+    // 清掉「已翻译」标记：reader-observers 正是靠它为空来重新入队的。
+    document.querySelectorAll(runtime.TARGET_SELECTOR).forEach(target => {
+      delete target.dataset.mtLastTranslatedKey;
+      delete target.dataset.mtNoTextKey;
+    });
+    runtime.rescan?.();
+    if (runtime.state.enabled === true && runtime.shouldSchedulePagePretranslation?.()) {
+      runtime.scheduleAheadPretranslation?.("translation-mode-change");
+    }
+    runtime.updateFloatingBallState?.();
+  }
+  runtime.invalidateComicTranslations = invalidateComicTranslations;
+  /**
+   * 本标签页临时切换翻译模式（全局默认在设置页，见 config/schema.js）。
+   * 选到与全局默认相同的值时把 override 清掉，避免留下一个与默认无差别的覆盖值。
+   */
+  function setComicTranslationMode(mode) {
+    const next = mode === "ocrOnly" ? "ocrOnly" : "provider";
+    runtime.state.translationModeOverride = next === runtime.state.translationMode ? null : next;
+    invalidateComicTranslations();
+    return next;
+  }
+  runtime.setComicTranslationMode = setComicTranslationMode;
+  /** 悬浮菜单入口：切换本页翻译模式并给出反馈（提示用户这件事要靠浏览器翻译接手）。 */
+  function toggleComicTranslationMode(enableOcrOnly) {
+    const next = setComicTranslationMode(enableOcrOnly === true ? "ocrOnly" : "provider");
+    runtime.showFloatingBallFeedback?.(next === "ocrOnly"
+      ? "本页已改为仅识别：覆盖层显示原文，请用浏览器自带的「翻译此页」翻它"
+      : "本页已恢复模型翻译，正在重新翻译当前视口", "info");
+    return next;
+  }
+  runtime.toggleComicTranslationMode = toggleComicTranslationMode;
+  /**
+   * 悬浮菜单里与翻译模式相关的项：命中返回切换结果，未命中返回 undefined。
+   * controls-triple 的 handleComicMenuAction 所有未列出的 id 都走这里，
+   * 所以新增模式项只改 floating-states 与本模块，不必动那个 switch。
+   */
+  function handleComicTranslationModeMenu(id) {
+    if (id !== "ocr-only-on" && id !== "ocr-only-off") return undefined;
+    return toggleComicTranslationMode(id === "ocr-only-on");
+  }
+  runtime.handleComicTranslationModeMenu = handleComicTranslationModeMenu;
   function destroy() {
     runtime.hideFloatingBallFeedback?.();
     runtime.restoreAllNovelText();

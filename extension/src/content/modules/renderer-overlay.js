@@ -175,6 +175,7 @@ export function installRendererOverlay(runtime) {
   }
   runtime.scheduleTermDiscovery = scheduleTermDiscovery;
   function buildTermDiscoveryMessage(result, targetKey, sourceIdentity, pageUrl, pageTitle) {
+    if (runtime.isOcrOnlyTranslation?.() === true) return null; // 术语发现会退化成「原文对原文」
     const imageId = `image-${runtime.hashSourceIdentity(`${targetKey}|${sourceIdentity}`)}`;
     const blocks = (result && Array.isArray(result.bubbles) ? result.bubbles : []).map((bubble, index) => {
       if (bubble && bubble.projection_role === "cover_only") {

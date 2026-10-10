@@ -47,6 +47,9 @@
           <label><input type="radio" name="displayMode" value="bilingual" /><span><b>双语</b><small>同时保留原文和译文</small></span></label>
         </fieldset>
       </article>
+      <article class="setting-card">
+        <div class="card-title"><div><h2>漫画翻译方式</h2><p>「仅识别」只做 OCR、不调用翻译模型：覆盖层渲染识别到的原文，由浏览器自带的「翻译此页」接手。这个模式下术语库、译文缓存与译文修订都不生效，小说与网页不受影响。可在漫画悬浮菜单里按页临时切换。</p></div><label class="switch-row"><input id="comicOcrOnly" type="checkbox" /><span></span><b>仅识别不翻译</b></label></div>
+      </article>
       <div class="panel-actions"><button id="saveGeneralBtn" class="primary" type="button">保存常规设置</button><span id="generalStatus" class="inline-status"></span></div>
     </section>
 
@@ -152,10 +155,10 @@
             <label>API Key<input id="vendorKey" type="password" autocomplete="off" /><small id="vendorKeyHint"></small></label>
             <label>Model<select id="vendorModel"></select><input id="vendorModelCustom" type="text" autocomplete="off" placeholder="输入自定义模型名" hidden /><small>可选下拉选择，或点“获取模型列表”拉取全部模型；也可手动输入。</small></label>
             <div class="vendor-model-row"><button id="vendorFetchModelsBtn" type="button">获取模型列表</button><span id="vendorModelStatus" class="inline-status"></span></div>
+            <label>思考模式<select id="vendorThinkingMode"><option value="auto">跟随模型默认（不发送参数）</option><option value="off">关闭思考（省输出 token）</option><option value="on">开启思考</option></select><small>DeepSeek、GLM 4.5+、Qwen3.5+ 等模型的思考模式默认是开的，思维链也按输出 token 计费 —— 小说翻译关掉它通常能省掉大部分输出。关闭时按服务商发对应的参数（DeepSeek/GLM 发 thinking，千问发 enable_thinking，认不准的中转站两种都发）；翻译与两个术语提取服务都跟着这条配置走。</small></label>
           </div>
 
           <p id="vendorFormError" class="vendor-form-error"></p>
-            <label>思考模式<select id="vendorThinkingMode"><option value="auto">跟随模型默认（不发送参数）</option><option value="off">关闭思考（省输出 token）</option><option value="on">开启思考</option></select><small>DeepSeek、GLM 4.5+、Qwen3.5+ 等模型的思考模式默认是开的，思维链也按输出 token 计费 —— 小说翻译关掉它通常能省掉大部分输出。关闭时按服务商发对应的参数（DeepSeek/GLM 发 thinking，千问发 enable_thinking，认不准的中转站两种都发）；翻译与两个术语提取服务都跟着这条配置走。</small></label>
           <div class="dialog-actions">
             <button id="vendorBackBtn" type="button" class="hidden">返回选服务商</button>
             <button id="vendorCancelBtn" type="button">取消</button>

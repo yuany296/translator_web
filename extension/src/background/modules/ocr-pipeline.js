@@ -128,7 +128,7 @@ export function installOcrPipeline(runtime) {
         timing: { totalMs: Date.now() - startedAt, translateMs: 0, officialLoadMs: 0 }
       };
     }
-    const translatableItems = items.filter(item => !item.non_translate);
+    const translatableItems = message && message.translationMode === "ocrOnly" ? [] : items.filter(item => !item.non_translate); // 只 OCR 不翻译：整批直通
     if (translatableItems.length === 0) {
       return {
         ok: true,

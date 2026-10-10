@@ -62,6 +62,7 @@ function updateOcrHint() {
 function fill(configuration) {
   const { ocr, translation, runtime } = configuration;
   byId("runtimeEnabled").checked = runtime.enabled;
+  byId("comicOcrOnly").checked = runtime.translationMode === "ocrOnly";
   byId("sourceLanguage").value = translation.sourceLanguage;
   byId("targetLanguage").value = translation.targetLanguage;
   document.querySelector(`input[name='displayMode'][value='${runtime.displayMode}']`).checked = true;
@@ -151,7 +152,7 @@ async function saveGeneral() {
   validateLanguagePair();
   setStatus("generalStatus", "保存中…");
   await saveSection("translation", { ...configuration.translation, sourceLanguage: value("sourceLanguage"), targetLanguage: value("targetLanguage") });
-  await saveSection("runtime", { ...configuration.runtime, enabled: checked("runtimeEnabled"), displayMode: displayMode() });
+  await saveSection("runtime", { ...configuration.runtime, enabled: checked("runtimeEnabled"), displayMode: displayMode(), translationMode: checked("comicOcrOnly") ? "ocrOnly" : "provider" });
   setStatus("generalStatus", "已保存");
 }
 

@@ -274,6 +274,7 @@ export function installRecognitionSeam(runtime) {
         targetLanguage,
         items: groupItems,
         taskId: String(context.taskId || ""),
+        translationMode: runtime.getEffectiveTranslationMode?.() || "provider", // 只 OCR 不翻译时后台整批直通
         // 只有用户显式打开漫画流式渲染时，才让后台走供应商流式请求；
         // 默认走整批 JSON（流式会给请求加 stream: true，实测会拿到被截尾的译文）。
         streamPartials: runtime.comicStreamingEnabled === true,

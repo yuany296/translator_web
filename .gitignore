@@ -79,6 +79,8 @@ test-run.log
 test3_fails.txt
 tmp-ocr-bench-*.json
 tmp_pairing_tests/
+# 真实页面的探针脚本与截图（诊断证据，含几百 KB 的输出转储），留在磁盘上但不入库
+tmp-cmoa/
 .pytest-tmp*/
 .nodetest-out*.txt
 .qa-*.txt

@@ -65,6 +65,19 @@ function makeElement(tag = "div") {
   };
   // 每个元素自带可观测的 CSS 变量表，方便断言"哪一个 root 拿到了什么变量"。
   element.cssProps = new Map();
+  // 真实 DOM 元素必有 classList（竖排判据 mt-jp-vertical 就挂在上面），假 DOM 也要有，
+  // 否则测到的是"stub 缺能力"而不是生产行为。
+  const classNames = new Set();
+  element.classList = {
+    add: (...names) => names.forEach(name => classNames.add(name)),
+    remove: (...names) => names.forEach(name => classNames.delete(name)),
+    contains: name => classNames.has(name),
+    toggle: (name, force) => {
+      const next = force === undefined ? !classNames.has(name) : force === true;
+      if (next) classNames.add(name); else classNames.delete(name);
+      return next;
+    }
+  };
   element.style = {
     setProperty: (name, value) => element.cssProps.set(name, value),
     getPropertyValue: name => element.cssProps.get(name) || "",

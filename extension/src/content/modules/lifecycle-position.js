@@ -1,4 +1,4 @@
-import { sanitizeRenderRotationDeg } from "../../rendering/cover-geometry.js";
+import { resolveBubbleScreenBox } from "../../rendering/cover-geometry.js";
 
 export function installLifecyclePosition(runtime) {
   function recoverRenderedTargets() {
@@ -195,39 +195,30 @@ export function installLifecyclePosition(runtime) {
     // 字号按气泡高度比例计算，并使用 clamp 限制上下界。
     overlayState.bubbleNodes.forEach(node => {
       const polygonGeometry = runtime.getOverlayPolygonGeometry(node, rect);
-      const bubbleWidthPercent = Number(node.dataset.wPercent || "0");
-      const bubbleHeightPercent = Number(node.dataset.hPercent || "0");
-      const bubbleWidthPx = polygonGeometry ? polygonGeometry.width : rect.width * bubbleWidthPercent / 100;
-      const bubbleHeightPx = polygonGeometry ? polygonGeometry.height : rect.height * bubbleHeightPercent / 100;
-      // 几何自洽：宽盒子不会承载「竖直文字」（±90° 会把宽高互换），见 sanitizeRenderRotationDeg。
+      const widthAxis = polygonGeometry ? polygonGeometry.width : rect.width * Number(node.dataset.wPercent || "0") / 100;
+      const heightAxis = polygonGeometry ? polygonGeometry.height : rect.height * Number(node.dataset.hPercent || "0") / 100;
       const declaredRotation = Number(node.dataset.rotationDeg || 0);
-      const renderRotation = sanitizeRenderRotationDeg(declaredRotation, bubbleWidthPx, bubbleHeightPx);
-      if (polygonGeometry) {
-        node.style.width = `${polygonGeometry.width}px`;
-        node.style.height = `${polygonGeometry.height}px`;
+      const verticalWriting = node.classList.contains("mt-jp-vertical");
+      const box = resolveBubbleScreenBox({ widthAxis, heightAxis, declaredRotation, verticalWriting });
+      const bubbleWidthPx = box.width;
+      const bubbleHeightPx = box.height;
+      const renderRotation = box.rotation;
+      const unit = polygonGeometry ? "px" : "%";
+      const centerX = polygonGeometry ? polygonGeometry.centerX : Number(node.dataset.xPercent || 0) + Number(node.dataset.wPercent || 0) / 2;
+      const centerY = polygonGeometry ? polygonGeometry.centerY : Number(node.dataset.yPercent || 0) + Number(node.dataset.hPercent || 0) / 2;
+      const width = unit === "px" ? bubbleWidthPx : bubbleWidthPx / rect.width * 100;
+      const height = unit === "px" ? bubbleHeightPx : bubbleHeightPx / rect.height * 100;
+      Object.assign(node.style, { width: `${width}${unit}`, height: `${height}${unit}` });
+      if (polygonGeometry || renderRotation !== declaredRotation || verticalWriting) {
         runtime.applyBubbleAnchorStyle(node, {
           alignment: node.dataset.alignment,
-          x: polygonGeometry.left,
-          y: polygonGeometry.top,
-          w: polygonGeometry.width,
-          h: polygonGeometry.height,
-          centerX: polygonGeometry.centerX,
-          centerY: polygonGeometry.centerY,
+          x: centerX - width / 2,
+          y: centerY - height / 2,
+          w: width,
+          h: height,
           rotation: renderRotation,
-          unit: "px",
-          allowVerticalOverflow: true
-        });
-      } else if (renderRotation !== declaredRotation) {
-        // 没有 polygon 的气泡只在创建期按百分比排过一次版，这里补一次修正。
-        runtime.applyBubbleAnchorStyle(node, {
-          alignment: node.dataset.alignment,
-          x: Number(node.dataset.xPercent || 0),
-          y: Number(node.dataset.yPercent || 0),
-          w: bubbleWidthPercent,
-          h: bubbleHeightPercent,
-          rotation: renderRotation,
-          unit: "%",
-          allowVerticalOverflow: node.dataset.stitchOverflow === "true"
+          unit,
+          allowVerticalOverflow: unit === "px" || node.dataset.stitchOverflow === "true"
         });
       }
       if (bubbleWidthPx < 2 || bubbleHeightPx < 2) {

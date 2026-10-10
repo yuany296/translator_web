@@ -196,6 +196,27 @@ export function sanitizeRenderRotationDeg(rotation, boxWidth = 0, boxHeight = 0)
   return width > height ? 0 : angle;
 }
 
+/**
+ * 覆盖层盒子的屏幕尺寸 + 渲染倾角（竖排的唯一判据处，与上面的自洽检查同一份口径）。
+ *
+ * 竖排（`mt-jp-vertical`）拿到的 widthAxis/heightAxis 是沿**文字轴**量的
+ * （像素来自 polygon 的四点，见 content 侧 getOverlayPolygonGeometry；百分比那份在
+ * 创建期靠 rotate(±90°) 摆正）：宽 = 字列长度、高 = 字列厚度 —— 横竖与屏幕上正好互换。
+ * 不换回来，104px 长的字列会被塞进 30px 高的盒子，`writing-mode: vertical-rl` 只能排出
+ * 2~3 字一列的碎列并溢出到相邻分格（现场症状「译文超出格子 / 横竖颠倒」）。换回屏幕轴
+ * 之后朝向由 writing-mode 承担，就**不能**再叠一次 ±90° 旋转，否则文字会被转回横排。
+ * 横排（含斜排 SFX）走原路径，行为逐字不变。
+ */
+export function resolveBubbleScreenBox({ widthAxis = 0, heightAxis = 0, declaredRotation = 0, verticalWriting = false } = {}) {
+  const width = verticalWriting ? Number(heightAxis) || 0 : Number(widthAxis) || 0;
+  const height = verticalWriting ? Number(widthAxis) || 0 : Number(heightAxis) || 0;
+  return {
+    width,
+    height,
+    rotation: verticalWriting ? 0 : sanitizeRenderRotationDeg(declaredRotation, width, height)
+  };
+}
+
 /** 四边形相对坐标轴的倾斜角（折到 ±45°）：轴对齐矩形返回 0。 */
 export function polygonTiltDeg(points) {
   const normalized = normalizePoints(points, 4);

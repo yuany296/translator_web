@@ -108,11 +108,19 @@ export function installOcrDisplayGeometry(runtime) {
     return Number.isFinite(thickness) && thickness > 0 ? thickness : 0;
   }
   runtime.getProjectedPolygonLineThickness = getProjectedPolygonLineThickness;
+  /** 竖排分「列」的容差比横排分「行」紧得多，理由见 buildRotatedClusterRows 的说明。 */
+  const VERTICAL_COLUMN_TOLERANCE_RATIO = 0.35;
+  const HORIZONTAL_LINE_TOLERANCE_RATIO = 0.7;
   function buildRotatedClusterRows(cluster, rotation) {
+    // 横排行距 ≈ 1.2 倍字高，0.7 倍线厚足够安全；竖排的**列距**在漫画台词里常压到
+    // 0.7~1.0 倍字宽（真实一页实测列距 16/26 而字宽 22~29），沿用 0.7 会把相邻两列并成
+    // 同一行、再按列内规则排就串成「始めろ 加護の儀を」。同一列被 OCR 切成的上下两段横向
+    // 几乎完全重合（Δcx≈0），收紧到 0.35 不会把它们拆开。
+    const toleranceRatio = Math.abs(runtime.normalizeRotationDegrees(rotation)) >= 45 ? VERTICAL_COLUMN_TOLERANCE_RATIO : HORIZONTAL_LINE_TOLERANCE_RATIO;
     const rows = [];
     cluster.forEach(entry => {
       const point = runtime.projectClusterCenter(entry, rotation);
-      let row = rows.find(candidate => Math.abs(candidate.y - point.y) <= Math.max(candidate.height, point.height) * 0.7);
+      let row = rows.find(candidate => Math.abs(candidate.y - point.y) <= Math.max(candidate.height, point.height) * toleranceRatio);
       if (!row) {
         row = {
           y: point.y,
@@ -144,6 +152,7 @@ export function installOcrDisplayGeometry(runtime) {
       height: row.height,
       entries: row.entries.map(item => ({
         entry: item.entry,
+        box: item.box,
         point: {
           x: item.point.inline,
           y: item.point.line
@@ -156,8 +165,47 @@ export function installOcrDisplayGeometry(runtime) {
     return Math.max(1, runtime.buildRotatedClusterRows(cluster, rotation).length);
   }
   runtime.estimateRotatedClusterLineCount = estimateRotatedClusterLineCount;
+  // 竖排（日文/中文竖排）的读序与横排是**两套轴**：一「行」是竖着的一列，
+  // 列内自上而下、列序自右向左。这里以前两条都沿用横排规则（列序自左向右、
+  // 列内自下而上），实测把台词的片段拼成了反序 —— CMOA 上「幼少の頃は何度か /
+  // 遊んだことはあるが」被拼成「遊んだことはあるが 幼少の頃は何度か」，
+  // 「ボクも《加護の儀》を / 受けることに / なってるんだけど」被拼成
+  // 「なてるんだけど 受けることに ボクも<加護の儀を」，模型只能靠猜。
+  //
+  // 方向**不能**从 rotation 的符号读：服务端 polygon_rotation_deg 与本文件的
+  // normalizeRotationDegrees 都把 +90° 折成 -90°（要与 CSS 的 rotate 对齐），
+  // 折叠之后「自上而下」与「自下而上」已经分不出来。方向一律从盒子中心取，
+  // 它不受折叠影响；rotation 只负责分「行（列）」—— 那一步要的是轴，不是方向。
+  const VERTICAL_READING_MIN_ABS_DEG = 45;
+  function isVerticalReadingRotation(rotation) {
+    return Math.abs(Number(rotation) || 0) >= VERTICAL_READING_MIN_ABS_DEG;
+  }
+  runtime.isVerticalReadingRotation = isVerticalReadingRotation;
+  function localPaddleEntryCenter(entry) {
+    // buildRotatedClusterRows 返回的条目是 `{ entry, box, point }` 包装；直接吃
+    // `{ box }` 的调用方也要能用，所以两种形状都认。
+    const inner = entry && entry.entry ? entry.entry : entry;
+    const box = (entry && entry.box) || (inner && inner.box);
+    return [Number(box && box.centerX) || 0, Number(box && box.centerY) || 0];
+  }
+  function rowCenterX(row) {
+    const entries = Array.isArray(row && row.entries) ? row.entries : [];
+    if (entries.length === 0) return 0;
+    return entries.reduce((sum, entry) => sum + localPaddleEntryCenter(entry)[0], 0) / entries.length;
+  }
+  runtime.rowCenterX = rowCenterX;
   function composeRotatedClusterWords(cluster, rotation) {
-    return runtime.buildRotatedClusterRows(cluster, rotation).map(row => row.entries.sort((left, right) => left.point.x - right.point.x).map(item => String(item.entry.item && item.entry.item.words || item.entry.text || "").trim()).filter(Boolean).join(" ")).filter(Boolean).join("\n");
+    const rows = runtime.buildRotatedClusterRows(cluster, rotation);
+    const joinRow = (row, entries) => entries
+      .map(item => String(item.entry.item && item.entry.item.words || item.entry.text || "").trim())
+      .filter(Boolean).join(" ");
+    if (!runtime.isVerticalReadingRotation(rotation)) {
+      return rows.map(row => joinRow(row, [...row.entries].sort((left, right) => left.point.x - right.point.x))).filter(Boolean).join("\n");
+    }
+    return [...rows]
+      .sort((left, right) => runtime.rowCenterX(right) - runtime.rowCenterX(left))
+      .map(row => joinRow(row, [...row.entries].sort((left, right) => localPaddleEntryCenter(left)[1] - localPaddleEntryCenter(right)[1])))
+      .filter(Boolean).join("\n");
   }
   runtime.composeRotatedClusterWords = composeRotatedClusterWords;
   function getHorizontalGap(leftBox, rightBox) {

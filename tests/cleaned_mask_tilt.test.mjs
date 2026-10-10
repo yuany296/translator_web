@@ -72,6 +72,50 @@ test("轴对齐文字仍走原来的蓝框遮罩（行为不变）", () => {
   assert.deepEqual(mask, { coordinateSpace: "percent", box: { x: 20, y: 12, w: 50, h: 8 } });
 });
 
+test("竖排投影（rotation_deg=±90）的清理遮罩必须竖长：±90° 是竖排方向，不是倾斜", () => {
+  // 现场（CMOA 一页）：竖排台词每一列的 item box 都是高而窄的框，服务端
+  // polygon_rotation_deg 一律给 ±90°，而文字四边形本身是轴对齐的竖列 —— 它就是
+  // 那一列的准确范围。以前 ±90° 走「rotation_deg 与 polygon 冲突就旋转外接框」那条路，
+  // 把 96x225 的竖列转成 225x96 的横条：清理图擦掉的是横跨页面的一条，真正的竖排原文
+  // 只被擦掉一小截（用户看到「清理图只覆盖了一部分、日文还露着」）。
+  const textAxisBox = { x: 40, y: 46.7, w: 24.55, h: 6.55 }; // projection.geometry（百分比，沿文字轴）
+  // 同一气泡在**屏幕轴**上的文字四边形：8.89 宽 × 14.66 高（现场 dataset.polygon 的外接框）。
+  const verticalPolygon = [
+    { x: 47.85, y: 57.33 }, { x: 47.85, y: 42.67 }, { x: 56.74, y: 42.67 }, { x: 56.74, y: 57.33 }
+  ];
+  const [mask] = runtime.buildCanonicalCleanMasks([
+    projection({ polygon: verticalPolygon, rotationDeg: -90, bgType: "none", regionType: "effect_text" }, textAxisBox)
+  ]);
+  assert.ok(mask, "应产出清理遮罩");
+  const points = mask.polygon || [
+    { x: mask.box.x, y: mask.box.y }, { x: mask.box.x + mask.box.w, y: mask.box.y },
+    { x: mask.box.x + mask.box.w, y: mask.box.y + mask.box.h }, { x: mask.box.x, y: mask.box.y + mask.box.h }
+  ];
+  const xs = points.map(point => point.x);
+  const ys = points.map(point => point.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  assert.ok(height > width * 1.5, `竖排遮罩必须高大于宽，实际 ${width.toFixed(0)}x${height.toFixed(0)}`);
+
+  // 与渲染侧遮罩同源（清理范围必须和画上去的遮罩是同一个四边形）。
+  const expected = resolveCoverQuad({ polygon: verticalPolygon, rotationDeg: -90, box: textAxisBox, padding: 0.2 });
+  assert.ok(Math.abs(width - expected.bounds.w) < 0.5, "宽度应与渲染遮罩一致");
+  assert.ok(Math.abs(height - expected.bounds.h) < 0.5, "高度应与渲染遮罩一致");
+  assert.equal(expected.tilted, false, "竖排不是倾斜：不应再按 90° 旋转");
+});
+
+test("竖排但没有 polygon 时，仍按 ±90° 把文字轴蓝框转成屏幕竖框", () => {
+  // 没有多边形时 box 就是文字轴几何，旋转 ±90° 恰好得到屏幕盒子 —— 这条路必须保留。
+  const textAxisBox = { x: 40, y: 46.7, w: 24.55, h: 6.55 };
+  const [mask] = runtime.buildCanonicalCleanMasks([
+    projection({ rotationDeg: -90, bgType: "none" }, textAxisBox)
+  ]);
+  const expected = resolveCoverQuad({ rotationDeg: -90, box: textAxisBox, padding: 0.2 });
+  assert.ok(mask.polygon, "没有 polygon 时按倾角旋转外接框，产出四边形");
+  assert.ok(Math.abs(expected.bounds.h - textAxisBox.w) < 1 && Math.abs(expected.bounds.w - textAxisBox.h) < 1,
+    `旋转后应是约 6.55x24.55 的竖框，实际 ${expected.bounds.w.toFixed(2)}x${expected.bounds.h.toFixed(2)}`);
+});
+
 test("实心背景与未激活的投影不需要清理图，不产出遮罩", () => {
   const box = { x: 20, y: 12, w: 50, h: 8 };
   const solid = projection({ polygon: TILTED_POLYGON, rotationDeg: -35, bgType: "solid" }, box);

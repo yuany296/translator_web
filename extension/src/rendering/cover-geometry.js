@@ -251,7 +251,14 @@ export function polygonTiltDeg(points) {
 export function resolveCoverQuad({ polygon, rotationDeg = 0, box, padding = 0 } = {}) {
   const scale = coverScale(padding);
   const rotation = Number(rotationDeg) || 0;
-  const rotationTilted = Math.abs(rotation) > COVER_TILT_TOLERANCE_DEG;
+  // |rotation| ≥ RENDER_ROTATION_VERTICAL_MIN_DEG 的语义是**竖排（文字沿竖直方向排列）**，
+  // 不是「歪了」：服务端的 polygon_rotation_deg 对高而窄的框一律给 ±90°（竖排日文台词的
+  // 每一列都是这种框），而文字四边形本身是轴对齐的 —— 它就是那一列的准确范围。
+  // 这种角度下**必须按四边形走**：照它旋转外接框会把 96×225 的竖列转成 225×96 的横条，
+  // 清理图于是擦掉横跨页面的一条、真正的竖排原文只被擦掉一小截（现场症状
+  // 「清理图只覆盖了一部分、日文还露着」）。阈值与 sanitizeRenderRotationDeg 同一常量。
+  const rotationTilted = Math.abs(rotation) > COVER_TILT_TOLERANCE_DEG
+    && Math.abs(rotation) < RENDER_ROTATION_VERTICAL_MIN_DEG;
   const polygonPoints = normalizePoints(polygon, 4);
   const polygonBox = polygonPoints && boundsOfPoints(polygonPoints);
   const normalizedBox = normalizeBox(box) || polygonBox;

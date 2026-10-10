@@ -19,7 +19,9 @@ export function installRecognitionPayload(runtime) {
       runtime.rememberPayloadCache(cacheKey, payload);
       return payload;
     }
-    if (target instanceof HTMLImageElement) {
+    if (runtime.isCompositePageTarget(target)) {
+      payload = await runtime.extractCompositePagePayload(target);
+    } else if (target instanceof HTMLImageElement) {
       payload = await runtime.extractImagePayload(target);
     } else if (target instanceof HTMLCanvasElement) {
       payload = await runtime.extractCanvasPayload(target);

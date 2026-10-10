@@ -151,6 +151,13 @@ export function installTargetFilter(runtime) {
     if (!runtime.IS_CMOA_SPEED_READER) {
       return true;
     }
+    // 「整页容器是一张图」时，容器内部的瓦片 img 不再单独成目标（它所属的容器才是），
+    // 否则同一页会被 3 条瓦片各翻一遍、跨瓦片的竖排台词被切断。放在 allowLoose 回退
+    // **之前**：否则 relaxed 时下面那条 [class*='page'] 又会把瓦片放回来。
+    const compositeHost = runtime.compositePageTargetOf(target);
+    if (compositeHost) {
+      return target === compositeHost;
+    }
     const inReader = !!target.closest("#content .pt-img, #content [id^='content-p'], #content");
     if (inReader) {
       return true;
@@ -170,6 +177,11 @@ export function installTargetFilter(runtime) {
   runtime.isSitePreferredTarget = isSitePreferredTarget;
   function computeTargetKey(target) {
     const captureSegment = runtime.getCaptureModeTargetKeySegment(target);
+    if (runtime.isCompositePageTarget(target)) {
+      // 整页容器：身份取瓦片集合的哈希（URL 串很长，不进 key），尺寸另算。
+      const rect = target.getBoundingClientRect();
+      return `${captureSegment}|page-composite|${runtime.hashSourceIdentity(runtime.compositePageSourceToken(target))}|${Math.round(rect.width)}x${Math.round(rect.height)}`;
+    }
     if (target instanceof HTMLImageElement) {
       const url = runtime.resolveImageUrl(target);
       const width = target.naturalWidth || target.width || Math.round(target.getBoundingClientRect().width);

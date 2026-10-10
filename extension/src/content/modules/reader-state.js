@@ -18,7 +18,13 @@ export function installReaderState(runtime) {
   // 目标选择器、并发槽位、接缝能力都不再按站点名分叉，RIDI 直接复用 KakaoPage 这一套。
   const IS_STRIP_TILE_READER = runtime.IS_STRIP_TILE_READER === true || IS_KAKAOPAGE_READER;
   runtime.IS_STRIP_TILE_READER = IS_STRIP_TILE_READER;
-  const TARGET_SELECTOR = runtime.IS_PIXIV_COMIC_VIEWER || IS_STRIP_TILE_READER ? "img, canvas, [id^='page-'], [style*='background-image']" : "img, canvas";
+  // 「整页容器是一张图」的站点（CMOA：一页 3 条瓦片）由提示直接给出容器选择器：
+  // 按裸 img 选目标会让同一页的 3 条瓦片各成一个页面，跨瓦片的竖排台词被切断。
+  const COMPOSITE_PAGE_TARGET = runtime.readerProfile?.pageComposite === true;
+  runtime.IS_COMPOSITE_PAGE_TARGET = COMPOSITE_PAGE_TARGET;
+  const TARGET_SELECTOR = COMPOSITE_PAGE_TARGET
+    ? runtime.readerProfile.targetSelector
+    : runtime.IS_PIXIV_COMIC_VIEWER || IS_STRIP_TILE_READER ? "img, canvas, [id^='page-'], [style*='background-image']" : "img, canvas";
   runtime.TARGET_SELECTOR = TARGET_SELECTOR;
   const PIXIV_PAGE_ID_RE = /^page-\d+$/;
   runtime.PIXIV_PAGE_ID_RE = PIXIV_PAGE_ID_RE;

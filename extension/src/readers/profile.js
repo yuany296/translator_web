@@ -28,6 +28,9 @@ export function detectReaderProfile(documentValue = globalThis.document, locatio
     virtualized: type === "virtualized-strip",
     // 分片长条能力只由站点提示声明，不由启发式 type 推导：任意「竖排图片列」的站点
     // 不该白付接缝 OCR 成本，而真正的分片站点只需在 site-hints 里加一条声明。
-    tiledStrip: hint.tiledStrip === true
+    tiledStrip: hint.tiledStrip === true,
+    // 「一整页 = 一个容器 + 若干瓦片图」：目标选择器指的是容器，采集时把瓦片拼成整页。
+    // 与 tiledStrip 一样只由站点提示声明，理由相同。
+    pageComposite: hint.pageComposite === true
   });
 }

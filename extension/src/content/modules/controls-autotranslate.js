@@ -215,7 +215,7 @@ export function installControlsAutotranslate(runtime) {
     if (!runtime.IS_CMOA_SPEED_READER || relaxed) {
       return Array.from(document.querySelectorAll(runtime.TARGET_SELECTOR));
     }
-    const selectors = ["#content .pt-img img", "#content [id^='content-p'] img", "#content img", "#content canvas", runtime.TARGET_SELECTOR];
+    const selectors = ["#content .pt-img", "#content [id^='content-p'] img", "#content img", "#content canvas", runtime.TARGET_SELECTOR];
     const seen = new Set();
     const result = [];
     for (const selector of selectors) {

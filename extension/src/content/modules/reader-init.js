@@ -323,6 +323,11 @@ export function installReaderInit(runtime) {
     if (!(node instanceof Element)) {
       return;
     }
+    // 整页容器（CMOA 的 .pt-img）自身也可能是新增子树的根：它不在自己的子孙里，
+    // 只跑下面那条 querySelectorAll 会漏掉整页刚插入的那一拍。
+    if (runtime.isCompositePageTarget?.(node) === true) {
+      runtime.registerTarget(node);
+    }
     node.querySelectorAll(runtime.TARGET_SELECTOR).forEach(target => {
       if (!runtime.shouldSkipNovelMediaTarget(target)) runtime.registerTarget(target);
     });

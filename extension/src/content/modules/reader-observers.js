@@ -31,6 +31,9 @@ export function installReaderObservers(runtime) {
       });
     }
     const sourceToken = runtime.getQuickSourceToken(target);
+    // 整页容器：瓦片还没加载完时挂一次 load 监听，瓦片齐了重新入队（见 composite-page.js）。
+    // 可选调用：没装那个能力（手搭的 runtime / 非整页站点）时本来就没什么可等的。
+    runtime.watchCompositePageBands?.(target);
     const oldSourceToken = target.dataset.mtSourceToken || "";
     const canonicalTarget = runtime.shouldUseKakaoCanonicalPipeline(target);
     if (canonicalTarget && oldSourceToken && oldSourceToken === sourceToken && runtime.shouldRevalidateReconnectedKakaoTarget(target)) {

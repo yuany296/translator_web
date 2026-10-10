@@ -249,7 +249,7 @@ export function installPlatformRuntime(runtime) {
     if (runtime.isMangaTranslatorOverlayTarget(target)) {
       return false;
     }
-    return target instanceof HTMLImageElement || target instanceof HTMLCanvasElement || runtime.isBackgroundImageTarget(target);
+    return target instanceof HTMLImageElement || target instanceof HTMLCanvasElement || runtime.isBackgroundImageTarget(target) || runtime.isCompositePageTarget(target);
   }
   runtime.isSupportedTarget = isSupportedTarget;
   function isRectVisible(rect) {

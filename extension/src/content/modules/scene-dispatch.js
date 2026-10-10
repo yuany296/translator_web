@@ -79,6 +79,9 @@ export function installSceneDispatch(runtime) {
     const novelImage = runtime.isNovelImageTarget?.(target) === true;
     return (runtime.isEmbeddedRenderMode() || novelImage) && !runtime.isBackgroundImageTarget(target);
   }
+    // 整页合成目标没有**单个**可以替换的元素（一页的内容是多条瓦片 img），
+    // 嵌入渲染无处落笔，一律走 DOM 覆盖层。
+    if (runtime.isCompositePageTarget?.(target) === true) return false;
   runtime.shouldUseEmbeddedRender = shouldUseEmbeddedRender;
   function getExistingRenderedState(targetId) {
     return runtime.state.embeddedById.get(targetId) || runtime.state.overlaysById.get(targetId) || null;

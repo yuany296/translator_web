@@ -70,6 +70,10 @@ export function installTargetResolve(runtime) {
   }
   runtime.isBackgroundImageTarget = isBackgroundImageTarget;
   function getQuickSourceToken(target) {
+    // 整页容器：身份 = 瓦片集合（每片 URL），否则滚回旧页会命中过期缓存。
+    if (runtime.isCompositePageTarget(target)) {
+      return runtime.compositePageSourceToken(target);
+    }
     if (target instanceof HTMLImageElement) {
       return runtime.resolveImageUrl(target);
     }

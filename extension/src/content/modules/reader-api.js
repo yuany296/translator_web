@@ -9,7 +9,7 @@ export function installReaderApi(runtime) {
     clearTimer: timer => window.clearTimeout(timer),
     isPlaceholder: target => target instanceof HTMLImageElement && runtime.isDataUrl(runtime.resolveImageUrl(target)),
     isTargetUsable: target => !!target && target.isConnected && !runtime.state.invalidated,
-    isTargetReady: target => target instanceof HTMLImageElement && target.complete && runtime.passesTargetFilter(target, true),
+    isTargetReady: target => runtime.isTargetMediaReady(target),
     onReady: runtime.queuePageAutoTranslate
   });
   runtime.kakaoRetryScheduler = kakaoRetryScheduler;

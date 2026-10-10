@@ -20,7 +20,13 @@ const hints = Object.freeze([
   stripTileHint("kakao", /(^|\.)kakao(?:page)?\.(?:com|net)$/iu),
   stripTileHint("ridi", RIDI_HOST_RE),
   { id: "pixiv", host: /(^|\.)comic\.pixiv\.net$/iu, profile: "virtualized-strip", weight: 2, selector: "img,canvas,[id^='page-']", tiledStrip: false },
-  { id: "cmoa", host: /(^|\.)cmoa\.jp$/iu, profile: "canvas-reader", weight: 2, selector: "img,canvas", tiledStrip: false }
+  /**
+   * CMOA 的 speedreader 把**一整页**切成若干条横向瓦片（`.pt-img` 下 3 个同宽 `img`，
+   * 各 617x293），瓦片边界与页边界无关。`pageComposite` 声明「整个容器才是一张图」：
+   * 采集时按版面位置把瓦片拼成整页图、一页只跑一次 OCR（见 content/modules/composite-page.js）。
+   * 以前这里选的是裸 `img`，于是同一页的 3 条瓦片各跑一次 OCR，跨瓦片的竖排台词被切断。
+   */
+  { id: "cmoa", host: /(^|\.)cmoa\.jp$/iu, profile: "canvas-reader", weight: 2, selector: "#content .pt-img", tiledStrip: false, pageComposite: true }
 ]);
 
 export function resolveSiteHint(locationValue = globalThis.location) {

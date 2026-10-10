@@ -63,6 +63,7 @@ import { installControlsAutotranslate } from "./controls-autotranslate.js";
 import { installControlsUtils } from "./controls-utils.js";
 import { installTargetFilter } from "./target-filter.js";
 import { installTargetIdentity } from "./target-identity.js";
+import { installCompositePage } from "./composite-page.js";
 import { installTargetResolve } from "./target-resolve.js";
 import { installTargetCache } from "./target-cache.js";
 import { installPlatformRuntime } from "./platform-runtime.js";
@@ -75,6 +76,9 @@ import { installReaderStartup } from "./reader-startup.js";
 export const contentPhases = Object.freeze({
   functions: Object.freeze([
     installTargetIdentity,
+    // 「一整页 = 一个容器 + 若干瓦片图」的判定/采集：isSupportedTarget、computeTargetKey
+    // 与 getQuickSourceToken 都要读它，装在这里保证只定义一处。
+    installCompositePage,
     installReaderInit,
     installReaderObservers,
     installScheduler,

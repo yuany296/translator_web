@@ -41,6 +41,13 @@ export function installLifecycleCover(runtime) {
     // 页面一一对应；倾斜/外扩的可见范围由 createBubbleCoverClipNode 的裁剪层
     // 单独承担（它用 resolveBubbleCoverGeometry 得到外接框与四边形）。
     // 这里必须原样保留 rotation_deg 与 polygon，裁剪层才能跟着原文倾角走。
+    //
+    // region_polygon 同样必须保留：实底（bg_type=solid）遮罩唯一的可信轮廓就是它
+    // （见 rendering/cover-geometry.js 的 resolveSolidFillOutline）。以前在这里把它
+    // 清空，lifecycle-bubble 就写不出 --mt-region-clip，纯色填充退回 inset(0) 铺满
+    // x/y/w/h 包围盒 —— 用户看到的就是弧形气泡边缘长出的矩形白色长条。
+    // fill_box 仍然清空：覆盖层盒子已经等于最终蓝框，再与 OCR 的背景估计求并集
+    // 只会把覆盖范围撑大。
     const coverBox = resolveBubbleCoverBox(bubble) || {};
     return {
       ...bubble,
@@ -51,8 +58,7 @@ export function installLifecycleCover(runtime) {
       projection_role: "cover_only",
       original_text: "",
       translated_text: "",
-      fill_box: null,
-      region_polygon: null
+      fill_box: null
     };
   }
   runtime.buildBubbleCoverProjection = buildBubbleCoverProjection;

@@ -1,3 +1,6 @@
+import { normalizeHexColor } from "../../rendering/bubble-colors.js";
+import { resolveSolidFillOutline } from "../../rendering/cover-geometry.js";
+
 export function installRendererEmbed(runtime) {
   function getEmbeddedTranslatedLines(bubbles) {
     const values = (Array.isArray(bubbles) ? bubbles : []).map(bubble =>
@@ -293,21 +296,25 @@ export function installRendererEmbed(runtime) {
         const coverPoints = coverGeometry && coverGeometry.tilted ? coverGeometry.quad : null;
         const coverBox = coverPoints
           ? runtime.getCanvasFillBox(coverGeometry.bounds, canvasWidth, canvasHeight) : null;
-        const clipPoly = coverPoints || (Array.isArray(bubble.region_polygon) && bubble.region_polygon.length >= 3 ? bubble.region_polygon : Array.isArray(bubble.polygon) && bubble.polygon.length >= 4 ? bubble.polygon : null);
-        if (clipPoly) {
-          ctx.beginPath();
-          clipPoly.forEach((point, index) => {
-            const px = Number(point?.x) / 100 * canvasWidth;
-            const py = Number(point?.y) / 100 * canvasHeight;
-            if (index === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          });
-          ctx.closePath();
-          ctx.clip();
+        const clipPoly = coverPoints || resolveSolidFillOutline(bubble);
+        // 口径同 DOM/跨页两条路：量到颜色就必须遮住原文，形状尽力而为（没采样色才不画）。
+        const fillColor = normalizeHexColor(bubble.bg_color);
+        if (fillColor) {
+          if (clipPoly) {
+            ctx.beginPath();
+            clipPoly.forEach((point, index) => {
+              const px = Number(point?.x) / 100 * canvasWidth;
+              const py = Number(point?.y) / 100 * canvasHeight;
+              if (index === 0) ctx.moveTo(px, py);
+              else ctx.lineTo(px, py);
+            });
+            ctx.closePath();
+            ctx.clip();
+          }
+          ctx.fillStyle = fillColor;
+          if (coverBox) ctx.fillRect(coverBox.x, coverBox.y, coverBox.w, coverBox.h);
+          else ctx.fillRect(fillBox.x, fillBox.y, fillBox.w, fillBox.h);
         }
-        ctx.fillStyle = String(bubble.bg_color || "#ffffff");
-        if (coverBox) ctx.fillRect(coverBox.x, coverBox.y, coverBox.w, coverBox.h);
-        else ctx.fillRect(fillBox.x, fillBox.y, fillBox.w, fillBox.h);
         ctx.restore();
       }
       ctx.save();

@@ -179,6 +179,64 @@ test("嵌入式画布：drawEmbeddedBubbles 按 polygon 倾角执行 rotate", ()
 const axisAlignedPolygon = [{ x: 10, y: 20 }, { x: 60, y: 20 }, { x: 60, y: 30 }, { x: 10, y: 30 }];
 const polygonRegionTilted = [{ x: 10, y: 20 }, { x: 60, y: 12 }, { x: 60, y: 30 }, { x: 10, y: 38 }];
 
+test("嵌入式画布实底遮罩：量到颜色就必须遮住原文，只有没采到色才不画", () => {
+  const runtime = {
+    state: { displayMode: "translated" },
+    clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
+    cleanRenderableText: value => String(value || "").trim(),
+    formatTranslationForOriginalLines: value => String(value || ""),
+    normalizeBgType: value => ["solid", "transparent", "none"].includes(String(value)) ? String(value) : "solid",
+    getBubbleRenderColors: () => ({ textColor: "#000000", strokeColor: "#ffffff" }),
+    getCanvasFillBox(value, canvasWidth, canvasHeight) {
+      if (!value || typeof value !== "object") return null;
+      const box = {
+        x: Number(value.x ?? value.left) / 100 * canvasWidth,
+        y: Number(value.y ?? value.top) / 100 * canvasHeight,
+        w: Number(value.w ?? value.width) / 100 * canvasWidth,
+        h: Number(value.h ?? value.height) / 100 * canvasHeight
+      };
+      return Object.values(box).every(Number.isFinite) && box.w > 0 && box.h > 0 ? box : null;
+    },
+    getEmbeddedPolygonGeometry: () => null,
+    unionRenderBoxes: (left, right) => right || left,
+    getDynamicStrokeWidth: size => size * 0.1,
+    resolveBubbleRotation: T.resolveBubbleRotation,
+    resolveBubbleCoverGeometry: T.resolveBubbleCoverGeometry,
+    drawFittedText: () => {}
+  };
+  installRendererEmbed(runtime);
+
+  let fillStyle = "";
+  const fills = [];
+  const ctx = new Proxy({}, {
+    get(_target, prop) {
+      if (prop === "fillRect") return (...args) => fills.push({ fillStyle, args });
+      if (prop === "measureText") return () => ({ width: 0 });
+      return () => {};
+    },
+    set(_target, prop, value) {
+      if (prop === "fillStyle") fillStyle = String(value);
+      return true;
+    }
+  });
+
+  // 没有轮廓：退回本气泡的填充盒，仍然要遮住原文（形状不完美 ≠ 放弃遮盖）。
+  runtime.drawEmbeddedBubbles(ctx, 1000, 1000, [makeBubble({ polygon: null, bg_color: "#ffffff" })], {});
+  assert.equal(fills.length, 1, "有采样色时不得整块不画");
+  assert.equal(fills[0].fillStyle, "#ffffff");
+
+  // 没采样到颜色：不得兜底纯白 → 一个像素都不画。
+  fills.length = 0;
+  runtime.drawEmbeddedBubbles(ctx, 1000, 1000, [makeBubble({ bg_color: "" })], {});
+  assert.equal(fills.length, 0, "没有采样色时不得兜底纯白");
+
+  // 轮廓 + 采样色齐全：按轮廓裁剪后填色。
+  fills.length = 0;
+  runtime.drawEmbeddedBubbles(ctx, 1000, 1000, [makeBubble()], {});
+  assert.equal(fills.length, 1);
+  assert.equal(fills[0].fillStyle, "#ffffff");
+});
+
 test("DOM 译文节点：倾角只在 region_polygon 上时也要倾斜", () => {
   for (const polygon of [null, axisAlignedPolygon]) {
     const node = T.createBubbleNode(makeBubble({ polygon, region_polygon: polygonRegionTilted }), 0);
@@ -198,6 +256,47 @@ test("DOM 译文节点：visual 里的同义倾角字段同样认", () => {
 test("遮罩裁剪层：倾角只在 region_polygon 上时也倾斜", () => {
   const bubble = makeBubble({ polygon: null, region_polygon: polygonRegionTilted });
   assert.equal(T.resolveBubbleCoverGeometry(bubble).tilted, true);
+});
+
+test("实底填充：量到颜色就必须遮住原文，只有没采到色才透明", () => {
+  // 没有轮廓时仍要遮：退回元素盒（本页的最终蓝框），绝不让原文裸露。
+  const boxOnly = T.createBubbleNode(makeBubble({ polygon: null }), 0);
+  assert.equal(boxOnly.classList.contains("mt-fill-unbounded"), false);
+  assert.equal(boxOnly.style.getPropertyValue("--mt-region-clip"), "", "没有轮廓就不写形状裁剪");
+
+  // 没采样到颜色：不得兜底 rgba(255,255,255,.96) 把插画糊白 → 透明。
+  const noColor = T.createBubbleNode(makeBubble({ bg_color: "" }), 0);
+  assert.equal(noColor.classList.contains("mt-fill-unbounded"), true);
+  assert.equal(noColor.style.getPropertyValue("--mt-region-clip"), "");
+
+  // 颜色不是 #rrggbb（未采样/非法值）同样不算数。
+  const badColor = T.createBubbleNode(makeBubble({ bg_color: "white" }), 0);
+  assert.equal(badColor.classList.contains("mt-fill-unbounded"), true);
+
+  // 轮廓 + 采样色都在：按轮廓裁剪。
+  const ok = T.createBubbleNode(makeBubble(), 0);
+  assert.equal(ok.classList.contains("mt-fill-unbounded"), false);
+  assert.match(ok.style.getPropertyValue("--mt-region-clip"), /^polygon\(/u);
+});
+
+test("实底填充：容器轮廓优先于文字四边形（跨页气泡的文字可能在另一页）", () => {
+  const bubble = makeBubble({ polygon: null, region_polygon: polygonRegionTilted });
+  const node = T.createBubbleNode(bubble, 0);
+  assert.equal(node.classList.contains("mt-fill-unbounded"), false);
+  // 文字四边形缺失时绝不能退回包围盒：裁剪用的必须是 region_polygon。
+  const clip = node.style.getPropertyValue("--mt-region-clip");
+  assert.match(clip, /^polygon\(/u);
+  assert.notEqual(clip, "polygon(0.00% 0.00%, 100.00% 0.00%, 100.00% 100.00%, 0.00% 100.00%)");
+});
+
+test("覆盖投影保留容器轮廓：跨页气泡的白色实底长条靠它裁剪", () => {
+  const bubble = makeBubble({ polygon: null, region_polygon: polygonRegionTilted });
+  const cover = T.buildBubbleCoverProjection(bubble);
+  assert.deepEqual(cover.region_polygon, bubble.region_polygon);
+  const node = T.createBubbleNode(cover, 0);
+  assert.equal(node.classList.contains("mt-cover-only"), true);
+  assert.equal(node.classList.contains("mt-fill-unbounded"), false);
+  assert.match(node.style.getPropertyValue("--mt-region-clip"), /^polygon\(/u);
 });
 
 test("遮罩尺寸跟着识别到的文字框：rotation_deg 与 polygon 角度「不一致」也不能撑大遮罩", () => {

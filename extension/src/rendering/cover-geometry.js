@@ -52,6 +52,25 @@ export function boundsOfPoints(points) {
   return w > 0 && h > 0 ? { x, y, w, h } : null;
 }
 
+/**
+ * 实底（solid）遮罩的轮廓：容器轮廓（region_polygon）优先，其次才是文字四边形（polygon）。
+ *
+ * 实底填充**必须**有轮廓才能裁剪：只拿 x/y/w/h 边界框填色就是一块轴对齐矩形，
+ * 会从弧形气泡边缘长出白边（跨页气泡最明显 —— 背景轮廓越过分页线、文字像素全在
+ * 下一页时，这一侧的几何只剩一个矩形）。三条渲染路径（逐页 DOM 覆盖层、跨页遮罩段、
+ * 清理图计划）共用这一个取证口径，避免各自解释"什么算轮廓"。
+ *
+ * 拿不到轮廓时返回 null，调用方必须保持透明，不得退回包围盒。
+ */
+export function resolveSolidFillOutline(source) {
+  if (!source || typeof source !== "object") return null;
+  for (const candidate of [source.region_polygon, source.regionPolygon, source.polygon]) {
+    const points = normalizePoints(candidate, 3);
+    if (points) return points;
+  }
+  return null;
+}
+
 /** 绕外接框中心等比外扩：方向无关，因此对任意四边形都成立。 */
 export function inflatePolygonAboutCenter(points, scale) {
   const normalized = normalizePoints(points, 1);

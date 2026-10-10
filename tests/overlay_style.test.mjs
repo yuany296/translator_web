@@ -119,7 +119,10 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   assert.match(lifecycleCover, /function createBubbleRenderNodes\(/);
   assert.match(lifecycleCover, /const coverBox = resolveBubbleCoverBox\(bubble\)/);
   assert.match(lifecycleCover, /x:\s*coverBox\.x[\s\S]*?y:\s*coverBox\.y[\s\S]*?w:\s*coverBox\.w[\s\S]*?h:\s*coverBox\.h/);
-  assert.match(lifecycleCover, /projection_role:\s*"cover_only"[\s\S]*?fill_box:\s*null[\s\S]*?region_polygon:\s*null/);
+  assert.match(lifecycleCover, /projection_role:\s*"cover_only"[\s\S]*?fill_box:\s*null/);
+  // 容器轮廓必须留给实底裁剪：清空 region_polygon 会让纯色填充退回 inset(0) 铺满
+  // x/y/w/h 包围盒 —— 弧形气泡边缘于是长出矩形白色长条。
+  assert.doesNotMatch(lifecycleCover, /region_polygon:\s*null/);
   // 旋转与 polygon 完全沿用原气泡，只增加不旋转的最终蓝框裁剪层。
   const coverProjection = lifecycleCover.match(/function buildBubbleCoverProjection\([\s\S]*?\n\s*runtime\.buildBubbleCoverProjection/)?.[0] ?? "";
   assert.match(coverProjection, /\.\.\.bubble[\s\S]*?projection_role:\s*"cover_only"/);
@@ -134,7 +137,34 @@ test("cleanup cover keeps final blue geometry separate from raw text placement",
   assert.match(css, /\.mt-bubble\.mt-text-layer::before\s*\{[\s\S]*?content:\s*none\s*!important/);
   assert.match(css, /\.mt-bubble\.mt-text-layer\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
   assert.match(css, /\.mt-bubble\.mt-cover-only\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
-  assert.match(lifecycleBubble, /if\s*\(!coverOnly\s*&&\s*!options\.textOnly\s*&&\s*bgType\s*===\s*"solid"[\s\S]*?fillDiv\.className\s*=\s*"mt-fill-tilted"/);
+  assert.match(lifecycleBubble, /if\s*\(!coverOnly\s*&&\s*!options\.textOnly\s*&&\s*solidFillOutline\s*&&\s*solidFillColor/);
+});
+
+test("实底纯色补丁：量到颜色就必须遮住原文，只有没采到色才透明", () => {
+  const css = readFileSync(path.resolve(projectRoot, "extension", "public", "styles.css"), "utf8");
+  const lifecycleBubble = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "lifecycle-bubble.js"), "utf8");
+  const coverGeometry = readFileSync(path.resolve(projectRoot, "extension", "src", "rendering", "cover-geometry.js"), "utf8");
+  const crossPageCover = readFileSync(path.resolve(projectRoot, "extension", "src", "content", "modules", "crosspage-cover.js"), "utf8");
+
+  // 实底纯色补丁（页级）：量到颜色就必须画，没采到色才加标记透明。
+  assert.match(lifecycleBubble, /classList\.add\("mt-fill-unbounded"\)/);
+  assert.match(lifecycleBubble, /if \(solidFillColor\) \{[\s\S]*?\} else \{\s*\n\s*node\.classList\.add\("mt-fill-unbounded"\)/);
+  assert.match(css, /\.mt-bubble\.mt-fill-unbounded::before\s*\{[\s\S]*?content:\s*none\s*!important/);
+  assert.match(css, /\.mt-bubble\.mt-fill-unbounded\s*>\s*\.mt-fill-tilted\s*\{[\s\S]*?display:\s*none\s*!important/);
+  // 轮廓取证只有一处定义。
+  assert.match(coverGeometry, /export function resolveSolidFillOutline\(source\)/);
+  assert.match(lifecycleBubble, /import \{ resolveSolidFillOutline \} from "\.\.\/\.\.\/rendering\/cover-geometry\.js"/);
+  // 跨页遮罩段：不得兜底纯白；有采样色就必须遮住原文（覆盖范围 = 这一页的遮罩段矩形），
+  // 只有没采到色才透明。
+  assert.doesNotMatch(crossPageCover, /rgba\(255,\s*255,\s*255,\s*0?\.96\)/);
+  assert.match(crossPageCover, /node\.style\.background = solidColor \|\| "transparent"/);
+  // 裁剪只服务斜排原文：轴对齐文字不按（可能只覆盖部分行的）四边形裁。
+  assert.match(crossPageCover, /if \(!quad \|\| !geometry\.coverTilted\) \{/);
+  assert.doesNotMatch(crossPageCover, /mustClip/);
+  // 映射点（root 坐标）必须先平移到覆盖层局部坐标，否则四边形与节点矩形永远不相交。
+  assert.match(crossPageCover, /const \{ targetRects, rootRect, offsetX = 0, offsetY = 0 \} = context/);
+  assert.match(crossPageCover, /offsetX: Math\.max\(0, Number\(geometry\.outer && geometry\.outer\.left\) \|\| 0\)/);
+  assert.match(crossPageCover, /x: point\.x - shiftX/);
 });
 
 test("覆盖层文字排版与宿主页面样式隔离（RIDI 的元素级规则不得漏进来）", () => {

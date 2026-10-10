@@ -332,6 +332,19 @@
   overflow: visible;
 }
 
+/* 实底纯色补丁只在「拿得到轮廓 + 拿得到采样色」时才允许画。
+   渲染层（content/modules/lifecycle-bubble.js）在这两条有任何一条不成立时加
+   .mt-fill-unbounded：那时只剩 x/y/w/h 包围盒 —— 轴对齐矩形会从弧形气泡边缘
+   长出白边（跨页气泡尤其明显），而没采样过的兜底色（rgba(255,255,255,.96)）
+   等于凭空把插画糊白。两种情况下都保持透明，与 .mt-bg-none 同一口径。 */
+.mt-bubble.mt-fill-unbounded::before {
+  content: none !important;
+}
+
+.mt-bubble.mt-fill-unbounded > .mt-fill-tilted {
+  display: none !important;
+}
+
 .mt-bg-solid::before {
   content: "";
   position: absolute;

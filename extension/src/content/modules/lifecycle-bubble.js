@@ -1,3 +1,5 @@
+import { resolveSolidFillOutline } from "../../rendering/cover-geometry.js";
+
 export function installLifecycleBubble(runtime) {
   function updateLoadingOverlayText(target, targetKey, text) {
     const targetId = runtime.state.targetIdByElement.get(target);
@@ -113,32 +115,48 @@ export function installLifecycleBubble(runtime) {
       node.style.setProperty("--mt-fill-width", fillBox.w / w * 100 + "%");
       node.style.setProperty("--mt-fill-height", fillBox.h / h * 100 + "%");
     }
-    if (bgType === "solid" && Array.isArray(bubble.region_polygon)) {
-      const clipTarget = fillBox || { x, y, w, h };
-      const clip = runtime.buildRegionClipPath(bubble.region_polygon, clipTarget.x, clipTarget.y, clipTarget.w, clipTarget.h);
-      if (clip) node.style.setProperty("--mt-region-clip", clip);
+    // 实底（solid）纯色填充的口径：**量到颜色就必须遮住原文**，形状是尽力而为。
+    //   · 颜色是硬条件：没有 bg_color 时 .mt-bg-solid::before 会兜底 rgba(255,255,255,.96)，
+    //     那是凭空糊白插画 —— 这种情况加 .mt-fill-unbounded 保持透明（见 .mt-bg-none 同一条规矩）；
+    //   · 形状优先用轮廓（容器轮廓 region_polygon 优先、文字四边形 polygon 兜底，
+    //     取证口径只有一处：rendering/cover-geometry.js 的 resolveSolidFillOutline）——
+    //     拿不到轮廓就退回**这一页自己的元素盒**（覆盖节点盒 = 最终蓝框/文字外接框，不跨页），
+    //     绝不为了"形状不完美"而放弃遮盖：现场就是「缺轮廓 → 整块遮罩消失、原文裸露」。
+    let solidFillOutline = null;
+    let solidFillColor = "";
+    if (bgType === "solid") {
+      solidFillOutline = resolveSolidFillOutline(bubble);
+      solidFillColor = runtime.normalizeCssColor(bubble.bg_color, "");
+      if (solidFillColor) {
+        const clipTarget = fillBox || { x, y, w, h };
+        const clip = solidFillOutline
+          ? runtime.buildRegionClipPath(solidFillOutline, clipTarget.x, clipTarget.y, clipTarget.w, clipTarget.h)
+          : "";
+        if (clip) node.style.setProperty("--mt-region-clip", clip);
+      } else {
+        node.classList.add("mt-fill-unbounded");
+      }
     }
-    // Tilted text: use counter-rotated fill div so the polygon clip-path is in world space
+    // Tilted text: use counter-rotated fill div so the polygon clip-path is in world space.
+    // 该层只在「实底 + 有轮廓 + 有采样色」时建立；裁剪基准是元素自身盒子
+    // （fill div 恒为 100%×100%），与 ::before 的填充盒基准不是同一个。
     const absAngle = Math.abs(rotation);
-    if (!coverOnly && !options.textOnly && bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle > 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
-      const fillDiv = document.createElement("div");
-      fillDiv.className = "mt-fill-tilted";
-      fillDiv.dataset.mangaTranslatorOverlay = "true";
-      const invAngle = -rotation;
-      fillDiv.style.transform = `rotate(${invAngle}deg)`;
-      fillDiv.style.transformOrigin = "center center";
-      fillDiv.style.background = String(bubble.bg_color || "rgba(255,255,255,0.96)");
-      const clipRef = { x: Number(x), y: Number(y), w: Number(w), h: Number(h) };
-      const fillClip = runtime.buildRegionClipPath(bubble.polygon, clipRef.x, clipRef.y, clipRef.w, clipRef.h);
-      if (fillClip) fillDiv.style.clipPath = fillClip;
-      node.appendChild(fillDiv);
+    if (!coverOnly && !options.textOnly && solidFillOutline && solidFillColor && absAngle > 2) {
+      const fillClip = runtime.buildRegionClipPath(solidFillOutline, Number(x), Number(y), Number(w), Number(h));
+      if (fillClip) {
+        const fillDiv = document.createElement("div");
+        fillDiv.className = "mt-fill-tilted";
+        fillDiv.dataset.mangaTranslatorOverlay = "true";
+        const invAngle = -rotation;
+        fillDiv.style.transform = `rotate(${invAngle}deg)`;
+        fillDiv.style.transformOrigin = "center center";
+        fillDiv.style.background = solidFillColor;
+        fillDiv.style.clipPath = fillClip;
+        node.appendChild(fillDiv);
+      }
     }
-    // Horizontal text: use ::before with polygon clip-path fallback (element is not rotated)
-    if (!coverOnly && !options.textOnly && bgType === "solid" && !node.style.getPropertyValue("--mt-region-clip") && absAngle <= 2 && Array.isArray(bubble.polygon) && bubble.polygon.length >= 4) {
-      const clipTarget = fillBox || { x, y, w, h };
-      const clip = runtime.buildRegionClipPath(bubble.polygon, clipTarget.x, clipTarget.y, clipTarget.w, clipTarget.h);
-      if (clip) node.style.setProperty("--mt-region-clip", clip);
-    }
+    // 横排文字的实底填充由上面那一段统一写 --mt-region-clip：轮廓可能与旋转无关
+    // （region_polygon 自带形状），所以不再为「角度 ≤ 2°」单开一条路径。
     node.style.width = `${w}%`;
     node.style.height = `${h}%`;
     runtime.applyBubbleAnchorStyle(node, {

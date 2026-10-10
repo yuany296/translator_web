@@ -429,3 +429,124 @@ test("一次遮罩同时跨带内带外时，带内用复合清理图、带外�
   assert.ok(singleX <= 0 && singleY <= 0,
     "a composite-only cover must start at or above/left of the node origin, otherwise a strip stays unmasked");
 });
+
+test("跨页实底遮罩：量到颜色就按这一页的遮罩段矩形整块遮住，只有没采到色才透明", () => {
+  // 现场（`게임 속에서` 那句）：接缝复合图只读到气泡的第一行、页级 OCR 读到两行，
+  // 于是 page_cover_boxes 是两行的并集、bubble.polygon 只有第一行。上一轮把"实底必须按
+  // 四边形裁"写成硬规则 → 遮罩被裁成第一行那一条，第二行原文裸露。
+  // 定稿口径：颜色是硬条件；覆盖范围 = 这一页自己的遮罩段矩形（按页映射的并集），
+  // 只有「斜排原文」（coverTilted）才额外按字形四边形修剪。
+  setupDom();
+  const runtime = createRuntime(new Map());
+  const surface = makeSurface();
+  const entry = { surface };
+  const buildItem = bubble => {
+    const overlay = new FakeElement("div");
+    const coverLayer = new FakeElement("div");
+    overlay.appendChild(coverLayer);
+    return { overlay, coverLayer, coverNodes: new Map(), bubble, textNode: null };
+  };
+  // 拼接图百分比坐标下的气泡轮廓；映射后落在 upper 页的遮罩段矩形内。
+  const polygon = [{ x: 20, y: 0 }, { x: 80, y: 0 }, { x: 80, y: 12 }, { x: 20, y: 12 }];
+  const segment = {
+    pageId: "upper", left: 150, top: 750, width: 520, height: 120, mapping: "page",
+    pageWidth: 760, pageHeight: 1000, sourceLeft: 100, sourceTop: 900, scaleX: 1, scaleY: 1
+  };
+  const context = {
+    targetRects: new Map([
+      ["upper", { left: 100, top: 50, width: 760, height: 1000 }],
+      ["lower", { left: 100, top: 1074, width: 760, height: 1000 }]
+    ]),
+    rootRect: { left: 80, top: 20, width: 800, height: 2100 }
+  };
+  const geometry = (bubble, coverQuad) => ({ coverTilted: false, coverQuad, coverSegments: [segment] });
+
+  // 没采样到颜色：绝不兜底 rgba(255,255,255,.96)，保持透明。
+  const noColor = buildItem({ bg_type: "solid", bg_color: "", polygon });
+  runtime.updateCoverSegments(entry, noColor, geometry(noColor.bubble, polygon), context);
+  assert.equal(noColor.coverNodes.get("upper").style.background, "transparent");
+
+  // 有颜色 + 轴对齐（哪怕四边形只覆盖其中一行）：整块矩形上色，绝不裁剪。
+  const solid = buildItem({ bg_type: "solid", bg_color: "#ffffff", polygon });
+  runtime.updateCoverSegments(entry, solid, geometry(solid.bubble, polygon), context);
+  const solidNode = solid.coverNodes.get("upper");
+  assert.equal(solidNode.style.background, "#ffffff");
+  assert.equal(solidNode.style.clipPath, undefined, "轴对齐文字不按四边形裁（会砍掉同一气泡的其它行）");
+  assert.equal(solidNode.dataset.coverTilted, "false");
+
+  // 缺少坐标映射（拿不到 targetRects/rootRect）：仍然必须遮住原文。
+  const unmapped = buildItem({ bg_type: "solid", bg_color: "#ffffff", polygon });
+  runtime.updateCoverSegments(entry, unmapped, geometry(unmapped.bubble, polygon), {});
+  assert.equal(unmapped.coverNodes.get("upper").style.background, "#ffffff");
+});
+
+test("斜排跨页遮罩的裁剪必须先把 root 坐标平移到覆盖层局部坐标（否则四边形永远裁不出交集）", () => {
+  // 现场：`mapCompositePointToRoot` 返回 root 坐标，而节点矩形是覆盖层局部坐标 ——
+  // 少了这一步平移，映射点与节点矩形完全不相交（现场 root≈3570 vs 局部 0~82），
+  // clip 恒为空：斜排跨页遮罩从来没真正裁过。
+  setupDom();
+  const runtime = createRuntime(new Map());
+  const surface = makeSurface();
+  const entry = { surface };
+  // 斜排：首边 -8/50 弧度 ≈ -9.09°（与 overlay_tilt 同一枚现场四边形）。
+  const tiltedQuad = [{ x: 20, y: 0 }, { x: 76, y: -1.6 }, { x: 76.4, y: 10 }, { x: 20.4, y: 11.6 }];
+  // 映射结果（root）：x 252~712、y 3550~3622；覆盖层原点 (252,3560) → 局部 0~460 / -10~62。
+  const segment = {
+    pageId: "upper", left: 0, top: 0, width: 460, height: 70, mapping: "page",
+    pageWidth: 760, pageHeight: 1000, sourceLeft: 100, sourceTop: 900, scaleX: 1, scaleY: 1
+  };
+  const targetRects = new Map([
+    ["upper", { left: 100, top: 2820, width: 760, height: 1000 }],
+    ["lower", { left: 100, top: 3844, width: 760, height: 1000 }]
+  ]);
+  const rootRect = { left: 0, top: 0, width: 800, height: 4000 };
+  const buildItem = () => {
+    const overlay = new FakeElement("div");
+    const coverLayer = new FakeElement("div");
+    overlay.appendChild(coverLayer);
+    return { overlay, coverLayer, coverNodes: new Map(), bubble: { bg_type: "none" }, textNode: null };
+  };
+  const geometry = outer => ({ coverTilted: true, coverQuad: tiltedQuad, coverSegments: [segment], outer });
+
+  const shifted = buildItem();
+  runtime.updateCoverSegments(entry, shifted, geometry({ left: 252, top: 3560, width: 460, height: 70 }),
+    { targetRects, rootRect });
+  const shiftedNode = shifted.coverNodes.get("upper");
+  assert.equal(shiftedNode.dataset.coverTilted, "true", "平移后应当裁得出四边形");
+  assert.match(String(shiftedNode.style.clipPath), /^polygon\(/u);
+
+  // 对照：同一份映射结果、同一份节点矩形，只是缺 outer（⇒ 不做平移）→ 裁不出交集。
+  const unshifted = buildItem();
+  runtime.updateCoverSegments(entry, unshifted, geometry(null), { targetRects, rootRect });
+  assert.equal(unshifted.coverNodes.get("upper").dataset.coverTilted, "false");
+});
+
+test("文字像素不在上一页时不再产生上一页的遮罩段，跨页外框只剩文字页", () => {
+  // 用户缺陷：气泡轮廓越过分页线、文字全在下一页，跨页 overlay 却因为「上一页也有遮罩段」
+  // 把外框（.mt-cross-page-debug 的蓝框）撑到两页，上一页还多出一块遮罩。
+  // canonical 层收窄后（见 canonical_render_plan / kakao_reconciler 的 span 声明用例），
+  // page_cover_boxes / page_text_boxes 里只剩文字所在页。
+  setupDom();
+  const { host, targets } = makeHostStack();
+  const runtime = createRuntime(targets);
+  const surface = makeSurface();
+  const [baseBubble] = surface.bubbles;
+  const textOnlyLower = { pageId: "lower", x: 20, y: 0, w: 60, h: 30 };
+  assert.equal(runtime.renderCrossPageSurfaces([{
+    ...surface,
+    bubbles: [{
+      ...baseBubble,
+      page_text_boxes: [textOnlyLower],
+      page_cover_boxes: [textOnlyLower]
+    }]
+  }]), 1);
+
+  const [overlay] = descendants(host, "mt-cross-page-overlay");
+  const covers = descendants(overlay, "mt-cover-segment");
+  assert.equal(covers.length, 1, "没有文字像素的那一页不得再有遮罩段");
+  assert.equal(covers[0].dataset.pageId, "lower");
+  // 外框（root 坐标系）不再向上一页长出：视口顶边落在下一页顶边（1074）或之下。
+  const overlayTopInViewport = 20 + Number.parseFloat(overlay.style.top);
+  assert.ok(overlayTopInViewport >= 1074 - 1,
+    `跨页外框不该再跨到上一页：viewport top=${overlayTopInViewport}`);
+});

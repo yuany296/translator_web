@@ -12,21 +12,42 @@ export function installCrossPageCover(runtime) {
   }
   runtime.createCoverSegmentNode = createCoverSegmentNode;
 
+  /** 实底遮罩的颜色必须来自采样：没有就返回 ""，由调用方保持透明（不兜底纯白）。 */
+  function solidCoverColor(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (typeof runtime.normalizeCssColor === "function") return runtime.normalizeCssColor(raw, "");
+    return /^#[0-9a-f]{6}$/iu.test(raw) ? raw : "";
+  }
+  runtime.solidCoverColor = solidCoverColor;
+
   /**
-   * 斜排文字的跨页遮罩：把拼接图坐标下的遮罩四边形映射到 root 像素，
+   * 斜排文字的跨页遮罩：把拼接图坐标下的遮罩四边形映射到覆盖层局部像素，
    * 与当前页节点矩形求交后作为 clip-path。节点矩形与背景补丁映射保持不变，
    * 所以清理图仍然对齐，只是可见范围跟着原文字形倾斜。
+   *
+   * **裁剪只服务「斜排原文」**：轴对齐文字的覆盖区域本来就等于这一页 OCR 给的
+   * 字框/填充框，再拿一个更小的四边形去裁只会砍掉同一气泡的其它行 ——
+   * 现场：接缝复合图只读到气泡的第一行（其余行落在接缝带之外），页级 OCR 读到两行，
+   * 于是 `page_cover_boxes` 是两行的并集、而 `bubble.polygon` 只有第一行；
+   * 按它裁完就变成"上面一行有遮罩、下面一行没有"。
+   *
+   * **坐标系必须统一**：`mapCompositePointToRoot` 返回的是 root 坐标，而调用方传进来的
+   * `rect` 是覆盖层局部坐标（`node.style.left/top` 相对 `.mt-cross-page-overlay`），
+   * 两者相差覆盖层在 root 里的原点。少了 context.offsetX/offsetY 这一步平移，
+   * 映射点与节点矩形永远不相交，斜排跨页遮罩的 clip-path 从来没真正生效过。
    */
   function applyCoverSegmentTilt(entry, item, geometry, node, context, rect) {
-    if (!geometry.coverTilted || !Array.isArray(geometry.coverQuad)) {
+    const quad = Array.isArray(geometry.coverQuad) && geometry.coverQuad.length >= 3 ? geometry.coverQuad : null;
+    if (!quad || !geometry.coverTilted) {
       node.style.removeProperty("clip-path");
       node.dataset.coverTilted = "false";
-      return;
+      return false;
     }
-    const { targetRects, rootRect } = context;
+    const { targetRects, rootRect, offsetX = 0, offsetY = 0 } = context;
     if (!targetRects || !rootRect) {
       node.dataset.coverTilted = "false";
-      return;
+      return false;
     }
     const mapPoint = runtime.mapCompositePointToRoot;
     if (typeof mapPoint !== "function") {
@@ -34,21 +55,31 @@ export function installCrossPageCover(runtime) {
       // 也不能让跨页渲染在这里抛错（曾经因为没挂到 runtime 而整页不渲染）。
       node.style.removeProperty("clip-path");
       node.dataset.coverTilted = "unsupported";
-      return;
+      return false;
     }
-    const points = geometry.coverQuad.map(point => mapPoint.call(runtime, entry.surface, {
+    const shiftX = Number(offsetX) || 0;
+    const shiftY = Number(offsetY) || 0;
+    const points = quad.map(point => mapPoint.call(runtime, entry.surface, {
       x: Number(point.x) / 100 * entry.surface.canvasWidth,
       y: Number(point.y) / 100 * entry.surface.canvasHeight
-    }, targetRects, rootRect)).filter(Boolean);
+    }, targetRects, rootRect)).filter(Boolean).map(point => ({
+      x: point.x - shiftX,
+      y: point.y - shiftY
+    }));
     if (points.length < 3) {
       node.style.removeProperty("clip-path");
       node.dataset.coverTilted = "false";
-      return;
+      return false;
     }
     const clipPath = polygonClipPathPercent(clipConvexPolygonToRect(points, rect), rect);
-    if (clipPath) node.style.clipPath = clipPath;
-    else node.style.removeProperty("clip-path");
+    if (!clipPath) {
+      node.style.removeProperty("clip-path");
+      node.dataset.coverTilted = "false";
+      return false;
+    }
+    node.style.clipPath = clipPath;
     node.dataset.coverTilted = "true";
+    return true;
   }
   runtime.applyCoverSegmentTilt = applyCoverSegmentTilt;
 
@@ -80,11 +111,22 @@ export function installCrossPageCover(runtime) {
       node.style.top = `${top}px`;
       node.style.width = `${right - left}px`;
       node.style.height = `${bottom - top}px`;
-      applyCoverSegmentTilt(entry, item, geometry, node, context, {
-        left, top, width: right - left, height: bottom - top, pageId
-      });
+      const rect = { left, top, width: right - left, height: bottom - top, pageId };
+      // 覆盖层局部坐标 = root 坐标 − 覆盖层自身原点（见 syncCrossPageSurfaceEntry 写
+      // item.overlay.style.left/top 时的 max(0, outer.left/top)）。
+      const layerContext = {
+        ...context,
+        offsetX: Math.max(0, Number(geometry.outer && geometry.outer.left) || 0),
+        offsetY: Math.max(0, Number(geometry.outer && geometry.outer.top) || 0)
+      };
+      const solidColor = bgType === "solid" ? solidCoverColor(item.bubble.bg_color) : "";
+      // 实底遮罩：有采样色就**必须**遮住原文，覆盖范围就是这一页自己的遮罩段矩形
+      // （`page_cover_boxes` 按页映射，是这一页全部 OCR 证据的并集，不会串到邻页）；
+      // 只有"斜排原文"才额外按字形四边形修剪可见范围（见 applyCoverSegmentTilt）。
+      // 没有采样色时才保持透明：凭空纯白比不遮更糟（见 .mt-bg-none 的同一条规矩）。
+      applyCoverSegmentTilt(entry, item, geometry, node, layerContext, rect);
       if (bgType === "solid") {
-        node.style.background = String(item.bubble.bg_color || "rgba(255,255,255,0.96)");
+        node.style.background = solidColor || "transparent";
         node.style.removeProperty("background-image");
         return;
       }

@@ -147,7 +147,7 @@ def test_upsert_library_generates_ids_and_updates_the_switch(tmp_path: Path) -> 
     assert len(database.list_libraries()) == 2
 
 
-def test_delete_library_moves_entries_back_to_the_default_library(tmp_path: Path) -> None:
+def test_delete_library_removes_its_entries_instead_of_moving_them(tmp_path: Path) -> None:
     database = GlossaryDB(str(tmp_path / "delete.db"))
     database.upsert_library("novel-1", "骸骨皇女", True, [])
     entry = database.upsert_entry("성현", "晟玄", library_id="novel-1")
@@ -155,10 +155,13 @@ def test_delete_library_moves_entries_back_to_the_default_library(tmp_path: Path
 
     result = database.delete_library("novel-1")
 
-    assert result == {"deleted": True, "moved": 1}
+    assert result["deleted"] is True
+    assert result["removed"] == 1
+    # moved 恒为 0：迁移到默认库会让默认库背上 500 条名额，删几个库就把全站塞死。
+    assert result["moved"] == 0
     assert [library["id"] for library in database.list_libraries()] == [DEFAULT_LIBRARY_ID]
-    assert database.get_entry(entry["id"])["libraryId"] == DEFAULT_LIBRARY_ID
-    assert database.get_pending()[0]["libraryId"] == DEFAULT_LIBRARY_ID
+    assert database.get_entry(entry["id"]) is None
+    assert database.get_pending() == []
     # 默认库不允许删除，避免出现"无库可用"的状态
     assert database.delete_library(DEFAULT_LIBRARY_ID)["deleted"] is False
     assert len(database.list_libraries()) == 1

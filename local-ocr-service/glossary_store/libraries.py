@@ -98,27 +98,28 @@ class LibrariesMixin:
         return self.upsert_library(lid, name or lid, True, []).get("id", DEFAULT_LIBRARY_ID)
 
     def delete_library(self, library_id: str) -> dict[str, Any]:
-        """删除术语库定义，条目与待确认候选退回默认库（不删除术语本身）。"""
+        """删除术语库：**库里的条目与待确认候选一起删除**（不迁移到默认库）。
+
+        迁移看着安全，实际会让默认库背上 500 条名额：删几个库就把它塞满，
+        之后全站都加不进新术语。用户删库的本意就是「这批术语不要了」。
+        想保留术语请先在扩展里用「移动到…」搬到别的库。
+        """
         lid = normalize_library_id(library_id)
         if not lid:
-            return {"deleted": False, "moved": 0, "error": "缺少术语库标识"}
+            return {"deleted": False, "removed": 0, "moved": 0, "error": "缺少术语库标识"}
         if lid == DEFAULT_LIBRARY_ID:
-            return {"deleted": False, "moved": 0, "error": "默认术语库不能删除"}
-        now = time.time()
+            return {"deleted": False, "removed": 0, "moved": 0, "error": "默认术语库不能删除"}
         with self._lock:
             conn = sqlite3.connect(self._path, check_same_thread=False)
             try:
-                deleted = conn.execute("DELETE FROM glossary_libraries WHERE id = ?", (lid,)).rowcount > 0
-                moved = conn.execute(
-                    "UPDATE glossary_entries SET library_id = ?, updated_at = ? WHERE library_id = ?",
-                    (DEFAULT_LIBRARY_ID, now, lid),
+                removed = conn.execute(
+                    "DELETE FROM glossary_entries WHERE library_id = ?", (lid,)
                 ).rowcount
-                conn.execute(
-                    "UPDATE pending_candidates SET library_id = ? WHERE library_id = ?",
-                    (DEFAULT_LIBRARY_ID, lid),
-                )
+                conn.execute("DELETE FROM pending_candidates WHERE library_id = ?", (lid,))
+                deleted = conn.execute("DELETE FROM glossary_libraries WHERE id = ?", (lid,)).rowcount > 0
                 conn.commit()
-                return {"deleted": deleted, "moved": max(0, moved)}
+                # moved 恒为 0：字段留着只是为了让仍在读 moved 的旧扩展不至于报「已移到默认库」。
+                return {"deleted": deleted, "removed": max(0, removed), "moved": 0}
             finally:
                 conn.close()
 

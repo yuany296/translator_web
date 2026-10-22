@@ -53,7 +53,8 @@ def glossary_library_delete(library_id: str) -> dict[str, runtime.Any]:
         result = db.delete_library(library_id)
         if result.get('error'):
             raise runtime.HTTPException(status_code=400, detail=str(result['error']))
-        return {'ok': True, 'moved': result.get('moved', 0), 'libraries': db.list_libraries()}
+        # removed：随库一起删掉的条目数（不再是「移到默认库」的 moved）。
+        return {'ok': True, 'removed': result.get('removed', 0), 'libraries': db.list_libraries()}
     except runtime.HTTPException:
         raise
     except Exception as exc:

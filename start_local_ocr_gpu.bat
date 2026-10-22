@@ -48,6 +48,15 @@ if errorlevel 1 (
 set "LOCAL_OCR_DEVICE=auto"
 set "LOCAL_OCR_DISABLE_MODELSCOPE=1"
 set "PADDLE_PDX_MODEL_SOURCE=bos"
+REM Recovery detection (2nd detect pass) runs only when primary finds fewer than 3 boxes.
+REM Measured on KakaoPage slices: that pass added 0 boxes and cost about 120ms per slice.
+REM NOTE: only "on-demand" is recognized; any other value keeps the old always-run behavior.
+set "LOCAL_OCR_RECOVERY_DETECT=on-demand"
+set "LOCAL_OCR_RECOVERY_MIN_PRIMARY=3"
+REM Allow two same-type inferences to overlap on the GPU (reduces queueing while scrolling).
+REM 2026-10-15: reverted to default 1 — this box shares the GPU with an Android emulator and
+REM Ollama (8GB resident), only ~0.6GB VRAM free; a 2nd concurrent inference thrashed instead of helping.
+REM set "LOCAL_OCR_PREDICT_CONCURRENCY=2"
 REM debug 产物（每页 3 张整页 PNG + result JSON）默认关闭，每页可省 0.6~0.9s。
 REM 需要排查识别效果时取消下一行注释，或在设置页打开"本地 OCR 调试"。
 REM set "LOCAL_OCR_DEBUG_ALWAYS=1"

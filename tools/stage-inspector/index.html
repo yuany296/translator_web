@@ -54,6 +54,7 @@
 <div class="bar">
   <label>语言
     <select id="lang"><option value="japan">japan</option><option value="korean">korean</option><option value="auto">auto</option></select>
+            <select id="recEngine" title="识别引擎（manga-ocr 只作用于 japan）"><option value="paddle">paddle</option><option value="manga_ocr">manga-ocr</option></select>
   </label>
   <label>模式
     <select id="mode"><option value="fast">fast</option><option value="enhanced">enhanced</option></select>
@@ -503,7 +504,7 @@ async function loadImage(file) {
     const { body, response } = await api("/api/ocr", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ image: dataUrl, lang: $("lang").value, mode: $("mode").value, textRecScoreThresh: Number($("floor").value) })
+      body: JSON.stringify({ image: dataUrl, lang: $("lang").value, mode: $("mode").value, textRecScoreThresh: Number($("floor").value), recEngine: $("recEngine").value })
     });
     state.payload = body;
     state.stem = response.headers.get("x-debug-stem") || "";

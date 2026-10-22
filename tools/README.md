@@ -31,6 +31,7 @@
 | `run_visual_regression.py` | 视觉回归 |
 | `repair_truncated_translations.py` | 修被截断的译文 |
 | `cdp.mjs` / `check-novel-quotes.js` / `debug-term-extractor.py` | Chrome DevTools 小工具 / 小说引号检查 / 术语提取调试 |
+| `ner-bench.py` | 用人工标注集量**真实链路**（分块 + 阈值 + 后处理 + worker 通信）的 NER 术语提取 P/R/F1；默认读 `AI_work/ner/ko/bench/gold_ko.json`，可传路径覆盖 |
 
 ## 相关目录（不在 tools/ 下）
 

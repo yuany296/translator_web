@@ -145,6 +145,10 @@ async function proxy(pathname, request, response, body) {
  *  2980 份都读了一遍 JSON（每份 100KB 级），列表要等好几秒。 */
 const SNAPSHOT_LIMIT = 200;
 
+// counts 解析缓存：/api/snapshots 每次要读 200 个完整结果 JSON 只为取 counts，
+// 快照一多（数百组）切换就会卡住。按 (stem, mtime) 缓存，结果文件没变就不重读。
+const snapshotCountsCache = new Map();
+
 function listSnapshots() {
   const imagesDir = path.join(debugRoot, "plugin_input");
   if (!fs.existsSync(imagesDir)) return { total: 0, snapshots: [] };
@@ -157,14 +161,23 @@ function listSnapshots() {
     .sort((left, right) => right.mtime.localeCompare(left.mtime));
   const snapshots = entries.slice(0, SNAPSHOT_LIMIT).map(entry => {
     const resultFile = path.join(debugRoot, "result_json", `${entry.stem}.json`);
-    const hasResult = fs.existsSync(resultFile);
     let counts = null;
-    if (hasResult) {
-      try {
+    let hasResult = false;
+    try {
+      const resultStat = fs.statSync(resultFile);
+      hasResult = true;
+      const cacheKey = `${entry.stem}:${Math.round(resultStat.mtimeMs)}`;
+      if (snapshotCountsCache.has(cacheKey)) {
+        counts = snapshotCountsCache.get(cacheKey);
+      } else {
         counts = JSON.parse(fs.readFileSync(resultFile, "utf8")).counts || null;
-      } catch {
-        counts = null;
+        snapshotCountsCache.set(cacheKey, counts);
+        if (snapshotCountsCache.size > 500) {
+          snapshotCountsCache.delete(snapshotCountsCache.keys().next().value);
+        }
       }
+    } catch {
+      counts = null;
     }
     return { ...entry, resultRel: hasResult ? `result_json/${entry.stem}.json` : "", hasResult, counts };
   });
@@ -247,7 +260,8 @@ const server = http.createServer(async (request, response) => {
         mode: String(body.mode || "fast"),
         debug: true,
         debug_id: debugId,
-        text_rec_score_thresh: Number(body.textRecScoreThresh ?? RECOGNITION_FLOOR)
+        text_rec_score_thresh: Number(body.textRecScoreThresh ?? RECOGNITION_FLOOR),
+        rec_engine: String(body.recEngine || "paddle")
       };
       const upstream = await fetch(`${serviceUrl}/ocr`, {
         method: "POST",

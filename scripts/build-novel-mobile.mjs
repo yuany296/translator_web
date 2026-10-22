@@ -27,8 +27,8 @@ await cp(publicDir, staging, { recursive: true });
 // 手机版自己的 manifest 与样式表覆盖/补进共享静态资源里。
 await cp(assetsDir, staging, { recursive: true });
 // 漫画与本地译文库的页面不属于手机版，页面脚本也已经不再引用它们。
+// （popup 页面已在桌面版删除，这里不再需要单独剔除。）
 for (const name of [
-  "popup.html", "popup.js",
   "sidepanel.html", "sidepanel.js",
   "translations.html", "translations.js"
 ]) {

@@ -1,5 +1,603 @@
 # Operations Log
 
+## 2026-10-16（续 2）—— 「盖板还是透明的」的最后一截：实底判定与采样色分属不同载体，渲染前没人把颜色找回来
+
+- **现场**：同一条跨页气泡（`.mt-cross-page-text` + `.mt-cover-segment`）盖板仍整块透明。
+  chrome-devtools 直连 + 直接读扩展持久缓存（复制 profile 的 leveldb、用 classic-level 解析）实锤：
+  接缝观测是 `bgType=solid, bgColor=""`，且这条缓存被写过 4 次（23:56、00:25:10 旧构建；00:25:35 新构建）
+  **内容逐字节相同** —— 不是缓存过期、也不是「没重载扩展」；前两轮「第一份有效色」修复（配对 / 区域组）没覆盖这一例。
+- **根因**：跨页观测由「接缝配对 / 区域组合并」合成，`bg_type` 与 `bg_color` 来自不同载体 —— 颜色一旦在合成时落空，
+  候选就带着「声明实底但没有颜色」的矛盾状态走到渲染；渲染侧按既定口径「没有采样色就透明（不兜底纯白）」→ 整块透明。
+  而**颜色其实就在同一 canonical 的证据组里**：同一气泡的两条页面观测是 `#fbffff` / `#f3fbfd`，
+  只是没有一处按「组内第一份有效色」把它找回来。
+- **修复**（三处同口径 + 对已有缓存立即生效）：
+  - 新增 `extension/src/shared/solid-color.js`：采样色判据唯一定义（`#rgb`/`#rrggbb` 归一；
+    `firstSolidColor` 取第一份有效色；`solidObservationColor` 只认自己声明实底的观测，复杂背景兜底色不借）。
+  - `canonical/modules/projection-utils.js#buildSeamSurfaceBubble`：实底观测自身颜色无效时，从同一 canonical 的
+    其它实底观测借第一份有效色；**不改 `bg_type`**（不动清理图要求，避免整层等图）；都找不到才留空。
+    canonical 每次渲染都重建 → 不需要清缓存 / 重跑 OCR。
+  - `background/modules/seam-handling.js#buildSeamCrossPairCandidate`、`translation-coalesce.js#groupColor`
+    改走同一判据（顺带接受 `#rgb` 与 `bgColor` 别名），收窄「solid 无颜色」的再产出。
+- **回归**：新增 `tests/seam_solid_color_fallback.test.mjs`（5 例：借色正例 / 自身优先并归一 / 全组无色留空 /
+  非实底兄弟不借 / 非实底接缝直通）；`seam_cross_pair_color`、`ocr_merge_group_color` 各加一例 `#rgb` 归一。
+- **验证**：`npm run verify` 全绿（行数门禁 / ESLint / Pylint / 构建 / Node / Python 188 passed + 1 skipped）；
+  真机缓存回放（真实 seam/page 观测 JSON 直接调构建器）→ `bg_color: #fbffff`；
+  真机复核：刷新漫画页（内容脚本改动，无需重载扩展）→ 遮罩段计算色 `rgb(243,251,253)`，用户确认「它好了」。
+- **文档**：CLAUDE.md / AGENTS.md 的实底遮罩条追加「颜色以 canonical 为组取证」一条口径。
+
+## 2026-10-16（续）—— 「盖板还是透明的」：合并候选只取第一行的背景色
+
+- **现场**：用户在同一页仍看到一块**透明**的跨页盖板（`.mt-cover-segment` 有节点、位置正确、
+  `data-cover-tilted="false"`，但 `background`/`background-image` 都是空的）。该气泡的
+  `--mt-adaptive-bg` 与 `--mt-region-clip` **都是空的** —— 颜色与多边形一起丢了，指向"合并/配对候选"。
+- **根因 A（本次修）**：`background/modules/translation-coalesce.js#mergeOcrCandidateGroup` 的背景色
+  只取 `sorted[0].bg_color`；文字色/描边色早在同一个函数里就是「整组找第一份有效值」。`sorted[0]` 只是
+  视觉第一行，它的容器未必采到色 → 区域组（含接缝的区域组合并）产出 `bg_type=solid` + `bg_color=""`
+  → 渲染侧「没有采样色就透明、也不兜底纯白」→ 整块透明。
+- **根因 B（同日已修）**：接缝**跨页配对**（`seam-handling.js#buildSeamCrossPairCandidate`）同样要求
+  两半颜色逐字符相同。用户气泡的 `--mt-region-clip` 为空（配对候选把 `polygon`/`region_polygon` 都置空），
+  说明这一例走的就是配对路径。
+- **修复**：`bg_color: groupColor("bg_color")`（与文字色/描边色同口径）。
+- **回归**：`tests/ocr_merge_group_color.test.mjs`（新，3 例：整组第一份有效值、全空仍留空、
+  非实底组同样保留）。**负向验证**：`translation-coalesce.js` 临时回旧版 → 2/3 失败；换回修复版 3/3 通过。
+- **待用户操作**（两处都在 **background**，一次即可）：`chrome://extensions` 点「重新加载」→ 刷新漫画页。
+  内容脚本那半边（裁剪顶点、截图显隐、并发交错）刷新页面即生效。
+
+## 2026-10-16 —— 「还是没有」的第三处：并发截图把扩展节点永久停在 visibility:hidden
+
+- **现场**（用户同一张 KakaoPage 标签页，chrome-devtools 只读取证）：跨页气泡的盖板这次**在 DOM 里、
+  白底、位置正确**，但 `style="...; visibility: hidden"`；进一步统计：整页 **64 个
+  `[data-manga-translator-overlay]` 节点里 62 个 `hidden`**（含 `.mt-cover-segment`、`.mt-overlay-root`、
+  跨页文本层），而 `.mt-overlay-layer` 本身是 visible。
+- **根因**：`content/modules/capture-payload.js#withOverlayLayerHidden` 截图前把**所有**
+  `[data-manga-translator-overlay]` 节点隐藏（免得自己的覆盖层被截进 OCR 图），截完照**自己的快照**还原。
+  这个阅读器页级 OCR 与接缝 OCR 的截图会**并发**：A 先隐藏 → B 进来时快照到的是 `"hidden"`（A 设的）→
+  B 结束得更晚，把 `"hidden"` 写回去 → 节点永久隐藏。遮罩段/覆盖层 root 都是**复用节点**，
+  之后每次渲染只改 left/top/宽高/背景/clip-path，`visibility` 没人再碰 —— 于是"盖板明明在那儿就是看不见"。
+  （同一个 `overlayHideDepth` 计数保护的是**图层**，覆盖层节点的显隐没有对应保护。）
+- **修复**：`state.captureHideDepth` 计数，**只有最外层**截图留快照、隐藏、还原；内层原样透传。
+  图层那半边仍走原来的 `overlayHideDepth`（行为不变）。
+- **回归**：`tests/capture_overlay_hide_nesting.test.mjs`（新，2 例：并发交错结束时必须回到可见、
+  内层不得改写外层快照）。**负向验证**：把 `capture-payload.js` 临时回到旧版跑该用例 —— 2/2 失败；
+  换回修复版 2/2 通过。
+- **验证**：`npm run verify` 全绿（行数门禁 / ESLint / Pylint / 构建 / Node 1705 / Python 188 passed + 1 skipped）。
+- **待用户操作**：这是**内容脚本**的修复 —— 刷新漫画页即可（不必重载扩展）；那张已经卡住的老页面
+  刷新后会重建全部节点。上一条的接缝采样色在 **background**，仍需要「重新加载扩展」一次。
+
+## 2026-10-15 —— 跨页气泡「没有盖板」两处连修：裁剪顶点被截断 + 接缝采样色要求逐字符相同
+
+- **现场**（KakaoPage「괴담에 떨어져도 출근을 해야 하는구나」29 話，ocronly 模式；用户两张截图 +
+  另一个「여기 마스코트, 정의의 화신처럼 구니까 조심해라.」）：跨页气泡的白色盖板整块不见了，
+  韩文原文露在译文下面。chrome-devtools 直连取证（新标签页复现）：
+  - 气泡 A（`일단바닥에 늙히시는게`）：`.mt-cover-segment` 在 DOM 里、白色背景、`data-cover-tilted="true"`，
+    但 `clip-path` 是贴左边的一条楔形 —— 实测**交集 0.87、画出来只有 0.14**。
+  - 气泡 B（`여기 마스코트…`）：两个遮罩段的 `background` 与 `background-image` **都是空的**，
+    文字节点的 `--mt-adaptive-bg` 也是空的 → 整块透明。
+- **根因 1（裁剪顶点被截断）**：`clipConvexPolygonToRect`（Sutherland–Hodgman）的输出是**多边形**
+  （四边形与矩形求交最多 8 个顶点），而 `polygonClipPathPercent` 走 `normalizePoints` → `slice(0, 4)`：
+  不相邻的顶点被连成一条**根本不存在的边**，`clip-path: polygon(...)` 于是画出一个楔形/八字形。
+  这里最容易骗人的是：为了反解"到底是多边形错还是映射错"，用生产模块做了数值拟合，
+  拟合出的四边形有一条 56° 的"不可能存在的边" —— 正是顶点被跳连的症状。
+- **根因 2（接缝两半的采样色要求逐字符相同）**：`seam-handling.js#buildSeamCrossPairCandidate`
+  只在 `upper.bg_color === lower.bg_color` 时保留颜色；而两半各自在原图上采样，同一个白气泡实测就是
+  `#f6fbfe` vs `#f4fcfe`（差 1~2 级）→ `bg_type=solid` 却 `bg_color=""`。渲染侧按既定规则
+  「没有采样色就保持透明（不兜底纯白）」→ 透明的盖板；而 `requiresCleanedImage` 只看
+  `bg_type === "none"`，**solid 永远不会去要清理图** —— 所以这条链路上没有清理图可用，不是漏画。
+- **修复 1**（`rendering/cover-geometry.js#polygonClipPathPercent`）：原样保留全部顶点（顶点沿边界连续，
+  `clip-path: polygon()` 直接可用）；`renderer-cover.js` 的四边形路径（恒 4 点）行为不变。
+- **修复 2**（`background/modules/seam-handling.js#buildSeamCrossPairCandidate`）：两半都是实底时取
+  **第一份合法的 `#rrggbb`**（与页面级 `translation-coalesce` 的「第一份有效颜色」同口径），
+  只有两半都没有才留空。留空仍是透明（不兜底纯白），规则不变。
+- **为什么不顺手给 solid-无颜色补清理图**：那要同时改「索要清理图」的判定（`requiresCleanedImage`、
+  `seamBubbleRequiresCleanedImage`、清理掩膜计划），而 seam surface 的渲染门槛是"要不要清理图"——
+  扩成 solid-无颜色会让**整块跨页覆盖层（含译文）等图**，图产不出来时译文也一起不显示。
+  两处根因修掉后这条支路已很难走到，先不动（待用户定）。
+- **回归**：`tests/seam_cover_clip_vertices.test.mjs`（新，2 例：现场四边形必须画出 7 个顶点、覆盖率 > 0.8；
+  真斜排仍裁剪）、`tests/seam_cross_pair_color.test.mjs`（新，3 例：差 1~2 级要保留、只一半有颜色时用另一半、
+  两半都不是实底不借颜色）。`tests/cross_page_overlay_dom.test.mjs` 保持 8 例不动。
+- **验证**：`npm run verify` 全绿（行数门禁 / ESLint / Pylint / 构建 / Node 1703 / Python 188 passed + 1 skipped）。
+  真机复核（新标签页，无需重载扩展即吃到新构建，因为改的是内容脚本）：气泡 A 的遮罩段
+  `data-cover-tilted="true"` + **7 个顶点 / 覆盖率 0.991**（修复前 4 个顶点 / 0.14）。
+- **待用户操作**：修复 2 在 **background**（service worker）里，需要 `chrome://extensions` 点
+  「重新加载」再刷新漫画页，那条「여기 마스코트…」才会变成实底白盖板。
+
+## 2026-10-14（续4）—— 原文语言删除「自动识别」选项 + 不可翻译文本直通
+
+- **「自动识别」选项下线**（用户定版：与其做不准的多语言自动检测，不如显式选择）：
+  设置页与 quick-popup 的原文语言下拉删除 `auto`，语义保持**完全统一**——设置继续治理所有模式
+  （漫画 OCR 选模型、翻译申报源语言、译文库/术语库按语言对匹配），读什么语言切什么设置。
+  `auto` 降级为内部哨兵值（`SOURCE_LANGUAGES` 仍含、文本判定与缺配置兜底仍在用），
+  存储边界唯一迁移点在 `config/schema.js#normalizeTranslationConfig`：归一化结果为 auto 的
+  存档值改写为 `languages.DEFAULT_SOURCE_LANGUAGE`（用户选了 `en`）。翻译侧判定代码零改动。
+  效果：漫画 OCR 永远单模型直跑（不再日韩双跑），日文站 manga-ocr 引擎直接生效。
+- **不可翻译文本直通**：新增 `shared/non-translatable.js`（保守判定：纯数字/时钟/日期/URL/邮箱/
+  纯符号含 emoji/单字母/字母数字编码；含任何 CJK/假名/谚文一律可翻译；带空格的 Level 5、
+  Chapter 12 保留）。接入点唯一：`ocr-pipeline.js#handleTranslateTextBlocks` 归一化 items 时标记
+  `non_translate`，直通分支（`translated_text = 原文`、passthrough 指纹）是既有行为——漫画/小说/
+  网页三条链路同一入口生效，页码与水印气泡不再烧 API。不加设置开关。
+- 顺带：`ocr-pipeline.js` 已顶 400 行门禁，把一个多行 `timing` 块合并成单行抵消新增 import。
+- 文档：CLAUDE.md / AGENTS.md Key Contracts 新增两条契约（无 auto 选项、不可翻译直通）。
+- 验证：`npm run verify` 全绿。
+
+## 2026-10-14（续3）—— 关闭参数修改途径：OCR 调参入口下线 + 旧 popup 死代码删除
+
+- **设置页 OCR 调参入口移除**（只关 UI，存储值与默认值原样保留）：「OCR 服务」卡删掉
+  检测参数三件套（detThresh / detBoxThresh / detUnclipRatio）；「结果筛选」卡整卡删除
+  （confidenceThreshold、minBoxArea、maxBoxArea、mergeLineGap、minBoxWidth、
+  minBoxHeight、maxAspectRatio、novelImageMergeLines）。`settings/controller.js` 的
+  `fill()` 不再回填这些字段，`collectOcr()` 里 `tuning` 改为整块透传存储值
+  （`{ ...configuration.ocr.tuning }`）、localPaddle 只留 baseUrl/mode/debug/recEngine；
+  归一化仍在 `schema.js` 兜底。值不变则 OCR 缓存键不变，无缓存影响。
+- **旧 popup 死代码删除**：manifest 早已指向 quick-popup（popup.html 只剩 meta-refresh
+  重定向，不可达）。删除 `public/popup.html` 与 `src/popup/`（index.js + controller.js）；
+  同步：`build-extension.mjs` 构建入口数组、`check-file-lengths.mjs` entrypoints、
+  `check-extension-dist.mjs` 产物名单、`build-novel-mobile.mjs` 剔除名单（手机版不再需要）、
+  两个测试断言（`kakao_pipeline.part01` 构建入口数组改为钉「popup 不在名单」的存在性，
+  `settings_ui` 的 meta-refresh 断言改为钉 popup.html 必须保持删除）。
+- **文档**：CLAUDE.md / AGENTS.md 域目录清单 17→16、public 资源与模块表去掉 popup。
+- 验证：`npm run verify` 全绿。
+
+## 2026-10-14（续2）—— 气泡译文「一行只剩一个字」：DOM 路径不再人工预分行，交给浏览器 balance
+
+- **现场**（用户截图，就是上一条那个跨页气泡）：译文被拆成 `听说新沙洞的奥 / 利弗要是那边组 / 织 /
+  的人,你打算怎么 / 收场才那么干的?` —— 第三行只有「织」。
+- **根因**：DOM 路径按**原文字数**预分行（`createBubbleNode` → `formatTranslationForOriginalLines`，
+  该气泡 source_line_count=4 → 7/8/8/8 字），而字号拟合的探针按「软换行后的总行数」测高（5 行
+  149px ≤ 158px 就算通过），并不保证每个预分行都能放下。于是那一个多出 1 字的预分行（`利弗要是那边组织`
+  8 字）被浏览器再拆一次 → 7+1，孤字「织」。fb 实测：24.7px、内容宽 194px、8 个 CJK = 197.6px > 194px。
+- **修法**：DOM 覆盖层**不预分行**（`contentNode.textContent = displayText`，双语 `\n` 保留），
+  换行交给浏览器 + `.mt-bubble-content { text-wrap: balance }`。实测同一文本：预分行 `[173,173,25,181,186]`
+  （孤字）→ 软换行 greedy `[173,173,181,173,37]`（末行 2 字）→ **balance `[148,148,156,148,136]`**
+  （5 行均匀）。Chromium 的 balance 只在 ≤6 行生效（实测 6 行均衡、7 行起回退贪心），`vertical-rl`
+  竖排下实测无副作用（4 列均 213/213/210/213，与不设时一致）。
+- `formatTranslationForOriginalLines` 保留给**画布渲染器**（`renderer-embed`）：canvas 没有 CSS 换行，
+  必须显式给固定行数；`content_runtime` 的两条 DP 单测继续钉它。
+- 测试更新：`bubble_text_layer`（内层 textContent 不再含人工 `\n`）、`overlay_style`（新增
+  `text-wrap: balance` 与「不得再预分行」两条断言）。现场复核（干净重载 + 滚动到接缝）：5 行均匀、
+  遮罩完整盖住原文（上一条的裁剪修复同时生效：两个 cover 段 `coverTilted=false`、无 `clip-path`、
+  下页段恢复 145px）。
+- 验证：`npm run verify` 全绿（行数门禁 / ESLint / Pylint / 构建 / Node 1692 / Python 188 passed + 1 skipped）。
+
+## 2026-10-14（续）—— 跨页遮罩被判成「斜排」裁到只剩顶部 ~18%：倾角必须在像素空间量
+
+- **现场**（接上一条的「顺带记录」，Lezhin 53 話）：canonical `canonical_4bd45cfca82a19bde529e73ac92a6a35`
+  （`…:seam`）的下页 `.mt-cover-segment` 只剩顶部 17.8~18.2%，下页 4 行原文只遮住第一行。触发链：
+  `data-cover-tilted="true"` + 气泡 `data-rotation-deg=89.9656`（竖排语义 → `rotationTilted` 为假），
+  所以裁剪只可能来自 `polygonTilted`。
+- **取证**（chrome-devtools 直连 + 隔离世界读 canonical store）：该 canonical 的选中断言是该接缝观测，
+  polygon 顶点在**拼接图像素空间**是 (674.8,77)(955,76)(955.3,140)(675,141) —— 299.6×69.1 的文字框
+  只在像素空间歪 **0.2°**（服务端 `rotationDeg=-0.2`，rawBox 299.6×69.1）。百分比空间里：最长边
+  89.9656°（= 90 − 0.0344°，与 DOM 上 `data-rotation-deg` 逐位吻合），而横边倾角是 **1.36°**。
+- **根因**：`polygonTiltDeg` 在 percent 空间量角度，而 1280×192 的两轴不等比（6.67×）把「横边的
+  像素级微倾」放大 6.7 倍（竖边反向压缩）。0.2° → 1.36° 越过 `COVER_TILT_TOLERANCE_DEG=0.5` →
+  气泡被当成斜排 SFX → 跨页遮罩按「接缝带里那一行」的四边形裁剪：下页遮罩段高 145px（页级 OCR
+  读到 4 行 = 258 页像素），被裁到只剩顶部 ~26px。**同一形状在像素空间根本没歪**。
+- **修法**：`polygonTiltDeg(points, scaleX=1, scaleY=1)` 先换算到同一物理空间再量（`polygonRotationDeg`
+  的轴对齐门槛同步带上比例）；`resolveCoverQuad` / `resolveBubbleCoverGeometry(bubble, { scaleX, scaleY })`
+  接受并透传；知道坐标空间长宽的调用方必须传：跨页 `buildCrossPageBubbleGeometry` 传
+  `canvasWidth×canvasHeight`，嵌入式画布（`renderer-embed`）传 `canvasWidth/Height`，RenderScene
+  （`scene-builder#cleanupGeometry`）传 `surface.width/height`。不传 = 旧口径（DOM 覆盖层路径没有
+  长宽可传，保持原样）。真正的斜排 SFX（夹具 12°/20°/35°）带不带比例都仍判成斜排。
+- **验证**：单测钉现场数值（不带长宽 1.36° / 带 1280×192 0.23°；`resolveCoverQuad` 不裁 + 12° 对照裁）；
+  跨页端到端用例（真 `lifecycle-cover` + `scene-crosspage` + `crosspage-cover`，现场 surface：
+  0.2° 时两个遮罩段都不设 `clip-path` 且下页段保持 145px，同一形状像素空间转 3° 的对照仍裁剪）。
+  把 scene-crosspage 的 scale 传参临时去掉后新用例确实失败（负向验证）。`npm run test:node` 1692/1692、
+  `check:lines`、`lint:js` 全绿；构建已更新 `dist/`。
+- **待确认**：浏览器需重载扩展 + 刷新漫画页（旧页面内容脚本仍是旧构建）才能看到现场修复。
+  复现物在 `%TEMP%\opencode\`（composite.jpg / pageA.jpg / pageB.jpg / seam-probe.mjs / cdp-run.mjs）。
+
+## 2026-10-14 — 「응?」被识别成「$?」丢掉（韩文短台词）；跨页碎片吸收与图层可见性两修
+
+- **「응?」不是没识别、也不是被过滤器误伤**：用 chrome-devtools 抽出该页原图（1007×1536，与扩展同参数）
+  重跑本地 OCR —— 检测到了（box 549,741 65×67），但 `korean_PP-OCRv5_mobile_rec` 把它读成 `"$?"`
+  （0.785），被服务端符号/噪声过滤丢掉；同页底部「응」气泡读成 `"\"` 0.944 / `"응f"` 0.479 也丢了
+  （它最后显示「嗯」是**接缝链路**在页边界复合图上重读的）。客户端过滤器对谚文是放行的
+  （`isReliableMeaningfulShortOcrText` 对 Hangul 直接 true），所以问题在识别器，不在筛子。
+- **模型 A/B（同图同检测模型，只换识别模型）**：`응?` → v3-mobile **`"응?"` 0.718 ✅** / v5-mobile `"$?"` 0.785 ❌；
+  `탐정님` → v3 0.996 / v5 0.906；`안 추워요?` → v5 0.941 ✅ / v3 0.875（측 误读）。两代各有胜负；
+  `PP-OCRv5_server_rec` 换不了韩文（其字符表只有 2 个 Hangul 字符，实测 `inference.yml`）。
+  服务里已有 `LOCAL_OCR_KOREAN_V3_FALLBACK`（binary_text_2x 变体走 v3），但只在变体恢复里跑且要求 ≥0.88。
+- **已完成（服务侧，v12）**：pipeline/degenerate_rescue.py —— 识别结果退化成符号/无意义文本（空/纯符号/
+  低于识别下限，与最终筛同一口径）时，换该语言的备用模型对**同一 crop** 重试一次，只有「实打实该语言文字 +
+  过识别下限」才替换（LOCAL_OCR_DEGENERATE_RESCUE=off 可关，counts.degenerate_rescued 可观测）。
+  真图实测（同一张 Lezhin 页 1007×1536）：degenerate_rescued=1，「응?」→ 응? 0.711 进 items、
+  底部「응」→ 0.671 进 items（此前两者都被丢）；안 추워요? 仍是 v5 的 0.939，未被替换 ✓。
+  返回 items 变了 → **代次 v11 → v12**（dependencies.py + config/versions.js 两侧同步；
+  `test_ocr_debug_part01.py` / `background_runtime.part06.test.mjs` 的字面量与 CLAUDE/AGENTS 文档同步更新）。
+  测试：Python 188 passed（新增 `tests/test_degenerate_rescue.py` 6 例）/ Node 1685 passed / pylint 10.00。
+- **轻量硬化（用户报告"loading 不停闪烁"）**：根因是**永久性服务故障被当成临时错误无限重试** ——
+  扩展升到 v12、服务仍是 v11（没重启）→ 每个请求 409 `contract mismatch` → 恢复扫描（650ms 节流）
+  与自动重试把失败当"再试一次就好"，0.5~1.5 秒一轮「入队→失败→清 loading→再入队」（实测 15 秒
+  211 次 loading 卡增删，`mtLastTranslatedKey` 永远为空），且自动模式不弹错误 → 用户只见闪烁不见原因。
+  修法：①`shared/ocr-service-fault.js` 唯一判据（`mismatch`/`offline`/`invalidated` 三类 + 可操作提示）；
+  ②`content/modules/ocr-service-fault.js` 状态机：一次提示（悬浮球浮层）+ 停本页自动翻译 + 60 秒冷却；
+  ③冷却期内 `queuePageAutoTranslate` / `scheduleAutoTranslateRetry` / `recoverRenderedTargets` 早退；
+  ④OCR 成功一次即解除（不必刷新页面）；⑤`ocr-provider.js` 把服务端 `detail` 透出来（409 的说明
+  以前被丢掉，只剩 "409 Conflict"）。回归测试 `tests/ocr_service_fault.test.mjs` 5 例（Node 1690 全绿）。
+- **复核（用户重启服务 + 刷新后）**：服务 `/health` = v12 ✓；页面 8 秒内 **0** 次 loading 卡新增
+  （闪烁前是 15 秒 211 次）；`응?` → **嗯?**、底部 `응` → 嗯 ✓（页级识别救援生效，不再靠接缝）；
+  其余气泡（탐정님→侦探大人、안 추워요?→不冷吗?）不变 ✓。
+- 本次新增文件：`shared/ocr-service-fault.js`、`content/modules/ocr-service-fault.js`、
+  `pipeline/degenerate_rescue.py`、`tests/test_degenerate_rescue.py`、`tests/ocr_service_fault.test.mjs`
+  （`content/modules` 与 `shared` 文件数各 +1；CLAUDE/AGENTS 的数量表是审计时点快照）。
+- **修 1（跨页已合并气泡 vs 页级碎片，用户截图「真是没救了。」）**：同一气泡被翻了两遍 —— 跨页链路
+  合成第 1~2 行，下页页级 OCR 把被页边界切掉的半行读成 `ᅥ|고그 없네.` 又单独翻一句。文本关系门槛对
+  被切断的乱码永远过不了，故在 `seam-residuals.js#findSeamCoveredResidualCanonicals` 增加**残字通道**：
+  贴页边（上下 4% 内）+ 残字证据（组合/兼容字母、�、混入符号且含 CJK/韩文）+ 几何几乎完全落在 winner
+  框内（overlap ≥0.9）+ 面积 ≤ winner 0.85 → 按 fragment 吸收（不并入译文，只摘掉页级投影）。
+  **刻意不按纯几何放开**：canonical_render_plan 的反例正是"贴页边的无关整块文本"（`외부`），
+  干净字词仍走文本关系路径。回归测试 +1（含反例对照），1685/1685 全绿。
+- **修 3（图层可见性死代码）**：`controls-ui#setOverlayLayerVisibility` 的 hide 分支是死代码
+  （`else if (visible && depth === 0)` 永远不可达 → 「隐藏译文覆盖层」只涨 depth 不隐藏）；
+  且 `overlayHideDepth > 0` 会挡住 `ensureExtensionUiMounted` 的可见性复位守卫 —— 与
+  `withOverlayLayerHidden`（depth>0 进入时既不保存也不回滚）组合可造成**图层永久 hidden**：
+  译文与 loading 卡整层不可见。修复：隐藏/显示做成成对操作并**逐图层**记住原值
+  （`overlay-host.js#hideOverlayLayers / restoreOverlayLayers`，语义搬到这里、controls-ui 只调）；
+  `ensureExtensionUiMounted` 改为逐层复位（不只主图层）。回归测试 +1。
+- 行数门禁：controls-ui 一度 405 行，把两个纯图层操作（get/setOverlayLayerVisibility）搬到
+  `overlay-host.js` 后回到限内。
+
+## 2026-10-13 — 覆盖层宿主被解析进推荐位轮播：译文与 loading 框整层被裁掉（Lezhin 实测）
+
+- 用户报（lezhin 韩漫阅读中）：译文突然全部消失 → 翻页不再出现译文 → 点悬浮球停/开也没用
+  → 连 loading 框都不出现。现场由 chrome-devtools 直连取证（未刷新页面、未改代码先取证）：
+- **事实一**：译文一切正常、只是看不见。`.mt-bubble-content` 里中文文本完整
+  （「两人是老人，一人是外来务工的简单劳动者。」），坐标也对（截图位置与气泡重合）。
+- **事实二**：两条 `.mt-overlay-layer` 中，承载正文译文的那条的宿主是推荐位轮播内部的
+  `div.flex`，其父 `carousel__GXXM_` 是 `overflow:hidden` —— 整层被裁。把该 overflow
+  临时改成 `visible`，译文立刻显示（前后截图对比），根因实锤。
+- **根因**：`renderer-crosspage.js#findCommonAncestor` 只比较**前两个**目标的共同祖先
+  （命中即返回），而调用方 `resolveOverlayHost` 传的是 `overlaysById` 的插入顺序 —— 一对
+  「碰巧同属轮播小盒子」的推荐位缩略图就决定了**全体**覆盖层的宿主；正文页的 root 落在该
+  宿主盒外，再被 `carousel` 裁掉。loading 卡走同一个 `ensureOverlayLayer()`，一起被裁，
+  所以「连 loading 框都没有」。悬浮球/点击链路正常（toast 正常）也由此解释。
+- **修复**：`findCommonAncestor` 改为对**全体**目标逐级求交（顺序无关，空集提前退出），
+  宿主必然包含所有目标；`hostDoesNotClip` 的向上回退保持不变（裁剪祖先仍会被绕开）。
+- **回归测试**：`tests/crosspage_overlay_host.test.mjs`（4 例：全体共同祖先 / 顺序无关 /
+  裁剪祖先继续上溯 / 单目标退化保持既有行为）。`npm run check:lines` 通过，构建已更新。
+- **待浏览器端确认**：需重载扩展 + 刷新漫画页（旧页面的内容脚本仍是旧构建；重注入在
+  `content/index.js` 只信 `existing.invalidated`，扩展重载后该字段仍为 false → 只跑一次
+  rescan 就退出，见下条）。
+- **顺带修掉的第二处（用户截图）**：气泡「随时都行?真是个不折不扣的花花公子。」第一行原文叠在译文下面。
+  实测：该气泡是跨页（seam）气泡，上页那段遮罩被 `clip-path: polygon(0% 100%, 0% 56.82%, …)` 裁掉上半截，
+  只留下 56.8% 以下的一条横带；触发条件是 `rotation_deg = -0.6°`（识别噪声）被判成「斜排」——
+  `COVER_TILT_TOLERANCE_DEG = 0.5` 太贴近噪声。修复：`cover-geometry.js` 新增
+  `COVER_ROTATION_NOISE_DEG = 2`（旋转噪声地板），`resolveCoverQuad` 的 rotation 分支改用它：
+  亚度级角度一律按轴对齐处理（不旋转、不裁剪）。真正的斜排 SFX（夹具 12°/20°/35°）不受影响；
+  回归测试 `tests/cleaned_mask_tilt.test.mjs` +1（`npm run test:node` 1683/1683）。
+- **顺带记录（本次未修，另行处理）**：
+  - **同一气泡被翻两次（Lezhin 跨页）**：跨页链路把气泡第 1~2 行合成一句，而**下页**页级 OCR 把被页边界
+    切掉的半行读成乱码（`ᅥ|고그 없네.`）又单独翻了一句「真是没救了。」画在同一气泡里。接缝已合并的气泡
+    没有把页级碎片挤掉（Lezhin 不是 tiledStrip，走不到 `dedupeKakaoResultByPageCoordinates` 那条跨图去重）。
+    隐藏跨页层截图取证：原图三行 = 언제든? / 난봉꾼이 따로 / 真是没救了。 —— 页级那半行是被页边界切断的碎片。
+  - `content/index.js`：扩展重载后旧 runtime 的 `invalidated` 不为人知地保持 false，
+    重注入只 `existing.rescan()` 就退出 —— 本页要刷新才能吃到新构建；孤儿 runtime 的
+    `chrome.runtime` 已死，所有请求都会瞬间失败且被 `CONTEXT_INVALIDATED_RE` 静默吞掉。
+  - `controls-ui.js#setOverlayLayerVisibility`：hide 分支是死代码（`else if (visible && depth === 0)`
+    不可达，点「隐藏译文覆盖层」只涨 `overlayHideDepth` 不隐藏图层），而 `overlayHideDepth > 0`
+    会让 `ensureExtensionUiMounted` 的图层可见性复位守卫失效；与 `withOverlayLayerHidden`
+    组合可造成「图层永久隐藏」。
+
+## 2026-10-12（续3）— ルビ过滤三修定版：宿主比 0.8 + 块级注音剥除 + 阶梯拆分
+
+- 完成审计后补的最后一块：几何漏网的 ruby（れい/まん いち/せいこう/だいがく/ゆうかい/
+  げんざいひとりぐ——宿主厚度差不足、或中间列规则/跨度判定没接住的）在**块级**收口：
+  聚类合并前，≥3 列的竖排块（含 ≥2 条汉字列）里 ≤8 字的全假名列按注音剥掉。
+  `stripFuriganaLikeClusterEntries`（ocr-ruby.js；从 ocr-clustering.js 搬过去是行数门禁）。
+  横排/聊天区/汉字列不足两列保守豁免。near-p3/4/6 回放：块内 ruby 泄漏 0（此前 2~4 条/页）。
+- 三修合起来（宿主比 0.8 / 中间隔列拒绝 / 阶梯错位拆分 + 块级剥除兜底）在凶乱令嬢 10 页
+  与転スラ 18 页上：对话识别完整、ruby 丢弃全部正确、无明显两段误并、无块内注音泄漏。
+  `npm run verify` 全绿（Python 181 / Node 1676 / 行数门禁 / lint）。
+- 已知残留：目录页码/花体署名/SFX 小假名的模型级误读；大字号气泡仍会碎片化（阶梯规则的
+  保守面）。扩展与构建均为最新，用户重载即生效。
+
+## 2026-10-12（续2）— ルビ宿主比引擎化（0.8）+ 检视台卡顿根治 + 凶乱令嬢复测确认
+
+- 用户报：还有很多最后没识别到的地方、有些 ruby 没被丢弃、检视台切快照卡住。
+- **卡住根因**：测试把 .local-data/debug 塞到 3.3GB（slice_crops 8600 文件、3035 组快照）。
+  /api/snapshots 每次要 parse 200 个完整结果 JSON（1.7s）。修复：①300 组以外归档到
+  `.local-data/debug-archive/`（2698 组、1.8GB，可删）；②serve.mjs counts 按 (stem,mtime)
+  缓存。实测 list 1.71s→0.87s（重启检视台后生效）。**教训：清理脚本的模式把要保留的
+  near-p*/cmoa-p* 复测快照也删了（好在拼接页图还在，重跑 OCR 即恢复）——清理与保留
+  清单要互相核对。**
+- **ruby 泄漏量化**：near-p3 存活全假名薄列 せお/からだ/かのじょ——宿主 この身体を、(27px)
+  对 からだ(20px) 是 1.35×，0.7 判据（要求 1.43×）差 1.6px 漏掉。修复：宿主厚度比引擎化
+  （manga_ocr 0.8 / paddle 0.7），engine 参数穿透 findRubyHost。near-p3 全量验证：16 条
+  丢弃全部正确配对、零误伤、泄漏清零。
+- 复测结论（凶乱令嬢 10 页，重跑恢复快照）：对话页全部完整，ruby 丢弃全部正确，阶梯拆分
+  符合预期。`npm run verify` 全绿。
+
+## 2026-10-12 — 凶乱令嬢（用户正在看的漫画）10 页复测
+
+- 用户在 CMOA 打开 凶乱令嬢ニア・リストン 1巻 無料試し読み（マンガUP！版，1352 宽分条），
+  要求对新开的漫画再测。同流程：canvas 导出 30 条 → 10 页拼回 → manga-ocr（扩展同参数）。
+- **识别**：对话页全部完整——第 6 页长对话页（正是最初误删 そういえば、あなたが… 的同类页）
+  全文捕获、第 1 页序章独白（好きな調味料は塩で…将来の夢は大きなステーキを食べること）完整、
+  第 4 页使用人页 そういえば、使用人もいる 正确保留。第 7/8/9 章节页/插图页正确稀疏。
+  残留小错：わかったわかんった（り→ん）、自浄効果といない（いい→ない）、列漏の星（术语乱码）
+  ——单点模型级，非系统性。
+- **客户端层**：ruby 丢弃 13+8+21 处全部正确配对（わたし→私がニアとして、たいさん→大金で
+  俺を雇った…），零误删；そういえば 正确成块。**已知权衡**：阶梯错位规则会把大字号气泡的
+  自然错位列拆成多块（page 3 的独白气泡拆成两句组）——翻译上下文有损但文本不丢，是「跨气泡
+  误并」与「大气泡碎片化」之间的取舍，当前按用户诉求（两段不合并）偏保守拆分。
+
+## 2026-10-11（续5）— CMOA 无料漫画 18 页实测 + 排版两修（阶梯错位拆分 / 字号下探）
+
+- 用户目标：①随机几页漫画不能出现识别错误/丢弃失误（用 CMOA 无料漫画实测）；②排版两修：
+  译文超出气泡框、明显两段不合并。
+- **实测方法**：内置浏览器打开 CMOA 免费试读（転生したらスライムだった件 1 巻），页面以
+  blob URL 分条渲染（1127×536×3 条/页），页面内 canvas 导出 → 3 条一页拼回 → 18 页全部
+  送本地服务（lang=japan + rec_engine=manga_ocr，扩展同参数）。我自己读原图当地面真值。
+- **识别结论**：对话页（1/4/5/6/7/9/10/11/14/15）台词全部完整正确——含第 4 页大段独白、
+  第 6 页多气泡页。第 8 页动作页 3 条全对（大 SFX + ちっ…）、第 12 页全黑转场页 0 条正确、
+  13/14 稀疏页正确。残留错误集中在**低利害场景**：目录页码（第四話→第回話）、花体署名
+  （川上泰樹→川上奈崎）、SFX 小假名（ぽよっ→ぽょっ）——模型级极限，非管线问题。
+  幻觉细列（8~11px 边缘噪声读出 そういえば、0.50/0.51）被既有纵横比门（25>18）与
+  面积门（0.00094<0.0012）拦掉，未泄漏。
+- **排版修 1（明显两段不合并）**：第 6 页两个跨气泡过度合并实锤（んん?なんだ…田村か? ×
+  血液が不要…??；田村あー!! × 俺が死んだら・・）。判据：同一气泡的正文列顶端对齐（读序
+  起点差 ≈0），跨气泡列起点错位 60~123px。`shouldMergeLocalPaddleParagraphLines` 加
+  「阶梯错位拒绝」：双方都非全假名 + 起点错位 >1.2×细列厚度 → 拒绝合并（全假名豁免——
+  ruby 与宿主的自然错位有半列长）。阈值 0.8 会误伤正确气泡的自然错位（29px 案例），
+  1.2 定版。回放 6 页验证：两案例拆开、正确气泡完整。
+- **排版修 2（译文超出气泡框）**：`fitBubbleFontSize` 的扩盒兜底是主因——最小字号 10px
+  clamp 会把字号抬回去，长译文 10px 放不下就走 `expandBubbleForTextOverflow` 把盒子撑到
+  气泡外。修复：扩盒前先下探字号（10 → 7.5px，0.5 步进），真放不下才扩。
+- `npm run verify` 全绿。扩展需重载，服务已重启。
+
+## 2026-10-11（续4）— 误删正文（そういえば）与批量空读（以前/ベデリオが）双修
+
+- 用户报：识别不到的部位 + 丢弃的识别错误了（截图：ルビ「そういうえば」→ 注在「言っていたな…」
+  粗细比 0.68）。用用户的线上快照（page-1aad437b）回放全链路，两个根因都实锤：
+- **误删正文**：そういえば(25px) 与宿主 言っていたな...(46px 大字号) 之间隔着 ruby 列
+  いぜん(13px)，间距 37 ≤ 25×1.6=40 通过了间距检查——ルビ过滤没有「中间隔列」防线。
+  修复：findRubyHost 加中间列判定（盒中心落在候选与宿主之间的带内 + 自身跨度的一半以上
+  落在候选的文字轴范围内），隔着列就拒绝配对。**中间列跨度归一用中间列自身**（用候选归一
+  会因短ルビ列 0.28<0.6 漏判）。
+- **批量空读**：7/82 列 manga-ocr 返回空文本 score 0.000（det 0.61~0.86 明明框到了）——
+  同一批裁剪**单张跑全对**（そういえば 0.9999）。这是批量解码的浮点归约顺序与单张不同、
+  低裕度步被翻转后级联成「立即 EOS」的彩票效应。修复：worker 对可疑行（空文本/置信 <0.6）
+  **单张重跑一次**（单张是基准），仍空才算真读不出。
+- 回归用例：ocr_ruby_filter 新增「中间隔列拒绝配对」真案例（実座標），正反两个断言
+  （去掉中间列后同样几何恢复ルビ判定——证明规则只对隔着列的情况生效）。
+- 真实快照回放验证：そういえば 保留并与 いぜん 成块（不再消失）。`npm run verify` 全绿，
+  服务已重启加载新 worker。扩展需重载。
+- 遗留：いぜん 这类与宿主框重叠的短 ruby 读法仍会漏进气泡文本（它的宿主框与候选框互相
+  压住，间距判定进不去）；等攒够多页快照统一重校 ruby 过滤。
+
+## 2026-10-11（续3）— 扩展主链路接上 manga-ocr 并设为日文默认（用户确认源语言选的是日文）
+
+- 用户反馈「插件日语识别还是很多错误」——根因：`rec_engine` 只接了服务端和检视台，**扩展主链路
+  一直在发 paddle**。本回合把它接进扩展并设为日文默认。
+- 接线清单（全部落位）：①schema `localPaddle.recEngine` 默认 `"manga_ocr"` + 归一化；②store
+  `toLegacySettings` → `localOcrRecEngine`；③`getLocalOcrParams` → `rec_engine`；④**请求体**补
+  `rec_engine` 字段（客户端是逐字段构造 body，漏了这步服务端永远收到空串——端到端测试当场抓出
+  rec_engine: paddle）；⑤`buildOcrCacheKey` 加 `localOcrRecEngine`（切引擎不再命中旧缓存，回切
+  paddle 旧条目依然有效——所以**不需要换代次**）；⑥设置页「日文识别引擎」下拉（默认 manga-ocr）；
+  ⑦ルビ过滤阈值按引擎分开（manga_ocr 0.9 / paddle 0.8）——manga-ocr 对 ruby 列也是高置信，
+  原先靠低分过滤挡住的 ruby 会活到过滤面前，0.9 档接住 0.84~0.89 的泄漏（新增回归用例钉住
+  0.84 边界：local_paddle 保留 / manga_ocr 丢弃）；⑧服务端 worker 起不来时**循环前探活回退
+  paddle**（识别期才回退会拿到 manga 路径的未旋转候选，paddle 读到侧躺文本）。
+- 用户澄清源语言选的是「日文」而非 auto——服务端引擎开关只认 japan 正好命中，auto 兼容方案
+  （japan 主跑 manga-ocr + korean 补跑 paddle）不做，保持简单；auto 语言下 manga-ocr 不生效，
+  想用就把原文语言选成日文。
+- 端到端验证（扩展确切请求体，lang=japan + rec_engine=manga_ocr）：rec_engine=manga_ocr ✓、
+  72 items、四个关键残留文本全对（全部潰してこい/調子に乗った/返り討ちに遭い/まあ言っちまえば）。
+  首次请求含 worker 模型加载 ~14s，预热后 2.2~2.6s。`npm run verify` 全绿。
+
+## 2026-10-11（续2）— 速度：paddle 0.9~1.7s、manga-ocr 2.2~2.6s（目标 1~3s 达成）
+
+- 用户三点：①检视台看到 全部り潰い，另一会话说 manga-ocr 是对的——怀疑检视台没走 manga-ocr
+  （对：serve.mjs 是长驻进程，改完透传代码必须重启；浏览器标签页也要刷新才有引擎下拉框；
+  服务重启前旧链路会静默忽略 rec_engine）；②manga-ocr 慢一倍怎么解决；③paddle 也变慢了，
+  目标 1~3s。
+- **实测定位**（/ocr 响应自带分阶段 timings）：paddle 的 `crops` 阶段 1095ms 是最大头——
+  `_deskew_crop_region` 逐 crop 调用却每次 `cv2.imdecode` 整页 PNG（~82 次 × 12ms）；
+  manga-ocr 的 `recognize` 3276ms 是逐列串行 generate（~40ms/列）。这不是新引入的回归——
+  crops 的浪费一直在，列拆分又加了 11 个 crop。
+- **两个修复**：①整页只解码一次，`_deskew_crop_region` 加 `source_image` 参数复用（crop 结果
+  带上 `imageArray`，省掉 per-crop PNG 编码+解码），paddle crops 1095ms → ~150ms；②worker
+  改批量协议（{"images":[...]} 进、{"results":[...]} 出，8 列/批，`LOCAL_OCR_MANGA_OCR_BATCH`），
+  压扁后批内全部 224×224 无尺寸差。
+- **批量引出的第三个模型坑**：transformers 5.x 批量下 `output_scores` 的 scores 行与
+  sequences 行不同序（argmax 实测逐帧错乱，第 2/3 行置信度 0.17/0.34）——弃用 output_scores，
+  改 teacher-forced 前向（logits[:, i] 预测 sequences[:, i+1]，按构造对齐）算置信度；代价一次
+  解码器前向。`encoder_outputs` 复用在该模型上有维度坑（12 vs 48），老实重过编码器。
+- **定版数字**（page139，预热后各两轮）：paddle 0.90~1.72s（57 items）、manga-ocr 2.22~2.57s
+  （72 items）——**1~3s 目标达成**，manga-ocr 只慢 ~1.5x 而识别质量全面占优。批量与单张的
+  文本+置信度完全一致（worker 内 A/B 验证）。
+- 手机版说明：novel-mobile 是小说构建，漫画 OCR 始终跑在 PC 本地服务上，手机端不改变 OCR 速度。
+- 教训：`pytest.importorskip("transformers")` 在文件运行时会让主进程炸（transformers 5.x 顶层
+  import torch）；契约测试的 `_deskew_crop_region` 桩签名随生产契约同步加 `source_image`。
+
+## 2026-10-11（续2）— 识别引擎 A/B 评判：manga-ocr 文本质量赢，但ルビ泄漏没过关
+
+- 方法：同一张图、受控实例（端口 8891~8894）、`rec_engine` 只切引擎；两页各跑 paddle / manga_ocr：
+  `page139`（CMOA 凶乱令嬢，硬骨头页）与 `page_real`（另一页真实漫画）。
+  脚本 `tmp-cmoa/ab_engine.py` + 报告 `ab_engine_report.txt` / `ab_engine_junk.txt`。
+- **文本质量：manga-ocr 胜**（page139 平均分 0.798 vs 0.603，≥0.9 的 30 → **54**，含非日文字符 2 → **0**）。
+  逐条真值（我读过原图）：
+  | 真值 | paddle | manga-ocr |
+  | --- | --- | --- |
+  | 全部潰してこい | —（全部り潰い 碎片） | **1.00** |
+  | 返り討ちに遭い | —（返討） | **0.99** |
+  | 潰させた | —（潰せ） | **1.00** |
+  | スキャンダルで / アンゼルなら | 0.92 / 0.95 | **1.00 / 1.00** |
+  | 問題ないだろ / 誘拐された娘を / 揉めに揉めた末 / 筋書きはこうだ | ✓ | ✓（个别多出「一」「。」） |
+  page_real 上它还把 `Jこ5年`→**ここ5年**、`交わしてなかた`→**交わしてなかった**、`早`→**早く**、`始ろ`→**始めろ** 修对。
+- **不通过的三条（可量化）**：
+  1. **ルビ泄漏**：page139 的 `rubyDrops` 4 → **17**，且**合并块里漏进 6~7 个短假名块**
+     （ヤッ / ッ / すじが / さしん / ゆうかい / こらの…；paddle 侧 0）。page_real 漏 2 个（スッ / よい）。
+     原因：manga-ocr 对ルビ列也高置信，于是 «低分过滤» 不再提前挡掉它们，全压到ルビ过滤上，而过滤的
+     厚度判据是按 paddle 几何校准的（文档自己也记了 4 条漏网：ゆうかい 0.84 / すじが 1.05）。
+  2. **更碎**：page139 合并块 13 → **20**，page_real 9 → 10 → 翻译单元变多（费用）且按碎片译。
+  3. **慢 2.4~4.9×**：page_real 2.6s → **12.6s**；page139 8.2s → **19.6s**（worker 协议是一图一往返，可批量化）。
+- **两个反例（别一刀切换引擎）**：竖排片假名 `バブテスマ` paddle 对、manga-ocr 吐 `リバブ・テス・マ・`；
+  `今は…` 0.97 → `今は:` 0.60（**没丢**，我复查了同一框的 manga 结果，只是分数掉+没并进同一块）。
+- **建议（按优先级）**：① 先按 manga-ocr 几何重校ルビ过滤（唯一硬门槛，修好即可让 japan 默认走 manga-ocr）；
+  ② 若不修过滤，就做「paddle 主跑 + 只对读弱的 crop 用 manga-ocr 复读」，但**必须先做完ルビ判定再送修复**，
+  否则一样漏；③ worker 批量化（一次往返多张 crop）压掉 2.4~4.9× 的差距；④ 横排/片假名 SFX 与日文以外语言仍用 paddle。
+
+
+## 2026-10-11（续）— manga-ocr 识别引擎接入（用户拍板「换 manga-ocr」）
+
+- **架构**：`manga_ocr_provider.py`（引擎开关 `manga_ocr_engine_enabled`：lang=japan 且
+  `rec_engine=manga_ocr`，或 `LOCAL_OCR_REC_ENGINE` 环境变量默认）+ `manga_ocr_worker.py`
+  独立进程。默认 paddle 逐字不变，korean/auto 不受影响；检视台参数面板加「识别引擎」下拉。
+- **DLL 冲突实录**：torch 与 paddle 的 CUDA DLL 同进程两种加载顺序都炸（WinError 127，
+  cudnn_cnn64_9 / cublas64_12 互相踩）→ worker 进程隔离。worker 还要**清洗继承的 PATH**
+  （paddle 导入时把自己的目录塞进 PATH，torch 会错拿它的 cudnn——这个污染在两层子进程
+  链里依然传播）。
+- **transformers 5.x 三坑**（都靠逐帧 debug 实锤）：①`size:224` = 短边+中心裁剪，竖排长列被
+  截断 → 显式压扁 224×224；②fast tokenizer 转换对 BertJapaneseTokenizer 走不通 → 慢分词器
+  decode 即可（generate 只需要 id→text），字间空格去掉；③scores/sequences 错位一格 → 长列
+  平均概率趋 0 → 识别下限整批误杀（一度让「主列全部消失、只剩 ruby 列」）。
+- **定版实测**（page139，RTX 5070 Ti，全页 14s）：manga-ocr 70 条分数普遍 0.95+；paddle 的
+  三类残留全破：全部潰してこい 0.999（无通道多列块）、返り討ちに遭い 0.995（paddle 误读返討——
+  真值揭示）、まあ言っちまえば 0.997 全字符；聚类回放 20 块、大气泡全部完整。
+- **遗留**：①ruby 列泄漏 4 条（manga-ocr 高置信让它们活到ルビ过滤，0.8 厚度阈值按 paddle 几何
+  校准的，需要按 manga-ocr 几何重校）；②`pytest.importorskip("transformers")` 绝不能进主进程
+  （transformers 5.x 顶层 import torch，paddle 先加载的主进程当场 WinError 127——冒烟测试因此
+  必须全程子进程化）；③引擎未进缓存键/未换代次（默认 paddle，结果不变；若用户拍板转默认，
+  rec_engine 进 `buildOcrCacheKey` 并换代次）。
+- 测试：`tests/test_manga_ocr_provider.py`（5 例，含真模型冒烟——全程子进程，主进程零 torch）。
+  `npm run verify` 全绿（Python 181、Node 1676、行数门禁、lint）。
+
+## 2026-10-11 — v11：放大上限收回 2x + 竖排气泡聚类合并（用户三点反馈的收尾）
+
+- 用户三点：①「放大别再超过 2×」；②「拆出来的列要能并回同一个气泡，合并有点问题」；③识别仍有残留，
+  并问换 OCR 会不会更好。
+- **①上限收回**：`prepare_recognition_image` 恢复 `min(2.0, …)`。此前「无上限精确到 48」的动机
+  （拆分窄列 12~23px 需要足额放大）与用户判断冲突，定版从用户：≥24px 列仍精确到 48，12~23px 只到
+  24~46px。换代次 v10 → **v11**（识别输入又变了；两侧逐字同步 + 钉值测试同步）。
+- **②合并问题的三层诊断**（全部用真 bundle 回放 + 逐对门检验定位，不猜）：
+  - 段落层：列厚比门 0.65 对细列过严（ますかね 32px × うまくいって 18px = 0.56 被拒）→ 放宽到 0.5。
+  - 段落层：`shouldMergeLocalPaddleParagraphLines` 的「聊天上小下大」拒并门在竖排投影下误伤——竖排的
+    inline=竖直，任意两列都有先后关系、相邻列 lineGap 天然极小，`揉めに揉めた末×返討`（hRatio 0.738
+    恰好压线 1/1.35=0.7407）所有几何门都过却被它拒掉。修复：横排（|median rotation| <45°）才启用。
+  - 样式层（最后一级，最隐蔽）：`splitLocalPaddleVisualStyleClusters` 的 `hasStackedStylePair` 在竖排下
+    **恒真**——段落明明已连通成整气泡（连通组验证 {揉め,返討,地元,貴人} 四列），还是被按列厚拆成
+    [地元+貴人] // [揉め+返討]。竖排跳过样式拆分（时间戳仍可拆；竖排漫画没有聊天时间戳）。
+  - 容器层：`areLocalPaddleRegionsCompatible` 要求同 id/可统一，但服务端**按列**发容器——同气泡各列
+    id 必不同、类型还在 speech_bubble/caption_panel 间漂移（同一白气泡实测三种类型并存）。竖排下
+    同/异类型 bubble-like（conf ≥0.75 + 底色差 ≤24）视为兼容。**只对竖排放宽**：横排的容器 id 是
+    可靠信号，放宽会让相邻字幕并进气泡（`background_runtime.part02` 的既有测试当场抓住，正确行为）。
+  - 行数门禁：ocr-lines.js 超 400 → 容器兼容函数族（~106 行）搬去 ocr-regions.js（本来就是 region 语义）。
+  - 实测（v11 识别 + 真聚类回放）：22 块 → **13 块**；大气泡六列完整成块「筋書きはこうだ/調子に乗た/
+    貴人の娘が/地元のチンピラと」——v8 同一区域也只有 2~3 列的碎片组，这里是净改善。Node 1676 全绿。
+- **③残留与换 OCR 评估**（未实施）：全部り潰い/キどものチ 两处 crop 内无干净通道，列拆分无效；
+  「0.5× 邻居遮挡候选」（续5 提案，n=1 证据）仍是候选。换引擎评估写在会话总结：manga-ocr 是日漫
+  竖排的专用模型（det+column crop 已由列拆分备好），是最对口的下一步，但属独立工程。
+
+## 2026-10-10（续7）— v10 复测：列拆分是真赢，但有两个新问题
+
+- 复测条件：同一页 `tmp-cmoa/page139.png`、端口隔离的受控实例（8765 上仍是别人的实例，我没动），
+  五份载荷：v8 基线 / v9 放大(无门) / v10 默认 / v10 关列拆分 / v10 关放大。
+  **注意**：v10 默认的检测框与 v8 **不一致**（列拆分新增 11 条检测，raw 71 → 82），
+  所以必须按 IoU 配对比较，按序号比会整片错位（我第一版报告就踩了这个坑）。
+  `tmp-cmoa/ab_v10_matched.mjs` 是配对版，`ab_v10_report.txt` 是五方对照。
+- `npm run verify` 绿：**1676 Node / 176 Python +1 skipped** + 行数门禁 + lint + build（含对方新增的
+  `tests/test_crop_columns.py`、`tests/test_rec_preprocess.py`）。seam 分支的悬空引用 bug 已修（append 回到 `is not None` 守卫内）。
+- **v10 修好的（逐条读图核对过真值）**：
+  - 列拆分（`crop_columns.py`）修好 8 处以上，新条目分数 0.91~1.0：`問題ないだろ` 0.948（原 問う題 0.67）、
+    `揉めに揉めた末` 0.925（原 揉にん末 0.52）、`誘拐された娘を` 0.917（原 誘拐娘 0.84）、
+    `筋書きはこうだ` 0.997（原 筋書はこうだ）、`地元のチンピラと` 0.999、`貴人の娘が` 0.997、
+    `被害者をかさ増し` 0.984、`ァンゼルにガキどもも` 0.942、`うまくいって` 0.914。
+    `tmp-cmoa/v10_column_split_crops.png` 是 crop 级证据：v8 的 crop 里混着ルビ/邻列出血，v10 拆出来的列是干净的。
+  - 几何门（短边 ≤11px 不放大）有效：v9 的三个「办」只剩 1 个、`い→2` 恢复 `い`、`号→办元` 恢复 `号`；
+    非日文字符命中 3 → 1。
+- **新问题一：放大的 2× 上限被去掉，12~16px 这一档变成 3~4×，出现新退步。**
+  `prepare_recognition_image` 现在是 `scale = floor / short_side`（v9 是 `min(2.0, floor/short_side)`）。
+  同框同图只切放大：`もう`(12×32) 0.97 → **`vc` 0.19**；`みさ` → `さ`；`かんたん` → `かんん`。
+  与文档里自己的结论（"放大过头会被模型缩回反而丢字"）一致 —— 建议对这一档恢复 2× 上限，几何门保留。
+- **新问题二：列拆分把短列切坏，并把气泡拆碎（客户端后果）。**
+  - 切坏：`潰させた`(28×90, 0.76) → **`潰せ` 0.87**（关列拆分时是 `潰させた`，所以确定是拆分导致）；另有一条
+    8×165 的带被建成条目却识别为 **0.00**（`COLUMN_DET_MIN_WIDTH=8` 刚好卡在边缘）。
+  - 气泡数：合并块 **17 → 22**（`うまくいって`/`ますかね`、`するために`/`潰せ`、`調子に乗た`/`貴人の娘が`/
+    `地元のチンピラと`/`揉めに揉めた末` 被拆成多个块）。**mergeLineGap 2.2/3/4/6/8 都试过，块数不变**（v8 也一直 17）
+    —— 不是这个旋钮能解决的。
+  - 根因：拆出来的子条目只带 `region_id=region-0079-…`（父是 `region-0063`），**没有父线索**，客户端无从知道
+    这几列原本属于同一气泡。最小改动：子条目带 `column_parent_index`（或复用父 region 前缀），客户端按父并回一个气泡 ——
+    既保住识别收益，又不增加气泡数（不额外花翻译费）。
+  - 顺带：`regions 15 → 14`（实底采样区少一块，需盯遮罩是否仍贴）。
+- 其它：仓库根目录出现未跟踪的 `.zcode/` 与 `.zcodeignore`（另一个会话的工具目录），建议加进 `.gitignore` 或清掉。
+
+## 2026-10-10（续6）— v10：竖排列拆分落地 + seam 恢复分支的悬空引用修复
+
+- **先修别人续5里发现的真 bug**：`crop_recognition.py` seam_recovery 分支的 `candidate_rows.append(...)`
+  确实在 `if repaired_crop is not None:` 之外（git diff 对 HEAD 可证）——`repaired_crop` 为 None 时首轮回
+  UnboundLocalError、后续轮复用上一轮残留的 `repaired_image`（张冠李戴）。已把 append 还原进 if 块。
+  `CLAUDE.md`/`AGENTS.md` 实底那条的「现为 v8」也已改为「现为 v10」。
+- **竖排列拆分**（上一轮的遗留项，本轮主任务）：新模块 `crop_columns.py`，接在检测合并之后、识别之前。
+  - `detect_column_bands`：列向墨水投影找列带。两轮实测调参——初版 `min_gap_width=2` 在真页上**一个都
+    拆不开**，投影剖面显示真实列缝只有 1px（ルビ紧贴正文/邻列出血），于是 1px 通道即列界、去掉合并
+    步骤；碎带下限 4px。`column_detection_polygons` 走 deskew 契约的 cropToSource 把列带映射回原图
+    四边形。
+  - 接线方式：列检测**追加进检测队列由同一 while 循环体处理**——初版做成独立预检（每个检测多裁一次）
+    被 `test_ocr_geometry_contract` 的 `crop_calls == 1` 打回，改成队列后零二次裁剪、契约测试原样通过。
+  - 两级阈值：拆分判定 4px / 建条目 8px（`COLUMN_DET_MIN_WIDTH`）。中间版本曾产出 `a`(4px)、`.业`(10.7px,
+    0.514 蹭过客户端低分例外) 这类垃圾条目；8px 门槛后消失，真ルビ列 8~11px 不受影响（照旧交给客户端
+    ルビ过滤）。全部碎带不足 8px 时回退整列识别。
+  - **放大与拆分的联动**：拆分后的窄列（12~20px）被 2x 上限压在 36~40px、不到模型原生 48px，实测丢字
+    （「うまくいって」→「うまくいて」）；去掉上限、12~47px 一律精确放大到 48 后恢复。续5 的「floor=64
+    倒退」由此也有了解释：不是 64 太大，是 2x 上限让 26px 只到 52px 再被模型缩回。
+- **实测**（同一页 page139，v10 最终版 vs v8 基线）：8 处多列混读修好 6 处——問う題→**問題ないだろ**
+  (0.651→0.948，正是续5 里「要靠 0.5× 缩小才对」的 #63，列拆分直接救活)、誘拐娘→**誘拐された娘を**、
+  揉にん末→**揉めに揉めた末**、被害増し→**被害者をかさ増し**、筋書はこうだ→**筋書きはこうだ**(0.997)、
+  アンゼルにガキもも→**アンゼルにガキどもも**；加上 v9 已修的 スキャンダルで/まあ言ちまえば。
+  残餘 2 处（全部り潰い、キどものチ）crop 内**没有贯穿高度的干净通道**，列拆分无能为力——续5 的
+  「0.5×/邻居遮挡候选」仍是这类的好候选（n=1 证据，未实施）。
+- **已知抖动**：低分碎片条目（潰せ/潰させた、かんん/かんたん、調子に乗った/乗た）在输入几乎不变的两次
+  运行间摆动——PaddleOCR rec 按 batch ≤16 组批、组内按最大宽度 padding，拆分改变了批次划分 → 同一
+  crop 的分数微移 → ±90 选优翻转。结构级修复跨运行稳定；逐字稳定要动组批策略（按尺寸排序组批），
+  未实施。`調子に乗った→乗た` 是本轮唯一一次真台词抖动，0.992 自信错读，留观。
+- 换代次 v9 → **v10**（拆分 + 放大几何门都改服务端返回；v9 未及发布，但用户已用 v9 跑过页面、缓存已热，
+  不换代读回旧结果）。两侧逐字同步 + 两处钉字面值测试同步。
+- 验证：新增 `tests/test_crop_columns.py`（8 例）、`test_rec_preprocess.py` 补 skip 门/无上限用例；
+  Python 176、Node 1676、行数门禁 + lint 全绿（`npm run verify`）。A/B 用 8766 独立实例（8765 是用户的
+  v10 服务，没动）。
+
+## 2026-10-10（续5）— v9「识别输入增强」的真实 A/B：先把测量环境修对，再谈效果
+
+- 目标：用户要求「用同一页做前后对比，验证那批 v9 改动（别人会话做的）到底把识别错误修到什么程度」。
+- **测量事故（重要教训）**：前三次采样（`LOCAL_OCR_REC_PREPROCESS=off` / 默认 / `LOCAL_OCR_REC_UPSCALE_MIN_SHORT_SIDE=200`）
+  结果**逐条完全一致**，看起来像「放大不影响识别」。实际原因是 **8765 上有一个别人起的 `python server.py`（pid 22400，
+  命令行是 bat 风格的 `python  server.py`，不是我这边的完整解释器路径）**：我起的受控子进程抢不到端口直接退出，
+  请求全被那个实例接走了 —— 它的放大是开着的，所以三次必然一样。
+  **教训：本地服务是固定端口，做 A/B 前必须先确认自己起的实例真的在服务**（看 `Get-NetTCPConnection` 的 OwnerProcess
+  命令行，或干脆换端口）。别人那个实例我**没有动**。
+- 修法：`tmp-cmoa/ab_rec_isolated.py` 用 `python -c "uvicorn.run(app, port=$AB_PORT)"` 在 **8791/8792** 起自己的
+  实例（不改 `server.py`），端口本来是空的 → 端点就是自己的，自证。
+- **受控结果**（同一张 `tmp-cmoa/page139.png`，同一份代码）：
+  - `v9·放大关` 与「v8 基线载荷」**逐条完全一致**（71 条文本/分数、57 items、17 块）—— 说明放大就是这批改动的
+    唯一功能差异，也说明测量链路可信。
+  - `v9·放大开`：**71 条里 33 条变了**；items 57 → 54；平均分 0.727 → 0.691；<0.72 的 29 → 30 条；合并块 17 → 18。
+  - 逐条读图核对（`tmp-cmoa/rec_disputed_crops.png` 是把有争议的 crop 横过来放大 3 倍拼的）：
+    - 真修好（真值由我读原图确认）：#29 スキンダルで → **スキャンダルで**；#37 ま言ちまえば → **まあ言ちまえば**；
+      #58 潰せた → **潰させた**；另有 #31 なるかわからね → なるかわからねえ、#27/#41 从空 → き/号。
+    - 变差：#6 みがら → **迹**（「迹」是简体专用字，日文里不该出现）；#26 い → 2（0.986 → 0.288，噪声碎片）；
+      #5/#9/#67 出现「办」。#51（真值 全部潰してこい）与 #63（真值 問題ないだろ）**两次都错**。
+    - 副作用（算好的一面）：#3/#25/#43 三个「2」的噪声条目分数掉到 0.000 被丢掉 —— 正是靠低分例外才放行的那类假阳性。
+    - 合并结构变差一处：基线「揉にん末/返討」+「調子に乗った/貴人の娘が/地元のチンピラと」在 v9 下变成
+      「地元のチンピラと/揉揉末/返討」+「調子に乗った/貴人の娘が」（误合）。
+- **crop 级探针**（`tmp-cmoa/probe_rec_scale.py`，直接调真识别器，不经过服务）：
+  | crop | 原始 | v9 放大到 48 | 2× LANCZOS | **0.5× AREA** |
+  | --- | --- | --- | --- | --- |
+  | #29（真值 スキャンダルで） | スキンダルで 0.998 | スキャンダルで 0.932 ✓ | スキャンダルで 0.921 ✓ | スキンダルで 0.759 |
+  | #63（真值 問題ないだろ） | 問う題 0.661 | 問う題 0.650 | 問う題 0.663 | **問題ないだろ 0.807 ✓** |
+  结论：**日文竖排有两类独立的识别错误，修法是相反的** ——
+  ①小字号假名被丢（ャ/あ/っ）→ 放大有效（v9 做对了）；
+  ②crop 里混进了相邻列的ルビ（#63 的 crop 右缘就有被切一半的注音）→ 放大无效，**缩小/糊掉反而对**。
+  建议：放大加**几何门**（长宽比 ≥5 这一桶 7 条里 6 条文本变长、0 条变短；短边 ≤11px 那一桶 5 条全部变差），
+  再给「有相邻细条邻居」的 crop 加一个 0.5×/邻居遮挡候选交给既有的 `select_best_recognition` 挑
+  （按 `recognition_quality` 算：#63 的 0.5× 候选 0.975 胜过原始的 0.754 ✓；但 #29 的放大候选 1.119 会输给
+  原始 1.165，所以**不能**只靠质量公式做取舍，得先把放大做进几何门）。
+- **顺带发现的真 bug（别人会话的改动里）**：`local-ocr-service/ocr_service/pipeline/crop_recognition.py:271-279`
+  —— seam_recovery 分支的 `candidate_rows.append(...)` 被**挪出了 `if repaired_crop is not None:` 之外**，
+  却仍引用 `repaired_image`。`repaired_crop is None` 时会 `UnboundLocalError`，或者上一轮循环残留的
+  `repaired_image` 被当成本次的 crop 送进识别（张冠李戴）。本页无接缝所以没触发，接缝页会中招。
+  `CLAUDE.md`/`AGENTS.md` 的实底那条还写着「现为 v8」，与磁盘上的 v9 不一致（文档待同步）。
+
 ## 2026-10-10（续4）— 检视台第二批问题：④⑤「没有框」是真 bug；⑦ 不是位置错是语义不同
 
 - 用户两条反馈：**「第七步服务端的 bubble 位置感觉没修」**、**「4 和 5 步的结果没有框」**。

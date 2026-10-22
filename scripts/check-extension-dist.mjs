@@ -32,7 +32,7 @@ function main() {
   ].filter(Boolean).filter(relative => !relative.includes("*"));
   const missing = referenced.filter(relative => !fs.existsSync(path.join(dir, relative)));
   // JS 产物单独兜底：manifest 不直接引用它们，但没有它们扩展一样加载不了。
-  for (const name of ["background", "content", "glossary", "settings", "sidepanel", "popup", "quick-popup", "translations"]) {
+  for (const name of ["background", "content", "glossary", "settings", "sidepanel", "quick-popup", "translations"]) {
     const relative = `${name}.js`;
     if (!fs.existsSync(path.join(dir, relative))) {
       missing.push(relative);

@@ -44,6 +44,7 @@ routes = [
     ("/health", runtime.health, ["GET"]),
     ("/terms/health", runtime.terms_health, ["GET"]),
     ("/terms/extract", runtime.extract_terms, ["POST"]),
+    ("/terms/warm", runtime.terms_warm, ["POST"]),
     ("/glossary/health", runtime.glossary_health, ["GET"]),
     ("/glossary", runtime.glossary_list, ["GET"]),
     ("/glossary", runtime.glossary_upsert, ["PUT"]),

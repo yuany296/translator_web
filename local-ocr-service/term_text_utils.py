@@ -1,6 +1,6 @@
 """术语提取共用的文本规范化与「原文里有没有这个词」判定。
 
-LLM 路径（term_extractor.py）与零依赖启发式路径（term_extract_heuristic.py）共用这一份，
+LLM 路径（term_extractor.py）与 NER worker（ner_worker.py）共用这一份，
 避免两边对同一条原文给出不同的判断。
 """
 

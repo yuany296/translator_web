@@ -19,7 +19,7 @@ def normalize_ocr_mode(value: str) -> str:
 runtime.normalize_ocr_mode = normalize_ocr_mode
 
 def normalize_ocr_params(payload: runtime.OcrRequest) -> dict[str, float]:
-    return {'text_det_thresh': runtime.clamp_float(payload.text_det_thresh, 0.01, 0.99, runtime.DEFAULT_TEXT_DET_THRESH), 'text_det_box_thresh': runtime.clamp_float(payload.text_det_box_thresh, 0.01, 0.99, runtime.DEFAULT_TEXT_DET_BOX_THRESH), 'text_det_unclip_ratio': runtime.clamp_float(payload.text_det_unclip_ratio, 1.0, 5.0, runtime.DEFAULT_TEXT_DET_UNCLIP_RATIO), 'text_rec_score_thresh': runtime.clamp_float(payload.text_rec_score_thresh, 0.0, 1.0, 0.0)}
+    return {'text_det_thresh': runtime.clamp_float(payload.text_det_thresh, 0.01, 0.99, runtime.DEFAULT_TEXT_DET_THRESH), 'text_det_box_thresh': runtime.clamp_float(payload.text_det_box_thresh, 0.01, 0.99, runtime.DEFAULT_TEXT_DET_BOX_THRESH), 'text_det_unclip_ratio': runtime.clamp_float(payload.text_det_unclip_ratio, 1.0, 5.0, runtime.DEFAULT_TEXT_DET_UNCLIP_RATIO), 'text_rec_score_thresh': runtime.clamp_float(payload.text_rec_score_thresh, 0.0, 1.0, 0.0), 'rec_engine': str(payload.rec_engine or '')}
 
 runtime.normalize_ocr_params = normalize_ocr_params
 

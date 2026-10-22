@@ -38,6 +38,7 @@ from term_extractor import (
     extract_term_candidates_with_stats,
     get_term_extractor_status,
 )
+from ner_extractor import is_warm as ner_is_warm, warm_up as warm_up_term_extractor
 from glossary_db import GlossaryDB
 from translation_store import TranslationStore
 
@@ -56,6 +57,9 @@ except Exception as exc:  # pragma: no cover
     PADDLE_IMPORT_ERROR = exc
 else:
     PADDLE_IMPORT_ERROR = PADDLEOCR_IMPORT_ERROR
+
+# 注意：torch 不能在这里 import——Windows 上 torch 与 paddle 的 CUDA DLL 互相冲突
+# （WinError 127），manga-ocr 引擎在 pipeline.manga_ocr_provider 里用时懒加载。
 
 CV2_AVAILABLE = False
 try:
@@ -90,10 +94,22 @@ values = {
     "SOLID_BACKGROUND_MIN_DOMINANT_COVERAGE": 0.78,
     "VERTICAL_ORIENTATION_TIE_MARGIN": 0.08,
     "VERTICAL_CROP_MIN_ASPECT_RATIO": 1.4,
+    # v12：识别退化救援（pipeline/degenerate_rescue.py）——识别结果退化成符号/无意义文本
+    # 时换该语言的备用模型重试一次（韩文：「응?」v5 读成 "$?" 被丢，备用 v3 读出「응?」；
+    # 韩文没有 server 版模型，PP-OCRv5 通用模型字符表里没有 Hangul）。
+    # v11：识别放大恢复 2x 上限（用户定版；拆分窄列 12~23px 只到 24~46px，不过度插值）。
+    # v10：slice 主路径在检测合并后做竖排列拆分（crop_columns.expand_vertical_column_detections，
+    # LOCAL_OCR_COLUMN_SPLIT=off 可关）——检测框把「正文列+ルビ列/邻列出血」框在一起时，
+    # 识别模型（单行）会把两列打乱混读（「全部潰してこい」+「(ぜんぶつぶせ)」→「全部う潰い」）；
+    # 同时放大加几何门（短边 ≤11px 的碎条不放大，实测放大后 5/5 变差）。
+    # v9：slice 主路径识别前对短边 <48px 的 crop 做 LANCZOS 放大
+    # （preprocess.prepare_recognition_image，旋钮 LOCAL_OCR_REC_PREPROCESS /
+    # LOCAL_OCR_REC_UPSCALE_MIN_SHORT_SIDE / LOCAL_OCR_REC_BORDER_PX 由函数动态读）。
+    # 识别输入变了、返回内容随之变化，换代次才能让已缓存的旧识别结果作废。
     # v7：实底容器的采样留边单位改成字形尺寸（appearance_regions.solid_sampling_reference）。
     # v6：日文识别模型换到 PP-OCRv5（见 paddle_provider.get_recognition_model_name）。
     # 与 extension/src/config/versions.js 的 OCR_GEOMETRY_VERSION 必须逐字相同。
-    "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v8",
+    "OCR_GEOMETRY_CONTRACT_VERSION": "detect-crop-recognize-appearance-layout-v12",
     # /ocr/timings 保留的最近请求数（分阶段 p50/p95）。
     "OCR_TIMINGS_WINDOW": 200,
     "DEBUG_DIR": DATA_ROOT / "debug-ocr",

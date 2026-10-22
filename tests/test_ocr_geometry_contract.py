@@ -70,9 +70,9 @@ def test_fast_and_enhanced_modes_detect_then_crop_original_source(
 
     original_crop = server._deskew_crop_region
 
-    def tracked_crop(image_bytes: bytes, polygon: list[list[float]], region_id: str) -> dict | None:
+    def tracked_crop(image_bytes: bytes, polygon: list[list[float]], region_id: str, source_image=None) -> dict | None:
         crop_calls.append((image_bytes, region_id))
-        return original_crop(image_bytes, polygon, region_id)
+        return original_crop(image_bytes, polygon, region_id, source_image)
 
     def fake_recognition(rows: list[dict], _languages: list[str]) -> list[dict]:
         return [{**{key: value for key, value in row.items() if key != "image"},

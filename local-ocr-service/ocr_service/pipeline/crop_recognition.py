@@ -247,36 +247,63 @@ def _run_slice_ocr_pipeline(
     candidate_rows: list[dict[str, runtime.Any]] = []
     detected_regions: list[dict[str, runtime.Any]] = []
     failed_detections = 0
+    column_split_added = 0
+    manga_ocr = runtime.manga_ocr_engine_enabled(params, lang)
+    if manga_ocr:
+        # 循环前先探活 worker：起不来就按 paddle 建候选（±90 双方向），不能等识别期才回退——
+        # 那时候候选行已是 manga 路径的未旋转列，paddle 会读到侧躺文本。
+        try:
+            runtime.get_manga_ocr_client()
+        except Exception as exc:
+            print(f'[manga-ocr] worker unavailable, falling back to paddle: {exc}', flush=True)
+            manga_ocr = False
+    # 整页只解码一次：_deskew_crop_region 逐 crop 调用，每次重解整页 PNG 曾占 crops 阶段大头。
+    source_image = runtime.decode_cv_image(image_bytes) if runtime.CV2_AVAILABLE else None
+    seam_source_image = runtime.decode_cv_image(seam_recovery_bytes) if seam_recovery_bytes and runtime.CV2_AVAILABLE else None
     with runtime.ocr_request_timings_scope('crops'):
-        for det_index, det in enumerate(detections):
+        # 列拆分把「正文列+ルビ列/邻列出血」的竖排检测切成逐列检测（识别模型是单行的，
+        # 两列同框会打乱混读）；新检测追加进队尾由同一循环体处理，避免二次透视裁剪。
+        det_index = -1
+        while det_index + 1 < len(detections):
+            det_index += 1
+            det = detections[det_index]
             region_id = f"region-{det_index:04d}-" + '-'.join(f"{point[0]:.1f},{point[1]:.1f}" for point in det['polygon'])
-            crop_result = runtime._deskew_crop_region(image_bytes, det['polygon'], region_id)
+            crop_result = runtime._deskew_crop_region(image_bytes, det['polygon'], region_id, source_image)
             if crop_result is None:
                 failed_detections += 1
                 continue
             deskewed_bytes = crop_result['imageBytes']
             detected_region = {**crop_result['detectedRegion'], 'detectionScore': float(det.get('det_score') or 0.0)}
             detected_regions.append(detected_region)
-            crop = runtime.decode_cv_image(deskewed_bytes)
+            crop = crop_result['imageArray']
             height, width = crop.shape[:2]
-            orientations = [(90, runtime.cv2.rotate(crop, runtime.cv2.ROTATE_90_CLOCKWISE)), (-90, runtime.cv2.rotate(crop, runtime.cv2.ROTATE_90_COUNTERCLOCKWISE))] if runtime.is_confident_vertical_crop(width, height) else [(0, crop)]
-            for orientation, candidate in orientations:
-                candidate_rows.append({'detection_index': det_index, 'region_id': region_id, 'orientation': orientation, 'variant': 'original', 'image': candidate})
-            if seam_recovery_bytes and runtime.detection_touches_seam(det, normalized_seam_rows):
-                repaired_crop = runtime._deskew_crop_region(
-                    seam_recovery_bytes,
-                    det['polygon'],
-                    region_id,
-                )
-                if repaired_crop is not None:
-                    repaired_image = runtime.decode_cv_image(repaired_crop['imageBytes'])
-                    candidate_rows.append({
-                        'detection_index': det_index,
-                        'region_id': region_id,
-                        'orientation': 0,
-                        'variant': 'seam_recovery',
-                        'image': repaired_image,
-                    })
+            column_bands = runtime.detect_column_bands(crop) if runtime.column_split_enabled() and runtime.is_confident_vertical_crop(width, height) else []
+            det_bands = runtime.det_worthy_column_bands(column_bands) if column_bands else []
+            if det_bands:
+                for column_polygon in runtime.column_detection_polygons(crop_result, det_bands):
+                    detections.append({'polygon': column_polygon, 'box': runtime._polygon_to_box(column_polygon), 'det_score': float(det.get('det_score') or 0.0), 'rotation_deg': runtime.polygon_rotation_deg(column_polygon), 'columnSplitFrom': det.get('box')})
+                    column_split_added += 1
+            else:
+                # manga-ocr 在竖排上训练，直接吃未旋转的列 crop，不需要 ±90 双方向。
+                orientations = [(0, crop)] if manga_ocr else ([(90, runtime.cv2.rotate(crop, runtime.cv2.ROTATE_90_CLOCKWISE)), (-90, runtime.cv2.rotate(crop, runtime.cv2.ROTATE_90_COUNTERCLOCKWISE))] if runtime.is_confident_vertical_crop(width, height) else [(0, crop)])
+                for orientation, candidate in orientations:
+                    candidate_rows.append({'detection_index': det_index, 'region_id': region_id, 'orientation': orientation, 'variant': 'original', 'image': runtime.prepare_recognition_image(candidate)})
+                if seam_recovery_bytes and runtime.detection_touches_seam(det, normalized_seam_rows):
+                    repaired_crop = runtime._deskew_crop_region(
+                        seam_recovery_bytes,
+                        det['polygon'],
+                        region_id,
+                        seam_source_image,
+                    )
+                    if repaired_crop is not None:
+                        repaired_image = runtime.decode_cv_image(repaired_crop['imageBytes'])
+                        candidate_rows.append({
+                            'detection_index': det_index,
+                            'region_id': region_id,
+                            'orientation': 0,
+                            'variant': 'seam_recovery',
+                            'image': runtime.prepare_recognition_image(repaired_image),
+                        })
             if debug:
                 debug_dir = runtime.service_debug_dir('slice_crops')
                 debug_dir.mkdir(parents=True, exist_ok=True)
@@ -284,9 +311,19 @@ def _run_slice_ocr_pipeline(
     if failed_detections > 0:
         raise RuntimeError(f'perspective crop failed for {failed_detections} detection(s)')
     languages = ['japan', 'korean'] if lang == 'auto' else [lang]
-    with runtime.ocr_request_timings_scope('recognize'):
-        recognized = runtime.recognize_candidate_rows(candidate_rows, languages[:1])
-    if len(languages) > 1:
+    recognized = None
+    if manga_ocr:
+        try:
+            with runtime.ocr_request_timings_scope('recognize'):
+                recognized = runtime.recognize_rows_with_manga_ocr(candidate_rows)
+        except Exception as exc:
+            # worker 起不来（模型缺失/显存不足）时回退 paddle，不能让整页请求 500。
+            print(f'[manga-ocr] engine failed, falling back to paddle: {exc}', flush=True)
+            manga_ocr = False
+    if recognized is None:
+        with runtime.ocr_request_timings_scope('recognize'):
+            recognized = runtime.recognize_candidate_rows(candidate_rows, languages[:1])
+    if len(languages) > 1 and not manga_ocr:
         # 默认（second_language_on_demand=False）整页补跑第二语言，与改造前一致；
         # 打开 LOCAL_OCR_AUTO_LANG_SECOND_PASS=0 时只补可疑 crop（整页都弱则仍补整页）。
         second_rows = runtime.select_rows_needing_second_language(recognized, candidate_rows, languages[0]) if runtime.second_language_on_demand() else candidate_rows
@@ -295,18 +332,21 @@ def _run_slice_ocr_pipeline(
                 recognized.extend(runtime.recognize_candidate_rows(second_rows, languages[1:]))
     primary_best = {det_index: runtime.select_best_recognition([row for row in recognized if row['detection_index'] == det_index], detections[det_index]) for det_index in range(len(detections))}
     primary_best = {index: row for index, row in primary_best.items() if row}
-    weak_indexes = {detection_index for detection_index, row in primary_best.items() if row['orientation'] == 0 and (row['score'] < 0.72 or runtime.count_target_script_chars(row['text'], row['lang']) == 0)}
-    retry_rows = [{**row, 'orientation': 180, 'image': runtime.cv2.rotate(row['image'], runtime.cv2.ROTATE_180)} for row in candidate_rows if row['detection_index'] in weak_indexes and row['orientation'] == 0]
-    with runtime.ocr_request_timings_scope('recognizeRetry'):
-        recognized.extend(runtime.recognize_candidate_rows(retry_rows, languages))
+    if not manga_ocr:
+        weak_indexes = {detection_index for detection_index, row in primary_best.items() if row['orientation'] == 0 and (row['score'] < 0.72 or runtime.count_target_script_chars(row['text'], row['lang']) == 0)}
+        retry_rows = [{**row, 'orientation': 180, 'image': runtime.cv2.rotate(row['image'], runtime.cv2.ROTATE_180)} for row in candidate_rows if row['detection_index'] in weak_indexes and row['orientation'] == 0]
+        with runtime.ocr_request_timings_scope('recognizeRetry'):
+            recognized.extend(runtime.recognize_candidate_rows(retry_rows, languages))
     best_by_detection = {det_index: runtime.select_best_recognition([row for row in recognized if row['detection_index'] == det_index], detections[det_index]) for det_index in range(len(detections))}
     best_by_detection = {index: row for index, row in best_by_detection.items() if row}
+    min_score = float(params.get('text_rec_score_thresh') or 0.0)
+    # 识别退化成符号/无意义文本时换备用模型重试一次（paddle 链路；manga-ocr 有它自己的重试）。
+    rescue_added = 0 if manga_ocr else runtime.rescue_degenerate_recognitions(best_by_detection, candidate_rows, recognized, min_score)
     raw_items: list[dict[str, runtime.Any]] = []
     for det_index, det in enumerate(detections):
         row = best_by_detection.get(det_index, {})
         raw_items.append({'region_id': str(row.get('region_id') or f'region-{det_index:04d}'), 'text': str(row.get('text') or '').strip(), 'score': float(row.get('score') or 0.0), 'box': det['box'], 'polygon': det['polygon'], 'det_score': float(det.get('det_score') or 0.0), 'rotation_deg': float(det.get('rotation_deg') or 0.0), 'orientation_applied': int(row.get('orientation') or 0), 'lang': str(row.get('lang') or lang), 'variant': str(row.get('variant') or f'perspective_{mode}_raw')})
     recognized_items: list[dict[str, runtime.Any]] = []
-    min_score = float(params.get('text_rec_score_thresh') or 0.0)
     for det_index, row in best_by_detection.items():
         text = str(row.get('text') or '').strip()
         if not text or float(row.get('score') or 0.0) < min_score or runtime.is_symbol_only_text(text):
@@ -319,7 +359,7 @@ def _run_slice_ocr_pipeline(
         regions = runtime.annotate_visual_regions(image_bytes, normalized)
     recognized_regions = [{'regionId': item['region_id'], 'text': item['text'], 'confidence': item['score'], 'language': item['lang'], 'appliedOrientation': item['orientation_applied']} for item in normalized]
     semantic_blocks = [{'id': f"block-{index:04d}", 'memberRegionIds': item['member_region_ids'], 'originalText': item['text'], 'readingOrder': index} for index, item in enumerate(normalized)]
-    return {'items': normalized, 'rawItems': raw_items, 'boxes': runtime.response_boxes(normalized), 'regions': regions, 'detectedRegions': detected_regions, 'recognizedRegions': recognized_regions, 'semanticBlocks': semantic_blocks, 'geometryReliability': 'detected', 'imageWidth': image_width, 'imageHeight': image_height, 'deskew': True, 'detections': len(detections), 'recognized': len(normalized), 'counts': {'paddle_raw_items': len(recognized), 'filtered_items': len(recognized_items), 'merged_blocks': len(normalized), 'variants': 1 + int(mode == 'enhanced') + int(bool(seam_recovery_bytes)), 'langs': len(languages), 'primary_detections': len(primary_detections), 'recovery_detections': len(recovery_detections), 'recovery_added': recovery_added, 'enhanced_added': enhanced_added, 'seam_recovery_added': seam_recovery_added}}
+    return {'items': normalized, 'rawItems': raw_items, 'boxes': runtime.response_boxes(normalized), 'regions': regions, 'detectedRegions': detected_regions, 'recognizedRegions': recognized_regions, 'semanticBlocks': semantic_blocks, 'geometryReliability': 'detected', 'imageWidth': image_width, 'imageHeight': image_height, 'deskew': True, 'detections': len(detections), 'recognized': len(normalized), 'counts': {'rec_engine': 'manga_ocr' if manga_ocr else 'paddle', 'paddle_raw_items': len(recognized), 'filtered_items': len(recognized_items), 'merged_blocks': len(normalized), 'variants': 1 + int(mode == 'enhanced') + int(bool(seam_recovery_bytes)), 'langs': len(languages), 'primary_detections': len(primary_detections), 'recovery_detections': len(recovery_detections), 'recovery_added': recovery_added, 'enhanced_added': enhanced_added, 'seam_recovery_added': seam_recovery_added, 'column_split_added': column_split_added, 'degenerate_rescued': rescue_added}}
 
 runtime._run_slice_ocr_pipeline = _run_slice_ocr_pipeline
 

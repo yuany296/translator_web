@@ -280,6 +280,61 @@ def write_temp_pil_image(image: runtime.Image.Image) -> runtime.Path:
 
 runtime.write_temp_pil_image = write_temp_pil_image
 
+def recognition_preprocess_enabled() -> bool:
+    """识别输入增强总开关（LOCAL_OCR_REC_PREPROCESS=off/0/false 关闭）。"""
+    return str(runtime.os.environ.get("LOCAL_OCR_REC_PREPROCESS", "on")).strip().lower() not in {"off", "0", "false"}
+
+runtime.recognition_preprocess_enabled = recognition_preprocess_enabled
+
+def _rec_preprocess_int_env(name: str, fallback: int) -> int:
+    try:
+        return int(str(runtime.os.environ.get(name, "")).strip() or fallback)
+    except ValueError:
+        return fallback
+
+def prepare_recognition_image(image: runtime.Any) -> runtime.Any:
+    """识别输入增强：短边不足的 crop 先 LANCZOS 放大（可选四周复制边，默认关）。
+
+    识别模型统一把输入按 ~48px 高重采样；整页位图收口后竖排台词列的短边（列厚）
+    只剩 26~35px，小字号假名（ャっぁ）在重采样时丢掉——这是"裁剪图清晰但认错字"
+    （スキンダルで/ま言ちまえば）的主因。放大由我们用 LANCZOS 做，而不是留给模型
+    内部的双线性。边框（BORDER_REPLICATE）默认 0：模型把输入高度压到 48px 时边框
+    会按比例挤占文字的有效高度（实测 8px 边让 26px 列只剩 ~37px，比不放大更差），
+    透视裁剪本身已带 2~12px 外扩。
+    """
+    if not runtime.CV2_AVAILABLE or image is None or not runtime.recognition_preprocess_enabled():
+        return image
+    if getattr(image, "ndim", 0) not in (2, 3) or image.size == 0:
+        return image
+    height, width = image.shape[:2]
+    short_side = max(1, min(height, width))
+    # 几何门：短边 ≤11px 的碎条（噪声/ルビ碎片）实测放大后 5/5 变差——模型会在
+    # 放大后的噪声上给出更自信的错读；只对真正的小字号文字列放大。
+    skip_below = max(0, _rec_preprocess_int_env("LOCAL_OCR_REC_UPSCALE_SKIP_MAX_SHORT_SIDE", 11))
+    floor = max(0, _rec_preprocess_int_env("LOCAL_OCR_REC_UPSCALE_MIN_SHORT_SIDE", 48))
+    # 上限 2x（用户定版）：≥24px 的列仍精确放大到 floor；更窄的列（列拆分产物 12~23px）
+    # 到 24~46px 为止，过度插值反而把笔画糊掉。
+    scale = 1.0 if short_side <= skip_below else min(2.0, floor / short_side) if floor > short_side else 1.0
+    if scale > 1.001:
+        image = runtime.cv2.resize(
+            image,
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            interpolation=runtime.cv2.INTER_LANCZOS4,
+        )
+    border = max(0, _rec_preprocess_int_env("LOCAL_OCR_REC_BORDER_PX", 0))
+    if border > 0:
+        image = runtime.cv2.copyMakeBorder(
+            image,
+            border,
+            border,
+            border,
+            border,
+            runtime.cv2.BORDER_REPLICATE,
+        )
+    return image
+
+runtime.prepare_recognition_image = prepare_recognition_image
+
 def normalize_item_box_scale(item: dict[str, runtime.Any], scale: float) -> None:
     if scale <= 0 or abs(scale - 1.0) < 0.001:
         return

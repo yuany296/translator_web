@@ -34,6 +34,22 @@ def terms_health(request: runtime.Request) -> dict[str, runtime.Any]:
 
 runtime.terms_health = terms_health
 
+def terms_warm() -> dict[str, runtime.Any]:
+    """预热本地模型：把 worker 拉起并跑一句最小推理。
+
+    冷启动（加载权重）实测 10~45 秒；它藏在第一次真实提取里就会顶着扩展的超时预算跑，
+    表现出来是「第一章一条术语都没收到」。已热时直接回 cached，不再重复推理。
+    """
+    status = runtime.get_term_extractor_status()
+    if status['engine'] != 'ner':
+        return {'ok': False, 'engine': status['engine'], 'elapsedMs': 0, 'error': status['nerError']}
+    if runtime.ner_is_warm():
+        return {'ok': True, 'engine': 'ner', 'elapsedMs': 0, 'error': '', 'cached': True}
+    result = runtime.warm_up_term_extractor()
+    return {'ok': bool(result['warmed']), 'engine': 'ner', 'elapsedMs': result['elapsedMs'], 'error': result['error']}
+
+runtime.terms_warm = terms_warm
+
 async def extract_terms(payload: runtime.TermExtractionRequest) -> dict[str, runtime.Any]:
     blocks = [
         {'id': block.id.strip(), 'text': block.text.strip(), 'translatedText': block.translatedText.strip()}
@@ -41,7 +57,7 @@ async def extract_terms(payload: runtime.TermExtractionRequest) -> dict[str, run
         if block.id.strip() and block.text.strip()
     ]
     if not blocks:
-        return {'ok': True, 'engine': 'heuristic', 'candidates': []}
+        return {'ok': True, 'engine': 'none', 'candidates': []}
     upstream = {
         'baseUrl': (payload.upstream.baseUrl or '').strip() if payload.upstream else '',
         'model': (payload.upstream.model or '').strip() if payload.upstream else '',
@@ -52,7 +68,8 @@ async def extract_terms(payload: runtime.TermExtractionRequest) -> dict[str, run
             if key in {'thinking', 'enable_thinking'}
         } if payload.upstream else {},
     }
-    engine = 'ollama' if upstream['baseUrl'] else 'heuristic'
+    # 没配 LLM 时引擎由本地服务自己定：模型在位是 ner，缺失是 none（见 ner_engine_status）。
+    engine = 'ollama' if upstream['baseUrl'] else runtime.get_term_extractor_status()['engine']
     candidates, dropped = await runtime.asyncio.to_thread(
         runtime.extract_term_candidates_with_stats, blocks, upstream, payload.target_language or 'zh-CN'
     )

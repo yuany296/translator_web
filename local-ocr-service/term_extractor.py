@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from term_extract_heuristic import extract_candidate_sentences
+from ner_extractor import ner_engine_status, try_extract_ner_candidates
 from term_text_utils import (
     MAX_SOURCE_LENGTH,
     contains_hangul,
@@ -68,10 +68,10 @@ def get_term_extractor_status(
     base_url: str = "",
     api_key: str = "",
 ) -> dict[str, Any]:
-    """Extraction engine availability: heuristic mode when no LLM URL, else probe /models."""
+    """Extraction engine availability: NER model when it is on disk, else nothing; LLM URL wins."""
     normalized = str(base_url or "").strip().rstrip("/")
     if not normalized:
-        return {"available": True, "engine": "heuristic", "error": ""}
+        return ner_engine_status()
     if not check_runtime:
         return {"available": True, "engine": "ollama", "error": ""}
     try:
@@ -375,9 +375,8 @@ def extract_term_candidates(
     upstream: dict[str, Any] | None = None,
     target_language: str = "zh-CN",
 ) -> list[dict[str, Any]]:
-    """Dispatch: LLM extraction when an upstream is configured, else heuristic."""
-    candidates, _stats = extract_term_candidates_with_stats(blocks, upstream, target_language)
-    return candidates
+    """Dispatch: LLM when configured, else the local NER model; nothing else (no heuristic)."""
+    return extract_term_candidates_with_stats(blocks, upstream, target_language)[0]
 
 
 def extract_term_candidates_with_stats(
@@ -385,7 +384,7 @@ def extract_term_candidates_with_stats(
     upstream: dict[str, Any] | None = None,
     target_language: str = "zh-CN",
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """同上，另外带回「丢弃统计」（只有 LLM 分支有；启发式分支没有可丢的东西）。"""
+    """同上，另外带回「丢弃统计」（LLM 分段丢弃 / NER 低质词条丢弃）。"""
     base_url = str((upstream or {}).get("baseUrl") or "").strip()
     if base_url:
         return extract_term_candidates_llm_with_stats(
@@ -393,4 +392,7 @@ def extract_term_candidates_with_stats(
             str((upstream or {}).get("apiKey") or ""), target_language,
             thinking=dict((upstream or {}).get("thinking") or {}),
         )
-    return extract_candidate_sentences(blocks), {}
+    # 没有第三条路：本地模型缺失/不可用时**一条都不产出**。以前这里会落回「句子模式」启发式，
+    # 它对任何 3 字韩文首字命中姓氏表就给 person 0.94 —— 实测 3 句普通韩文产出 5 条候选、
+    # 0 条真专名，等于往术语库里灌垃圾。宁可空着，让界面说清「没提取到」。
+    return try_extract_ner_candidates(list(blocks)) or ([], {})

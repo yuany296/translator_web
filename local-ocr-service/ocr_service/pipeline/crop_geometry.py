@@ -26,13 +26,20 @@ def _deskew_crop_image(image_bytes: bytes, polygon: list[list[float]]) -> bytes 
 
 runtime._deskew_crop_image = _deskew_crop_image
 
-def _deskew_crop_region(image_bytes: bytes, polygon: list[list[float]], region_id: str) -> dict[str, runtime.Any] | None:
-    """返回透视 crop 与不可变的 source↔crop 几何契约。"""
+def _deskew_crop_region(image_bytes: bytes, polygon: list[list[float]], region_id: str, source_image: runtime.Any = None) -> dict[str, runtime.Any] | None:
+    """返回透视 crop 与不可变的 source↔crop 几何契约。
+
+    source_image 传入已解码的整页 ndarray 时跳过重复 imdecode——主循环逐 crop 调用
+    本函数，每次都解一遍整页 PNG 曾占掉整个 crops 阶段的大头（~80 次 × 12ms）。
+    """
     if not runtime.CV2_AVAILABLE:
         return None
     try:
-        np_arr = runtime.np.frombuffer(image_bytes, runtime.np.uint8)
-        image = runtime.cv2.imdecode(np_arr, runtime.cv2.IMREAD_COLOR)
+        if source_image is not None:
+            image = source_image
+        else:
+            np_arr = runtime.np.frombuffer(image_bytes, runtime.np.uint8)
+            image = runtime.cv2.imdecode(np_arr, runtime.cv2.IMREAD_COLOR)
         if image is None:
             return None
         source_pts = runtime._order_polygon_points(runtime.np.array(polygon, dtype=runtime.np.float32))
@@ -61,6 +68,8 @@ def _deskew_crop_region(image_bytes: bytes, polygon: list[list[float]], region_i
         source_box = runtime._polygon_to_box(source_polygon)
         return {
             "imageBytes": buf.tobytes(),
+            # 调用方多数只需要 ndarray；带上可省一次 per-crop PNG 解码。
+            "imageArray": warped,
             "detectedRegion": {
                 "regionId": region_id,
                 "sourcePolygon": [{"x": point[0], "y": point[1]} for point in source_polygon],
@@ -189,6 +198,22 @@ def get_text_recognition_client(lang: str) -> runtime.Any:
         return client
 
 runtime.get_text_recognition_client = get_text_recognition_client
+
+def get_alternate_text_recognition_client(model_name: str) -> runtime.Any:
+    """按**显式模型名**取识别客户端（识别退化成符号时换另一套模型重试用）。
+
+    与 `get_text_recognition_client` 共用同一张客户端表：同一个模型只建一份。
+    """
+    device = runtime.get_runtime_device()
+    key = '|'.join([device, model_name])
+    with runtime._ocr_client_lock:
+        client = runtime._text_recognition_clients.get(key)
+        if client is None:
+            client = runtime.TextRecognition(model_name=model_name, device=device, **{'enable_mkldnn': False, 'cpu_threads': 4} if device == 'cpu' else {})
+            runtime._text_recognition_clients[key] = client
+        return client
+
+runtime.get_alternate_text_recognition_client = get_alternate_text_recognition_client
 
 def normalize_detection_polygon(value: runtime.Any, image_width: int, image_height: int) -> list[list[float]] | None:
     points = runtime.polygon_from_any(value)

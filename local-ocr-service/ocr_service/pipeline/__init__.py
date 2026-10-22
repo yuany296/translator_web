@@ -16,6 +16,9 @@ from . import result_parsing
 from . import dedupe_candidates
 from . import value_utils
 from . import crop_geometry
+from . import crop_columns
+from . import degenerate_rescue
+from . import manga_ocr_provider
 from . import crop_recognition
 from . import translation_api
 from . import translation_stream

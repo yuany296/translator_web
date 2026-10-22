@@ -13,6 +13,7 @@ class OcrRequest(BaseModel):
     text_det_box_thresh: float | None = None
     text_det_unclip_ratio: float | None = None
     text_rec_score_thresh: float | None = None
+    rec_engine: str = Field(default="", max_length=24)
     debug: bool = False
     debug_id: str = ""
     ocr_geometry_version: str = Field(default="", max_length=64)

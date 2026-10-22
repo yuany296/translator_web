@@ -91,7 +91,7 @@ def test_local_ocr_request_defaults_to_fast_mode() -> None:
     import server
 
     assert server.OcrRequest(image="placeholder").mode == "fast"
-    assert server.OCR_GEOMETRY_CONTRACT_VERSION == "detect-crop-recognize-appearance-layout-v8"
+    assert server.OCR_GEOMETRY_CONTRACT_VERSION == "detect-crop-recognize-appearance-layout-v12"
     extension_versions = (
         Path(__file__).resolve().parents[1] / "extension" / "src" / "config" / "versions.js"
     ).read_text(encoding="utf-8")

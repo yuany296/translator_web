@@ -14,8 +14,8 @@ if str(SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_ROOT))
 
 from term_extractor import (  # noqa: E402
-    extract_candidate_sentences,
     extract_term_candidates,
+    extract_term_candidates_with_stats,
     extract_term_candidates_llm,
     extract_term_candidates_llm_with_stats,
     get_term_extractor_status,
@@ -272,40 +272,12 @@ def test_llm_extraction_source_with_trailing_josa_still_validated(monkeypatch: p
     assert [item["source"] for item in result] == ["정다준이"]
 
 
-def test_sentence_mode_finds_names_latin_and_bracketed() -> None:
-    blocks = [
-        {"id": "name", "text": "김성현이 말했다."},
-        {"id": "latin", "text": "THE DAWN 무대가 시작됐다."},
-        {"id": "bracket", "text": "【미다스의 손】이 울렸다."},
-        {"id": "katakana", "text": "タナカさんが来た。"},
-    ]
-    result = extract_candidate_sentences(blocks)
-    by_source = {item["source"]: item for item in result}
-    assert by_source["김성현"]["kind"] == "person"
-    assert by_source["김성현"]["evidenceIds"] == ["name"]
-    assert by_source["THE DAWN"]["kind"] == "latin_title"
-    assert by_source["미다스의 손"]["kind"] == "title"
-    assert by_source["タナカ"]["kind"] == "latin_name"
-
-
-def test_sentence_mode_repeated_phrases_are_sentence_only() -> None:
-    blocks = [
-        {"id": "a", "text": "하이파이브가 무대에 올랐다."},
-        {"id": "b", "text": "하이파이브의 공연이 끝났다."},
-        {"id": "c", "text": "하이파이브가 인사했다."},
-    ]
-    result = extract_candidate_sentences(blocks)
-    candidate = next(item for item in result if item["source"] == "하이파이브")
-    assert candidate["sentenceOnly"] is True
-    assert candidate["score"] <= 0.5
-    assert len(candidate["evidenceIds"]) == 3
-
-
-def test_dispatch_uses_heuristic_without_upstream() -> None:
+def test_dispatch_produces_nothing_without_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """模型不在位时一条都不产出：旧的「句子模式」兜底已封存（它会把普通韩文当成专名）。"""
+    monkeypatch.setenv("LOCAL_OCR_NER_MODEL_DIR", str(tmp_path / "no-ner-model"))
     blocks = [{"id": "a", "text": "김성현이 말했다."}]
-    result = extract_term_candidates(blocks)
-    assert result[0]["source"] == "김성현"
-    assert result[0]["kind"] == "person"
+    assert extract_term_candidates(blocks) == []
+    assert extract_term_candidates_with_stats(blocks) == ([], {})
 
 
 def test_dispatch_uses_llm_with_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -317,10 +289,12 @@ def test_dispatch_uses_llm_with_upstream(monkeypatch: pytest.MonkeyPatch) -> Non
     assert {item["source"] for item in result} == {"하이파이브", "정다준"}
 
 
-def test_status_is_heuristic_without_base_url() -> None:
+def test_status_is_none_without_base_url_and_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LOCAL_OCR_NER_MODEL_DIR", str(tmp_path / "no-ner-model"))
     status = get_term_extractor_status()
     assert status["available"] is True
-    assert status["engine"] == "heuristic"
+    assert status["engine"] == "none"
+    assert status["nerAvailable"] is False
 
 
 def test_status_probes_ollama_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -332,13 +306,15 @@ def test_status_probes_ollama_when_configured(monkeypatch: pytest.MonkeyPatch) -
     assert fake.calls[0][0].endswith("/models")
 
 
-def test_extract_endpoint_heuristic_without_upstream() -> None:
+def test_extract_endpoint_returns_nothing_without_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """模型缺失时接口要老实说「没产出」，而不是拿启发式凑几条（engine=none）。"""
     import server
 
+    monkeypatch.setenv("LOCAL_OCR_NER_MODEL_DIR", str(tmp_path / "no-ner-model"))
     payload = server.TermExtractionRequest(blocks=[{"id": "b1", "text": "김성현이 말했다."}])
     result = asyncio.run(server.extract_terms(payload))
-    assert result["engine"] == "heuristic"
-    assert result["candidates"][0]["source"] == "김성현"
+    assert result["engine"] == "none"
+    assert result["candidates"] == []
 
 
 def test_extract_endpoint_llm_with_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -364,9 +340,31 @@ def test_extract_endpoint_llm_with_upstream(monkeypatch: pytest.MonkeyPatch) -> 
     assert "译文：郑多俊和Hi-Five出演了。" in prompt
 
 
+def test_warm_endpoint_explains_missing_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """预热在模型不在位时要老实说「没有可预热的引擎」，而不是假装成功。"""
+    import server
+
+    monkeypatch.setenv("LOCAL_OCR_NER_MODEL_DIR", str(tmp_path / "no-ner-model"))
+    result = server.terms_warm()
+    assert result["ok"] is False
+    assert result["engine"] == "none"
+    assert result["error"]
+
+
+def test_warm_endpoint_explains_missing_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """预热在模型不在位时要老实说「没有可预热的引擎」，而不是假装成功。"""
+    import server
+
+    monkeypatch.setenv("LOCAL_OCR_NER_MODEL_DIR", str(tmp_path / "no-ner-model"))
+    result = server.terms_warm()
+    assert result["ok"] is False
+    assert result["engine"] == "none"
+    assert result["error"]
+
+
 def test_extract_endpoint_empty_blocks_returns_no_candidates() -> None:
     import server
 
     payload = server.TermExtractionRequest(blocks=[])
     result = asyncio.run(server.extract_terms(payload))
-    assert result == {"ok": True, "engine": "heuristic", "candidates": []}
+    assert result == {"ok": True, "engine": "none", "candidates": []}

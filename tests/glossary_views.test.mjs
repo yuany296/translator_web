@@ -385,7 +385,8 @@ test("删除入口在库标题行：具体库能看到，总览与默认术语�
   await openLibrary(page, "lib-haigu");
   assert.equal(page.elements.get("libraryDeleteBtn").classList.contains("hidden"), false,
     "进具体库后应一眼看到「删除这个库」");
-  assert.match(page.elements.get("libraryDeleteBtn").title, /退回默认术语库/u);
+  assert.match(page.elements.get("libraryDeleteBtn").title, /一起删除/u,
+    "删库会连带删掉库里的术语，标题说明必须说实话");
 
   await page.elements.get("backToListBtn").dispatch("click");
   await settle();

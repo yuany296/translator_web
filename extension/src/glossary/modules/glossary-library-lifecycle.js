@@ -14,7 +14,7 @@ export function installGlossaryLibraryLifecycle(runtime) {
   const libraryTestInput = document.getElementById("libraryTestInput");
   Object.assign(runtime, { libraryDeleteBtn, addLibraryBtn });
 
-  /** 删除当前库：条目退回默认库，库定义删掉，然后回到列表页。 */
+  /** 删除当前库：库里的术语一并删除（不迁移到默认库），然后回到列表页。 */
   async function deleteCurrentLibrary() {
     const library = runtime.glossary.libraries.find(item => item.id === libraryIdInput.value);
     if (!library) {
@@ -26,8 +26,9 @@ export function installGlossaryLibraryLifecycle(runtime) {
       return;
     }
     const count = runtime.glossary.entries.filter(entry => entry.libraryId === library.id).length;
+    // 删库 = 删条目（用户本意）。想留住术语就明说要先搬走，别让人以为删库还能捞回来。
     const confirmed = window.confirm(count
-      ? `删除术语库「${library.name}」？其中 ${count} 条术语会移到默认术语库，不会丢失。`
+      ? `删除术语库「${library.name}」？\n其中 ${count} 条术语会一起删除，无法恢复。\n（想保留术语请先取消，到库里用「移动到…」搬到别的库。）`
       : `删除术语库「${library.name}」？`);
     if (!confirmed) {
       runtime.setStatus(`没有删除「${library.name}」（你取消了确认）`, false);
@@ -38,7 +39,7 @@ export function installGlossaryLibraryLifecycle(runtime) {
       runtime.setStatus(result.error, true);
       return;
     }
-    const message = `已删除「${library.name}」${result.moved ? `，${result.moved} 条术语已移到默认术语库` : ""}`;
+    const message = `已删除「${library.name}」${result.removed ? `，连同 ${result.removed} 条术语一起删除` : ""}`;
     // 删完会回到列表页，所以两个状态行都写：详情页那条用于万一没跳转，列表页那条是你回去后看到的。
     runtime.setStatus(message, false);
     runtime.setLibraryStatus(message, false);
@@ -50,7 +51,7 @@ export function installGlossaryLibraryLifecycle(runtime) {
     const deletable = Boolean(library) && library.id !== runtime.glossaryCore.DEFAULT_LIBRARY_ID;
     libraryDeleteBtn.disabled = !deletable;
     libraryDeleteBtn.title = deletable
-      ? "删除后，这个库里的术语会退回默认术语库"
+      ? "删除这个库，库里的术语会一起删除（想保留请先用「移动到…」搬到别的库）"
       : "默认术语库不能删除：没匹配到任何库的术语都归它";
   }
   runtime.updateLibraryDeleteButton = updateLibraryDeleteButton;

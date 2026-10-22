@@ -407,7 +407,7 @@ test("the pending chapter lists its auto-matched library and can be reassigned",
   assert.match(page.elements.get("pendingChapters").querySelector(".chapter-library-hint").textContent, /网址匹配/u);
 });
 
-test("deleting a library moves its terms back to the default library", async () => {
+test("deleting a library deletes its terms too (they are not moved to the default library)", async () => {
   const page = createPage();
   page.setMessageHandler(message => message.type === "GET_TERM_DISCOVERY_STATE" ? discoveryState : { ok: true });
   await page.boot();
@@ -430,7 +430,7 @@ test("deleting a library moves its terms back to the default library", async () 
   await settle();
   assert.equal(page.stored.mt_glossary_v2.entries[0].libraryId, libraryId);
 
-  // 先切到该库（表格只剩这一条），再删除它：筛选会自动回到"全部术语"，条目仍在
+  // 先切到该库（表格只剩这一条），再删除它：库里的术语跟着一起删掉
   page.attachAll();
   const novelRow = page.elements.get("libraryList").querySelectorAll(".library-row")
     .find(row => row.dataset.libraryId === libraryId);
@@ -444,17 +444,16 @@ test("deleting a library moves its terms back to the default library", async () 
 
   const stored = page.stored.mt_glossary_v2;
   assert.deepEqual(stored.libraries.map(library => library.id), ["default"]);
-  assert.equal(stored.entries[0].libraryId, "default");
-  assert.notEqual(stored.entries[0].id, "term-new", "移动后的条目应换新 id，避免服务端主键冲突");
+  assert.deepEqual(stored.entries, [], "删库 = 删条目，不允许迁进默认库（否则默认库 500 条名额会被塞满）");
   assert.match(page.elements.get("statusText").textContent, /已删除「骸骨皇女」/u);
+  assert.match(page.elements.get("statusText").textContent, /连同 1 条术语一起删除/u);
   page.attachAll();
   assert.deepEqual(
     page.elements.get("libraryList").querySelectorAll(".library-name").map(node => node.textContent),
     ["全部术语", "默认术语库"]
   );
-  // 删除当前正在查看的库后，表格要回到"全部术语"并继续显示被转移的条目
-  assert.equal(page.elements.get("termRows").children.length, 1);
-  assert.equal(page.elements.get("termRows").children[0].dataset.libraryId, "default");
+  // 删除当前正在查看的库后，表格要回到"全部术语"：库里那条已随库一起删除，所以只剩空表
+  assert.equal(page.elements.get("termRows").children.length, 0);
 });
 
 test("清理「其它库已有」时服务端没删掉就报术语删除失败，不假装清干净了", async () => {

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "小说翻译器 · KakaoPage / RIDI（手机版）",
   "short_name": "小说翻译器",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "在手机上翻译 KakaoPage 与 RIDI 小说：抓取正文、直连 AI 翻译、本地译文缓存与术语库，不需要本地服务。",
   "icons": {
     "16": "icons/icon-16.png",

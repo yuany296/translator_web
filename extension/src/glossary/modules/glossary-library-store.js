@@ -144,7 +144,13 @@ export function installGlossaryLibraryStore(runtime) {
     return { ok: true, library: next, serverSynced: true };
   }
   runtime.setLibraryEnabled = setLibraryEnabled;
-  /** 删除术语库：条目先退回默认库（换新 id，避免服务端主键冲突），再删除库定义。 */
+  /**
+   * 删除术语库：**库里的术语一并删除**，不迁移到默认术语库。
+   *
+   * 早期实现是「条目退回默认库」，实际用起来很糟：默认库只有 500 条名额，删几个库就把它塞满，
+   * 之后全站都加不进新术语 —— 而用户删库的本意往往就是「这批术语不要了」。
+   * 想保留术语的话，删除前先在库里用「移动到…」搬到别的库（或者直接删条目）。
+   */
   async function removeLibrary(libraryId) {
     const current = await readGlossaryState();
     const library = current.libraries.find(item => item.id === libraryId);
@@ -154,34 +160,40 @@ export function installGlossaryLibraryStore(runtime) {
     if (library.id === runtime.glossaryCore.DEFAULT_LIBRARY_ID) {
       return { ok: false, error: "默认术语库不能删除" };
     }
-    const moved = current.entries.filter(entry => entry.libraryId === library.id);
-    const entries = current.entries.map(entry => entry.libraryId === library.id
-      ? { ...entry, id: runtime.createTermId(), libraryId: runtime.glossaryCore.DEFAULT_LIBRARY_ID }
-      : entry);
+    const removed = current.entries.filter(entry => entry.libraryId === library.id);
+    const entries = current.entries.filter(entry => entry.libraryId !== library.id);
     const libraries = current.libraries.filter(item => item.id !== library.id);
     const next = runtime.glossaryCore.normalizeGlossary({
       ...current, revision: current.revision + 1, updatedAt: Date.now(), libraries, entries
     });
-    // 先同步到 runtime，persistEntries 会沿用这份（已删除该库的）库列表，避免删掉的库又被写回。
+    // 先同步到 runtime，persistEntries 会沿用这份（已删库、已删条目的）状态，避免删掉的库又被写回。
+    // 代价是 persistEntries 看不到这些条目的旧 id（previousIds 里已经没有了），服务端删除要在下面自己做。
     runtime.glossary = next;
-    await runtime.persistEntries(next.entries, moved.length
-      ? `已删除「${library.name}」，${moved.length} 条术语已移到默认术语库`
-      : `已删除「${library.name}」`);
+    const detail = removed.length ? `，连同 ${removed.length} 条术语一起删除` : "";
+    await runtime.persistEntries(next.entries, `已删除「${library.name}」${detail}`);
     if (runtime.activeLibraryId === library.id) {
       runtime.activeLibraryId = "";
       // 搜索框里可能还留着刚删掉那个库的词：切回总览时一并换掉。
       runtime.syncSearchInput?.();
       runtime.renderGlossary();
-      runtime.setStatus(`已删除「${library.name}」${moved.length ? `，${moved.length} 条术语已移到默认术语库` : ""}，现在显示全部 ${runtime.glossary.entries.length} 条术语`, false);
+      runtime.setStatus(`已删除「${library.name}」${detail}，现在显示全部 ${runtime.glossary.entries.length} 条术语`, false);
     }
-    for (const entry of moved) {
-      await runtime.deleteEntryFromServer(entry.id).catch(() => undefined);
+    let failedDeletes = 0;
+    for (const entry of removed) {
+      const deleted = await runtime.deleteEntryFromServer(entry.id).catch(() => ({ ok: false }));
+      if (!deleted || deleted.ok === false) {
+        failedDeletes += 1;
+      }
     }
     await deleteLibraryOnServer(library.id).catch(() => undefined);
     // 这个库的搜索词也一起丢掉，免得删了库还留着一份「幽灵搜索」。
     runtime.searchQueries?.delete(library.id);
     runtime.renderLibraryPanel();
-    return { ok: true, moved: moved.length };
+    if (failedDeletes) {
+      // 服务端没删干净，下次 loadGlossaryFromServer 会把它们拉回来 —— 必须说出来，不能停在「已删除」上。
+      setLibraryStatus(`已删除「${library.name}」，但 ${failedDeletes} 条术语未从本地服务删除，刷新后可能重新出现`, true);
+    }
+    return { ok: true, removed: removed.length, failedDeletes };
   }
   runtime.removeLibrary = removeLibrary;
   async function focusLibrary(libraryId) {

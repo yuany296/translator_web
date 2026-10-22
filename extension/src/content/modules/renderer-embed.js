@@ -290,9 +290,9 @@ export function installRendererEmbed(runtime) {
       }
       if (bgType === "solid") {
         ctx.save();
-        // 遮罩必须跟着原文字形：斜排文字用倾斜四边形裁剪，而不是气泡区域框
-        // （区域框是轴对齐的，正是「遮罩保持水平、露出斜排原文」的来源）。
-        const coverGeometry = runtime.resolveBubbleCoverGeometry(bubble);
+        // 遮罩必须跟着原文字形：斜排文字用倾斜四边形裁剪，而不是气泡区域框（区域框是轴对齐的，
+        // 正是「遮罩保持水平、露出斜排原文」的来源）。画布长宽要传下去，「歪没歪」在像素空间判定。
+        const coverGeometry = runtime.resolveBubbleCoverGeometry(bubble, { scaleX: canvasWidth, scaleY: canvasHeight });
         const coverPoints = coverGeometry && coverGeometry.tilted ? coverGeometry.quad : null;
         const coverBox = coverPoints
           ? runtime.getCanvasFillBox(coverGeometry.bounds, canvasWidth, canvasHeight) : null;

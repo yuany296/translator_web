@@ -45,6 +45,16 @@ export function installLifecycleOverlayCleanup(runtime) {
     }
   }
   runtime.removeOverlayForTarget = removeOverlayForTarget;
+  // 渲染跳过判据：这一页上一轮画好的覆盖层是否还在 DOM 上。
+  // 滚动清理、换图、恢复原文都会删掉覆盖层状态，这时必须重画，不能跳过。
+  function isPageRenderStillApplied(target) {
+    const targetId = typeof runtime.getTargetId === "function" ? runtime.getTargetId(target) : runtime.state.targetIdByElement.get(target);
+    const overlayState = targetId ? runtime.state.overlaysById.get(targetId) : null;
+    if (!overlayState || !overlayState.root || !overlayState.root.isConnected) return false;
+    const mode = String(overlayState.mode || "");
+    return mode !== "loading" && mode !== "debug";
+  }
+  runtime.isPageRenderStillApplied = isPageRenderStillApplied;
 }
 
 // 与 renderer-mask.js 的 overlayPageId 同一口径：先看这一 target 此刻绑在哪一页

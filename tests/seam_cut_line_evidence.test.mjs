@@ -371,3 +371,54 @@ test("跨页气泡：文字像素不在上一页时，span 显式声明没有文
   }, candidate, IMAGE_SIZE);
   assert.equal(pageSpans[0].visual, undefined);
 });
+
+/**
+ * 现场（Lezhin 韩漫，用户截图）：同一气泡被翻了两遍。
+ *
+ * 跨页链路把气泡第一~二行合成一句（原文 `언제든? 난봉꾼이따로 없네.`），而**下页**页级 OCR
+ * 把被页边界切掉的半行读成乱码（`ᅥ|고그 없네.`）又单独翻了一句画在同一气泡里 ——
+ * 文本关系门槛对这种被切断的乱码永远过不了，只能按几何吸收：残片几乎完全落在 winner
+ * 框内、且贴着被切开的那条页边。
+ */
+test("被页边界切断的碎片（文本必然乱码）按几何吸收，不留下第二份译文", () => {
+  // 现场实测尺寸：Lezhin 页图 1280×1952（屏幕 720×1098），接缝带 96px。
+  // winner 的下页文字框 {x:48.2,y:0,w:20,h:4.6}，碎片框 {x:48.96,y:0,w:18.06,h:4.87}
+  // —— 面积比 0.96（同一条线被切断，碎片和 winner 一样大），所以面积比不能当门槛；
+  // 判定靠"几乎完全包含 + 残字 + 贴页边"。
+  const segments = [{
+    pageId: UPPER, drawRect: { x: 0, y: 0, w: 1280, h: 96 }, sourceCrop: { x: 0, y: 1856, w: 1280, h: 96 }, naturalWidth: 1280, naturalHeight: 1952
+  }, {
+    pageId: LOWER, drawRect: { x: 0, y: 96, w: 1280, h: 96 }, sourceCrop: { x: 0, y: 0, w: 1280, h: 96 }, naturalWidth: 1280, naturalHeight: 1952
+  }];
+  const winner = {
+    canonical: { id: "canonical_frame_bubble", originalText: "언제든? 난봉꾼이따로 없네.", memberObservationIds: ["seam-frame"] },
+    bubble: { page_text_boxes: [{ pageId: LOWER, x: 48.2, y: 0, w: 20, h: 4.6 }] }
+  };
+  const residual = { id: "canonical_cut_tail", status: "ready", originalText: "ᅥ|고그 없네.", memberObservationIds: ["page-tail"] };
+  const observationsById = new Map([
+    ["seam-frame", { id: "seam-frame", sourceType: "seam", pageSpans: [] }],
+    ["page-tail", { id: "page-tail", sourceType: "page", visual: { translationRole: "" }, pageSpans: [{ pageId: LOWER, box: { x: 48.96, y: 0, w: 18.06, h: 4.87 } }] }]
+  ]);
+  const absorbed = P.findSeamCoveredResidualCanonicals([winner], [residual], observationsById, segments);
+  assert.deepEqual(absorbed.map(item => [item.canonical.id, item.kind]), [["canonical_cut_tail", "fragment"]]);
+  const ownership = P.collectSeamSurfaceOwnership([winner], [], [residual], observationsById, segments);
+  assert.equal(ownership.absorbedIdSet.has("canonical_cut_tail"), true, "页级碎片必须从渲染里摘掉");
+
+  // 对照一：同样贴页边、干净字词（不是被切断的残字）→ 不吸收，保持既有行为。
+  const cleanObs = new Map(observationsById);
+  cleanObs.set("page-clean", {
+    id: "page-clean", sourceType: "page", visual: { translationRole: "" },
+    pageSpans: [{ pageId: LOWER, box: { x: 48.96, y: 0, w: 18.06, h: 4.87 } }]
+  });
+  const clean = { ...residual, originalText: "외부", memberObservationIds: ["page-clean"] };
+  assert.deepEqual(P.findSeamCoveredResidualCanonicals([winner], [clean], cleanObs, segments), []);
+
+  // 对照二：同样是残字，但离页边很远（不是被切断的碎片）→ 不吸收。
+  const interiorObs = new Map(observationsById);
+  interiorObs.set("page-interior", {
+    id: "page-interior", sourceType: "page", visual: { translationRole: "" },
+    pageSpans: [{ pageId: LOWER, box: { x: 48.96, y: 40, w: 18.06, h: 4.87 } }]
+  });
+  const interior = { ...residual, memberObservationIds: ["page-interior"] };
+  assert.deepEqual(P.findSeamCoveredResidualCanonicals([winner], [interior], interiorObs, segments), []);
+});

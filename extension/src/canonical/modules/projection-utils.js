@@ -1,4 +1,10 @@
+import { firstSolidColor, solidObservationColor } from "../../shared/solid-color.js";
+
 export function installProjectionUtils(runtime) {
+  function verticalPagePolygonPercentBox(observation) {
+    const visual = observation?.visual || {}, polygon = visual.polygon, rotation = Math.abs(Number(visual.rotationDeg ?? visual.rotation_deg) || 0); if (observation?.sourceType !== "page" || rotation < 45 || rotation > 135 || !Array.isArray(polygon) || polygon.length < 3) return null;
+    const xs = polygon.map(point => Number(point && (point.x ?? point[0]))).filter(Number.isFinite), ys = polygon.map(point => Number(point && (point.y ?? point[1]))).filter(Number.isFinite); return xs.length >= 3 && ys.length >= 3 ? runtime.normalizeSeamPercentBox({ x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }) : null;
+  }
   function unionPageBoxes(boxes) {
     const valid = (Array.isArray(boxes) ? boxes : []).filter(Boolean);
     if (!valid.length) return null;
@@ -8,26 +14,19 @@ export function installProjectionUtils(runtime) {
     const bottom = Math.max(...valid.map(box => box.y + box.h));
     return runtime.normalizeSeamPercentBox({ x: left, y: top, w: right - left, h: bottom - top });
   }
-
   function canonicalSeamPageBoxes(canonical, observationsById, segments) {
     const segmentByPage = new Map((Array.isArray(segments) ? segments : []).map(segment => [String(segment?.pageId || ""), segment]));
     const pageOrder = new Map([...segmentByPage.keys()].map((pageId, index) => [pageId, index]));
     const textByPage = new Map();
     const coverByPage = new Map();
-    // One canonical sentence may occupy both seam slices; the cross-page renderer
-    // turns these tight page-local boxes into one text frame and one cover surface.
+    // 跨页句子可能同时占两页切片；这里把 page-local 盒子拼成跨页文字/遮罩面。
     for (const observationId of Array.isArray(canonical?.memberObservationIds) ? canonical.memberObservationIds : []) {
       const observation = observationsById instanceof Map ? observationsById.get(String(observationId)) : null;
       if (!observation) continue;
+      const verticalBox = verticalPagePolygonPercentBox(observation);
       for (const span of Array.isArray(observation?.pageSpans) ? observation.pageSpans : []) {
         const pageId = String(span?.pageId || "");
-        // 这一页没有文字像素（生产者显式声明）：整条跳过 —— 既不进文字框，也不进遮罩框。
-        // 跨页气泡的背景轮廓越过分页线、文字像素全在另一页时，这一页的 span 只是个
-        // 容器空壳：给它发遮罩就是把平色/补丁画在没有原文的地方（用户现场：上一页
-        // 顶部长出白色实底、跨页 overlay 的外框被撑到两页），把它算进文字框还会把
-        // 译文框整体撑高、译文跟着偏移。
-        // cover 同时是 buildCleanedArtifactProjectionPlan 的清理掩膜来源，两边必须一起
-        // 收窄，否则会出现「清理计划认为要擦、渲染却不画遮罩」的分叉。
+        // 显式声明“这一页没有文字像素”的空壳 span 既不进文字框，也不进遮罩框。
         if (span?.visual?.hasTextPixels === false) continue;
         const segment = segmentByPage.get(pageId);
         const width = Number(segment?.naturalWidth) || 0;
@@ -42,8 +41,8 @@ export function installProjectionUtils(runtime) {
             h: box.height / height * 100
           });
         };
-        const textBox = toPercent(span?.visual?.textBox || span?.visual?.text_box || span?.box);
-        const coverBox = toPercent(span?.visual?.fillBox || span?.visual?.fill_box || span?.box);
+        const textBox = verticalBox || toPercent(span?.visual?.textBox || span?.visual?.text_box || span?.box);
+        const coverBox = verticalBox || toPercent(span?.visual?.fillBox || span?.visual?.fill_box || span?.box);
         if (textBox) textByPage.set(pageId, [...(textByPage.get(pageId) || []), textBox]);
         if (coverBox) coverByPage.set(pageId, [...(coverByPage.get(pageId) || []), coverBox]);
       }
@@ -57,7 +56,6 @@ export function installProjectionUtils(runtime) {
     return { text: serialize(textByPage), cover: serialize(coverByPage) };
   }
   runtime.canonicalSeamPageBoxes = canonicalSeamPageBoxes;
-
   function buildSeamSurfaceBubble(canonical, translation, observations, canvasWidth, canvasHeight, observationsById, segments) {
     const linked = (Array.isArray(observations) ? observations : []).filter(observation => runtime.seamObservationCaptureBox(observation, canvasWidth, canvasHeight));
     const witnessBox = linked.length ? runtime.unionSeamPercentBoxes(linked.map(observation =>
@@ -85,7 +83,12 @@ export function installProjectionUtils(runtime) {
     const translatedText = String(translation && (translation.translated_text || translation.translatedText) || "").trim();
     if (!translatedText) return null;
     const bgType = String(rawVisual.bgType || rawVisual.bg_type || "none");
-    const bgColor = String(rawVisual.bgColor || rawVisual.bg_color || "");
+    // 实底盖板必须有采样色：选中观测没给出来时，从同一 canonical 的其它实底观测
+    // （接缝合成图/页面观测）取第一份有效色（与 translation-coalesce 同口径）。
+    const bgColor = bgType === "solid"
+      ? firstSolidColor([rawVisual.bgColor, rawVisual.bg_color,
+        ...[...linked, ...trustedMembers, selected].map(solidObservationColor)])
+      : String(rawVisual.bgColor || rawVisual.bg_color || "");
     const bgConfidence = Number(rawVisual.bgConfidence ?? rawVisual.bg_confidence) || 0;
     const regionId = String(rawVisual.regionId || rawVisual.region_id || "");
     const regionType = String(rawVisual.regionType || rawVisual.region_type || "plain_text");
@@ -202,7 +205,11 @@ export function installProjectionUtils(runtime) {
         const sourceCrop = runtime.normalizeSeamGeometryRect(segment && segment.sourceCrop);
         const naturalWidth = Number(segment && segment.naturalWidth) || 0;
         const naturalHeight = Number(segment && segment.naturalHeight) || 0;
-        const box = runtime.normalizeSpanBoxPixels(span && span.box, {
+        const verticalBox = verticalPagePolygonPercentBox(observation);
+        const box = verticalBox ? {
+          left: verticalBox.x / 100 * naturalWidth, top: verticalBox.y / 100 * naturalHeight,
+          width: verticalBox.w / 100 * naturalWidth, height: verticalBox.h / 100 * naturalHeight
+        } : runtime.normalizeSpanBoxPixels(span && span.box, {
           width: naturalWidth,
           height: naturalHeight
         });

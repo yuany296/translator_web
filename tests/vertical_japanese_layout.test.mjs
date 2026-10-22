@@ -49,6 +49,12 @@ test("竖排：沿文字轴量出来的宽高必须换回屏幕轴，且不再�
   const percentBox = resolveBubbleScreenBox({ widthAxis: 109, heightAxis: 33, verticalWriting: true });
   assert.deepEqual([percentBox.width, percentBox.height], [33, 109]);
   assert.equal(percentBox.rotation, 0);
+  // 源文字列不是绝对竖直（-86°）：剥掉 90° 后保留 4° 残余倾角，遮罩/译文跟着歪。
+  const tilted = resolveBubbleScreenBox({
+    widthAxis: 103.8, heightAxis: 30.1, declaredRotation: -86, verticalWriting: true
+  });
+  assert.deepEqual([tilted.width, tilted.height], [30.1, 103.8]);
+  assert.equal(tilted.rotation, 4);
 });
 
 test("横排（含斜排 SFX）行为逐字不变", () => {
@@ -161,4 +167,58 @@ test("横排倾斜文字仍按自左向右 / 自上而下", () => {
   assert.equal(background.isVerticalReadingRotation(-90), true);
   assert.equal(background.estimateRotatedClusterLineCount([lower, upper], -12.6), 2);
   assert.equal(background.composeRotatedClusterWords([lower, upper], -12.6), "일부러 보라고\n저런 거잖아!!");
+});
+
+/* ---------------------------------------------------------------------------
+ * 三、韩文竖排的识别证据
+ *
+ * 韩文漫画里的竖排（效果字、署名）与高而窄的横排气泡在几何上几乎一样，
+ * 语言本身不能当判据。OCR 的 orientation_applied=±90 才表示「这块是按竖列
+ * 识别出来的」；它必须一路保留到 observation，否则渲染层只能把韩文强制横排
+ * （现场：라오오무섭구나바다신 的 polygon 是 88×779，译出来却是 778×88 的横条）。
+ * ------------------------------------------------------------------------- */
+
+test("韩文竖排：cluster 多数方向为 ±90 时才传播 vertical writing_mode", () => {
+  assert.equal(background.inferLocalPaddleClusterOrientation([
+    { item: { orientation_applied: -90 } },
+    { item: { orientation_applied: -90 } }
+  ]), -90);
+  assert.equal(background.inferLocalPaddleClusterOrientation([
+    { item: { orientation_applied: -90 } },
+    { item: { orientation_applied: 0 } }
+  ]), 0, "一列碎片不足以把横排整体判成竖排");
+});
+
+test("韩文竖排：orientation_applied 进入 candidate 与 observation 的 writing_mode", () => {
+  const imageSize = { width: 720, height: 947 };
+  const candidate = background.normalizeBaiduOcrItem({
+    words: "라오오무섭구나바다신",
+    confidence: 0.99,
+    location: { left: 367, top: 166, width: 115, height: 779 },
+    rotation_deg: -88,
+    orientation_applied: -90,
+    polygon: [[367, 945], [395, 166], [483, 169], [455, 947]]
+  }, 0, imageSize);
+  assert.ok(candidate);
+  assert.equal(candidate.writing_mode, "vertical");
+  assert.equal(candidate.orientation_applied, -90);
+
+  const result = background.buildProviderNeutralObservationResult({
+    provider: "local_paddle",
+    request: {
+      sourceType: "page",
+      pageIds: ["page-korean-vertical"],
+      imageRevisionByPage: { "page-korean-vertical": "rev-1" },
+      imageDigest: "digest-korean-vertical"
+    },
+    imageSize,
+    normalized: [candidate],
+    ocrTuning: background.getDefaultOcrTuning(),
+    ocrDebug: null,
+    ignoreSimplifiedChinese: false
+  });
+  assert.equal(result.observations.length, 1);
+  assert.equal(result.observations[0].visual.writingMode, "vertical");
+  assert.equal(result.observations[0].visual.writing_mode, "vertical");
+  assert.equal(result.observations[0].visual.orientationApplied, -90);
 });

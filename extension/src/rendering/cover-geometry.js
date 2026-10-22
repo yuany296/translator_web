@@ -7,6 +7,18 @@
  */
 
 export const COVER_TILT_TOLERANCE_DEG = 0.5;
+/**
+ * 「OCR 的 rotation_deg 是不是真在说这块文字歪了」的**旋转噪声地板**。
+ *
+ * 与 COVER_TILT_TOLERANCE_DEG 分工不同：那个判定的是**四边形本身**是否轴对齐，
+ * 这个判定的是 rotation_deg 这条独立证据值不值得相信。现场（Lezhin 跨页气泡）：
+ * rotation_deg = -0.6° 是纯粹的识别噪声（0.6° 在 122px 高的框上只挪动约 1px），
+ * 却让 `rotationTilted` 成立 → 跨页遮罩被按字形四边形裁剪，上页那一段只留下
+ * 56.8% 以下的一条横带，气泡第一行原文直接露在译文下面。真正的斜排 SFX 远大于
+ * 这个角度（夹具实测 12°/20°/35°），所以地板取 2°：低于它一律按轴对齐处理
+ * （不旋转、不裁剪）。
+ */
+export const COVER_ROTATION_NOISE_DEG = 2;
 export const COVER_PADDING_MAX = 1.2;
 export const COVER_PADDING_BASE = 0.05;
 
@@ -14,6 +26,12 @@ function clampPadding(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
   return Math.min(COVER_PADDING_MAX, Math.max(0, numeric));
+}
+
+/** 百分比坐标 → 物理（像素）比例：只比值的相对大小有意义，非有限/非正值当「没有信息」记 1。 */
+function positiveScale(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : 1;
 }
 
 /** 「覆盖范围」配置 → 绕中心外扩倍数：0 贴合文字轮廓，1.2 外扩约 6%。 */
@@ -124,18 +142,19 @@ const LONG_EDGE_MIN_ASPECT = 1.2;
  * 被竖过来），而「文字框轴对齐、只有区域轮廓倾斜」的气泡又会退回 0°（用户现场：
  * 覆盖层没有跟着斜排原文倾斜）。
  *
- * 轴对齐框（倾斜量 ≤ 0.5°）一律返回 0：一个正正方方的框不管哪条边长，都没有倾角
- * 可恢复，否则高而窄的多行外框会被误读成 90°。确实歪了的四边形里，长边就是文字
- * 行方向；近正方形（长短边比 < 1.2）判断不出行方向，取更接近水平的那条边。
+ * 轴对齐框（换算到同一物理空间后倾斜量 ≤ 0.5°）一律返回 0：一个正正方方的框不管哪条
+ * 边长，都没有倾角可恢复，否则高而窄的多行外框会被误读成 90°。确实歪了的四边形里，
+ * 长边就是文字行方向；近正方形（长短边比 < 1.2）判断不出行方向，取更接近水平的那条边。
  *
  * scaleX/scaleY 把百分比坐标换算成像素比例：同一族倾斜在不同长宽比的图上角度不同。
+ * 「歪没歪」的门槛与最长边角度用同一组比例（见 polygonTiltDeg 的放大教训）。
  */
 export function polygonRotationDeg(points, scaleX = 1, scaleY = 1) {
   const normalized = normalizePoints(points, 4);
   if (!normalized) return 0;
-  if (polygonTiltDeg(normalized) <= COVER_TILT_TOLERANCE_DEG) return 0;
-  const sx = Number.isFinite(Number(scaleX)) && Number(scaleX) > 0 ? Number(scaleX) : 1;
-  const sy = Number.isFinite(Number(scaleY)) && Number(scaleY) > 0 ? Number(scaleY) : 1;
+  const sx = positiveScale(scaleX);
+  const sy = positiveScale(scaleY);
+  if (polygonTiltDeg(normalized, sx, sy) <= COVER_TILT_TOLERANCE_DEG) return 0;
   const edges = normalized.map((current, index) => {
     const next = normalized[(index + 1) % normalized.length];
     const dx = (next.x - current.x) * sx;
@@ -187,6 +206,17 @@ export function resolveTiltRotationDeg(rotationDeg, polygons = [], scaleX = 1, s
  */
 export const RENDER_ROTATION_VERTICAL_MIN_DEG = 60;
 
+/**
+ * 竖排时 writing-mode 只负责「字列方向」，OCR 的 ±90° 里还夹着几度真实倾斜
+ * （现场韩文竖列 -86° = 竖直方向再歪 4°）。把 90° 剥掉，只保留这部分残余倾角，
+ * 否则竖排会被强行扶正，和倾斜的原文字列对不上。
+ */
+export function verticalRenderRotationDeg(rotation) {
+  const angle = Number(rotation) || 0;
+  if (Math.abs(angle) < 45) return 0;
+  return angle > 0 ? angle - 90 : angle + 90;
+}
+
 export function sanitizeRenderRotationDeg(rotation, boxWidth = 0, boxHeight = 0) {
   const angle = Number(rotation) || 0;
   if (Math.abs(angle) < RENDER_ROTATION_VERTICAL_MIN_DEG) return angle;
@@ -213,18 +243,30 @@ export function resolveBubbleScreenBox({ widthAxis = 0, heightAxis = 0, declared
   return {
     width,
     height,
-    rotation: verticalWriting ? 0 : sanitizeRenderRotationDeg(declaredRotation, width, height)
+    rotation: verticalWriting ? verticalRenderRotationDeg(declaredRotation) : sanitizeRenderRotationDeg(declaredRotation, width, height)
   };
 }
 
-/** 四边形相对坐标轴的倾斜角（折到 ±45°）：轴对齐矩形返回 0。 */
-export function polygonTiltDeg(points) {
+/**
+ * 四边形相对坐标轴的倾斜角（折到 ±45°）：轴对齐矩形返回 0。
+ *
+ * **倾斜必须在各向同性的空间里量**：percent 坐标的 x/y 两轴各单位长度不同（跨页拼接图
+ * 1280×192 相差 6.7 倍），同一个"横边的像素级微倾"在 percent 空间会被放大成 6.7 倍
+ * （反之竖边被压缩）。现场（Lezhin 53 话跨页气泡）：OCR 给出的文字框在像素空间只歪
+ * 0.2°（服务端 `rotation_deg=-0.2`），percent 空间读成 1.36°，越过 0.5° 阈值 →
+ * 整个气泡被当成斜排 SFX、跨页遮罩按"接缝带里那一行"的四边形裁到只剩顶部 ~18%
+ * （用户症状「下面那页只有一部分背景」）。scaleX/scaleY 传坐标空间的长宽（或任意等比
+ * 因子），不传（=1/1）时保持旧口径。
+ */
+export function polygonTiltDeg(points, scaleX = 1, scaleY = 1) {
   const normalized = normalizePoints(points, 4);
   if (!normalized) return 0;
+  const sx = positiveScale(scaleX);
+  const sy = positiveScale(scaleY);
   return normalized.reduce((max, point, index) => {
     const next = normalized[(index + 1) % normalized.length];
-    const dx = next.x - point.x;
-    const dy = next.y - point.y;
+    const dx = (next.x - point.x) * sx;
+    const dy = (next.y - point.y) * sy;
     if (!(Math.abs(dx) > 0 || Math.abs(dy) > 0)) return max;
     let deg = Math.atan2(dy, dx) * 180 / Math.PI;
     while (deg >= 90) deg -= 180;
@@ -247,8 +289,11 @@ export function polygonTiltDeg(points) {
  * 就不同（页面长宽比 720:947 时，35° 与 28° 是同一个倾角）。早期按数值比对会误判成
  * 「冲突」，进而退回「旋转整个外接框」——那会把遮罩撑成外接框的包围盒（实测 362×278
  * 的文字框变成 443×532 的遮罩），用户看到的就是「覆盖层太大」。
+ *
+ * scaleX/scaleY 是 polygon 百分比空间的长宽（见 polygonTiltDeg）：判定「这个四边形
+ * 歪没歪」必须带上它，否则各向异性的 percent 空间会把亚度级像素微倾放大成"斜排"。
  */
-export function resolveCoverQuad({ polygon, rotationDeg = 0, box, padding = 0 } = {}) {
+export function resolveCoverQuad({ polygon, rotationDeg = 0, box, padding = 0, scaleX = 1, scaleY = 1 } = {}) {
   const scale = coverScale(padding);
   const rotation = Number(rotationDeg) || 0;
   // |rotation| ≥ RENDER_ROTATION_VERTICAL_MIN_DEG 的语义是**竖排（文字沿竖直方向排列）**，
@@ -257,7 +302,7 @@ export function resolveCoverQuad({ polygon, rotationDeg = 0, box, padding = 0 } 
   // 这种角度下**必须按四边形走**：照它旋转外接框会把 96×225 的竖列转成 225×96 的横条，
   // 清理图于是擦掉横跨页面的一条、真正的竖排原文只被擦掉一小截（现场症状
   // 「清理图只覆盖了一部分、日文还露着」）。阈值与 sanitizeRenderRotationDeg 同一常量。
-  const rotationTilted = Math.abs(rotation) > COVER_TILT_TOLERANCE_DEG
+  const rotationTilted = Math.abs(rotation) > COVER_ROTATION_NOISE_DEG
     && Math.abs(rotation) < RENDER_ROTATION_VERTICAL_MIN_DEG;
   const polygonPoints = normalizePoints(polygon, 4);
   const polygonBox = polygonPoints && boundsOfPoints(polygonPoints);
@@ -265,7 +310,7 @@ export function resolveCoverQuad({ polygon, rotationDeg = 0, box, padding = 0 } 
   if (!polygonPoints && !normalizedBox) return null;
   let quad = null;
   let tilted = rotationTilted;
-  const polygonTilted = Boolean(polygonPoints) && polygonTiltDeg(polygonPoints) > COVER_TILT_TOLERANCE_DEG;
+  const polygonTilted = Boolean(polygonPoints) && polygonTiltDeg(polygonPoints, scaleX, scaleY) > COVER_TILT_TOLERANCE_DEG;
   if (polygonPoints && rotationTilted && !polygonTilted) {
     // 文字框本身是轴对齐的，只有 OCR 的 rotation_deg 说它歪：按倾角旋转这个框。
     quad = rotateBoxQuad(polygonBox, rotation, scale);
@@ -331,14 +376,22 @@ function cutHorizontal(a, b, y) {
   return { x: a.x + (b.x - a.x) * ratio, y };
 }
 
-/** 四边形 → 相对 bounds 的 clip-path 百分比；退化时返回空串（调用方保留兜底遮罩）。 */
+/**
+ * 多边形 → 相对 bounds 的 clip-path 百分比；退化时返回空串（调用方保留兜底遮罩）。
+ *
+ * **顶点不能被截断**：`clipConvexPolygonToRect` 的结果最多有 8 个顶点（四边形与矩形的
+ * 交集），按「四边形」切到前 4 个会把不相邻的顶点连成一条并不存在的边 ——
+ * 现场（KakaoPage 跨页气泡）：交集明明有 87% 面积，画出来只剩 14% 的楔形，
+ * 原文整段露在译文下面。Sutherland–Hodgman 的输出是沿边界连续的，原样写进
+ * `polygon()` 即可。
+ */
 export function polygonClipPathPercent(points, bounds) {
-  const normalized = normalizePoints(points, 3);
+  const list = Array.isArray(points) ? points : [];
   const box = normalizeBox(bounds);
-  if (!normalized || !box) return "";
-  const values = normalized.map(point => {
-    const x = (point.x - box.x) / box.w * 100;
-    const y = (point.y - box.y) / box.h * 100;
+  if (list.length < 3 || !box) return "";
+  const values = list.map(point => {
+    const x = (Number(point && point.x) - box.x) / box.w * 100;
+    const y = (Number(point && point.y) - box.y) / box.h * 100;
     return Number.isFinite(x) && Number.isFinite(y) ? `${x.toFixed(2)}% ${y.toFixed(2)}%` : "";
   });
   return values.every(Boolean) ? `polygon(${values.join(", ")})` : "";

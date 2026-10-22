@@ -129,10 +129,10 @@ export function installCanonicalTranslate(runtime, scope) {
     return reconciliation;
   }
   scope.refreshCanonicalState = refreshCanonicalState;
-  function canonicalWaitsForEdge(canonical) {
+  function canonicalWaitsForEdge(canonical, observationById = null) {
     const memberIds = Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : [];
     for (const observationId of memberIds) {
-      const observation = scope.store.getObservations().find(item => item.id === observationId);
+      const observation = observationById instanceof Map ? observationById.get(String(observationId)) : scope.store.getObservations().find(item => item.id === observationId);
       if (!observation || observation.sourceType === "seam") continue;
       for (const pageId of observation.pageIds) {
         const record = scope.store.getPageHandle(pageId);

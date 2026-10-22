@@ -1,3 +1,5 @@
+import { firstSolidColor } from "../../shared/solid-color.js";
+
 export function installTranslationCoalesce(runtime) {
   function shouldCoalesceOcrCandidateGroups(leftGroup, rightGroup) {
     const left = runtime.getPercentBubbleGroupBox(leftGroup);
@@ -147,11 +149,15 @@ export function installTranslationCoalesce(runtime) {
     // 采样到的文字/描边色必须保留：这里以前在 bg_type === "none" 时直接写死
     // #000000/#ffffff，把本地 OCR 从原图采到的墨色丢掉了，渲染层于是永远"黑字白边"。
     // 只有整组都没有有效颜色时才退回历史默认值。
-    const groupColor = key => (Array.isArray(sorted) ? sorted : [])
-      .map(item => String(item && item[key] || "").trim())
-      .find(candidate => /^#[0-9a-f]{6}$/iu.test(candidate)) || "";
+    const groupColor = key => firstSolidColor((Array.isArray(sorted) ? sorted : []).map(item => item && item[key]));
     const groupTextColor = groupColor("text_color");
     const groupStrokeColor = groupColor("stroke_color");
+    // 背景色与文字色同口径：整组里**第一份有效颜色**就够，不能只看 sorted[0]。
+    // sorted[0] 只是视觉上第一行，它的容器未必采到色；而 `bg_type=solid` + `bg_color=""`
+    // 在渲染侧等于「整块透明」（不兜底纯白、也不会去要清理图）→ 原文裸露。
+    // 现场（KakaoPage 跨页气泡「여기 마스코트…」）：区域组里同行另一项有 #f4fcfe，
+    // 合并出来的候选却是空色。
+    const groupBgColor = groupColor("bg_color");
     const textColor = groupTextColor || (bgType === "none" ? "#000000" : "");
     const strokeColor = groupStrokeColor || (bgType === "none" ? "#ffffff" : "");
     return {
@@ -167,7 +173,7 @@ export function installTranslationCoalesce(runtime) {
       bg_type: bgType,
       // 采样到的背景色对非实底同样要留着：它既是清理图缺位时的遮罩兜底色
       // （复杂背景的旁白必须挡住原文），也是渲染侧推导可读文字色的依据。
-      bg_color: String(sorted[0] && sorted[0].bg_color || ""),
+      bg_color: groupBgColor,
       bg_confidence: Number(sorted[0] && sorted[0].bg_confidence || 0),
       region_id: String(sorted[0] && sorted[0].region_id || ""),
       region_type: String(sorted[0] && sorted[0].region_type || "plain_text"),
@@ -175,6 +181,7 @@ export function installTranslationCoalesce(runtime) {
       text_color: textColor,
       stroke_color: strokeColor,
       alignment: runtime.inferOcrCandidateGroupAlignment(sorted),
+      writing_mode: sorted.filter(item => String(item && (item.writing_mode || item.writingMode) || "").toLowerCase().startsWith("vertical")).length * 2 > sorted.length ? "vertical" : "",
       translation_role: runtime.inferOcrCandidateGroupTranslationRole(sorted),
       font_weight: runtime.inferOcrCandidateGroupFontWeight(sorted),
       polygon: runtime.mergePercentPolygons(sorted),

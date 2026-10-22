@@ -1,13 +1,30 @@
-import { sanitizeRenderRotationDeg } from "../../rendering/cover-geometry.js";
+import { sanitizeRenderRotationDeg, verticalRenderRotationDeg } from "../../rendering/cover-geometry.js";
 
 export function installRendererCrossPage(runtime) {
+  /**
+   * 全体目标的**最深共同祖先**。
+   *
+   * 旧实现只比较前两个目标（命中即返回），而调用方传进来的顺序是
+   * `overlaysById` 的插入顺序 —— 一对"碰巧同属某个小盒子"的目标会决定整个目标集的宿主。
+   * Lezhin 阅读页实测：前两个是推荐位缩略图 → 宿主落进 `carousel`（overflow:hidden）内部，
+   * 之后每一条覆盖层与 loading 卡都被裁掉，表现为「译文突然全部消失、也不再出现 loading 框」。
+   * 逐级求交：只有**所有**目标都还在的祖先才配当宿主（顺序无关）。
+   */
   function findCommonAncestor(targets) {
-    const values = targets.filter(Boolean);
-    if (values.length < 2) return values[0] && values[0].parentElement || null;
-    const ancestors = new Set();
-    for (let node = values[0].parentElement; node; node = node.parentElement) ancestors.add(node);
-    for (let node = values[1].parentElement; node; node = node.parentElement) {
-      if (ancestors.has(node)) return node;
+    const values = Array.from(new Set(targets.filter(Boolean)));
+    if (values.length === 0) return null;
+    if (values.length === 1) return values[0].parentElement || null;
+    let chain = new Set();
+    for (let node = values[0].parentElement; node; node = node.parentElement) chain.add(node);
+    for (let index = 1; index < values.length && chain.size > 0; index += 1) {
+      const next = new Set();
+      for (let node = values[index].parentElement; node; node = node.parentElement) {
+        if (chain.has(node)) next.add(node);
+      }
+      chain = next;
+    }
+    for (let node = values[0].parentElement; node; node = node.parentElement) {
+      if (chain.has(node)) return node;
     }
     return null;
   }
@@ -164,38 +181,52 @@ export function installRendererCrossPage(runtime) {
   function applyCrossPageTextGeometry(entry, item, geometry) {
     const frame = geometry.textFrame;
     const node = item.textNode;
-    node.style.width = `${frame.width}px`;
-    node.style.height = `${frame.height}px`;
+    // 跨页文字的 polygon / textFrame 也是沿文字轴量的：竖排时宽是字列长度、
+    // 高是字列厚度。writing-mode 接管朝向后必须换回屏幕轴，否则 3 个字的竖排
+    // 会被塞进 193×83 的横框里（现场「带走」仍然是横的）。
+    const verticalWriting = node.classList.contains("mt-jp-vertical");
+    // 跨页整列是两页 box 的并集，旋转来自单页 OCR，套到整列会放大成横向扫动；
+    // 多页竖排统一扶正，单页竖排保留残余倾角。
+    const multiPageVertical = verticalWriting && (entry.surface?.pageIds?.length || 0) > 1;
+    // frame 可能已经是屏幕轴（高 > 宽，不能再换一次），也可能还是文字轴
+    // （宽 > 高，竖排时必须换回来）。以长边方向为准，避免二次换轴。
+    const swapAxes = verticalWriting && frame.width > frame.height;
+    const width = swapAxes ? frame.height : frame.width;
+    const height = swapAxes ? frame.width : frame.height;
+    node.style.width = `${width}px`;
+    node.style.height = `${height}px`;
     runtime.applyBubbleAnchorStyle(node, {
       alignment: node.dataset.alignment,
-      x: frame.centerX - frame.width / 2,
-      y: frame.centerY - frame.height / 2,
-      w: frame.width,
-      h: frame.height,
+      x: frame.centerX - width / 2,
+      y: frame.centerY - height / 2,
+      w: width,
+      h: height,
       centerX: frame.centerX,
       centerY: frame.centerY,
-      rotation: sanitizeRenderRotationDeg(
+      // 竖排方向由 writing-mode 承担。单页保留完整残余倾角；两页合并时单页倾角
+      // 会把 1177px 长列扫宽一大截，取一半既保留倾斜感又不会把框撑爆。
+      rotation: verticalWriting ? (multiPageVertical ? verticalRenderRotationDeg(Number(node.dataset.rotationDeg || 0)) * 0.5 : verticalRenderRotationDeg(Number(node.dataset.rotationDeg || 0))) : sanitizeRenderRotationDeg(
         Number(node.dataset.rotationDeg || 0),
-        frame.width,
-        frame.height
+        width,
+        height
       ),
       unit: "px",
       allowVerticalOverflow: true
     });
-    const cacheKey = `cross-page:${entry.surface.layoutKey}:${item.canonicalId}`;
+    const cacheKey = `cross-page:${entry.surface.layoutKey}:${item.canonicalId}:${verticalWriting ? "v" : "h"}`;
     let layout = item.layout || runtime.state.seamLayoutCache.get(cacheKey);
     if (!layout || layout.kind !== "cross-page") {
       // 优先用 OCR 的绝对行高(font_height × 输入图→屏幕比例)还原原文字高:
       // font_height_percent 的分母是 seam 拼接图全高或单页捕获图高,按来源不同
       // 需要不同的还原分母;绝对行高直接换算可避免来源判断,对两种来源都精确。
       const originalTextHeight = runtime.resolveCrossPageOriginalTextHeight(item.bubble, frame)
-        || runtime.getBubbleOriginalTextHeight(node, frame.height,
+        || runtime.getBubbleOriginalTextHeight(node, verticalWriting ? width : height,
           Number(frame.sourceImageHeight) || frame.height);
-      const fontSize = runtime.fitBubbleFontSize(node, frame.width, frame.height, {}, originalTextHeight);
+      const fontSize = runtime.fitBubbleFontSize(node, width, height, {}, originalTextHeight);
       layout = {
         kind: "cross-page",
-        fontRatio: fontSize / Math.max(1, frame.width),
-        strokeRatio: runtime.getDynamicStrokeWidth(fontSize) / Math.max(1, frame.width)
+        fontRatio: fontSize / Math.max(1, width),
+        strokeRatio: runtime.getDynamicStrokeWidth(fontSize) / Math.max(1, width)
       };
       runtime.state.seamLayoutCache.set(cacheKey, layout);
       if (runtime.state.seamLayoutCache.size > runtime.MAX_FONT_FIT_CACHE) {
@@ -203,9 +234,9 @@ export function installRendererCrossPage(runtime) {
       }
     }
     item.layout = layout;
-    const fontSize = layout.fontRatio * frame.width;
+    const fontSize = layout.fontRatio * width;
     node.style.fontSize = `${fontSize.toFixed(1)}px`;
-    node.style.setProperty("--mt-stroke-width", `${(layout.strokeRatio * frame.width).toFixed(1)}px`);
+    node.style.setProperty("--mt-stroke-width", `${(layout.strokeRatio * width).toFixed(1)}px`);
   }
 
   function syncCrossPageSurfaceEntry(entry) {

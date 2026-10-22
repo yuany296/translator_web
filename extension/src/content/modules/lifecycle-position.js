@@ -2,6 +2,11 @@ import { resolveBubbleScreenBox } from "../../rendering/cover-geometry.js";
 
 export function installLifecyclePosition(runtime) {
   function recoverRenderedTargets() {
+    // 永久性服务故障冷却期内不做恢复扫描：扫描只会把注定失败的请求重新入队，
+    // 表现就是 loading 卡不停闪烁（契约不匹配 / 服务未启动）。
+    if (runtime.isOcrServiceFaultActive?.()) {
+      return;
+    }
     const now = Date.now();
     if (now - runtime.state.lastRecoveryAt < runtime.RECOVERY_SCAN_GAP_MS) {
       return;
@@ -30,8 +35,10 @@ export function installLifecyclePosition(runtime) {
       if (!runtime.matchesTargetMarker(renderedKey, targetKey, scopedTargetKey)) {
         continue;
       }
-      // “无文字”是正常终态，本来就不应该存在气泡；恢复扫描不得重新启动 OCR。
+      // “无文字”是正常终态，本来就不应该存在气泡；但允许同一 source 重查一次，
+      // 防止空白截图/限流导致的假空结果把整页永久钉死。
       if (runtime.hasSettledNoTextMarker(target, targetKey, scopedTargetKey)) {
+        if (runtime.retrySettledNoTextOnce?.(target, scopedTargetKey)) continue;
         runtime.clearKakaoLoadingOverlay(target);
         runtime.kakaoRetryScheduler.cancel(target);
         continue;
@@ -137,6 +144,7 @@ export function installLifecyclePosition(runtime) {
       return;
     }
     const rect = runtime.getOverlayDisplayRect(overlayState);
+    if (runtime.hideOverlayWhenFarFromViewport?.(overlayState, rect) === true) return;
     const targetVisibleRect = runtime.getVisibleViewportRect(overlayState.target);
     if (!targetVisibleRect) {
       overlayState.root.style.display = "none";
@@ -198,7 +206,8 @@ export function installLifecyclePosition(runtime) {
       const widthAxis = polygonGeometry ? polygonGeometry.width : rect.width * Number(node.dataset.wPercent || "0") / 100;
       const heightAxis = polygonGeometry ? polygonGeometry.height : rect.height * Number(node.dataset.hPercent || "0") / 100;
       const declaredRotation = Number(node.dataset.rotationDeg || 0);
-      const verticalWriting = node.classList.contains("mt-jp-vertical");
+      const verticalWriting = node.classList.contains("mt-jp-vertical")
+        || node.classList.contains("mt-cover-only") && Boolean(node.dataset.polygon) && String(node.dataset.writingMode || "").toLowerCase().startsWith("vertical");
       const box = resolveBubbleScreenBox({ widthAxis, heightAxis, declaredRotation, verticalWriting });
       const bubbleWidthPx = box.width;
       const bubbleHeightPx = box.height;

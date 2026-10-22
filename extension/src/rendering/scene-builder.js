@@ -76,7 +76,7 @@ function detectedMembers(bubble, surface) {
   }];
 }
 
-function cleanupGeometry(bubble) {
+function cleanupGeometry(bubble, surface) {
   const visual = bubble?.visual || {};
   const polygon = bubble?.polygon || visual.polygon || null;
   const box = {
@@ -87,6 +87,8 @@ function cleanupGeometry(bubble) {
   };
   // 斜排文字的遮罩几何：canvas 渲染器必须按四边形裁剪，否则轴对齐矩形会露出原文。
   // rotation_deg 缺失时同样从四边形取倾角（含 region_polygon 只有轮廓倾斜的现场）。
+  // polygon 的百分比空间就是渲染面（surface.width×surface.height），传下去让
+  // 「歪没歪」在像素空间判定（见 cover-geometry.js#polygonTiltDeg）。
   const cover = resolveCoverQuad({
     polygon,
     rotationDeg: resolveTiltRotationDeg(
@@ -94,7 +96,9 @@ function cleanupGeometry(bubble) {
       [polygon, bubble?.region_polygon, visual.regionPolygon, visual.region_polygon]
     ),
     box,
-    padding: 0
+    padding: 0,
+    scaleX: surface?.width,
+    scaleY: surface?.height
   });
   return Object.freeze({
     fillBox: bubble?.fill_box || visual.fillBox || null,
@@ -185,7 +189,7 @@ export function buildRenderSceneForBubbles({
     const explicitCover = String(bubble?.projection_role || "") === "cover_only";
     if (explicitCover) {
       layers.push({ id: `${family}:cover:${index}`, type: "cover", canonicalId: bubble?.canonical_id,
-        regionFamily: family, geometry: cleanupGeometry(bubble), content: { bubble } });
+        regionFamily: family, geometry: cleanupGeometry(bubble, surface), content: { bubble } });
       continue;
     }
     if (activeFamilies.has(family)) continue;
@@ -196,7 +200,7 @@ export function buildRenderSceneForBubbles({
       continue;
     }
     layers.push({ id: `${family}:cover`, type: "cover", canonicalId: bubble?.canonical_id,
-      regionFamily: family, geometry: cleanupGeometry(bubble), content: { bubble } });
+      regionFamily: family, geometry: cleanupGeometry(bubble, surface), content: { bubble } });
     layers.push(textLayer);
   }
   return createRenderScene({ id, surface, layers });

@@ -211,13 +211,36 @@ export function installSceneCrossPage(runtime) {
     };
   }
 
+  function verticalTextFrame(segments) {
+    const valid = (Array.isArray(segments) ? segments : []).filter(segment => segment && segment.width > 0 && segment.height > 0);
+    if (!valid.length) return null;
+    const widths = valid.map(segment => segment.width).sort((left, right) => left - right);
+    const width = widths[Math.floor(widths.length / 2)];
+    const centerX = valid.reduce((sum, segment) => sum + segment.left + segment.width / 2, 0) / valid.length;
+    const top = Math.min(...valid.map(segment => segment.top));
+    const bottom = Math.max(...valid.map(segment => segment.top + segment.height));
+    return {
+      left: centerX - width / 2,
+      top,
+      width,
+      height: bottom - top,
+      centerX,
+      centerY: (top + bottom) / 2
+    };
+  }
   function buildCrossPageBubbleGeometry(surface, bubble, targetRects, rootRect) {
     const textBox = toCompositeBox(surface, bubble);
     // 斜排文字的遮罩四边形（coverQuad/coverTilted）用与 DOM 覆盖层同源的推导。
     // 该钩子由 lifecycle-cover 安装；精简 runtime（如跨页 DOM 单测）可能没装，
     // 此时优雅降级为轴对齐，而不是整段跨页几何抛错。
+    // polygon 的百分比空间就是拼接图（canvasWidth×canvasHeight），把真实长宽传下去 ——
+    // 缺了它，1280×192 的窄带图会把横边 0.2° 的像素微倾放大成 1.36° 的"斜排"，
+    // 遮罩于是被只覆盖接缝带那行的四边形裁掉大半（现场「只有一部分背景」）。
     const coverGeometry = typeof runtime.resolveBubbleCoverGeometry === "function"
-      ? runtime.resolveBubbleCoverGeometry(bubble) : null;
+      ? runtime.resolveBubbleCoverGeometry(bubble, {
+        scaleX: Number(surface && surface.canvasWidth) || 0,
+        scaleY: Number(surface && surface.canvasHeight) || 0
+      }) : null;
     // 每页遮罩段的映射盒子沿用最终蓝框：它既与清洗图补丁/页面坐标一致，也
     // 让分页之间的真实页面间隙保持整数像素。倾斜可见范围由 coverQuad 单独裁剪，
     // 不靠放大映射盒子实现（放大盒子会把页面间隙压成浮点误差）。
@@ -234,11 +257,15 @@ export function installSceneCrossPage(runtime) {
       mapPageBoxToRoot(surface, value, targetRects, rootRect)) : mapBox(coverBox)).filter(Boolean);
     const coverSegments = addSolidCoverBridges(bubble, mappedCoverSegments);
     const fallbackTextBounds = unionRects(textSegments);
+    const vertical = String(bubble?.writing_mode || bubble?.writingMode || bubble?.visual?.writingMode || bubble?.visual?.writing_mode || "").toLowerCase().startsWith("vertical");
+    // 竖排跨页时两页的列在水平方向可能错开几像素；不能把两页的 x 范围并成一个大宽框，
+    // 否则 184×1177 的框再叠 6° 倾角会扫出 300px 宽。宽度取单列中位厚度，高度仍取并集。
+    const verticalBox = vertical ? verticalTextFrame(textSegments) : null;
     const polygonFrame = pageTextBoxes.length ? null : buildMappedPolygonFrame(surface, bubble, targetRects, rootRect);
-    const textBounds = polygonFrame && polygonFrame.bounds || fallbackTextBounds;
+    const textBounds = polygonFrame && polygonFrame.bounds || verticalBox || fallbackTextBounds;
     const outer = unionRects([...(coverSegments || []), textBounds].filter(Boolean));
     if (!outer || !(outer.width > 0 && outer.height > 0) || !textBounds) return null;
-    const frame = polygonFrame || {
+    const frame = polygonFrame || verticalBox || {
       centerX: textBounds.left + textBounds.width / 2,
       centerY: textBounds.top + textBounds.height / 2,
       width: textBounds.width,

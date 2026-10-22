@@ -35,6 +35,24 @@ export function installSeamResiduals(runtime) {
   }
   runtime.isSeamAdjacentBubbleLine = isSeamAdjacentBubbleLine;
 
+  /**
+   * 「这条文本是被页边界切断的残字」——只有在识别结果本身就坏掉时才成立。
+   *
+   * 现场（Lezhin）：气泡被页边界劈开，下页页级 OCR 把半行读成 `ᅥ|고그 없네.`
+   * （组合字母 U+1165 + 混进来的 `|`），这种文本永远过不了文本关系门槛
+   * （`hasStrongTextRelation`），于是同一气泡会同时留下跨页译文与页级碎片译文。
+   * 判据刻意收紧：**干净的字词（如「외부」这种无关小框）不算残字** ——
+   * canonical_render_plan 的反例就是用它挡住"贴页边的无关整块文本"，
+   * 只按几何放开会把那种情况一并吸收。
+   */
+  function looksLikeCutFragmentText(text) {
+    const raw = String(text || "");
+    if (!raw) return false;
+    if (/[\u1100-\u11ff\u3130-\u318f\ufffd]/u.test(raw)) return true;
+    return /[\uac00-\ud7af\u3040-\u30ff\u3400-\u9fff]/u.test(raw) && /[|\\^*~_]/u.test(raw);
+  }
+  runtime.looksLikeCutFragmentText = looksLikeCutFragmentText;
+
   function findSeamCoveredResidualCanonicals(selected, canonicals, observationsById, segments) {
     const reconciler = runtime.getCanonicalReconciler();
     if (!reconciler?.hasStrongTextRelation || !reconciler?.fuzzyFragmentSimilarity) return [];
@@ -69,7 +87,10 @@ export function installSeamResiduals(runtime) {
         const winnerLength = Array.from(winnerText.replace(/\s+/gu, "")).length;
         if (!winnerText) continue;
         const winnerBox = (winner?.bubble?.page_text_boxes || [])
-          .find(item => String(item?.pageId || "") === String(residualBox.pageId || ""));
+          .find(item => String(item?.pageId || "") === String(residualBox.pageId || "")) ||
+          // 没有这一页的文字框时退回覆盖框（覆盖框是文字框的超集，吸收判据只需要"包含"）。
+          (winner?.bubble?.page_cover_boxes || [])
+            .find(item => String(item?.pageId || "") === String(residualBox.pageId || ""));
         if (!winnerBox) continue;
         const overlap = runtime.seamBoxOverlapOverSmaller(residualBox, winnerBox);
         const residualArea = residualBox.w * residualBox.h;
@@ -81,8 +102,16 @@ export function installSeamResiduals(runtime) {
         // 近完全包含的微小残片:几何已证明是 winner 文本的一部分。
         // OCR 会把一行拆成多个小块,1 字符短块过不了文本关系门槛,
         // 这里只用面积比约束,避免误吸收"unrelated"这类整块文本。
-        if (captureCoverage >= 0.72 && overlap >= 0.9 &&
-            residualArea <= winnerArea * 0.25 && rolesCompatible) {
+        // 残字通道（面积比不再设限）：被页边界切断的半行，OCR 读出来的是残字
+        // （组合/兼容字母、�、混进来的符号），且贴着被切开的那条页边（上下 4% 内）——
+        // 同一条线被切断后，碎片框可以和 winner 的框一样大（实测面积比 0.96），
+        // 所以这条通道只靠"几乎完全包含"（overlap ≥ 0.9）判定；干净字词（「외부」
+        // 这类贴页边的无关小框）文本关系门槛照旧，不会被误吸收。
+        const touchesPageEdge = (Number(residualBox.y) || 0) <= 4 ||
+          (Number(residualBox.y) || 0) + (Number(residualBox.h) || 0) >= 96;
+        const cutFragment = touchesPageEdge && runtime.looksLikeCutFragmentText(residualText);
+        if (captureCoverage >= 0.72 && overlap >= 0.9 && rolesCompatible &&
+            (residualArea <= winnerArea * 0.25 || cutFragment && residualArea <= winnerArea * 1.2)) {
           results.push({ canonical, winnerCanonicalId: String(winner.canonical.id),
             pageId: String(residualBox.pageId), overlap, captureCoverage, kind: "fragment" });
           break;

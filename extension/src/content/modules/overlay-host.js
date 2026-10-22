@@ -188,4 +188,56 @@ export function installOverlayHost(runtime) {
     }
   }
   runtime.forEachOverlayLayer = forEachOverlayLayer;
+  /**
+   * 图层可见性的成对开关（悬浮菜单「隐藏/显示译文覆盖层」用）。
+   *
+   * 旧实现（controls-ui）的 hide 分支是死代码：`else if (visible && depth === 0)`
+   * 永远不可达 —— 点「隐藏译文覆盖层」只把 `overlayHideDepth` 涨到 1，图层其实没隐藏；
+   * 而 `overlayHideDepth > 0` 会让 `ensureExtensionUiMounted` 的可见性复位守卫失效，
+   * 之后任何一次截图回退（`withOverlayLayerHidden`，depth>0 进入时不保存也不回滚）
+   * 都会把图层真的隐藏且无人恢复 → 整层译文与 loading 卡永久不可见。
+   * 这里把「隐藏」做成真的隐藏，并**逐图层**记住隐藏前的 inline 值：恢复时各回各的，
+   * 多图层（每宿主一层）不会互相顶掉。
+   */
+  function hideOverlayLayers() {
+    forEachOverlayLayer(layer => {
+      if (!layer || !layer.style) return;
+      if (layer.dataset && layer.dataset.mtVisibilityBeforeHide === undefined) {
+        layer.dataset.mtVisibilityBeforeHide = layer.style.visibility || "";
+      }
+      layer.style.visibility = "hidden";
+    });
+  }
+  runtime.hideOverlayLayers = hideOverlayLayers;
+  /** onlyHidden=true 时只复位"此刻是 hidden"的图层（看门狗用），否则全部复位。 */
+  function restoreOverlayLayers(onlyHidden = false) {
+    forEachOverlayLayer(layer => {
+      if (!layer || !layer.style) return;
+      if (onlyHidden && layer.style.visibility !== "hidden") return;
+      const previous = layer.dataset ? layer.dataset.mtVisibilityBeforeHide : undefined;
+      layer.style.visibility = previous === undefined ? "" : previous;
+      if (layer.dataset) delete layer.dataset.mtVisibilityBeforeHide;
+    });
+  }
+  runtime.restoreOverlayLayers = restoreOverlayLayers;
+  /** 任一图层不可见（或正在隐藏）就算整体不可见：悬浮球的「覆盖层已隐藏」徽标读它。 */
+  function getOverlayLayerVisibility() {
+    if (runtime.state.overlayHideDepth > 0) return false;
+    let hidden = false;
+    forEachOverlayLayer(layer => {
+      if (layer && layer.style && layer.style.visibility === "hidden") hidden = true;
+    });
+    return !hidden;
+  }
+  runtime.getOverlayLayerVisibility = getOverlayLayerVisibility;
+  /** visible=false 隐藏、true 显示；成对写图层 inline visibility（语义见 hideOverlayLayers）。 */
+  function setOverlayLayerVisibility(visible) {
+    const depth = runtime.state.overlayHideDepth;
+    const next = visible ? Math.max(0, depth - 1) : depth + 1;
+    runtime.state.overlayHideDepth = next;
+    if (next > depth) hideOverlayLayers();
+    else if (next === 0) restoreOverlayLayers();
+    if (next === 0) runtime.state.overlayPreviousVisibility = "";
+  }
+  runtime.setOverlayLayerVisibility = setOverlayLayerVisibility;
 }

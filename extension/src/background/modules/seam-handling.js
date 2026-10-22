@@ -1,3 +1,5 @@
+import { firstSolidColor } from "../../shared/solid-color.js";
+
 export function installSeamHandling(runtime) {
   function filterSeamOcrCandidates(candidates, request, imageSize) {
     const input = Array.isArray(candidates) ? candidates : [];
@@ -206,6 +208,11 @@ export function installSeamHandling(runtime) {
     const width = Math.max(1, Number(imageSize && imageSize.width) || 1);
     const height = Math.max(1, Number(imageSize && imageSize.height) || 1);
     const sameSolidBackground = String(upper.candidate.bg_type || "").toLowerCase() === "solid" && String(lower.candidate.bg_type || "").toLowerCase() === "solid";
+    // 采样色**不能要求两半逐字符相同**：上下两半各自采样，同一个白气泡也常差 1~2 级
+    // （现场 KakaoPage「여기 마스코트…」：`#f6fbfe` vs `#f4fcfe`）→ 被判成"没颜色"，
+    // `bg_type=solid` 却 `bg_color=""`，跨页遮罩整块透明、原文裸露。两半都是实底时
+    // 取第一份有效颜色（与页面级合并「translation-coalesce」同口径）。
+    const solidColor = sameSolidBackground ? firstSolidColor([upper.candidate.bg_color, upper.candidate.bgColor, lower.candidate.bg_color, lower.candidate.bgColor]) : "";
     const sameRegionType = String(upper.candidate.region_type || "") === String(lower.candidate.region_type || "");
     const candidate = {
       ...upper.candidate,
@@ -218,7 +225,7 @@ export function installSeamHandling(runtime) {
       original_text: `${upperText}\n${lowerText}`,
       confidence: Math.min(Number(upper.candidate.confidence) || 0, Number(lower.candidate.confidence) || 0),
       bg_type: sameSolidBackground ? "solid" : "none",
-      bg_color: sameSolidBackground && String(upper.candidate.bg_color || "") === String(lower.candidate.bg_color || "") ? String(upper.candidate.bg_color || "") : "",
+      bg_color: solidColor,
       region_id: String(upper.candidate.region_id || "") === String(lower.candidate.region_id || "") ? String(upper.candidate.region_id || "") : "",
       region_type: sameRegionType ? String(upper.candidate.region_type || "") : "plain_text",
       region_polygon: null,

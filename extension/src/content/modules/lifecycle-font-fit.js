@@ -57,7 +57,21 @@ export function installLifecycleFontFit(runtime) {
     let safeSize = runtime.clamp(best * safetyScale, runtime.BUBBLE_FONT_MIN, maxFont);
     probe.style.fontSize = `${safeSize}px`;
     if (runtime.isProbeOverflowing(probe)) {
-      runtime.expandBubbleForTextOverflow(node, width, height, probe);
+      // 用户反馈译文超出气泡框比小字号更难接受：最小字号仍放不下时先下探到 7.5px，
+      // 真放不下（极端长文）才扩气泡兜底。
+      let shrunk = null;
+      for (let size = runtime.BUBBLE_FONT_MIN - 0.5; size >= 7.5; size -= 0.5) {
+        probe.style.fontSize = `${size}px`;
+        if (!runtime.isProbeOverflowing(probe)) {
+          shrunk = size;
+          break;
+        }
+      }
+      if (shrunk !== null) {
+        safeSize = shrunk;
+      } else {
+        runtime.expandBubbleForTextOverflow(node, width, height, probe);
+      }
     }
     const normalized = Math.round(safeSize * 10) / 10;
     runtime.rememberFontFitCache(cacheKey, normalized);

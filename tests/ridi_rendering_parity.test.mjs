@@ -167,6 +167,27 @@ test("覆盖层宿主取真正的滚动容器，绝不落在 documentElement 上
   assert.equal(slice.children.includes(layer), false, "不能挂到分片自己的小盒子上");
 });
 
+test("隐藏/显示覆盖层成对生效：隐藏真的写 visibility，显示逐层恢复", () => {
+  // 旧实现（controls-ui#setOverlayLayerVisibility）的 hide 分支是死代码：点「隐藏译文
+  // 覆盖层」只把 overlayHideDepth 涨到 1、图层其实没隐藏；而 depth>0 会让
+  // ensureExtensionUiMounted 的可见性复位守卫失效 —— 之后任何一次截图回退把图层真的
+  // 隐藏后就没人恢复了（译文与 loading 卡整层不可见）。这里钉住成对语义。
+  const runtime = { state: {}, findCrossPageOverlayHost: () => document.documentElement };
+  installOverlayHost(runtime);
+  const { image } = buildRidiLikeReader();
+  const layer = runtime.ensureOverlayLayerOnHost(image);
+  runtime.hideOverlayLayers();
+  assert.equal(layer.style.visibility, "hidden", "隐藏必须真的写 visibility");
+  runtime.hideOverlayLayers();
+  assert.equal(layer.style.visibility, "hidden", "重复隐藏仍是隐藏");
+  runtime.restoreOverlayLayers();
+  assert.notEqual(layer.style.visibility, "hidden", "显示必须恢复");
+  // onlyHidden=true：没被隐藏的图层不动（看门狗路径不能被误伤）。
+  layer.style.visibility = "visible";
+  runtime.restoreOverlayLayers(true);
+  assert.equal(layer.style.visibility, "visible", "看门狗不得改写未隐藏图层的可见性");
+});
+
 test("没有滚动容器时才退回 documentElement", () => {
   const runtime = { state: {}, findCrossPageOverlayHost: () => document.documentElement };
   installOverlayHost(runtime);

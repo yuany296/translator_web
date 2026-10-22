@@ -238,7 +238,11 @@ test("overlay bubbles always anchor at the source text block center and center t
   assert.match(lifecycle, /contentNode\.style\.width = "100%"/);
   assert.match(lifecycle, /contentNode\.style\.textAlign = "center"/);
   assert.match(lifecycle, /contentNode\.style\.whiteSpace = "pre-line"/);
-  assert.match(lifecycle, /contentNode\.textContent = runtime\.formatTranslationForOriginalLines/);
+  assert.match(lifecycle, /contentNode\.textContent = displayText/);
+  // DOM 覆盖层不得再按原文字数预分行：预分行 + 浏览器再软换行 = 孤字
+  // （现场 `…那边组 / 织 / 的人…`）。固定行数只留给画布渲染器（renderer-embed）。
+  assert.doesNotMatch(lifecycle, /contentNode\.textContent = runtime\.formatTranslationForOriginalLines/);
+  assert.match(contentRule, /text-wrap:\s*balance/);
   assert.match(lifecycle, /node\.appendChild\(contentNode\)/);
   const domRenderer = readFileSync(path.resolve(projectRoot, "extension", "src", "rendering", "dom-renderer.js"), "utf8");
   assert.match(domRenderer, /overflow:\s*"hidden"/);

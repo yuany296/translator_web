@@ -1,8 +1,15 @@
 export function installCanonicalRender(runtime, scope) {
-  function getCanonicalPageTranslationStatus(pageId, projections = []) {
+  // 每页最近一次渲染的输入签名：整章里没有变化的页面不再重复渲染（长条章节下这是主要开销）。
+  const renderSignatures = new Map();
+  function getCanonicalPageTranslationStatus(pageId, projections = [], indexes = null) {
     const normalizedPageId = String(pageId || "");
-    const observationById = new Map(scope.store.getObservations().map(item => [String(item.id || ""), item]));
-    const relevant = scope.store.getCanonicalSnapshot().filter(canonical => {
+    const observationById = indexes && indexes.observationById instanceof Map
+      ? indexes.observationById
+      : new Map(scope.store.getObservations().map(item => [String(item.id || ""), item]));
+    const canonicals = indexes && Array.isArray(indexes.canonicals)
+      ? indexes.canonicals
+      : scope.store.getCanonicalSnapshot();
+    const relevant = canonicals.filter(canonical => {
       if (!canonical || canonical.status === "filtered") return false;
       if (canonical.geometryByPage && canonical.geometryByPage[normalizedPageId]) return true;
       return (Array.isArray(canonical.memberObservationIds) ? canonical.memberObservationIds : []).some(id => {
@@ -11,20 +18,67 @@ export function installCanonicalRender(runtime, scope) {
       });
     });
     const provisional = (Array.isArray(projections) ? projections : []).some(projection => projection && (projection.provisional === true || projection.pendingCanonicalId));
-    const complete = !provisional && relevant.every(canonical => !scope.canonicalWaitsForEdge(canonical) && !!scope.store.getTranslation(canonical.id, canonical.revision));
+    const complete = !provisional && relevant.every(canonical => !scope.canonicalWaitsForEdge(canonical, observationById) && !!scope.store.getTranslation(canonical.id, canonical.revision));
     return {
       relevantCount: relevant.length,
       complete
     };
   }
   scope.getCanonicalPageTranslationStatus = getCanonicalPageTranslationStatus;
+  function buildPageRenderSignature(descriptor, debugOnly) {
+    try {
+      return JSON.stringify([
+        debugOnly === true ? 1 : 0,
+        descriptor.translationComplete === true ? 1 : 0,
+        descriptor.authoritativeEmpty === true ? 1 : 0,
+        descriptor.projections,
+        descriptor.fallbackProjections || null,
+        descriptor.seamSurfaces.map(surface => [
+          String(surface && surface.renderKey || ""),
+          Array.isArray(surface && surface.handledCanonicalIds) ? surface.handledCanonicalIds : [],
+          Array.isArray(surface && surface.absorbedCanonicalIds) ? surface.absorbedCanonicalIds : []
+        ])
+      ]);
+    } catch {
+      // 序列化不了就无法证明"没变"，返回 null 表示必须重渲染。
+      return null;
+    }
+  }
+  function pageRenderStillApplied(target) {
+    if (typeof scope.adapters.isPageRenderStillApplied !== "function") return false;
+    try {
+      return scope.adapters.isPageRenderStillApplied(target) === true;
+    } catch {
+      return false;
+    }
+  }
+  function shouldSkipPageRender(descriptor, options) {
+    if (options.force === true) return false;
+    if (typeof scope.adapters.isPageRenderStillApplied !== "function") return false;
+    const signature = descriptor.renderSignature;
+    if (signature === null || signature === undefined) return false;
+    const previous = renderSignatures.get(String(descriptor.pageId));
+    if (!previous || previous.signature !== signature || previous.target !== descriptor.target) return false;
+    if (previous.debugRef !== descriptor.debug) return false;
+    if (previous.payloadRef !== descriptor.handle.payload) return false;
+    if (previous.cleanedImageRef !== descriptor.handle.cleanedImage) return false;
+    // 无文字的页面目标状态就是"没有覆盖层"，不必要求覆盖层还在。
+    if (descriptor.authoritativeEmpty === true) return true;
+    return pageRenderStillApplied(descriptor.target);
+  }
   async function renderAllCanonicalPages(reason, guardAllows = () => true, options = {}) {
     const focusPageIds = new Set((Array.isArray(options.focusPageIds) ? options.focusPageIds : []).map(String));
     const seamSurfaceIndex = options.seamSurfaceIndex || runtime.buildSeamRenderSurfaceIndex(scope.store, {
       isPageAvailable: scope.isPageAvailable
     });
     const fallbackProjectionMap = options.fallbackProjectionsByPage instanceof Map ? options.fallbackProjectionsByPage : new Map();
+    // 整轮渲染只扫一遍观测/canonical：逐页重建这两份索引在长条章节里是二次方开销。
+    const renderIndexes = {
+      observationById: new Map(scope.store.getObservations().map(item => [String(item.id || ""), item])),
+      canonicals: scope.store.getCanonicalSnapshot()
+    };
     const descriptors = [];
+    const descriptorByPage = new Map();
     for (const handle of scope.store.getPageHandles()) {
       if (!guardAllows()) return;
       // 全局 reconcile 会遍历已经登记的所有页面，其中可能包含仍在 OCR 的并发页面。
@@ -40,6 +94,33 @@ export function installCanonicalRender(runtime, scope) {
       if (options.debugOnly === true && focusPageIds.size > 0 && !focusPageIds.has(String(handle.pageId)) && seamSurfaces.length === 0) continue;
       const target = scope.getTargetForPageId ? scope.getTargetForPageId(handle.pageId) : handle.target;
       if (!scope.targetIsUsable(target)) continue;
+      const storedProjections = scope.store.getProjections(handle.pageId).filter(projection => !handledCanonicalIds.has(String(projection && projection.canonicalId || "")) && !handledCanonicalIds.has(String(projection && projection.pendingCanonicalId || "")));
+      if (options.debugOnly === true && seamSurfaces.length === 0 && storedProjections.some(item => item.activeText && item.translated_text)) {
+        continue;
+      }
+      const projections = options.debugOnly === true ? [] : storedProjections;
+      const terminal = scope.store.getPageTerminal(handle.pageId);
+      const observationCount = Number(terminal && terminal.details && terminal.details.observationCount);
+      const translationStatus = scope.getCanonicalPageTranslationStatus(handle.pageId, projections, renderIndexes);
+      const authoritativeEmpty = options.debugOnly !== true && seamSurfaces.length === 0 && Number.isFinite(observationCount) && (observationCount === 0 || translationStatus.relevantCount === 0);
+      const translationComplete = options.debugOnly !== true && options.translationComplete !== false && translationStatus.complete;
+      const activeBubbles = projections.filter(item => item.activeText && item.translated_text).map(runtime.projectionToBubble);
+      const descriptor = {
+        handle,
+        target,
+        pageId: handle.pageId,
+        projections,
+        fallbackProjections: fallbackProjectionMap.get(String(handle.pageId)) || projections,
+        seamSurfaces,
+        debug: pageDebug,
+        activeBubbles,
+        translationComplete,
+        authoritativeEmpty
+      };
+      descriptor.renderSignature = buildPageRenderSignature(descriptor, options.debugOnly === true);
+      descriptorByPage.set(String(handle.pageId), descriptor);
+      // 输入签名与上次一致、且上次的渲染成果还在 DOM 上 → 这一页不必重画。
+      if (shouldSkipPageRender(descriptor, options)) continue;
       if (target.dataset) {
         const relatedStates = scope.store.getSeamStates().filter(state =>
           Array.isArray(state?.pageIds) && state.pageIds.map(String).includes(String(handle.pageId))
@@ -64,33 +145,10 @@ export function installCanonicalRender(runtime, scope) {
           ...canonicalMembership
         ]);
       }
-      const storedProjections = scope.store.getProjections(handle.pageId).filter(projection => !handledCanonicalIds.has(String(projection && projection.canonicalId || "")) && !handledCanonicalIds.has(String(projection && projection.pendingCanonicalId || "")));
-      if (options.debugOnly === true && seamSurfaces.length === 0 && storedProjections.some(item => item.activeText && item.translated_text)) {
-        continue;
-      }
-      const projections = options.debugOnly === true ? [] : storedProjections;
-      const terminal = scope.store.getPageTerminal(handle.pageId);
-      const observationCount = Number(terminal && terminal.details && terminal.details.observationCount);
-      const translationStatus = scope.getCanonicalPageTranslationStatus(handle.pageId, projections);
-      const authoritativeEmpty = options.debugOnly !== true && seamSurfaces.length === 0 && Number.isFinite(observationCount) && (observationCount === 0 || translationStatus.relevantCount === 0);
-      const translationComplete = options.debugOnly !== true && options.translationComplete !== false && translationStatus.complete;
-      const activeBubbles = projections.filter(item => item.activeText && item.translated_text).map(runtime.projectionToBubble);
-      descriptors.push({
-        handle,
-        target,
-        pageId: handle.pageId,
-        projections,
-        fallbackProjections: fallbackProjectionMap.get(String(handle.pageId)) || projections,
-        seamSurfaces,
-        debug: pageDebug,
-        activeBubbles,
-        translationComplete,
-        authoritativeEmpty
-      });
+      descriptors.push(descriptor);
     }
-    const descriptorByPage = new Map(descriptors.map(descriptor => [String(descriptor.pageId), descriptor]));
     const uniqueSurfaces = new Map();
-    for (const descriptor of descriptors) {
+    for (const descriptor of descriptorByPage.values()) {
       for (const surface of descriptor.seamSurfaces) {
         uniqueSurfaces.set(String(surface.renderKey || surface.pairKey || ""), surface);
       }
@@ -119,6 +177,17 @@ export function installCanonicalRender(runtime, scope) {
       reason,
       ...extra
     });
+    const rememberRenderedDescriptor = descriptor => {
+      const signature = descriptor && descriptor.renderSignature;
+      if (signature === null || signature === undefined) return;
+      renderSignatures.set(String(descriptor.pageId), {
+        signature,
+        target: descriptor.target,
+        debugRef: descriptor.debug,
+        payloadRef: descriptor.handle.payload,
+        cleanedImageRef: descriptor.handle.cleanedImage
+      });
+    };
     if (batchPageIds.size > 0) {
       const batchDescriptors = [...batchPageIds].map(pageId => descriptorByPage.get(pageId)).filter(Boolean);
       const first = batchDescriptors[0];
@@ -134,6 +203,7 @@ export function installCanonicalRender(runtime, scope) {
         translationCompleteByPage: mapByPage(descriptor => descriptor.translationComplete),
         authoritativeEmptyByPage: mapByPage(descriptor => descriptor.authoritativeEmpty)
       });
+      for (const descriptor of batchDescriptors) rememberRenderedDescriptor(descriptor);
     }
     for (const descriptor of descriptors) {
       if (!guardAllows()) return;
@@ -148,6 +218,7 @@ export function installCanonicalRender(runtime, scope) {
           deferredSurfaceOwnership ? descriptor.projections : descriptor.fallbackProjections
         ]])
       });
+      rememberRenderedDescriptor(descriptor);
     }
   }
   scope.renderAllCanonicalPages = renderAllCanonicalPages;

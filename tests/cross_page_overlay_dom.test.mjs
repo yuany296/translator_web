@@ -4,6 +4,8 @@ import { installSceneCrossPage } from "../extension/src/content/modules/scene-cr
 import { installCrossPageCover } from "../extension/src/content/modules/crosspage-cover.js";
 import { installRendererCrossPage } from "../extension/src/content/modules/renderer-crosspage.js";
 import { installCrossPageLifecycle } from "../extension/src/content/modules/crosspage-lifecycle.js";
+import { installLifecycleCover } from "../extension/src/content/modules/lifecycle-cover.js";
+import { resolveTiltRotationDeg } from "../extension/src/rendering/cover-geometry.js";
 
 class FakeClassList {
   constructor(owner) {
@@ -549,4 +551,140 @@ test("文字像素不在上一页时不再产生上一页的遮罩段，跨页�
   const overlayTopInViewport = 20 + Number.parseFloat(overlay.style.top);
   assert.ok(overlayTopInViewport >= 1074 - 1,
     `跨页外框不该再跨到上一页：viewport top=${overlayTopInViewport}`);
+});
+
+/** 新用例专用：把真遮罩几何装上（lifecycle-cover → cover-geometry，与生产同源）。 */
+function installCoverGeometry(runtime) {
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  runtime.clamp = clamp;
+  runtime.normalizeBubblePolygon = (value, allowOverflow) => {
+    if (!Array.isArray(value) || value.length < 4) return null;
+    const points = value.slice(0, 4).map(point => {
+      const rawY = Number(point && point.y);
+      return { x: clamp(Number(point && point.x), 0, 100), y: allowOverflow ? rawY : clamp(rawY, 0, 100) };
+    });
+    return points.every(point => Number.isFinite(point.x) && Number.isFinite(point.y)) ? points : null;
+  };
+  runtime.resolveBubblePolygonBox = (value, allowOverflow) => {
+    const polygon = runtime.normalizeBubblePolygon(value, allowOverflow);
+    if (!polygon) return null;
+    const xs = polygon.map(point => point.x);
+    const ys = polygon.map(point => point.y);
+    const [left, right] = [Math.min(...xs), Math.max(...xs)];
+    const [top, bottom] = [Math.min(...ys), Math.max(...ys)];
+    return right > left && bottom > top ? { x: left, y: top, w: right - left, h: bottom - top } : null;
+  };
+  runtime.normalizeFillBox = value => {
+    if (!value) return null;
+    const x = Number(value.x);
+    const y = Number(value.y);
+    const w = Number(value.w ?? value.width);
+    const h = Number(value.h ?? value.height);
+    return [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0 ? { x, y, w, h } : null;
+  };
+  // 与生产同口径：DOM 覆盖层不带像素比例（percent 空间），跨页路径显式传拼接图长宽。
+  runtime.resolveBubbleRotation = bubble => {
+    const visual = bubble && bubble.visual || {};
+    const explicit = Number((bubble && (bubble.rotation_deg ?? bubble.rotationDeg))
+      ?? (visual.rotation_deg ?? visual.rotationDeg));
+    return resolveTiltRotationDeg(explicit, [bubble && bubble.polygon, bubble && bubble.region_polygon], 1, 1);
+  };
+  runtime.state.coverPadding = 0.2;
+  installLifecycleCover(runtime);
+}
+
+/** 现场（Lezhin 53 话）的拼接图坐标：1280×192，上下各 96px 带，页图 1280×1952。 */
+function makeLiveSeamSurface(polygon) {
+  const bubble = {
+    canonical_id: "canonical-live", x: 51.97, y: 38.25, w: 23.41, h: 36,
+    fill_box: { x: 51.97, y: 38.25, w: 23.41, h: 36 },
+    polygon,
+    rotation_deg: -0.2,
+    bg_type: "solid",
+    bg_color: "#fefefe",
+    page_text_boxes: [
+      { pageId: "upper", x: 51.97, y: 98.84, w: 23.41, h: 1.16 },
+      { pageId: "lower", x: 48.99, y: 0, w: 29.33, h: 13.21 }
+    ],
+    page_cover_boxes: [
+      { pageId: "upper", x: 51.97, y: 98.84, w: 23.41, h: 1.16 },
+      { pageId: "lower", x: 48.99, y: 0, w: 29.33, h: 13.21 }
+    ],
+    original_text: "신싸로 올리버가 그쪽 조직원이었으면 뒷감당은어쩌려고 그랬대요?",
+    translated_text: "听说新沙洞的奥利弗要是那边组织的人，你打算怎么收场才那么干的？",
+    source_line_count: 4
+  };
+  return {
+    renderKey: "seam-live", layoutKey: "seam-live",
+    canvasWidth: 1280, canvasHeight: 192, pageIds: ["upper", "lower"],
+    cleanedImage: "data:image/png;base64,AQID", cleanedImageByPage: {},
+    segments: [{
+      pageId: "upper", drawRect: { x: 0, y: 0, w: 1280, h: 96 },
+      sourceCrop: { x: 0, y: 1856, w: 1280, h: 96 }, naturalWidth: 1280, naturalHeight: 1952
+    }, {
+      pageId: "lower", drawRect: { x: 0, y: 96, w: 1280, h: 96 },
+      sourceCrop: { x: 0, y: 0, w: 1280, h: 96 }, naturalWidth: 1280, naturalHeight: 1952
+    }],
+    bubbles: [bubble]
+  };
+}
+
+/** 把像素空间的四边形绕中心转 deg 度再换算成百分比（构造"真斜排"对照）。 */
+function rotatePolygonInPixels(points, canvasWidth, canvasHeight, deg) {
+  const centerX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+  const centerY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+  const radians = deg * Math.PI / 180;
+  return points.map(point => {
+    const dx = point.x - centerX;
+    const dy = point.y - centerY;
+    return {
+      x: (centerX + dx * Math.cos(radians) - dy * Math.sin(radians)) / canvasWidth * 100,
+      y: (centerY + dx * Math.sin(radians) + dy * Math.cos(radians)) / canvasHeight * 100
+    };
+  });
+}
+
+test("跨页遮罩的斜排判定必须带拼接图长宽：0.2° 像素微倾不得把下页遮罩裁到只剩顶部", () => {
+  // 现场（Lezhin 53 话）：拼接图 1280×192 把文字框横边的 0.2° 像素微倾放大成 1.36°
+  // （见 cover-geometry.js#polygonTiltDeg）→ 判成斜排 → 下页遮罩（页级 OCR 读到 4 行、
+  // 高 258px）被只覆盖接缝带那一行的四边形裁到只剩顶部 ~26px，其余原文裸露
+  // （用户症状「下面那页只有一部分背景」）。跨页路径必须把 canvasWidth×canvasHeight
+  // 传进 resolveBubbleCoverGeometry，让判定落在像素空间。
+  setupDom();
+  const host = new FakeElement("section");
+  host.rect = { left: 0, top: -25966, width: 1280, height: 79208 };
+  host.setConnected(true);
+  const upper = new FakeElement("img");
+  upper.rect = { left: 158.67, top: -657.11, width: 720, height: 1098 };
+  const lower = new FakeElement("img");
+  lower.rect = { left: 158.67, top: 440.89, width: 720, height: 1098 };
+  host.appendChild(upper);
+  host.appendChild(lower);
+  const runtime = createRuntime(new Map([["upper", upper], ["lower", lower]]));
+  installCoverGeometry(runtime);
+
+  const livePolygon = [
+    { x: 52.72, y: 40.1 }, { x: 74.61, y: 39.58 },
+    { x: 74.63, y: 72.92 }, { x: 52.73, y: 73.44 }
+  ];
+  assert.equal(runtime.renderCrossPageSurfaces([makeLiveSeamSurface(livePolygon)]), 1);
+  const nearAxisCovers = descendants(host, "mt-cover-segment");
+  assert.equal(nearAxisCovers.length, 2);
+  const lowerCover = nearAxisCovers.find(node => node.dataset.pageId === "lower");
+  assert.equal(lowerCover.dataset.coverTilted, "false", "0.2° 像素微倾不是斜排");
+  assert.equal(lowerCover.style.clipPath, undefined, "不裁剪：遮罩必须整块盖住这一页的 4 行原文");
+  assert.ok(Number.parseFloat(lowerCover.style.height) > 100,
+    `下页遮罩应覆盖整段文字（实测 145px），实际 ${lowerCover.style.height}`);
+
+  // 对照：同一形状在像素空间真的转 3° → 仍按斜排裁剪（该能力不能修没）。
+  const pixelPolygon = livePolygon.map(point => ({ x: point.x / 100 * 1280, y: point.y / 100 * 192 }));
+  const tiltedSurface = {
+    ...makeLiveSeamSurface(rotatePolygonInPixels(pixelPolygon, 1280, 192, 3)),
+    renderKey: "seam-tilted", layoutKey: "seam-tilted"
+  };
+  runtime.renderCrossPageSurfaces([tiltedSurface]);
+  const tiltedCovers = descendants(host, "mt-cover-segment");
+  const tiltedLower = tiltedCovers.find(node => node.dataset.pageId === "lower");
+  assert.equal(tiltedLower.dataset.coverTilted, "true", "真正的斜排仍要裁剪");
+  assert.match(String(tiltedLower.style.clipPath), /^polygon\(/u);
 });

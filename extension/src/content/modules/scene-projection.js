@@ -63,7 +63,12 @@ export function installSceneProjection(runtime) {
       restored,
       reason
     });
-    await runtime.reportStatus("error", reason, {
+    // 永久故障（契约不匹配 / 服务未启动）：noteOcrServiceFault 弹一次可操作提示并进入冷却，
+    // 这里不再走通用错误上报 —— 否则恢复扫描会把同一个错误刷成无限重试（loading 不停闪）。
+    if (runtime.noteOcrServiceFault?.(reason) === true) {
+      return;
+    }
+    await runtime.reportStatus?.("error", reason, {
       reason: options && options.reason,
       targetTag: target && target.tagName ? target.tagName.toLowerCase() : "unknown"
     });

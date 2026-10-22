@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installCleanMasks } from "../extension/src/canonical/modules/clean-masks.js";
-import { polygonRotationDeg, resolveCoverQuad } from "../extension/src/rendering/cover-geometry.js";
+import { polygonRotationDeg, polygonTiltDeg, resolveCoverQuad } from "../extension/src/rendering/cover-geometry.js";
 
 // 用户缺陷「覆盖层没有根据倾斜的文本进行倾斜」的另一半：清理图（嵌入式小说正文图片的底图）
 // 才是用户看到的覆盖层。遮罩若按轴对齐蓝框清理，斜排原文的位置会留下一块水平补丁。
@@ -122,4 +122,43 @@ test("实心背景与未激活的投影不需要清理图，不产出遮罩", ()
   const inactive = projection({ polygon: TILTED_POLYGON, rotationDeg: -35, bgType: "none" }, box);
   inactive.activeText = false;
   assert.deepEqual(runtime.buildCanonicalCleanMasks([solid, inactive]), []);
+});
+
+test("rotation_deg 的亚度级噪声不得把遮罩当成斜排（跨页遮罩被裁成横带的根源）", () => {
+  // 现场（Lezhin 跨页气泡）：rotation_deg = -0.6° 纯属识别噪声 —— 0.6° 在 122px 高的框上
+  // 只挪动约 1px，却让 rotationTilted 成立 → 跨页遮罩走「按字形四边形裁剪」，而接缝复合图
+  // 只读到气泡的一部分，上页那段遮罩于是被裁成一条横带（56.8% 以下），气泡第一行原文直接
+  // 露在译文下面。亚度级角度一律按轴对齐处理。
+  const box = { x: 20, y: 12, w: 50, h: 8 };
+  const noise = resolveCoverQuad({ polygon: AXIS_POLYGON, rotationDeg: -0.6, box, padding: 0.2 });
+  assert.equal(noise.tilted, false, "亚度级角度是噪声，不是斜排");
+  assert.ok(Math.abs(noise.bounds.w - 50) < 2 && Math.abs(noise.bounds.h - 8) < 2,
+    `噪声角度下遮罩仍应是原框，实际 ${noise.bounds.w.toFixed(2)}x${noise.bounds.h.toFixed(2)}`);
+  assert.equal(resolveCoverQuad({ polygon: AXIS_POLYGON, rotationDeg: -12, box, padding: 0.2 }).tilted, true,
+    "真正的斜排（12°）不受影响");
+});
+
+test("百分比空间的各向异性不得把亚度级像素微倾抬成斜排（跨页遮罩只遮住顶部 ~18% 的根源）", () => {
+  // 现场（Lezhin 53 话跨页气泡，拼接图 1280×192）：服务端返回的文字框在像素空间只歪
+  // 0.2°（visual.rotationDeg=-0.2，rawBox 299.6×69.1，顶点 (674.8,77)(955,76)(955.3,140)
+  // (675,141)），而百分比空间把"横边的微倾"放大 6.7 倍 → 1.36° → 越过 0.5° 阈值 →
+  // 整个气泡被当成斜排 SFX，页面遮罩按"接缝带里那一行"的四边形裁剪：下页 OCR 读到 4 行、
+  // 高 258px 的遮罩被裁到只剩顶部 ~26px（用户症状「下面那页只有一部分背景」）。
+  // 判定「歪没歪」必须带着坐标空间的真实长宽做（scaleX/scaleY），见 polygonTiltDeg 注释。
+  const polygon = [
+    { x: 52.72, y: 40.1 }, { x: 74.61, y: 39.58 },
+    { x: 74.63, y: 72.92 }, { x: 52.73, y: 73.44 }
+  ];
+  assert.ok(polygonTiltDeg(polygon) > 0.5, "不带长宽（旧口径）时 1.36° 会被当成斜排");
+  assert.ok(polygonTiltDeg(polygon, 1280, 192) < 0.3, "像素空间里它只是 0.2° 的噪声");
+  const box = { x: 51.97, y: 38.25, w: 23.41, h: 36 };
+  const aware = resolveCoverQuad({
+    polygon, rotationDeg: 89.9656294105337, box, padding: 0.2, scaleX: 1280, scaleY: 192
+  });
+  assert.equal(aware.tilted, false, "亚度级像素微倾不得按斜排裁剪遮罩");
+  // 真正的斜排（既有夹具）不受影响：带不带长宽都必须判成斜排。
+  const tilted = resolveCoverQuad({
+    polygon: TILTED_POLYGON, rotationDeg: -35, box, padding: 0.2, scaleX: 1280, scaleY: 192
+  });
+  assert.equal(tilted.tilted, true, "12° 级别的斜排仍要裁剪");
 });

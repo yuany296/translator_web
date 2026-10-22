@@ -23,7 +23,13 @@ export function installLifecycleCover(runtime) {
     } : blueBox;
   }
   runtime.resolveBubbleCoverBox = resolveBubbleCoverBox;
-  /** 遮罩最终几何：斜排文字用倾斜四边形，轴对齐文字与旧行为完全一致。 */
+  /**
+   * 遮罩最终几何：斜排文字用倾斜四边形，轴对齐文字与旧行为完全一致。
+   *
+   * `options.scaleX/scaleY`（百分比空间的长宽，如拼接图 canvasWidth×canvasHeight）
+   * 用于「歪没歪」的判定；不传时沿用旧口径（percent 空间），跨页路径必须传 ——
+   * 1280×192 的拼接图会把横边微倾放大 6.7 倍（见 rendering/cover-geometry.js）。
+   */
   function resolveBubbleCoverGeometry(bubble, options = {}) {
     const allowVerticalOverflow = bubble && bubble.stitch_overflow === true;
     const box = Object.prototype.hasOwnProperty.call(options, "box")
@@ -32,7 +38,9 @@ export function installLifecycleCover(runtime) {
       polygon: runtime.normalizeBubblePolygon(bubble && bubble.polygon, allowVerticalOverflow),
       rotationDeg: runtime.resolveBubbleRotation(bubble),
       box: box || runtime.normalizeFillBox(bubble, allowVerticalOverflow),
-      padding: runtime.state.coverPadding
+      padding: runtime.state.coverPadding,
+      scaleX: options.scaleX,
+      scaleY: options.scaleY
     });
   }
   runtime.resolveBubbleCoverGeometry = resolveBubbleCoverGeometry;

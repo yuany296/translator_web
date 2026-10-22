@@ -36,6 +36,8 @@ export function installLifecycleBubble(runtime) {
     const projectionRole = String(bubble.projection_role || "text_primary");
     const coverOnly = projectionRole === "cover_only";
     const rotation = runtime.resolveBubbleRotation(bubble);
+    const writingMode = String(bubble.writing_mode || bubble.writingMode || "").toLowerCase();
+    const orientationApplied = Number(bubble.orientation_applied ?? bubble.orientationApplied) || 0;
     const originalText = runtime.cleanRenderableText(bubble.original_text || "");
     const translatedText = coverOnly ? "" : runtime.cleanRenderableText(bubble.translated_text || "") || originalText;
     const displayText = runtime.state.displayMode === "bilingual" && originalText
@@ -64,6 +66,8 @@ export function installLifecycleBubble(runtime) {
     node.dataset.fontWeight = String(fontWeight);
     node.dataset.translationRole = String(bubble.translation_role || bubble.translationRole || "");
     node.dataset.rotationDeg = String(rotation);
+    node.dataset.writingMode = writingMode;
+    node.dataset.orientationApplied = String(orientationApplied);
     if (Array.isArray(bubble.polygon)) {
       node.dataset.polygon = JSON.stringify(bubble.polygon);
     }
@@ -176,9 +180,12 @@ export function installLifecycleBubble(runtime) {
       const contentNode = document.createElement("div");
       contentNode.className = "mt-bubble-content";
       contentNode.dataset.mangaTranslatorOverlay = "true";
-      contentNode.textContent = runtime.formatTranslationForOriginalLines(
-        displayText, Number(node.dataset.sourceLineCount)
-      );
+      // 不在这里预分行。DOM 覆盖层的换行由浏览器按盒子宽度决定，并靠 CSS
+      // `text-wrap: balance`（.mt-bubble-content）把各行摊匀；人工按字数预分行会让
+      // 「比可容纳宽度多一个字」的那一行被浏览器再拆一次，产出孤字
+      // （现场：`…那边组 / 织 / 的人…`）。需要固定行数的画布渲染器（renderer-embed）
+      // 仍走 runtime.formatTranslationForOriginalLines。
+      contentNode.textContent = displayText;
       // 气泡专用文字排版兜底：文字统一由内层节点居中显示并保留换行，
       // 外层类名（如 OCR 推断的 mt-align-left）只作调试数据，不再影响排版。
       contentNode.style.width = "100%";
@@ -313,10 +320,26 @@ export function installLifecycleBubble(runtime) {
   runtime.applyBubbleTextLayout = applyBubbleTextLayout;
   function shouldUseVerticalJapaneseLayout(node, text) {
     const originalText = String(node && node.dataset && node.dataset.original || "").trim();
+    // OCR 的 orientation_applied 是「这一块原文确实按竖列读出来」的直接证据，
+    // 与语言无关：韩文竖排、竖排署名与日文竖排都会在识别时旋转 ±90°。
+    // 只有这个证据才能放行非日文竖排；没有证据的韩文（常见于高而窄的横排气泡）
+    // 继续走下面的语言兜底，避免把正常横排台词转成竖排。
+    const writingMode = String(node && node.dataset && node.dataset.writingMode || "").toLowerCase();
+    const orientationApplied = Math.abs(Number(node && node.dataset && node.dataset.orientationApplied) || 0);
+    const rotation = Math.abs(runtime.normalizeBubbleRotation(node && node.dataset && node.dataset.rotationDeg, node && node.dataset && node.dataset.regionType));
+    const widthPercent = Number(node && node.dataset && node.dataset.wPercent || 0);
+    const heightPercent = Number(node && node.dataset && node.dataset.hPercent || 0);
+    // 旧 OCR 缓存没有 writingMode（当时 observation 还没这个字段）。这类韩文竖排
+    // 仍可从几何恢复：宽高是沿文字轴的（宽是字列长度、高是字列厚度），而高而窄的
+    // 横排框恰好相反。跨页占位节点是 100×100，靠「无 polygon + 单行」识别。
+    const legacyKoreanVertical = /[\uac00-\ud7af]/.test(originalText) && rotation >= 45 && rotation <= 135 &&
+      (widthPercent >= 99 && heightPercent >= 99 && !node.dataset.polygon || widthPercent > 0 && heightPercent > 0 && widthPercent / heightPercent >= 2);
+    if ((writingMode.startsWith("vertical") || orientationApplied === 90 || legacyKoreanVertical) && runtime.looksLikeCjkText(text)) {
+      return true;
+    }
     if (originalText && /[\uac00-\ud7afA-Za-z]/.test(originalText) && !runtime.looksLikeJapaneseText(originalText)) {
       return false;
     }
-    const rotation = Math.abs(runtime.normalizeBubbleRotation(node && node.dataset && node.dataset.rotationDeg, node && node.dataset && node.dataset.regionType));
     if (rotation >= 45 && rotation <= 135) {
       return runtime.looksLikeCjkText(text);
     }

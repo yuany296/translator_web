@@ -16,7 +16,7 @@ function page(pageId, readingOrder) {
   };
 }
 
-function pageObservation(pageValue, text, box, translationRole = "", regionType = "dialogue") {
+function pageObservation(pageValue, text, box, translationRole = "", regionType = "dialogue", rotationDeg = 0, polygon = null) {
   return R.createObservation({
     provider: "fixture-ocr",
     captureId: `page:${pageValue.pageId}:${text}:${box.x}`,
@@ -34,13 +34,15 @@ function pageObservation(pageValue, text, box, translationRole = "", regionType 
     confidence: 0.94,
     visual: {
       regionType,
-      translationRole
+      translationRole,
+      ...(rotationDeg ? { rotationDeg, rotation_deg: rotationDeg } : {}),
+      ...(polygon ? { polygon } : {})
     }
   });
 }
 
 function seamObservation(upper, lower, text, upperBox, lowerBox, translationRole = "",
-  regionType = "dialogue") {
+  regionType = "dialogue", rotationDeg = 0) {
   return R.createObservation({
     provider: "fixture-ocr",
     captureId: `seam:${upper.pageId}:${lower.pageId}:${text}`,
@@ -67,7 +69,8 @@ function seamObservation(upper, lower, text, upperBox, lowerBox, translationRole
     confidence: 0.99,
     visual: {
       regionType,
-      translationRole
+      translationRole,
+      ...(rotationDeg ? { rotationDeg, rotation_deg: rotationDeg } : {})
     }
   });
 }
@@ -129,6 +132,29 @@ test("one upper fragment and many connected lower fragments form one seam canoni
   assert.deepEqual(result.diagnostics.acceptedFragmentGroups[0].memberObservationIds,
     [fixture.upperFragment, ...fixture.lowerFragments].map(item => item.id).sort());
   for (const observation of observations) assert.equal(result.ledger[observation.id].resolution, "consumed");
+});
+
+test("a vertical column continuing across the page boundary merges both page halves", () => {
+  const upper = page("vertical-upper", 0);
+  const lower = page("vertical-lower", 1);
+  // 真实观测的 visual.box 是沿文字轴的宽框，屏幕竖列在 polygon 里；两者都要能吃。
+  const upperObservation = pageObservation(upper, "하셨다악한자가저",
+    { x: 0, y: 62.39, w: 90.53, h: 9.21 }, "", "effect_text", -86,
+    [{ x: 15, y: 99.6 }, { x: 21.05, y: 33.8 }, { x: 32.21, y: 34.39 }, { x: 26.16, y: 100 }]);
+  const lowerObservation = pageObservation(lower, "시해일에빨려들어",
+    { x: 0, y: 27.33, w: 87.61, h: 9.34 }, "", "effect_text", -85.7,
+    [{ x: 8.68, y: 63.5 }, { x: 15.01, y: 0 }, { x: 26.33, y: 0.5 }, { x: 20, y: 64.15 }]);
+  // 接缝 OCR 只看得到边界两侧几个字；它是 witness，不是最终译文。
+  const seam = seamObservation(upper, lower, "가저해",
+    { x: 15, y: 94, w: 17, h: 6 }, { x: 8.7, y: 0, w: 17.6, h: 6 },
+    "", "effect_text", -86);
+  const result = reconcileFixture({ upper, lower }, [upperObservation, lowerObservation, seam]);
+  assert.equal(result.canonicals.length, 1);
+  assert.equal(result.canonicals[0].originalText, "하셨다악한자가저 시해일에빨려들어");
+  assert.deepEqual(result.canonicals[0].memberObservationIds,
+    [upperObservation, lowerObservation, seam].map(item => item.id).sort());
+  assert.deepEqual(result.diagnostics.acceptedFragmentGroups[0].memberObservationIds,
+    [upperObservation, lowerObservation].map(item => item.id).sort());
 });
 
 test("a cross-page seam absorbs many lower fragments without an upper page OCR result", () => {

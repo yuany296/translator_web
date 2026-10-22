@@ -89,11 +89,13 @@ test("translation text lives in an inner mt-bubble-content node forced to center
     assert.equal(node.style.left, "25%");
     assert.equal(node.style.top, "26%");
     assert.match(node.style["--mt-base-transform"], /translate\(-50%, -50%\)/);
-    // 内层是直接承载中文的节点。
+    // 内层是直接承载中文的节点。译文原样写入，不做「按原文字数预分行」——
+    // 预分行 + 浏览器再软换行会产出孤字（现场 `…那边组 / 织 / 的人…`）；
+    // 均匀分行交给 CSS `text-wrap: balance`（见 overlay_style 对样式表的断言）。
     assert.equal(node.children.length, 1);
     const content = node.children[0];
     assert.equal(content.className, "mt-bubble-content");
-    assert.equal(content.textContent, "一二三四\n五六七八");
+    assert.equal(content.textContent, "一二三四五六七八");
     // 气泡专用兜底：内层强制 100% 宽、居中、保留换行。
     assert.equal(content.style.width, "100%");
     assert.equal(content.style.textAlign, "center");

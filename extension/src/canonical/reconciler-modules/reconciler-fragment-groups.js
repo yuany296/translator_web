@@ -356,7 +356,8 @@ export function installReconcilerFragmentGroups(runtime) {
         });
       }
       if (!captureCandidates.length) {
-        captureCandidates.push(...structuralFallbackCandidates(
+        captureCandidates.push(...runtime.buildVerticalContinuationGroups(capture, upperPage, lowerPage, pageObservations, pageIndex, adjacencyConfirmed));
+        if (!captureCandidates.length) captureCandidates.push(...structuralFallbackCandidates(
           capture, upperPage, lowerPage, pageObservations, adjacencyConfirmed, pageIndex
         ));
       }

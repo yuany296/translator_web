@@ -71,7 +71,8 @@ export function installCrossPageCover(runtime) {
       node.dataset.coverTilted = "false";
       return false;
     }
-    const clipPath = polygonClipPathPercent(clipConvexPolygonToRect(points, rect), rect);
+    const clipped = clipConvexPolygonToRect(points, rect);
+    const clipPath = polygonClipPathPercent(clipped, rect);
     if (!clipPath) {
       node.style.removeProperty("clip-path");
       node.dataset.coverTilted = "false";

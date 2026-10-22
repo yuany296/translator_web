@@ -1,4 +1,5 @@
 import { resolveExtractionConfig } from "../../config/store.js";
+import { describeTermExtractionEngine } from "../../config/extraction-engine.js";
 import reportCore from "../../shared/term-discovery-report.js";
 import thinkingMode from "../../shared/thinking-mode.js";
 
@@ -17,9 +18,15 @@ import thinkingMode from "../../shared/thinking-mode.js";
  *      免得用提取前的旧快照把用户刚确认/忽略的条目盖回去。
  */
 export function installTermDiscoveryExtract(runtime) {
-  /** 术语提取的有效配置：配置库选定条目（旧存档仍按「跟随翻译服务」解析）。 */
+  /**
+   * 术语提取的有效配置：先按 termExtraction.engine 三档判定，再把结论交给解析器。
+   * 选「本地模型」时故意返回空配置 —— 上游地址为空，服务端才会分派到本地模型；
+   * 这样超时预算、健康探测（要不要带 base_url）也跟着同一条判定走。
+   */
   function termLlmConfig(configuration) {
-    return resolveExtractionConfig(configuration, "termExtraction");
+    const info = describeTermExtractionEngine(configuration);
+    if (info.effective === "ai") return info.llm || resolveExtractionConfig(configuration, "termExtraction");
+    return {};
   }
   runtime.termLlmConfig = termLlmConfig;
   /** 提取请求单独排一条队列：上游仍串行（别并发压垮本地模型），但不占用户操作的队列。 */
@@ -63,19 +70,22 @@ export function installTermDiscoveryExtract(runtime) {
       const libraryId = matched ? matched.libraryId : "";
       // 自动忽略来源（小说名等）先于冷却/去重早退写入，保证提取器离线时也生效。
       const autoIgnored = await runtime.applyAutoIgnoreSources(stored, message.autoIgnoreSources, pageUrl);
-      const blocks = runtime.termDiscoveryCore.getUnprocessedBlocks(
-        autoIgnored.store, pageUrl, message.blocks, targetKey
-      );
+      // 手动「提取本章术语」（message.force）：已处理过滤、冷却、30 秒节流全部绕过 ——
+      // 用户点它，多半就是因为上一次什么都没收到，再挡一次等于点了没反应。
+      const force = message.force === true;
+      const blocks = force
+        ? runtime.termDiscoveryCore.normalizeBlocks(message.blocks, targetKey)
+        : runtime.termDiscoveryCore.getUnprocessedBlocks(autoIgnored.store, pageUrl, message.blocks, targetKey);
       if (blocks.length === 0) {
         return { skip: "already_processed" };
       }
-      if (runtime.isTermExtractorCoolingDown()) {
+      if (!force && runtime.isTermExtractorCoolingDown()) {
         return { skip: "cooldown", status: runtime.getTermExtractorStatusSnapshot() };
       }
       // 漫画连续翻页时同一章节 30 秒内只提取一次。
       const now = Date.now();
       const lastByPage = runtime.termExtractorLastExtractByPage || new Map();
-      if (now - (lastByPage.get(pageUrl) || 0) < runtime.TERM_EXTRACTOR_THROTTLE_MS) {
+      if (!force && now - (lastByPage.get(pageUrl) || 0) < runtime.TERM_EXTRACTOR_THROTTLE_MS) {
         return { skip: "throttled" };
       }
       lastByPage.set(pageUrl, now);
@@ -84,6 +94,11 @@ export function installTermDiscoveryExtract(runtime) {
       }
       runtime.termExtractorLastExtractByPage = lastByPage;
       const termLlm = termLlmConfig(configuration);
+      // 选了「AI 配置」却没配好：明确跳过并说清原因，不偷偷用本地模型顶上去
+      // （用户既然点名要 AI，静默换引擎等于背着他改了结果）。
+      if (describeTermExtractionEngine(configuration).effective === "none") {
+        return { skip: "engine_unconfigured" };
+      }
       const upstream = {
         baseUrl: String(termLlm.baseUrl || "").trim(),
         model: String(termLlm.model || "").trim(),
@@ -99,12 +114,19 @@ export function installTermDiscoveryExtract(runtime) {
         libraryId,
         blocks,
         llmMode: Boolean(upstream.baseUrl),
+        // 预算在准备阶段一次算好：请求与「正在提取」的记账必须同一个数，否则页面显示的
+        // 剩余时间与实际掐断时刻对不上（AI 按分段数算，本地按字数算）。
+        timeoutMs: runtime.termDiscoveryTimeoutMs(blocks, Boolean(upstream.baseUrl)),
         baseUrl: runtime.sanitizeLocalOcrBaseUrl(configuration.ocr.localPaddle.baseUrl),
         requestBody: discoveryRequestBody(configuration, blocks, upstream)
       };
     });
   }
   runtime.prepareDiscovery = prepareDiscovery;
+  /** 这次请求的预算：准备阶段算过就用那个数（测试里手搓 prepared 时按同样规则兜底）。 */
+  function discoveryBudgetMs(prepared) {
+    return Number(prepared && prepared.timeoutMs) || runtime.termDiscoveryTimeoutMs(prepared && prepared.blocks, Boolean(prepared && prepared.llmMode));
+  }
   /** 二段：慢请求走提取队列，成功返回 `{ payload }`，失败返回 `{ error, timedOut }`。 */
   async function requestDiscovery(prepared) {
     try {
@@ -115,7 +137,7 @@ export function installTermDiscoveryExtract(runtime) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(prepared.requestBody)
         },
-        prepared.llmMode ? runtime.termExtractionTimeoutMs(prepared.blocks) : runtime.TERM_EXTRACTOR_TIMEOUT_MS
+        discoveryBudgetMs(prepared)
       ));
       runtime.markTermExtractorOnline(payload && payload.engine);
       return { payload };
@@ -189,9 +211,7 @@ export function installTermDiscoveryExtract(runtime) {
       return { ok: true, skipped: true, reason: prepared.skip, status: prepared.status };
     }
     const startedAt = Date.now();
-    const budgetMs = prepared.llmMode
-      ? runtime.termExtractionTimeoutMs(prepared.blocks)
-      : runtime.TERM_EXTRACTOR_TIMEOUT_MS;
+    const budgetMs = discoveryBudgetMs(prepared);
     // 开始就记账：请求挂住时页面能显示「正在提取（已 N 分钟）」，而不是一片空白。
     await recordDiscovery({
       outcome: "running",

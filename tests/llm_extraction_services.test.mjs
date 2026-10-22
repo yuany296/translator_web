@@ -93,7 +93,7 @@ test("翻译服务没配好时跟随不生效，退回本节存的值（没配�
     configuration: { termExtraction: normalizeTermExtractionConfig({}) }
   }, unconfigured);
   assert.equal(resolveExtractionConfig(configuration, "termExtraction").baseUrl, "",
-    "保持空值 → 整章提取退回内置句子模式");
+    "保持空值 → 整章提取走本地模型（没有句子模式了）");
 
   const withOwn = configurationWith({
     configuration: {

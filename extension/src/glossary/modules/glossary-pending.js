@@ -39,8 +39,9 @@ export function installGlossaryPending(runtime) {
       }, `本话已忽略 ${sources.length} 条`, `正在忽略本话的 ${sources.length} 条候选…`);
       return;
     }
-    if (button.dataset.action === "ai-extract" || button.dataset.action === "new-library") {
-      // 这两个按钮自带点击处理（AI 提取、按网址建库），不进入忽略/确认逻辑。
+    if (button.dataset.action === "ai-extract" || button.dataset.action === "new-library"
+      || button.dataset.action === "ai-fill-targets") {
+      // 这几个按钮自带点击处理（AI 提取、按网址建库、补译名），不进入忽略/确认逻辑。
       return;
     }
     const card = event.target.closest(".candidate-card");
@@ -178,7 +179,9 @@ export function installGlossaryPending(runtime) {
         disabled: "自动发现已关闭",
         already_processed: "这一章已经提取过，没有新段落",
         cooldown: "提取器冷却中（上次失败后不立即重试）",
-        throttled: "同一页 30 秒内只提取一次"
+        throttled: "同一页 30 秒内只提取一次",
+        // 引擎选了「AI 配置」却没配好：说清是配置问题，别让人去怀疑模型。
+        engine_unconfigured: "设置了「AI 配置」但没有可用配置，这次没有提取"
       };
       return `上次跳过（${when}）：${reasons[last.reason] || last.reason || "未说明原因"}`;
     }

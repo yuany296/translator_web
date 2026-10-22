@@ -1,5 +1,6 @@
 import { installGlossaryEditor } from "./glossary-editor.js";
 import { installGlossaryPending } from "./glossary-pending.js";
+import { installGlossaryPendingTargets } from "./glossary-pending-targets.js";
 import { installGlossaryStorage } from "./glossary-storage.js";
 import { installGlossaryTransfer } from "./glossary-transfer.js";
 import { installGlossaryTermsView } from "./glossary-terms-view.js";
@@ -19,6 +20,7 @@ import { installGlossaryViewRouter } from "./glossary-view-router.js";
 export const glossaryInstallers = Object.freeze([
   installGlossaryEditor,
   installGlossaryPending,
+  installGlossaryPendingTargets,
   installGlossaryStorage,
   installGlossaryTransfer,
   installGlossarySearch,
@@ -39,6 +41,7 @@ export const glossaryPhases = Object.freeze({
   functions: Object.freeze([
     installGlossaryEditor,
     installGlossaryPending,
+  installGlossaryPendingTargets,
     installGlossaryStorage,
     installGlossaryTransfer,
     installGlossarySearch,

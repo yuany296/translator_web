@@ -112,7 +112,7 @@ function installLibrarySyncMessageFix(runtime) {
   }
 }
 
-/** 提取器状态文案：桌面版引擎名是 ollama/heuristic，手机版是直连 LLM，叫「AI」更准确。 */
+/** 提取器状态文案：桌面版引擎名是 ollama/ner/none，手机版是直连 LLM，叫「AI」更准确。 */
 function installExtractorStatusLabel(runtime) {
   const renderPendingState = runtime.renderPendingState;
   if (typeof renderPendingState !== "function") return;

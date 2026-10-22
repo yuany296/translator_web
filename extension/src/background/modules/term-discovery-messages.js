@@ -17,6 +17,16 @@ export function installTermDiscoveryMessages(runtime) {
     return runtime.runTermDiscovery(message);
   }
   runtime.handleDiscoverTerms = handleDiscoverTerms;
+  /**
+   * 预热本地模型（设置页切到「本地模型」时发一次）。
+   * 立刻回话、加载留在后台：这个请求要几十秒，界面不该等它。
+   */
+  async function handleWarmTermExtractor() {
+    const configuration = await runtime.loadConfiguration();
+    void runtime.warmTermExtractor(configuration.ocr.localPaddle.baseUrl);
+    return { ok: true, warming: true };
+  }
+  runtime.handleWarmTermExtractor = handleWarmTermExtractor;
   async function handleGetTermDiscoveryStatus(message = {}) {
     const [configuration, stored] = await Promise.all([
       runtime.loadConfiguration(),

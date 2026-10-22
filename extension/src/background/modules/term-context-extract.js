@@ -67,6 +67,8 @@ function resolveSentenceService(configuration) {
 }
 
 export function installTermContextExtract(runtime) {
+  // 批量补译名（term-target-batch.js）用的是同一套「句子级提取」配置，判定逻辑只留一份。
+  runtime.resolveSentenceService = resolveSentenceService;
   async function handleExtractTermFromContext(message = {}) {
     const sourceText = String(message.sourceText || "").trim().slice(0, SOURCE_TEXT_LIMIT);
     const translatedText = String(message.translatedText || "").trim().slice(0, SOURCE_TEXT_LIMIT);

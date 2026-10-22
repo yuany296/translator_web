@@ -31,6 +31,7 @@ export function installGlossaryEditor(runtime) {
     runtime.ignoreAllBtn.addEventListener("click", runtime.ignoreAllPendingCandidates);
     runtime.resetProcessedBtn.addEventListener("click", runtime.resetProcessedEvidence);
     runtime.pendingChapters.addEventListener("click", runtime.handlePendingCandidateClick);
+    runtime.bindPendingTargetEvents();
     runtime.ignoredRows.addEventListener("click", runtime.handleIgnoredClick);
     runtime.bindLibraryPanelEvents();
     chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -106,6 +107,8 @@ export function installGlossaryEditor(runtime) {
     runtime.ignoreAllBtn.disabled = pendingCount === 0;
     runtime.pendingChapters.replaceChildren(...chapters.map(runtime.createPendingChapter));
     runtime.pendingEmptyState.classList.toggle("hidden", pendingCount !== 0);
+    // 补译名按钮上的数字跟着候选一起变（剩下多少条还没译名）。
+    runtime.renderFillButton?.();
     // 列表页每行要显示「N 条待确认」，候选或当前库一变就刷新库列表。
     runtime.renderLibraryPanel();
   }
@@ -122,9 +125,14 @@ export function installGlossaryEditor(runtime) {
     const enabled = response.enabled !== false;
     const stateValue = String(response.status && response.status.state || "unknown");
     const engine = String(response.status && response.status.engine || "");
-    const modeLabel = engine === "ollama" ? "AI（Ollama）" : engine === "heuristic" ? "句子模式" : "提取器";
+    // 服务端没配 LLM 时可能报 ner（本地 NER 模型）；不上报就退回「提取器」这个中性说法。
+    // none = 没配 AI 且本地模型不可用：没有兜底算法，说清「不可用」比含糊的「提取器」有用。
+    const modeLabel = { ollama: "AI（Ollama）", ner: "本地模型", none: "本地模型不可用" }[engine] || "提取器";
     if (!enabled || stateValue === "disabled") {
       runtime.extractorStatus.textContent = "术语提取器：自动发现已关闭";
+    } else if (engine === "none" && stateValue === "online") {
+      // 「在线」但引擎是 none：服务活着，可这次提取一条候选都不会产出，得说清楚。
+      runtime.extractorStatus.textContent = "术语提取器：本地模型不可用（不会产出候选）";
     } else if (stateValue === "online") {
       runtime.extractorStatus.textContent = `术语提取器：${modeLabel}在线`;
     } else if (stateValue === "offline") {
@@ -156,8 +164,17 @@ export function installGlossaryEditor(runtime) {
     url.className = "chapter-url";
     url.textContent = chapter.url;
     left.append(title, url);
-    const chapterIgnore = runtime.createActionButton("忽略本话全部", "ignore-chapter-all", "danger");
-    heading.append(left, chapterIgnore);
+    const chapterActions = document.createElement("div");
+    chapterActions.className = "chapter-heading-actions";
+    // 本地模型只认得出「这是个人名」，给不出译名 —— 所以每一话都要能一键把空译名补齐。
+    const fillable = chapter.candidates.filter(candidate => candidate.suggestedTargets.length === 0).length;
+    if (fillable > 0 && runtime.sentenceLlmConfigured) {
+      const chapterFill = runtime.createActionButton(`AI 补全本话译名（${fillable}）`, "ai-fill-targets");
+      chapterFill.addEventListener("click", () => void runtime.fillChapterTargets?.(chapter.key));
+      chapterActions.append(chapterFill);
+    }
+    chapterActions.append(runtime.createActionButton("忽略本话全部", "ignore-chapter-all", "danger"));
+    heading.append(left, chapterActions);
     section.append(heading, runtime.buildChapterLibraryControl(chapter), ...chapter.candidates.map(candidate => runtime.createCandidateCard(chapter, candidate)));
     return section;
   }

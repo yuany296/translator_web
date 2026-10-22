@@ -293,6 +293,8 @@ test("re-confirming an existing term keeps its entry id", async () => {
   }];
   const stored = installStorage({
     mt_glossary_v2: glossary,
+    // 原文语言已无「自动识别」：词条按 ko 语言对匹配，存档必须显式给 ko（旧缺省曾依赖 auto 的文本判定）。
+    mt_translation_config_v1: { sourceLanguage: "ko", targetLanguage: "zh-CN" },
     mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:1" } },
     mt_glossary_pending_v1: {
       chapters: [{
@@ -377,6 +379,25 @@ test("提取超时预算随章节长度放大，且有上下限", () => {
     { originalText: "가".repeat(120000), translatedText: "啊".repeat(120000) }
   ]);
   assert.equal(huge, background.TERM_EXTRACTOR_MAX_TIMEOUT_MS, "再长也有上限");
+});
+
+// 本地模型那条路（NER）是 CPU 推理：8 秒必然超时（冷启动就要 10 秒以上），
+// 而预算只该随字数放大 —— 它没有上游排队这回事。
+test("本地模型的超时预算按字数算，且不被 8 秒那档掐死", () => {
+  const short = background.termLocalExtractionTimeoutMs([
+    { originalText: "성현이 말했다", translatedText: "成贤说道" }
+  ]);
+  assert.equal(short, background.TERM_EXTRACTOR_LOCAL_TIMEOUT_MS, "短章节给足冷启动时间");
+  assert.ok(short > background.TERM_EXTRACTOR_TIMEOUT_MS, "必须比原来那 8 秒宽");
+
+  const long = background.termLocalExtractionTimeoutMs([
+    { originalText: "가".repeat(60000), translatedText: "啊".repeat(60000) }
+  ]);
+  assert.ok(long > short, "12 万字要放大预算");
+  assert.equal(long, Math.ceil(120000 / background.TERM_EXTRACTOR_LOCAL_CHARS_PER_SECOND) * 1000);
+
+  assert.equal(background.termDiscoveryTimeoutMs([], true), background.TERM_EXTRACTOR_MIN_LLM_TIMEOUT_MS);
+  assert.equal(background.termDiscoveryTimeoutMs([], false), background.TERM_EXTRACTOR_LOCAL_TIMEOUT_MS);
 });
 
 test("提取超时只罚一分钟冷却，并单独记账", async () => {
@@ -484,4 +505,37 @@ test("a stalled term extraction no longer blocks confirming a candidate", async 
   background.requestTermExtractorJson = originalExtractor;
   assert.equal(stored.mt_glossary_pending_v1.chapters.every(chapter => chapter.candidates.length === 0), true);
   assert.equal(stored.mt_glossary_v2.entries.length, 1, "术语没有因为提取回写而重复");
+});
+
+// 手动「提取本章术语」：点下去必须真的再跑一次，不能被 30 秒节流/「已处理」挡住。
+test("force 的手动提取绕过节流与已处理过滤", async () => {
+  const stored = installStorage({
+    mt_glossary_v2: novelGlossary(),
+    mt_ocr_config_v1: { localPaddle: { baseUrl: "http://127.0.0.1:8765" } },
+    mt_glossary_pending_v1: { chapters: [] }
+  });
+  let calls = 0;
+  background.requestTermExtractorJson = async () => {
+    calls += 1;
+    return { ok: true, engine: "ner", candidates: [{ source: "성현", kind: "person", score: 0.9, evidenceIds: ["b1"] }] };
+  };
+  background.markTermExtractorOnline("ner");
+  const request = {
+    type: "DISCOVER_TERMS",
+    pageUrl: "https://page.kakao.com/content/69299983/viewer/manual/",
+    pageTitle: "第 3 话",
+    targetKey: "manual-force",
+    blocks
+  };
+  await background.handleDiscoverTerms(request);
+  assert.equal(calls, 1);
+
+  const throttled = await background.handleDiscoverTerms(request);
+  assert.equal(throttled.skipped, true, "自动那条路再点一次会被挡");
+
+  const forced = await background.handleDiscoverTerms({ ...request, force: true });
+  assert.equal(calls, 2, "手动提取要真的发出去");
+  assert.equal(forced.ok, true);
+  assert.equal(forced.skipped, undefined);
+  assert.equal(stored.mt_term_discovery_last_v1.outcome, "added");
 });

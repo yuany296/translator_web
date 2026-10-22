@@ -1029,6 +1029,14 @@
         margin-left: auto;
       }
 
+      .chapter-heading-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+        margin-left: auto;
+      }
+
       .candidate-card {
         margin-bottom: 12px;
         border: 1px solid #dce4ef;
@@ -1312,6 +1320,7 @@
           <section id="pendingPanel" class="panel hidden">
             <div class="toolbar">
               <button id="confirmFilledBtn" class="primary" type="button">加入所有已填写</button>
+              <button id="aiFillTargetsBtn" type="button" disabled>AI 补全译名</button>
               <button id="ignoreAllBtn" class="danger" type="button">永久忽略全部</button>
               <button id="resetProcessedBtn" type="button">重置已处理</button>
               <span id="extractorStatus" class="subtitle">Kiwi 状态：读取中...</span>

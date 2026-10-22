@@ -62,7 +62,8 @@ class MiniElement {
 const IDS = [
   "termServiceSelect", "termServiceName", "termServiceDetail", "termServiceNewBtn",
   "sentenceServiceSelect", "sentenceServiceName", "sentenceServiceDetail", "sentenceServiceNewBtn",
-  "termDiscoveryEnabled", "sentenceExtractionEnabled", "serviceSelectionStatus"
+  "termDiscoveryEnabled", "sentenceExtractionEnabled", "serviceSelectionStatus",
+  "termEngineAuto", "termEngineLocal", "termEngineAi", "termEngineHint"
 ];
 
 const VENDORS = {
@@ -75,6 +76,9 @@ function makeConfiguration() {
     translation: { provider: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-chat", apiKey: "k1", sourceLanguage: "auto", targetLanguage: "zh-CN" },
     termExtraction: { provider: "", baseUrl: "", model: "qwen2.5:7b", apiKey: "", vendor: "", followTranslation: true },
     sentenceExtraction: { provider: "", baseUrl: "", model: "qwen2.5:7b", apiKey: "", vendor: "", followTranslation: true },
+    // 配置库条目要和下面 GET_TRANSLATION_VENDORS 返回的一致：引擎判定（resolveExtractionConfig）
+    // 读的是 configuration.llmVendors，真实环境里 GET_CONFIGURATION 就带着它。
+    llmVendors: { vendors: VENDORS },
     runtime: { termDiscoveryEnabled: true, sentenceExtractionEnabled: true }
   };
 }
@@ -90,6 +94,7 @@ function setup({ vendors = VENDORS, configuration = makeConfiguration() } = {}) 
   const saved = [];
   const created = [];
   const statuses = [];
+  const warm = [];
   const state = { configuration };
   const body = {
     byId: id => globalThis.document.getElementById(id),
@@ -105,10 +110,11 @@ function setup({ vendors = VENDORS, configuration = makeConfiguration() } = {}) 
     },
     setStatus: (id, message, error = false) => statuses.push({ id, message, error }),
     getConfiguration: () => state.configuration,
-    requestCreate: prefix => created.push(prefix)
+    requestCreate: prefix => created.push(prefix),
+    warmUp: () => warm.push(Date.now())
   };
   const ui = installServiceSelection(body);
-  return { nodes, saved, created, statuses, state, ui, body };
+  return { nodes, saved, created, statuses, state, ui, body, warm };
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -180,4 +186,120 @@ test("向导建好配置后把它指派给对应的一行", async () => {
   assert.equal(saved[0].value.vendor, "DeepSeek");
   assert.equal(nodes.termServiceSelect.value, "DeepSeek", "指派后下拉回显新选择");
   assert.match(statuses.at(-1).message, /整章术语提取使用「DeepSeek」/u);
+});
+
+/** 没有任何可用 AI 配置的存档：termExtraction 不再跟随翻译，翻译自己也是空的。 */
+function makeNoAiConfiguration() {
+  return {
+    ...makeConfiguration(),
+    translation: { provider: "", baseUrl: "", model: "", apiKey: "" },
+    termExtraction: { vendor: "", followTranslation: false }
+  };
+}
+
+test("引擎三档默认是「自动」，提示行按当前配置说清会走哪边", async () => {
+  const { nodes, ui } = setup();
+  await ui.refresh();
+  assert.equal(nodes.termEngineAuto.checked, true, "老存档没有 engine 字段，落到自动");
+  assert.equal(nodes.termEngineLocal.checked, false);
+  assert.match(nodes.termEngineHint.textContent, /^自动：使用/u);
+});
+
+test("自动档在没有可用 AI 配置时说清改用本地模型", async () => {
+  const { nodes, ui } = setup({ configuration: makeNoAiConfiguration() });
+  await ui.refresh();
+  assert.equal(nodes.termEngineAuto.checked, true);
+  assert.match(nodes.termEngineHint.textContent, /改用本地模型/u);
+});
+
+test("切到「本地模型」立刻落盘，提示行说明不发 AI 请求", async () => {
+  const { nodes, saved, ui, statuses } = setup();
+  await ui.refresh();
+  nodes.termEngineLocal.checked = true;
+  nodes.termEngineLocal.dispatch("change");
+  await settle();
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].section, "termExtraction");
+  assert.equal(saved[0].value.engine, "local");
+  assert.equal(nodes.termEngineHint.textContent, "已选「本地模型」：不会发送 AI 请求");
+  assert.match(statuses.at(-1).message, /已改为「本地模型」/u);
+});
+
+test("选「AI 配置」但没配好时提示会跳过，不偷偷回退到本地", async () => {
+  const { nodes, saved, ui } = setup({ configuration: makeNoAiConfiguration() });
+  await ui.refresh();
+  nodes.termEngineAi.checked = true;
+  nodes.termEngineAi.dispatch("change");
+  await settle();
+  assert.equal(saved[0].value.engine, "ai");
+  assert.match(nodes.termEngineHint.textContent, /提取会跳过/u);
+});
+
+test("走本地模型时顺手预热，走 AI 时不预热", async () => {
+  const local = setup({ configuration: makeNoAiConfiguration() });
+  await local.ui.refresh();
+  assert.equal(local.warm.length, 1, "打开设置页就发一次预热（冷启动几十秒，等到提取就超时了）");
+
+  const ai = setup();
+  await ai.ui.refresh();
+  assert.equal(ai.warm.length, 0, "走 AI 不需要本地模型");
+
+  // 从「自动走 AI」切到「本地模型」也要补一次。
+  ai.nodes.termEngineLocal.checked = true;
+  ai.nodes.termEngineLocal.dispatch("change");
+  await settle();
+  assert.equal(ai.warm.length, 1);
+});
+
+// 「（已关闭）」不只由开关决定：整章引擎切到「本地模型」时，这条 AI 配置就是闲置的。
+test("选本地模型时配置行标「已关闭」", async () => {
+  const configuration = {
+    ...makeConfiguration(),
+    termExtraction: { vendor: "DeepSeek", followTranslation: false, engine: "local" }
+  };
+  const { nodes, ui } = setup({ configuration });
+  await ui.refresh();
+  assert.equal(nodes.termServiceName.textContent, "正在使用配置「DeepSeek」");
+  assert.match(nodes.termServiceDetail.textContent, /（已关闭）$/u);
+});
+
+test("自动档且 AI 配置可用时不标已关闭", async () => {
+  const configuration = {
+    ...makeConfiguration(),
+    termExtraction: { vendor: "DeepSeek", followTranslation: false }
+  };
+  const { nodes, ui } = setup({ configuration });
+  await ui.refresh();
+  assert.doesNotMatch(nodes.termServiceDetail.textContent, /（已关闭）/u);
+});
+
+test("没选配置时只说「未选择配置」，不加已关闭后缀", async () => {
+  const configuration = {
+    ...makeConfiguration(),
+    termExtraction: { vendor: "", followTranslation: false, engine: "local" }
+  };
+  const { nodes, ui } = setup({ configuration });
+  await ui.refresh();
+  assert.equal(nodes.termServiceName.textContent, "未选择配置");
+  assert.doesNotMatch(nodes.termServiceDetail.textContent, /（已关闭）/u);
+});
+
+test("切到本地模型后该行立刻标已关闭，切回 AI 又恢复", async () => {
+  const configuration = {
+    ...makeConfiguration(),
+    termExtraction: { vendor: "DeepSeek", followTranslation: false }
+  };
+  const { nodes, ui } = setup({ configuration });
+  await ui.refresh();
+  assert.doesNotMatch(nodes.termServiceDetail.textContent, /（已关闭）/u);
+
+  nodes.termEngineLocal.checked = true;
+  nodes.termEngineLocal.dispatch("change");
+  await settle();
+  assert.match(nodes.termServiceDetail.textContent, /（已关闭）$/u);
+
+  nodes.termEngineAi.checked = true;
+  nodes.termEngineAi.dispatch("change");
+  await settle();
+  assert.doesNotMatch(nodes.termServiceDetail.textContent, /（已关闭）/u);
 });

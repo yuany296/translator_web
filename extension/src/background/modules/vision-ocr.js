@@ -1,10 +1,10 @@
 export function installVisionOcr(runtime) {
-  function buildVisionCropOcrGroups(words, imageSize) {
+  function buildVisionCropOcrGroups(words, imageSize, lang = "korean") {
     const entries = words.map((item, index) => {
       const box = runtime.getBaiduItemBox(item);
       const text = String(item && item.words ? item.words : "").trim();
       const confidence = Number(item && item.confidence ? item.confidence : 0);
-      return box && runtime.shouldRepairLocalPaddleWordWithVision(text, confidence) ? {
+      return box && runtime.shouldRepairLocalPaddleWordWithVision(text, confidence, lang) ? {
         item,
         index,
         box,
@@ -24,7 +24,7 @@ export function installVisionOcr(runtime) {
     return groups;
   }
   runtime.buildVisionCropOcrGroups = buildVisionCropOcrGroups;
-  function shouldRepairLocalPaddleWordWithVision(text, confidence) {
+  function shouldRepairLocalPaddleWordWithVision(text, confidence, lang = "korean") {
     const raw = String(text || "").trim();
     if (!raw || confidence >= 0.78) {
       return false;
@@ -34,6 +34,11 @@ export function installVisionOcr(runtime) {
     const latin = (raw.match(/[A-Za-z]/g) || []).length;
     if (latin > 0 || jamo > 0) {
       return true;
+    }
+    if (lang === "japan") {
+      const kana = (raw.match(/[\u3041-\u30ff]/g) || []).length;
+      const kanji = (raw.match(/[\u3400-\u9fff]/g) || []).length;
+      return kana + kanji <= 3 || confidence < 0.58;
     }
     return hangul <= 3 || confidence < 0.58;
   }
@@ -93,9 +98,10 @@ export function installVisionOcr(runtime) {
     apiKey,
     baseUrl,
     model,
-    requestTimeoutMs
+    requestTimeoutMs,
+    lang = "korean"
   }) {
-    const prompt = ["Read the Korean text in this cropped manga image.", "Return JSON only: {\"text\":\"...\"}.", "Do not translate. Preserve Korean text, spaces, and punctuation.", "If the crop is unreadable or contains no Korean text, return {\"text\":\"\"}."].join("\n");
+    const prompt = buildVisionCropOcrPrompt(lang);
     const raw = await runtime.requestOpenAICompatibleVision({
       model,
       apiKey,
@@ -112,10 +118,48 @@ export function installVisionOcr(runtime) {
     }
   }
   runtime.requestVisionCropOcr = requestVisionCropOcr;
-  function isUsableVisionCropOcrText(text) {
+  function buildVisionCropOcrPrompt(lang) {
+    if (lang === "japan") {
+      return [
+        "Read the Japanese text in this cropped manga speech bubble.",
+        "The text may be written vertically (tategaki): read each column top-to-bottom, columns ordered right-to-left.",
+        "Small furigana beside kanji are pronunciation hints, not dialogue: do not include them.",
+        "Return JSON only: {\"text\":\"...\"}.",
+        "Do not translate. Preserve Japanese kana, kanji, spaces, and punctuation.",
+        "If the crop is unreadable or contains no Japanese text, return {\"text\":\"\"}."
+      ].join("\n");
+    }
+    if (lang === "korean") {
+      return [
+        "Read the Korean text in this cropped manga image.",
+        "Return JSON only: {\"text\":\"...\"}.",
+        "Do not translate. Preserve Korean text, spaces, and punctuation.",
+        "If the crop is unreadable or contains no Korean text, return {\"text\":\"\"}."
+      ].join("\n");
+    }
+    return [
+      "Read the Japanese or Korean text in this cropped manga image.",
+      "The text may be written vertically (tategaki): read each column top-to-bottom, columns ordered right-to-left.",
+      "Return JSON only: {\"text\":\"...\"}.",
+      "Do not translate. Preserve the original text, spaces, and punctuation.",
+      "If the crop is unreadable or contains no Japanese/Korean text, return {\"text\":\"\"}."
+    ].join("\n");
+  }
+  runtime.buildVisionCropOcrPrompt = buildVisionCropOcrPrompt;
+  function isUsableVisionCropOcrText(text, lang = "korean") {
     const raw = String(text || "").trim();
     if (!raw || raw.length > 80) {
       return false;
+    }
+    if (lang === "japan") {
+      const kana = (raw.match(/[\u3041-\u30ff]/g) || []).length;
+      const kanji = (raw.match(/[\u3400-\u9fff]/g) || []).length;
+      return kana + kanji >= 2;
+    }
+    if (lang !== "korean") {
+      const japanese = (raw.match(/[\u3041-\u30ff\u3400-\u9fff]/g) || []).length;
+      const hangulAny = (raw.match(/[\uac00-\ud7af]/g) || []).length;
+      return japanese >= 2 || hangulAny >= 2;
     }
     const hangul = (raw.match(/[\uac00-\ud7af]/g) || []).length;
     return hangul >= 2;

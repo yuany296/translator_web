@@ -38,6 +38,8 @@ export function installReaderApi(runtime) {
     applyCleanedImageToPageOverlays: (pageId, cleanedImage) =>
       runtime.applyCleanedImageToPageOverlays?.(pageId, cleanedImage),
     clearCanonicalProjection: target => runtime.clearRenderedTarget(target),
+    // 整章重渲染时跳过"输入没变且覆盖层还在"的页面（长条章节的主要开销）。
+    isPageRenderStillApplied: target => runtime.isPageRenderStillApplied?.(target) === true,
     computeTargetKey: runtime.computeTargetKey,
     getQuickSourceToken: runtime.getQuickSourceToken,
     buildTargetSourceCacheKey: runtime.buildTargetSourceCacheKey,

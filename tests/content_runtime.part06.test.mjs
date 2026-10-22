@@ -436,6 +436,12 @@ test("cross-page renderer has one layout call site and no legacy page-local seam
   assert.equal((layoutSource.match(/fitBubbleFontSize\(/g) || []).length, 1);
   assert.doesNotMatch(contentSource.slice(syncStart, syncEnd), /fitBubbleFontSize\(/);
   assert.doesNotMatch(contentSource, /mt-seam-window|mt-seam-composite|syncSeamOverlayTransforms/);
+  // 跨页竖排只在 frame 仍是文字轴（宽 > 高）时换轴；已经是屏幕轴的不能再换一次。
+  assert.match(layoutSource, /verticalWriting = node\.classList\.contains\("mt-jp-vertical"\)/u);
+  assert.match(layoutSource, /swapAxes = verticalWriting && frame\.width > frame\.height/u);
+  assert.match(layoutSource, /width = swapAxes \? frame\.height : frame\.width/u);
+  assert.match(layoutSource, /multiPageVertical/u);
+  assert.match(layoutSource, /verticalRenderRotationDeg\(Number\(node\.dataset\.rotationDeg/u);
 });
 test("seam surface validation is atomic across targets and image revisions", () => {
   const targets = {

@@ -6,6 +6,11 @@
 // （亮度对比度对中灰蓝背景上的渐变红字失效），并放宽 choose_readable 的
 // 彩色保留线（删除 ct ≥ 2.2 下限）。
 const APPEARANCE_SAMPLE_VERSION = 4;
+// Observation schema version：OCR 缓存的不是原始识别载荷，而是最终的 observation
+// result。给 observation 增加 writingMode/orientationApplied 后，旧缓存里没有这些
+// 字段，必须让它们整体失效；否则会继续拿回「几何是竖排、渲染却是横排」的旧结果。
+// 该版本只属于扩展侧，和本地服务的 OCR_GEOMETRY_VERSION 无关，不需要重启服务。
+const OBSERVATION_SCHEMA_VERSION = 1;
 
 export function installOcrDispatch(runtime) {
   function canonicalizeCleanedMaskPolygon(points) {
@@ -107,6 +112,7 @@ export function installOcrDispatch(runtime) {
       imageRevisionByPage: request && request.imageRevisionByPage || {},
       geometryVersion: runtime.LOCAL_OCR_GEOMETRY_VERSION,
       appearanceSampleVersion: APPEARANCE_SAMPLE_VERSION,
+      observationSchemaVersion: OBSERVATION_SCHEMA_VERSION,
       coordinateModelVersion: runtime.OCR_COORDINATE_MODEL_VERSION,
       imageMeta: {
         width: Number(request && request.imageMeta && request.imageMeta.width) || 0,
@@ -119,6 +125,7 @@ export function installOcrDispatch(runtime) {
         localOcrBaseUrl: settings && settings.localOcrBaseUrl || "",
         localOcrLang: settings && settings.localOcrLang || "",
         localOcrMode: settings && settings.localOcrMode || "",
+        localOcrRecEngine: settings && settings.localOcrRecEngine || "",
         localOcrDetThresh: settings && settings.localOcrDetThresh || "",
         localOcrDetBoxThresh: settings && settings.localOcrDetBoxThresh || "",
         localOcrDetUnclipRatio: settings && settings.localOcrDetUnclipRatio || "",
@@ -251,9 +258,11 @@ export function installOcrDispatch(runtime) {
     const items = await runtime.buildLocalPaddleBubbleItems(ocrPayload, coordinateImageSize, request.imageMeta && request.imageMeta.coordinateSpace === "source-image-v1" ? "" : request.dataUrl, settings.localOcrDebug === true, {
       apiKey: settings.visionOcrEnabled ? settings.visionOcrApiKey : "",
       baseUrl: settings.visionOcrEnabled ? settings.visionOcrBaseUrl || runtime.DEFAULT_QWEN_BASE_URL : "",
-      model: settings.visionOcrEnabled ? settings.visionOcrModel || runtime.DEFAULT_VISION_OCR_MODEL : ""
+      model: settings.visionOcrEnabled ? settings.visionOcrModel || runtime.DEFAULT_VISION_OCR_MODEL : "",
+      lang: settings.localOcrLang || runtime.DEFAULT_LOCAL_OCR_LANG
     }, ocrTuning, ocrDebug, request.imageMeta, {
-      preserveLineGroups: runtime.shouldPreserveLineGroups(request, ocrTuning)
+      preserveLineGroups: runtime.shouldPreserveLineGroups(request, ocrTuning),
+      recEngine: settings.localOcrRecEngine || ""
     });
     const normalized = items.map((item, index) => runtime.normalizeBaiduOcrItem(item, index, coordinateImageSize)).filter(Boolean);
     return runtime.buildProviderNeutralObservationResult({

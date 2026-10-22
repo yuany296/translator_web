@@ -475,7 +475,7 @@ test("manifest exposes only built entries from dist extension", () => {
   }
   const buildSource = fs.readFileSync(path.join(root, "scripts", "build-extension.mjs"), "utf8");
   assert.match(buildSource, /format: "esm"/);
-assert.match(buildSource, /\["content", "popup", "quick-popup", "settings", "glossary", "translations", "sidepanel"\]/);
+assert.match(buildSource, /\["content", "quick-popup", "settings", "glossary", "translations", "sidepanel"\]/);
     assert.equal(manifest.action.default_popup, "quick-popup.html");
     assert.ok(manifest.side_panel?.default_path, "side_panel.default_path missing");
     assert.ok(manifest.permissions?.includes("sidePanel"), "sidePanel permission missing");

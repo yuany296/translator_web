@@ -134,6 +134,17 @@ export function installBackgroundState(runtime) {
   runtime.TERM_EXTRACTOR_MIN_LLM_TIMEOUT_MS = TERM_EXTRACTOR_MIN_LLM_TIMEOUT_MS;
   const TERM_EXTRACTOR_MAX_TIMEOUT_MS = 1200 * 1000;
   runtime.TERM_EXTRACTOR_MAX_TIMEOUT_MS = TERM_EXTRACTOR_MAX_TIMEOUT_MS;
+  // 本地模型（NER）是 CPU 推理：没有网络抖动，但冷启动要加载权重（实测 10~45 秒），
+  // 沿用上面 8 秒那档必然判超时、结果被丢掉 —— 表现就是「本地模型好像没用」。
+  // 热起来之后一话（约 1500 字）4 秒左右，所以给 120 秒起步，再按字数放大。
+  const TERM_EXTRACTOR_LOCAL_TIMEOUT_MS = 120 * 1000;
+  runtime.TERM_EXTRACTOR_LOCAL_TIMEOUT_MS = TERM_EXTRACTOR_LOCAL_TIMEOUT_MS;
+  // 实测服务进程里 NER 约 370 字/秒，这里取不到三分之一的保守值，超时只在真卡死时触发。
+  const TERM_EXTRACTOR_LOCAL_CHARS_PER_SECOND = 120;
+  runtime.TERM_EXTRACTOR_LOCAL_CHARS_PER_SECOND = TERM_EXTRACTOR_LOCAL_CHARS_PER_SECOND;
+  // 预热是「加载权重 + 一句最小推理」，冷启动实测 10~45 秒，给足余量但不无限等。
+  const TERM_EXTRACTOR_WARM_TIMEOUT_MS = 180 * 1000;
+  runtime.TERM_EXTRACTOR_WARM_TIMEOUT_MS = TERM_EXTRACTOR_WARM_TIMEOUT_MS;
   // 超时只罚一分钟：它是「这次太慢」，不是「提取器坏了」，别把后面几章一起罚 5 分钟。
   const TERM_EXTRACTOR_TIMEOUT_COOLDOWN_MS = 60 * 1000;
   runtime.TERM_EXTRACTOR_TIMEOUT_COOLDOWN_MS = TERM_EXTRACTOR_TIMEOUT_COOLDOWN_MS;

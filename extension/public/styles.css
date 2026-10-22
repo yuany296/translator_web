@@ -266,6 +266,12 @@
   color: inherit;
   text-align: center;
   white-space: pre-line;
+  /* 换行完全交给浏览器，并让它把各行长度摊匀（text-wrap: balance）。
+     反例是「人工按字数预分行 + 浏览器再软换行」：预分行比可容纳宽度多一个字时
+     只有那一行被再拆，产出孤字（Lezhin 现场：`…那边组 / 织 / 的人…` 一行只有「织」）。
+     Chromium 的 balance 只在 ≤6 行时生效（实测 6 行均衡、7 行回退 greedy），
+     更长的译文与旧行为一致（贪心换行）。 */
+  text-wrap: balance;
   line-height: 1.18;
   letter-spacing: normal;
   margin: 0;

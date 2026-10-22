@@ -1,4 +1,5 @@
 import llmProviders from "../../shared/llm-providers.js";
+import nonTranslatable from "../../shared/non-translatable.js";
 
 export function installOcrPipeline(runtime) {
   async function handleOcrDataUrl(message) {
@@ -108,16 +109,14 @@ export function installOcrPipeline(runtime) {
       return {
         ok: false,
         error: "TRANSLATE_TEXT_BLOCKS requires a stable canonical id for every item",
-        timing: {
-          totalMs: Date.now() - startedAt
-        }
+        timing: { totalMs: Date.now() - startedAt }
       };
     }
     const items = rawItems.map(item => ({
       id: String(item && item.id || "").trim(),
       revision: runtime.normalizeCanonicalRevision(item && item.revision),
       original_text: runtime.normalizeTranslationSourceText(item && item.original_text),
-      non_translate: item && item.non_translate === true
+      non_translate: item && (item.non_translate === true || nonTranslatable.isNonTranslatableText(item.original_text))
     })).filter(item => item.original_text);
     if (items.length === 0) {
       return {

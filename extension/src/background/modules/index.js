@@ -2,6 +2,7 @@ import { installMessages } from "./messages.js";
 import { installTermDiscoveryMessages } from "./term-discovery-messages.js";
 import { installTermDiscoveryExtract } from "./term-discovery-extract.js";
 import { installTermDiscovery } from "./term-discovery.js";
+import { installTermTargetBatch } from "./term-target-batch.js";
 import { installOcrTimings } from "./ocr-timings.js";
 import { installOcrPipeline } from "./ocr-pipeline.js";
 import { installOcrDispatch } from "./ocr-dispatch.js";
@@ -53,6 +54,7 @@ export const backgroundPhases = Object.freeze({
     installTermDiscoveryMessages,
     installTermDiscoveryExtract,
     installTermDiscovery,
+    installTermTargetBatch,
     installOcrTimings,
     installOcrPipeline,
     installOcrDispatch,

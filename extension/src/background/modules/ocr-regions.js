@@ -193,6 +193,113 @@ export function installOcrRegions(runtime) {
     return Number.isFinite(left) && Number.isFinite(top) && width > 0 && height > 0 ? runtime.buildBaiduBox(left, top, left + width, top + height) : null;
   }
   runtime.normalizeLocalOcrRegionBox = normalizeLocalOcrRegionBox;
+  function areLocalPaddleRegionsCompatible(left, right) {
+    const leftContainer = left && left.container;
+    const rightContainer = right && right.container;
+    if (!leftContainer || !rightContainer) {
+      return true;
+    }
+    if (leftContainer.id === rightContainer.id) {
+      return true;
+    }
+    if (runtime.areUnifiedLocalPaddleSpeechBubbleContainers(leftContainer, rightContainer)) {
+      return true;
+    }
+    const leftType = String(leftContainer.type || "").toLowerCase();
+    const rightType = String(rightContainer.type || "").toLowerCase();
+    // 服务端按"列"发容器：同一竖排气泡的各列 id 必不同，外观类型还会在 speech_bubble/
+    // caption_panel 之间漂移（细列的采样带不同）。两者都是"实底白容器"语义，底色一致、
+    // 置信足够就不该挡住同气泡的段落合并。**只对竖排放宽**：横排的容器 id 是可靠信号
+    // （相邻字幕与气泡必须保持分离），段落合并还有线距/重叠等几何门把着。
+    const verticalText = Math.abs(runtime.normalizeRotationDegrees(runtime.medianRotation([left.rotation, right.rotation]))) >= 45;
+    const bubbleLike = leftType === "speech_bubble" || leftType === "caption_panel";
+    const bubbleLikePair = bubbleLike && (rightType === "speech_bubble" || rightType === "caption_panel");
+    if (verticalText && bubbleLikePair && Number(leftContainer.confidence || 0) >= 0.75 && Number(rightContainer.confidence || 0) >= 0.75 && runtime.getLocalPaddleRegionColorDistance(leftContainer.color, rightContainer.color) <= 24) {
+      return true;
+    }
+    if (leftContainer.type === "caption_panel" && rightContainer.type === "caption_panel") {
+      return true;
+    }
+    return runtime.areNestedLocalPaddleRegionFragments(left, right);
+  }
+  runtime.areLocalPaddleRegionsCompatible = areLocalPaddleRegionsCompatible;
+  function areNestedLocalPaddleRegionFragments(left, right) {
+    const leftContainer = left && left.container;
+    const rightContainer = right && right.container;
+    if (!leftContainer || !rightContainer || !leftContainer.box || !rightContainer.box) {
+      return false;
+    }
+    const leftType = String(leftContainer.type || "").toLowerCase();
+    const rightType = String(rightContainer.type || "").toLowerCase();
+    const isCaptionSpeechPair = leftType === "caption_panel" && rightType === "speech_bubble" || leftType === "speech_bubble" && rightType === "caption_panel";
+    if (!isCaptionSpeechPair) {
+      return false;
+    }
+    if (Number(leftContainer.confidence || 0) < 0.75 || Number(rightContainer.confidence || 0) < 0.75) {
+      return false;
+    }
+    if (runtime.rotationDistance(left.rotation, right.rotation) > 4) {
+      return false;
+    }
+    const leftBox = left.box;
+    const rightBox = right.box;
+    const avgHeight = Math.max(1, (leftBox.height + rightBox.height) / 2);
+    const heightRatio = Math.min(leftBox.height, rightBox.height) / Math.max(leftBox.height, rightBox.height);
+    const verticalOverlap = Math.max(0, Math.min(leftBox.bottom, rightBox.bottom) - Math.max(leftBox.top, rightBox.top));
+    if (heightRatio < 0.78 || verticalOverlap < Math.min(leftBox.height, rightBox.height) * 0.7 || Math.abs(leftBox.bottom - rightBox.bottom) > avgHeight * 0.25 || runtime.getHorizontalGap(leftBox, rightBox) > avgHeight * 0.35) {
+      return false;
+    }
+    const leftRegion = leftContainer.box;
+    const rightRegion = rightContainer.box;
+    const overlapWidth = Math.max(0, Math.min(leftRegion.right, rightRegion.right) - Math.max(leftRegion.left, rightRegion.left));
+    const overlapHeight = Math.max(0, Math.min(leftRegion.bottom, rightRegion.bottom) - Math.max(leftRegion.top, rightRegion.top));
+    const overlapArea = overlapWidth * overlapHeight;
+    const leftArea = Math.max(1, leftRegion.width * leftRegion.height);
+    const rightArea = Math.max(1, rightRegion.width * rightRegion.height);
+    const smallerArea = Math.min(leftArea, rightArea);
+    const largerArea = Math.max(leftArea, rightArea);
+    if (overlapArea / smallerArea < 0.85 || smallerArea / largerArea > 0.55) {
+      return false;
+    }
+    return runtime.getLocalPaddleRegionColorDistance(leftContainer.color, rightContainer.color) <= 24;
+  }
+  runtime.areNestedLocalPaddleRegionFragments = areNestedLocalPaddleRegionFragments;
+  function getLocalPaddleRegionColorDistance(left, right) {
+    const parse = value => {
+      const match = String(value || "").trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+      if (!match) {
+        return null;
+      }
+      const hex = match[1].length === 3 ? Array.from(match[1], char => char + char).join("") : match[1];
+      return [0, 2, 4].map(offset => Number.parseInt(hex.slice(offset, offset + 2), 16));
+    };
+    const leftRgb = parse(left);
+    const rightRgb = parse(right);
+    if (!leftRgb || !rightRgb) {
+      return Infinity;
+    }
+    return Math.hypot(leftRgb[0] - rightRgb[0], leftRgb[1] - rightRgb[1], leftRgb[2] - rightRgb[2]);
+  }
+  runtime.getLocalPaddleRegionColorDistance = getLocalPaddleRegionColorDistance;
+  function areLocalPaddleLineRegionsCompatible(left, right) {
+    return left.entries.some(leftEntry => right.entries.some(rightEntry => runtime.areLocalPaddleRegionsCompatible(leftEntry, rightEntry)));
+  }
+  runtime.areLocalPaddleLineRegionsCompatible = areLocalPaddleLineRegionsCompatible;
+  function areLocalPaddleScriptsCompatible(leftText, rightText) {
+    const leftHangul = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/.test(leftText);
+    const rightHangul = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/.test(rightText);
+    const leftHan = /[\u3400-\u9fff]/.test(leftText);
+    const rightHan = /[\u3400-\u9fff]/.test(rightText);
+    return !(leftHangul && rightHan && !rightHangul || rightHangul && leftHan && !leftHangul);
+  }
+
+  /**
+   * Auto-detect chat/forum region type from a group of OCR entries.
+   * Returns "chat" if the entries exhibit chat-like patterns (timestamps,
+   * small-above-large stacking, left alignment, regular arrangement), or null.
+   */
+  runtime.areLocalPaddleScriptsCompatible = areLocalPaddleScriptsCompatible;
+
   function sampleLocalOcrTextColor(sample, box) {
     if (!sample || !sample.data || !box) {
       return {

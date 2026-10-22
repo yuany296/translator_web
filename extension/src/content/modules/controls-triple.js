@@ -159,12 +159,8 @@ export function installControlsTriple(runtime) {
       icon.dataset.mtPlaceholder = "true";
       icon.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="rgba(255,255,255,0.92)"/><text x="16" y="22" text-anchor="middle" font-size="16" fill="#64748b">?</text></svg>')}`;
     });
-    const ring = document.createElement("span");
-    ring.className = "mt-floating-ring";
-    ring.hidden = true;
-    const badge = document.createElement("span");
-    badge.className = "mt-floating-badge";
-    badge.hidden = true;
+    const ring = Object.assign(document.createElement("span"), { className: "mt-floating-ring", hidden: true });
+    const badge = Object.assign(document.createElement("span"), { className: "mt-floating-badge", hidden: true });
     ball.append(icon, ring, badge);
     ball.addEventListener("click", event => void onClick(event));
     return ball;
@@ -285,6 +281,9 @@ export function installControlsTriple(runtime) {
         });
       case "translate-missing":
         return void runtime.translateNovelChapter({ missingOnly: true }).then(() => runtime.updateNovelProgressPanel?.());
+      case "extract-chapter-terms":
+        // 手动补跑一次术语提取：结果与跳过原因都由 extractNovelChapterTerms 自己浮层交代。
+        return void runtime.extractNovelChapterTerms?.();
       case "show-translation":
         novel.showTranslation = true;
         runtime.setNovelTranslationVisibility(true);

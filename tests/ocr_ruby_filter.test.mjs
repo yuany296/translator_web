@@ -71,6 +71,41 @@ test("竖排ルビ：贴在含汉字粗列右侧的薄假名列整条丢掉，�
   assert.equal(debug.filterReasons[0].rubyHostText, "明日地元");
 });
 
+test("manga-ocr 引擎的ルビ阈值放宽到 0.9：paddle 时代靠低分挡住的 ruby 列也能过滤", () => {
+  const words = [
+    ...normalColumns(),
+    // 粗细比 26/31 ≈ 0.84：paddle 阈值 0.8 放行，manga-ocr 阈值 0.9 丢弃——
+    // manga-ocr 对 ruby 列也是高置信（paddle 时代靠低分过滤挡住），会活到过滤面前。
+    word("ゆうかい", 640, 549, 26, 110, 0.96),
+    word("誘拐だが", 600, 545, 40, 130, 0.98)
+  ];
+  const keptPaddle = rt.filterRubyAnnotationWords(words, IMAGE, { filterReasons: [] }, "local_paddle");
+  assert.ok(keptPaddle.some(item => item.words === "ゆうかい"), "paddle 阈值 0.8：0.84 比值的列保留");
+  const keptManga = rt.filterRubyAnnotationWords(words, IMAGE, { filterReasons: [] }, "manga_ocr");
+  assert.ok(!keptManga.some(item => item.words === "ゆうかい"), "manga-ocr 阈值 0.9：同列被当ルビ丢掉");
+  assert.ok(keptManga.some(item => item.words === "誘拐だが"), "含汉字宿主保留");
+});
+
+test("ルビ与宿主之间隔着第三列时拒绝配对（そういえば 被大字宿主吸走的真案例）", () => {
+  // 実座標：1080×1536 页，そういえば(25px) 与 言っていたな...(46px 大字) 之间隔着
+  // ruby 列 いぜん(13px)。间距 629-592=37 ≤ 25×1.6=40，旧逻辑把正文开头列当ルビ丢掉。
+  const words = [
+    ...normalColumns(),
+    word("言っていたな...", 546, 1190, 46, 177, 0.97),
+    word("いぜん", 617, 1211, 13, 43, 0.95),
+    word("そういえば", 628, 1180, 25, 152, 1.0)
+  ];
+  const debugWith = { filterReasons: [] };
+  const keptWith = rt.filterRubyAnnotationWords(words, IMAGE, debugWith, "manga_ocr");
+  assert.ok(keptWith.some(item => item.words === "そういえば"), "中间隔着第三列：正文开头列不能当ルビ丢掉");
+  // 对照：去掉中间列（いぜん），同样的宿主几何就恢复ルビ判定。
+  const without = words.filter(item => item.words !== "いぜん");
+  const debugWithout = { filterReasons: [] };
+  const keptWithout = rt.filterRubyAnnotationWords(without, IMAGE, debugWithout, "manga_ocr");
+  assert.ok(!keptWithout.some(item => item.words === "そういえば"), "无中间列时紧贴配对仍然成立");
+  assert.equal(debugWithout.filterReasons[0].rubyHostText, "言っていたな...");
+});
+
 test("竖排ルビ：只注一个词的短ルビ（さかば←その時はこの酒場に）也认得出", () => {
   const debug = { filterReasons: [] };
   const words = [...normalColumns(), word("さかば", 413, 290, 11, 43, 0.578), word("その時はこの酒場に", 386, 142, 29, 218, 0.883)];

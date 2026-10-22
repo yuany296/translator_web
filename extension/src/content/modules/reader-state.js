@@ -209,6 +209,8 @@ export function installReaderState(runtime) {
     aggressiveSweepTimer: 0,
     overlayHideDepth: 0,
     overlayPreviousVisibility: "",
+    /** 截图并发嵌套层数：只有最外层那次留快照并还原扩展节点的 visibility（见 capture-payload）。 */
+    captureHideDepth: 0,
     payloadCacheByTargetKey: new Map(),
     localResultCache: new Map(),
     /** pageId 只映射当前可用 DOM 句柄；canonical/translation 事实保存在 Kakao Store。 */

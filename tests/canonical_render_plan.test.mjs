@@ -122,6 +122,48 @@ test("one seam sentence keeps tight text and cover boxes on both page slices", (
   assert.equal(bubble.translated_text, "真的");
 });
 
+test("vertical columns crossing a seam use their polygon bounds outside the capture band", () => {
+  const segments = [
+    { pageId: "a", sourceCrop: { x: 0, y: 904, w: 760, h: 96 }, naturalWidth: 760, naturalHeight: 1000 },
+    { pageId: "b", sourceCrop: { x: 0, y: 0, w: 760, h: 96 }, naturalWidth: 760, naturalHeight: 1000 }
+  ];
+  const upper = {
+    id: "upper", sourceType: "page", originalText: "하셨다악한자가저",
+    visual: {
+      rotationDeg: -86,
+      polygon: [{ x: 15, y: 99.6 }, { x: 21.05, y: 33.8 }, { x: 32.21, y: 34.39 }, { x: 26.16, y: 100 }]
+    },
+    pageSpans: [{ pageId: "a", box: { x: 0, y: 62.39, w: 90.53, h: 9.21 } }]
+  };
+  const lower = {
+    id: "lower", sourceType: "page", originalText: "시해일에빨려들어",
+    visual: {
+      rotationDeg: -85.7,
+      polygon: [{ x: 8.68, y: 63.5 }, { x: 15.01, y: 0 }, { x: 26.33, y: 0.5 }, { x: 20, y: 64.15 }]
+    },
+    pageSpans: [{ pageId: "b", box: { x: 0, y: 27.33, w: 87.61, h: 9.34 } }]
+  };
+  const seam = {
+    id: "seam", sourceType: "seam", originalText: "가저해",
+    visual: { box: { x: 8.68, y: 4, w: 17.65, h: 40 }, bgType: "none" },
+    pageSpans: [
+      { pageId: "a", box: { x: 15, y: 94, w: 17, h: 6 }, overlapRatio: 0.4 },
+      { pageId: "b", box: { x: 8.68, y: 0, w: 17.6, h: 6 }, overlapRatio: 0.6 }
+    ]
+  };
+  const observations = new Map([["upper", upper], ["lower", lower], ["seam", seam]]);
+  const canonical = { id: "merged", revision: 1, originalText: `${upper.originalText} ${lower.originalText}`, memberObservationIds: ["upper", "lower", "seam"] };
+  const inspection = P.inspectCanonicalSeamGeometry(canonical, observations, segments);
+  assert.equal(inspection.represented, true);
+  const pageBoxes = P.canonicalSeamPageBoxes(canonical, observations, segments);
+  assert.equal(Math.round(pageBoxes.text[0].h * 10) / 10, 66.2);
+  assert.equal(Math.round(pageBoxes.text[1].h * 10) / 10, 64.2);
+  assert.equal(pageBoxes.text[0].w < pageBoxes.text[0].h, true);
+  const bubble = P.buildSeamSurfaceBubble(canonical, { translated_text: "被卷入了那场弑害事件的恶人" }, [seam], 760, 192, observations, segments);
+  assert.equal(bubble.page_text_boxes.length, 2);
+  assert.equal(Math.round(bubble.page_text_boxes[0].h * 10) / 10, 66.2);
+});
+
 test("a filtered seam witness rebuilds the surface box from trusted page rows", () => {
   const segments = [
     {

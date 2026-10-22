@@ -64,6 +64,7 @@ import { installControlsUtils } from "./controls-utils.js";
 import { installTargetFilter } from "./target-filter.js";
 import { installTargetIdentity } from "./target-identity.js";
 import { installCompositePage } from "./composite-page.js";
+import { installOcrServiceFault } from "./ocr-service-fault.js";
 import { installTargetResolve } from "./target-resolve.js";
 import { installTargetCache } from "./target-cache.js";
 import { installPlatformRuntime } from "./platform-runtime.js";
@@ -79,6 +80,9 @@ export const contentPhases = Object.freeze({
     // 「一整页 = 一个容器 + 若干瓦片图」的判定/采集：isSupportedTarget、computeTargetKey
     // 与 getQuickSourceToken 都要读它，装在这里保证只定义一处。
     installCompositePage,
+    // 永久性服务故障的状态机必须在任何自动翻译路径之前装好：
+    // 队列/重试/恢复扫描都读它来决定"这个错误值不值得再试一次"。
+    installOcrServiceFault,
     installReaderInit,
     installReaderObservers,
     installScheduler,

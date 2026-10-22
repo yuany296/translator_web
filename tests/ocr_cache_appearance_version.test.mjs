@@ -39,6 +39,7 @@ test("appearanceSampleVersion 参与 OCR 缓存键：版本 bump 必须让键变
   assert.equal(first, second, "同参数键必须稳定");
   assert.ok(first.startsWith("mt_cache_v28:ocr:digest-a:"));
   assert.equal(serialized[0].appearanceSampleVersion, 4, "外观采样算法版本必须进键");
+  assert.equal(serialized[0].observationSchemaVersion, 1, "observation 结构版本必须进键");
   assert.equal(serialized[0].geometryVersion, "geo-test-v5", "与几何版本同层参与键");
 
   // 版本 bump（唯一变量）→ 序列化源变化 → 键变化：旧缓存失效的旋钮真的接上了。
@@ -51,4 +52,6 @@ test("appearanceSampleVersion 参与 OCR 缓存键：版本 bump 必须让键变
     path.join(projectRoot, "extension", "src", "background", "modules", "ocr-dispatch.js"), "utf8");
   assert.match(source, /appearanceSampleVersion: APPEARANCE_SAMPLE_VERSION/u);
   assert.match(source, /const APPEARANCE_SAMPLE_VERSION = 4;/u);
+  assert.match(source, /observationSchemaVersion: OBSERVATION_SCHEMA_VERSION/u);
+  assert.match(source, /const OBSERVATION_SCHEMA_VERSION = 1;/u);
 });

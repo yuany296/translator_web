@@ -64,7 +64,8 @@ function separatedConfiguration({
   localOcrBaseUrl = "http://127.0.0.1:8765",
   translationApiKey = "",
   translationBaseUrl = "https://api.deepseek.com",
-  translationModel = "deepseek-chat"
+  translationModel = "deepseek-chat",
+  translationSourceLanguage = ""
 } = {}) {
   return {
     mt_ocr_config_v1: {
@@ -81,7 +82,9 @@ function separatedConfiguration({
       provider: "openai_compatible",
       apiKey: translationApiKey,
       baseUrl: translationBaseUrl,
-      model: translationModel
+      model: translationModel,
+      // 原文语言已无「自动识别」：内容语言显式给定（旧 fixture 缺省曾依赖 auto 的文本判定）。
+      ...(translationSourceLanguage ? { sourceLanguage: translationSourceLanguage } : {})
     }
   };
 }
@@ -186,7 +189,7 @@ test("confirming an edited source stores the correction and removes the original
 });
 test("novel chunk retries only rejected paragraphs and enforces the book glossary", async () => {
   const stored = installMemoryStorage({
-    ...separatedConfiguration({ translationApiKey: "test-key" }),
+    ...separatedConfiguration({ translationApiKey: "test-key", translationSourceLanguage: "ko" }),
     mt_glossary_v2: {
       entries: [
         { source: "성현", target: "成贤", scope: "global" },

@@ -243,6 +243,12 @@ function buildNovelMenuItems(state = {}) {
   const list = [
     { id: "translate-chapter", label: "翻译当前章节", disabled: loading || translated },
     { id: "translate-missing", label: "只翻译缺失段落", disabled: loading || (translated && !error) },
+    {
+      id: "extract-chapter-terms",
+      label: "提取本章术语",
+      disabled: state.hasTranslation !== true,
+      disabledReason: state.hasTranslation ? "" : "当前没有已翻译的段落"
+    },
     { id: "show-translation", label: "显示译文", disabled: !(state.hasTranslation === true && !translated), disabledReason: state.hasTranslation ? "" : "当前没有已翻译的段落" },
     { id: "restore-original", label: "恢复原文", disabled: !translated, disabledReason: translated ? "" : "当前已显示原文" },
     { id: "force-retranslate", label: "强制重新翻译当前章节", disabled: loading },

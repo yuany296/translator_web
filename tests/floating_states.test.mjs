@@ -243,9 +243,12 @@ test("every derived state is valid and every presentation has aria-label and too
 test("novel menu exposes chapter actions and marks future features as disabled", () => {
   const idle = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true }));
   assert.deepEqual(idle.map(item => item.id), [
-    "translate-chapter", "translate-missing", "show-translation",
+    "translate-chapter", "translate-missing", "extract-chapter-terms", "show-translation",
     "restore-original", "force-retranslate", "retranslate-text", "retranslate-images", "manage-chapter"
   ]);
+  // 手动「提取本章术语」：没有已译段落就没东西可提取。
+  assert.equal(idle.find(item => item.id === "extract-chapter-terms").disabled, true);
+  assert.match(idle.find(item => item.id === "extract-chapter-terms").disabledReason, /没有已翻译的段落/u);
   const manage = idle.find(item => item.id === "manage-chapter");
   assert.equal(manage.disabled, true);
   assert.match(manage.disabledReason, /没有可管理的译文/u);
@@ -255,6 +258,7 @@ test("novel menu exposes chapter actions and marks future features as disabled",
   const shown = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, textStatus: "complete", showTranslation: true }));
   assert.equal(shown.find(item => item.id === "restore-original").disabled, false);
   assert.equal(shown.find(item => item.id === "translate-chapter").disabled, true);
+  assert.equal(shown.find(item => item.id === "extract-chapter-terms").disabled, false, "有译文就能手动提取");
   const busy = states.buildNovelMenuItems(states.buildNovelState({ enabled: true, novelReader: true, surfaceFound: true, imageStatus: "working" }));
   assert.equal(busy.find(item => item.id === "retranslate-images").disabled, true);
   assert.match(busy.find(item => item.id === "retranslate-images").disabledReason, /图片正在处理中/u);

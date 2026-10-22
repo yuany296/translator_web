@@ -21,7 +21,12 @@ export function installOcrClustering(runtime) {
     const clusters = paragraphGroups.map(group => group.flatMap(line => line.entries));
     // Detect region types for each cluster (chat/forum vs comic bubble)
     const clusterRegionTypes = runtime.inferLocalPaddleClusterRegionTypes(clusters);
-    const merged = clusters.flatMap((cluster, index) => {
+    // 块级注音剥除：≥3 列的竖排块里混进的 ≤8 字全假名列（几何上漏过ルビ过滤的读音：
+    // れい/まん いち/せいこう/だいがく…）按注音剥掉。要求块内有 ≥2 条含汉字列才动手
+    //（假名heavy的漫画整块都是假名时无法区分，保守不动）；横排/聊天区豁免。
+    const strippedClusters = clusters.map((cluster, index) =>
+      runtime.stripFuriganaLikeClusterEntries(cluster, clusterRegionTypes[index]));
+    const merged = strippedClusters.flatMap((cluster, index) => {
       const regionType = clusterRegionTypes[index];
       const sharedRotation = runtime.getReliableSharedClusterRotation(cluster, regionType, clusters, clusterRegionTypes);
       return runtime.splitLocalPaddleVisualStyleClusters(cluster, regionType).map(styleCluster => {

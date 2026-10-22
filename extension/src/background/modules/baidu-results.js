@@ -64,6 +64,9 @@ export function installBaiduResults(runtime) {
     const h = (height + expandY * 2) / imageSize.height * 100;
     const polygon = runtime.normalizePercentPolygon(item && item.polygon, imageSize);
     const rotation = runtime.normalizeRotationDegrees(item && item.rotation_deg);
+    const orientationApplied = Number(item && (item.orientation_applied ?? item.orientationApplied)) || 0;
+    const writingMode = String(item && (item.writing_mode || item.writingMode) || "").toLowerCase()
+      || (Math.abs(orientationApplied) === 90 ? "vertical" : "");
     const sourceLineCount = Math.max(1, Math.round(Number(item && item.sourceLineCount) || String(text).split(/\n/).length));
     const fontHeight = Math.max(1, Number(item && (item.fontHeight ?? item.font_height)) || sourceHeight / sourceLineCount);
     return {
@@ -89,6 +92,8 @@ export function installBaiduResults(runtime) {
       alignment: runtime.normalizeOcrTextAlignment(item && item.alignment),
       polygon,
       rotation_deg: rotation,
+      writing_mode: writingMode,
+      orientation_applied: orientationApplied,
       source_line_count: sourceLineCount,
       font_height: fontHeight,
       font_height_percent: fontHeight / Math.max(1, imageSize.height) * 100,

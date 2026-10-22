@@ -58,6 +58,12 @@ export function installMessages(runtime) {
         return runtime.handleDiscoverTerms(message);
       case "GET_TERM_DISCOVERY_STATUS":
         return runtime.handleGetTermDiscoveryStatus(message);
+      case "WARM_TERM_EXTRACTOR":
+        return runtime.handleWarmTermExtractor();
+      case "EXTRACT_TERM_TARGETS":
+        return runtime.handleExtractTermTargets(message);
+      case "SAVE_PENDING_TARGET_DRAFTS":
+        return runtime.handleSavePendingTargetDrafts(message);
       case "GET_TERM_DISCOVERY_STATE":
         return runtime.handleGetTermDiscoveryState(message);
       case "SET_TERM_DISCOVERY_ENABLED":

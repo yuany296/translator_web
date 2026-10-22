@@ -1,5 +1,10 @@
 export function installControlsAutotranslate(runtime) {
   function queuePageAutoTranslate(target) {
+    // 永久性服务故障冷却期内不再自动入队：否则「入队→失败→清 loading→再入队」
+    // 会以 0.5~1.5 秒一轮无限闪烁（契约不匹配、服务未启动都是永久错误）。
+    if (runtime.isOcrServiceFaultActive?.()) {
+      return;
+    }
     if (!runtime.state.autoTranslatePageEnabled || !runtime.state.enabled || runtime.state.invalidated) {
       return;
     }
@@ -61,6 +66,21 @@ export function installControlsAutotranslate(runtime) {
     });
   }
   runtime.queuePageAutoTranslate = queuePageAutoTranslate;
+  /**
+   * “无文字”是正常终态，但整页 OCR 偶发在图片尚未解码/被限流时返回空结果，
+   * 这个空结果会被写成终态，页面就永远不再处理。这里只对**同一个 scoped source**
+   * 重试一次：真正的无文字页会命中 OCR 缓存（几乎零成本），而空白截图导致的
+   * 假空结果会重新走一次完整图片 OCR。mtNoTextRetryKey 防止无限重试。
+   */
+  function retrySettledNoTextOnce(target, scopedTargetKey) {
+    const retryKey = String(scopedTargetKey || "");
+    if (!retryKey || target.dataset.mtNoTextRetryKey === retryKey) return false;
+    target.dataset.mtNoTextRetryKey = retryKey;
+    delete target.dataset.mtNoTextKey;
+    queuePageAutoTranslate(target);
+    return true;
+  }
+  runtime.retrySettledNoTextOnce = retrySettledNoTextOnce;
   function maybeQueueKakaoShortPageAttachmentOwner(target, options = {}) {
     // 这里的判定比共享的 shouldUseKakaoCanonicalPipeline（content/configure.js，只看目标类型）
     // 更严：还要"分片长条站 + 直接采集 + 覆盖层渲染 + 已加载完的 <img>"。
@@ -169,6 +189,9 @@ export function installControlsAutotranslate(runtime) {
   }
   runtime.hasAttachedShortPageBubble = hasAttachedShortPageBubble;
   function scheduleAutoTranslateRetry(target) {
+    if (runtime.isOcrServiceFaultActive?.()) {
+      return null;
+    }
     return runtime.kakaoRetryScheduler.schedule(target);
   }
   runtime.scheduleAutoTranslateRetry = scheduleAutoTranslateRetry;

@@ -32,6 +32,13 @@ export function installOcrStyles(runtime) {
       return [cluster];
     }
     const hasTimestamp = entries.some(entry => runtime.CHAT_TIME_RE.test(String(entry.text || "")));
+    // 「上小下大」的堆叠样式是横排聊天 UI 的特征；竖排列在投影后任意相邻两列都满足
+    // 这个形状（一列总在另一列"旁边"、字号差常见），这个判据恒真会把同一个竖排气泡
+    // 按字号拆散。竖排文本只在出现时间戳（聊天痕迹）时才允许样式拆分。
+    const verticalText = Math.abs(runtime.normalizeRotationDegrees(rotation)) >= 45;
+    if (verticalText && !hasTimestamp) {
+      return [cluster];
+    }
     const hasStackedStylePair = entries.some(left => entries.some(right => {
       if (left === right) return false;
       const geometry = runtime.getLocalPaddlePairGeometry(left, right);

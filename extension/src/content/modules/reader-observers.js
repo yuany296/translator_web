@@ -9,7 +9,7 @@ export function installReaderObservers(runtime) {
     if (!runtime.isSitePreferredTarget(target)) {
       return;
     }
-    if (target instanceof HTMLImageElement && !target.complete && !runtime.state.kakaoLoadListenerTargets.has(target)) {
+    if (target instanceof HTMLImageElement && (!target.complete || !target.naturalWidth && !target.naturalHeight) && !runtime.state.kakaoLoadListenerTargets.has(target)) {
       runtime.state.kakaoLoadListenerTargets.add(target);
       target.addEventListener("load", () => {
         runtime.state.kakaoLoadListenerTargets.delete(target);

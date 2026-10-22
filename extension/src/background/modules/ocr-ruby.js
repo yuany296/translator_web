@@ -29,8 +29,14 @@ const RUBY_KANA_ONLY = /^[\u3041-\u309f\u30a0-\u30ff\u30fc\u30fb\u309d\u309e\u30
 const RUBY_HOST_KANJI = /[\u3400-\u9fff]/u;
 /** ルビ相对整页正文字号的粗细上限（粗过它就按真台词放行）。 */
 const RUBY_MAX_GLYPH_RATIO = 0.8;
+/** manga-ocr 引擎的阈值放宽到 0.9：它对 ruby 列也是高置信（paddle 时代靠低分过滤挡住的
+ * ruby 现在活到过滤面前），而其列框略厚（0.84~0.89 档），0.8 会漏。 */
+const RUBY_MAX_GLYPH_RATIO_MANGA_OCR = 0.9;
 /** 宿主相对ルビ的粗细下限：宿主必须明显更粗（防「两条等粗的真台词」互配）。 */
 const RUBY_MAX_HOST_RATIO = 0.7;
+/** manga-ocr 引擎放宽到 0.8：manga-ocr 的正文列普遍偏细（24~31px），ruby 列 20px 对
+ * 27px 宿主（1.35×）在 0.7 判据下漏掉——实测 からだ/かのじょ 两列。 */
+const RUBY_MAX_HOST_RATIO_MANGA_OCR = 0.8;
 /** 沿文字轴与宿主的重合比例下限。 */
 const RUBY_MIN_SPAN = 0.6;
 /** ルビ一列不会太长；超过这么多字符就不当注音（避免拿长句去配宿主）。 */
@@ -77,7 +83,7 @@ export function installOcrRuby(runtime) {
    * `vertical` 决定轴：竖排时宿主在候选**右**边、比 top/bottom 范围；横排时宿主在
    * 候选**下**边（横書き的ルビ在汉字上方）、比 left/right 范围。
    */
-  function findRubyHost(candidate, entries, vertical) {
+  function findRubyHost(candidate, entries, vertical, engine) {
     const box = candidate.box;
     const gapLimit = Math.max(candidate.thickness * RUBY_AXIS_TOLERANCE, RUBY_MIN_GAP_PX);
     const overlapTolerance = candidate.thickness * RUBY_OVERLAP_TOLERANCE;
@@ -89,7 +95,8 @@ export function installOcrRuby(runtime) {
       if (!RUBY_HOST_KANJI.test(entry.text)) {
         return;
       }
-      if (entry.thickness <= candidate.thickness / RUBY_MAX_HOST_RATIO) {
+      const hostMinRatio = engine === "manga_ocr" ? RUBY_MAX_HOST_RATIO_MANGA_OCR : RUBY_MAX_HOST_RATIO;
+      if (entry.thickness <= candidate.thickness / hostMinRatio) {
         return;
       }
       const host = entry.box;
@@ -105,6 +112,31 @@ export function installOcrRuby(runtime) {
       if (span < RUBY_MIN_SPAN) {
         return;
       }
+      // ルビ必须与宿主**紧贴**：两者之间若还夹着其它同向文本列，这条「ルビ」其实是
+      // 从右往左句子的开头列，被大字号邻列吸走了（真案例：そういえば [いぜん]
+      // 言っていたな…——「そういえば」是正文开头，隔着 ruby 列配上了 46px 的大字宿主）。
+      // 中间列判定：盒中心落在候选与宿主之间的带内，且自身跨度的一半以上落在候选的
+      // 文字轴范围内（短ルビ列整列都在宿主旁边也算）。
+      const between = entries.some(entry2 => {
+        if (entry2 === candidate || entry2 === entry) {
+          return false;
+        }
+        const b2 = entry2.box;
+        const low = vertical ? Math.min(host.right, box.left) : Math.min(box.bottom, host.top);
+        const high = vertical ? Math.max(host.right, box.left) : Math.max(box.bottom, host.top);
+        const center = vertical ? b2.left + b2.width / 2 : b2.top + b2.height / 2;
+        if (center < low || center > high) {
+          return false;
+        }
+        const overlapSpan = vertical
+          ? Math.max(0, Math.min(box.bottom, b2.bottom) - Math.max(box.top, b2.top))
+          : Math.max(0, Math.min(box.right, b2.right) - Math.max(box.left, b2.left));
+        const entrySpan = vertical ? b2.bottom - b2.top : b2.right - b2.left;
+        return entrySpan > 0 && overlapSpan >= entrySpan * 0.5;
+      });
+      if (between) {
+        return;
+      }
       if (!best || entry.thickness < best.entry.thickness) {
         best = { entry, span, gap };
       }
@@ -112,6 +144,29 @@ export function installOcrRuby(runtime) {
     return best;
   }
   runtime.findRubyHost = findRubyHost;
+  function stripFuriganaLikeClusterEntries(cluster, regionType) {
+    if (!Array.isArray(cluster) || cluster.length < 3 || runtime.isChatRegionType(regionType)) {
+      return cluster;
+    }
+    const rotation = runtime.medianRotation(cluster.map(entry => entry.rotation));
+    if (Math.abs(runtime.normalizeRotationDegrees(rotation)) < 45) {
+      return cluster;  // 竖排限定：横排的短假名行语义多变，不动
+    }
+    const hasKanji = entry => /[\u3400-\u9fff]/.test(String(entry.item?.words || entry.text || ""));
+    if (cluster.filter(hasKanji).length < 2) {
+      return cluster;  // 含汉字列不足两条：假名heavy的块无法区分注音与正文，保守不动
+    }
+    return cluster.filter(entry => {
+      const text = String(entry.item?.words || entry.text || "").replace(/\s+/g, "");
+      if (hasKanji(entry) || !runtime.isKanaOnlyOcrText(text)) {
+        return true;
+      }
+      // ≤8 字的全假名列混在多列汉字正文里 = 漏过ルビ过滤的注音读音，剥掉。
+      return [...text].length > 8;
+    });
+  }
+  runtime.stripFuriganaLikeClusterEntries = stripFuriganaLikeClusterEntries;
+
   /**
    * 丢掉整页里判定为ルビ的词条。返回保留下来的数组（**不**把它们并进正文：读音没有
    * 翻译价值，并进去只会污染原文）。`words` 是已过尺寸/分数门槛的词条数组。
@@ -155,10 +210,11 @@ export function installOcrRuby(runtime) {
         return;
       }
       const median = isVertical ? medianVertical : medianHorizontal;
-      if (!(median > 0) || entry.thickness > median * RUBY_MAX_GLYPH_RATIO) {
+      const maxGlyphRatio = engine === "manga_ocr" ? RUBY_MAX_GLYPH_RATIO_MANGA_OCR : RUBY_MAX_GLYPH_RATIO;
+      if (!(median > 0) || entry.thickness > median * maxGlyphRatio) {
         return;
       }
-      const host = findRubyHost(entry, isVertical ? vertical : horizontal, isVertical);
+      const host = findRubyHost(entry, isVertical ? vertical : horizontal, isVertical, engine);
       if (!host) {
         return;
       }

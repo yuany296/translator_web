@@ -260,13 +260,16 @@ export function installOcrLines(runtime) {
     if (!geometry) return false;
     const sharedSpeechBubble = runtime.shareUnifiedSpeechBubbleContainer(left, right);
     const heightRatio = Math.min(geometry.left.height, geometry.right.height) / Math.max(geometry.left.height, geometry.right.height);
-    if (heightRatio < 0.65 && !sharedSpeechBubble) {
+    // 0.5 而不是 0.65：列拆分产出的正文列（18~20px）天然比未拆的邻列（26~32px）细，
+    // 同一气泡内的厚薄比会落到 0.56~0.74；ルビ已被上游过滤，这里再卡 0.65 只会拆散气泡。
+    if (heightRatio < 0.5 && !sharedSpeechBubble) {
       return false;
     }
 
-    // Chat pattern rejection: small text above large text (e.g., username above message body)
-    // When the upper box is significantly smaller, vertically close, and horizontally overlapping
-    if (!sharedSpeechBubble && rotationDelta < 3.5 && heightRatio < 1 / runtime.CHAT_PARAGRAPH_HEIGHT_RATIO_MAX) {
+    // 「上小下大」是横排聊天 UI 的版式特征；竖排列在投影后任意两列都有先后关系、
+    // 相邻列的 lineGap 又天然很小，这个拒并门会把同气泡的竖排列全部拆散。
+    const horizontalText = Math.abs(runtime.normalizeRotationDegrees(geometry.rotation)) < 45;
+    if (!sharedSpeechBubble && horizontalText && rotationDelta < 3.5 && heightRatio < 1 / runtime.CHAT_PARAGRAPH_HEIGHT_RATIO_MAX) {
       const chatAvgHeight = Math.max(1, (geometry.left.height + geometry.right.height) / 2);
       const upperAboveLower = geometry.left.centerY < geometry.right.centerY;
       const chatOverlapRatio = geometry.inlineOverlap / Math.max(1, Math.min(geometry.left.width, geometry.right.width));
@@ -276,6 +279,18 @@ export function installOcrLines(runtime) {
     }
     const avgHeight = Math.max(1, (geometry.left.height + geometry.right.height) / 2);
     const verticalGap = geometry.lineGap;
+    // 竖排「阶梯错位」拒绝：同一气泡的正文列顶端对齐（读序起点差 ≈ 0），而相邻两个
+    // 气泡的列起点错位接近一个列厚（真案例：んん?なんだ…田村か? × 血液が不要…??、
+    // 田村あー!! × 俺が死んだら・・，错位 60~123px）。只对**双方都不是全假名**的列
+    // 生效——ruby 读音与宿主的自然错位有半列长，全假名列豁免。
+    if (!horizontalText) {
+      const startOffset = Math.abs(left.box.top - right.box.top);
+      const minThickness = Math.min(geometry.left.height, geometry.right.height);
+      const bothMainText = !runtime.isKanaOnlyOcrText(String(left.text || "")) && !runtime.isKanaOnlyOcrText(String(right.text || ""));
+      if (bothMainText && startOffset > minThickness * 1.2) {
+        return false;
+      }
+    }
     const hasChatTimestamp = runtime.CHAT_TIME_RE.test(String(left.text || "")) || runtime.CHAT_TIME_RE.test(String(right.text || ""));
     const chatMetaGap = geometry.inlineGap;
     if (hasChatTimestamp && heightRatio >= 0.75 && verticalGap <= avgHeight * 0.35 && chatMetaGap <= avgHeight * 2.4) {
@@ -302,98 +317,4 @@ export function installOcrLines(runtime) {
     return widthRatio >= 0.35 || leftAligned || rightAligned || centerClose;
   }
   runtime.shouldMergeLocalPaddleParagraphLines = shouldMergeLocalPaddleParagraphLines;
-  function areLocalPaddleRegionsCompatible(left, right) {
-    const leftContainer = left && left.container;
-    const rightContainer = right && right.container;
-    if (!leftContainer || !rightContainer) {
-      return true;
-    }
-    if (leftContainer.id === rightContainer.id) {
-      return true;
-    }
-    if (runtime.areUnifiedLocalPaddleSpeechBubbleContainers(leftContainer, rightContainer)) {
-      return true;
-    }
-    if (leftContainer.type === "caption_panel" && rightContainer.type === "caption_panel") {
-      return true;
-    }
-    return runtime.areNestedLocalPaddleRegionFragments(left, right);
-  }
-  runtime.areLocalPaddleRegionsCompatible = areLocalPaddleRegionsCompatible;
-  function areNestedLocalPaddleRegionFragments(left, right) {
-    const leftContainer = left && left.container;
-    const rightContainer = right && right.container;
-    if (!leftContainer || !rightContainer || !leftContainer.box || !rightContainer.box) {
-      return false;
-    }
-    const leftType = String(leftContainer.type || "").toLowerCase();
-    const rightType = String(rightContainer.type || "").toLowerCase();
-    const isCaptionSpeechPair = leftType === "caption_panel" && rightType === "speech_bubble" || leftType === "speech_bubble" && rightType === "caption_panel";
-    if (!isCaptionSpeechPair) {
-      return false;
-    }
-    if (Number(leftContainer.confidence || 0) < 0.75 || Number(rightContainer.confidence || 0) < 0.75) {
-      return false;
-    }
-    if (runtime.rotationDistance(left.rotation, right.rotation) > 4) {
-      return false;
-    }
-    const leftBox = left.box;
-    const rightBox = right.box;
-    const avgHeight = Math.max(1, (leftBox.height + rightBox.height) / 2);
-    const heightRatio = Math.min(leftBox.height, rightBox.height) / Math.max(leftBox.height, rightBox.height);
-    const verticalOverlap = Math.max(0, Math.min(leftBox.bottom, rightBox.bottom) - Math.max(leftBox.top, rightBox.top));
-    if (heightRatio < 0.78 || verticalOverlap < Math.min(leftBox.height, rightBox.height) * 0.7 || Math.abs(leftBox.bottom - rightBox.bottom) > avgHeight * 0.25 || runtime.getHorizontalGap(leftBox, rightBox) > avgHeight * 0.35) {
-      return false;
-    }
-    const leftRegion = leftContainer.box;
-    const rightRegion = rightContainer.box;
-    const overlapWidth = Math.max(0, Math.min(leftRegion.right, rightRegion.right) - Math.max(leftRegion.left, rightRegion.left));
-    const overlapHeight = Math.max(0, Math.min(leftRegion.bottom, rightRegion.bottom) - Math.max(leftRegion.top, rightRegion.top));
-    const overlapArea = overlapWidth * overlapHeight;
-    const leftArea = Math.max(1, leftRegion.width * leftRegion.height);
-    const rightArea = Math.max(1, rightRegion.width * rightRegion.height);
-    const smallerArea = Math.min(leftArea, rightArea);
-    const largerArea = Math.max(leftArea, rightArea);
-    if (overlapArea / smallerArea < 0.85 || smallerArea / largerArea > 0.55) {
-      return false;
-    }
-    return runtime.getLocalPaddleRegionColorDistance(leftContainer.color, rightContainer.color) <= 24;
-  }
-  runtime.areNestedLocalPaddleRegionFragments = areNestedLocalPaddleRegionFragments;
-  function getLocalPaddleRegionColorDistance(left, right) {
-    const parse = value => {
-      const match = String(value || "").trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
-      if (!match) {
-        return null;
-      }
-      const hex = match[1].length === 3 ? Array.from(match[1], char => char + char).join("") : match[1];
-      return [0, 2, 4].map(offset => Number.parseInt(hex.slice(offset, offset + 2), 16));
-    };
-    const leftRgb = parse(left);
-    const rightRgb = parse(right);
-    if (!leftRgb || !rightRgb) {
-      return Infinity;
-    }
-    return Math.hypot(leftRgb[0] - rightRgb[0], leftRgb[1] - rightRgb[1], leftRgb[2] - rightRgb[2]);
-  }
-  runtime.getLocalPaddleRegionColorDistance = getLocalPaddleRegionColorDistance;
-  function areLocalPaddleLineRegionsCompatible(left, right) {
-    return left.entries.some(leftEntry => right.entries.some(rightEntry => runtime.areLocalPaddleRegionsCompatible(leftEntry, rightEntry)));
-  }
-  runtime.areLocalPaddleLineRegionsCompatible = areLocalPaddleLineRegionsCompatible;
-  function areLocalPaddleScriptsCompatible(leftText, rightText) {
-    const leftHangul = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/.test(leftText);
-    const rightHangul = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/.test(rightText);
-    const leftHan = /[\u3400-\u9fff]/.test(leftText);
-    const rightHan = /[\u3400-\u9fff]/.test(rightText);
-    return !(leftHangul && rightHan && !rightHangul || rightHangul && leftHan && !leftHangul);
-  }
-
-  /**
-   * Auto-detect chat/forum region type from a group of OCR entries.
-   * Returns "chat" if the entries exhibit chat-like patterns (timestamps,
-   * small-above-large stacking, left alignment, regular arrangement), or null.
-   */
-  runtime.areLocalPaddleScriptsCompatible = areLocalPaddleScriptsCompatible;
 }

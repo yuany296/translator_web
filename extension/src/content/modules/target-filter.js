@@ -32,6 +32,15 @@ export function installTargetFilter(runtime) {
       });
       return false;
     }
+    // complete=true 也可能是加载失败（naturalWidth=0）：这种图送 OCR 只会得到空结果，
+    // 还会被写成“无文字”终态。等真正的 load 事件后再处理。
+    if (target instanceof HTMLImageElement && target.complete && !target.naturalWidth && !target.naturalHeight
+      && !runtime.isDataUrl(target.currentSrc || target.src || "")) {
+      runtime.debugTargetFilter("image decode empty", {
+        src: (target.currentSrc || target.src || '').slice(0, 60)
+      });
+      return false;
+    }
     const rect = target.getBoundingClientRect();
     if (rect.width <= 1 || rect.height <= 1) {
       return false;

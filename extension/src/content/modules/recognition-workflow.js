@@ -6,6 +6,7 @@ export function installRecognitionWorkflow(runtime) {
         ? await runtime.kakaoCanonicalPipeline.runCached(target, null, options)
         : await runtime.kakaoCanonicalPipeline.run(target, options);
       if (result?.ok) {
+        runtime.clearOcrServiceFault?.();
         const timings = result.timings && typeof result.timings === "object" ? result.timings : null;
         if (timings) {
           // total 是墙钟时间：与各阶段之和的差额就是没有单独打点的等待
@@ -121,7 +122,8 @@ export function installRecognitionWorkflow(runtime) {
         }
         return { ok: false, skipped: true, reason };
       }
-      if (!runtime.CONTEXT_INVALIDATED_RE.test(reason)) {
+      const faultNoted = runtime.noteOcrServiceFault?.(reason) === true;
+      if (!faultNoted && !runtime.CONTEXT_INVALIDATED_RE.test(reason)) {
         await runtime.reportStatus("error", reason, {
           reason: options.reason,
           targetTag: target.tagName.toLowerCase()

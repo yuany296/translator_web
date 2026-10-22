@@ -167,32 +167,22 @@ export function installCapturePayload(runtime) {
 
     // 覆盖层挂在 document 根节点，默认不会继承目标祖先的 overflow 裁剪。
     // 因此可见矩形必须显式与每个滚动/裁剪祖先求交，横向推荐列表尤其依赖这一点。
-    let ancestor = target && target.parentElement;
-    while (ancestor) {
-      let style = null;
-      try {
-        style = getComputedStyle(ancestor);
-      } catch {
-        style = null;
+    // 祖先链（及其 overflow 标记）按 target 缓存——这个函数被覆盖层逐帧调用，
+    // 每次重走全链 getComputedStyle 会把主线程烧穿。矩形本身仍逐次现取。
+    for (const clip of (runtime.collectClipAncestors?.(target) || [])) {
+      const clipRect = clip.element.getBoundingClientRect();
+      const clipLeft = Number(clipRect.left || 0);
+      const clipTop = Number(clipRect.top || 0);
+      const clipRight = Number.isFinite(Number(clipRect.right)) ? Number(clipRect.right) : clipLeft + Number(clipRect.width || 0);
+      const clipBottom = Number.isFinite(Number(clipRect.bottom)) ? Number(clipRect.bottom) : clipTop + Number(clipRect.height || 0);
+      if (clip.clipX && clipRight > clipLeft) {
+        left = Math.max(left, clipLeft);
+        right = Math.min(right, clipRight);
       }
-      const clipX = /^(?:auto|scroll|hidden|clip)$/.test(String(style && style.overflowX || ""));
-      const clipY = /^(?:auto|scroll|hidden|clip)$/.test(String(style && style.overflowY || ""));
-      if ((clipX || clipY) && typeof ancestor.getBoundingClientRect === "function") {
-        const ancestorRect = ancestor.getBoundingClientRect();
-        const ancestorLeft = Number(ancestorRect.left || 0);
-        const ancestorTop = Number(ancestorRect.top || 0);
-        const ancestorRight = Number.isFinite(Number(ancestorRect.right)) ? Number(ancestorRect.right) : ancestorLeft + Number(ancestorRect.width || 0);
-        const ancestorBottom = Number.isFinite(Number(ancestorRect.bottom)) ? Number(ancestorRect.bottom) : ancestorTop + Number(ancestorRect.height || 0);
-        if (clipX && ancestorRight > ancestorLeft) {
-          left = Math.max(left, ancestorLeft);
-          right = Math.min(right, ancestorRight);
-        }
-        if (clipY && ancestorBottom > ancestorTop) {
-          top = Math.max(top, ancestorTop);
-          bottom = Math.min(bottom, ancestorBottom);
-        }
+      if (clip.clipY && clipBottom > clipTop) {
+        top = Math.max(top, clipTop);
+        bottom = Math.min(bottom, clipBottom);
       }
-      ancestor = ancestor.parentElement;
     }
     const width = right - left;
     const height = bottom - top;
@@ -210,9 +200,16 @@ export function installCapturePayload(runtime) {
   async function withOverlayLayerHidden(callback) {
     const overlayLayer = runtime.state.overlayLayer;
     const floatingBallWrap = runtime.state.floatingBallWrap;
-    const markedOverlays = Array.from(document.querySelectorAll("[data-manga-translator-overlay]"));
-    const shouldHideOverlay = overlayLayer && overlayLayer.isConnected;
-    const shouldHideBall = floatingBallWrap && floatingBallWrap.isConnected;
+    // 截图会互相并发（页级 OCR 与接缝 OCR 同时跑），**只有最外层那次**留快照并还原：
+    // 内层若照自己的快照还原，会把它开始时看到的 "hidden"（外层设的）写回去，
+    // 而它结束得更晚 —— 覆盖层节点于是永久停在 visibility: hidden。现场（KakaoPage）：
+    // 跨页气泡的 `.mt-cover-segment` 是**复用节点**，之后每次渲染都不再碰 visibility，
+    // 于是"白底盖板在 DOM 里、位置也对，就是看不见"（用户「还是没有」）。
+    const outermost = (Number(runtime.state.captureHideDepth) || 0) === 0;
+    runtime.state.captureHideDepth = (Number(runtime.state.captureHideDepth) || 0) + 1;
+    const markedOverlays = outermost ? Array.from(document.querySelectorAll("[data-manga-translator-overlay]")) : [];
+    const shouldHideOverlay = outermost && overlayLayer && overlayLayer.isConnected;
+    const shouldHideBall = outermost && floatingBallWrap && floatingBallWrap.isConnected;
     const previousFloatingVisibility = shouldHideBall ? floatingBallWrap.style.visibility : "";
     const previousMarkedVisibility = markedOverlays.map(node => ({
       node,
@@ -234,6 +231,7 @@ export function installCapturePayload(runtime) {
     try {
       return await callback();
     } finally {
+      runtime.state.captureHideDepth = Math.max(0, (Number(runtime.state.captureHideDepth) || 0) - 1);
       if (shouldHideOverlay) {
         runtime.state.overlayHideDepth = Math.max(0, runtime.state.overlayHideDepth - 1);
         if (runtime.state.overlayHideDepth === 0) {

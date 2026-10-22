@@ -220,6 +220,53 @@ export function installReaderInit(runtime) {
     }
   }
   runtime.bindViewportSync = bindViewportSync;
+  // 裁剪祖先链缓存：getVisibleViewportRect 被覆盖层逐帧调用，逐次重走全链
+  // getComputedStyle 是主要开销（整章几十片时能把主线程烧穿）。链本身很少变，
+  // 缓存 1 秒或父节点/连接状态变化时失效；矩形仍由调用方逐次现取。
+  const clipAncestorCache = new WeakMap();
+  function collectClipAncestors(target) {
+    const parent = target && target.parentElement;
+    if (!parent) return [];
+    const cached = clipAncestorCache.get(target);
+    if (cached && cached.parent === parent && performance.now() - cached.at < 1000 &&
+        cached.entries.every(entry => entry.element.isConnected)) {
+      return cached.entries;
+    }
+    const entries = [];
+    let ancestor = parent;
+    while (ancestor) {
+      let style = null;
+      try {
+        style = getComputedStyle(ancestor);
+      } catch {
+        style = null;
+      }
+      const clipX = /^(?:auto|scroll|hidden|clip)$/.test(String(style && style.overflowX || ""));
+      const clipY = /^(?:auto|scroll|hidden|clip)$/.test(String(style && style.overflowY || ""));
+      if (clipX || clipY) entries.push({ element: ancestor, clipX, clipY });
+      ancestor = ancestor.parentElement;
+    }
+    clipAncestorCache.set(target, { parent, at: performance.now(), entries });
+    return entries;
+  }
+  runtime.collectClipAncestors = collectClipAncestors;
+  // 远离视口的覆盖层：可见性矩形要沿祖先链算 overflow 裁剪，先做一个只依赖
+  // 目标矩形的廉价判据把绝大多数离屏覆盖层挡掉（隐藏语义与"不在视口"一致）。
+  function hideOverlayWhenFarFromViewport(overlayState, rect) {
+    if (!overlayState || !overlayState.root || !rect) return false;
+    const left = Number(rect.left) || 0;
+    const top = Number(rect.top) || 0;
+    const right = Number.isFinite(Number(rect.right)) ? Number(rect.right) : left + (Number(rect.width) || 0);
+    const bottom = Number.isFinite(Number(rect.bottom)) ? Number(rect.bottom) : top + (Number(rect.height) || 0);
+    const margin = Math.max(window.innerWidth, window.innerHeight) || 0;
+    const near = bottom > -margin && top < window.innerHeight + margin &&
+      right > -margin && left < window.innerWidth + margin;
+    if (near) return false;
+    overlayState.root.style.display = "none";
+    overlayState.root.style.removeProperty("clip-path");
+    return true;
+  }
+  runtime.hideOverlayWhenFarFromViewport = hideOverlayWhenFarFromViewport;
   function overlayFrameSyncTick() {
     runtime.state.overlayFrameRaf = 0;
     if (runtime.state.invalidated) {

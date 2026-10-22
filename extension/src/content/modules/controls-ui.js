@@ -59,8 +59,10 @@ export function installControlsUi(runtime) {
     }
     const layer = runtime.ensureOverlayLayer();
     runtime.reattachOverlayRoots(layer);
-    if (runtime.state.overlayHideDepth === 0 && layer && layer.style.visibility === "hidden") {
-      layer.style.visibility = runtime.state.overlayPreviousVisibility || "";
+    if (runtime.state.overlayHideDepth === 0) {
+      // 逐层复位（不只是主图层）：任一图层被截图/异常留在 hidden 都要自愈。
+      // 旧的 depth>0 守卫与 setOverlayLayerVisibility 的死代码组合会让图层永久隐藏。
+      runtime.restoreOverlayLayers?.(true);
       runtime.state.overlayPreviousVisibility = "";
     }
     if (!runtime.state.floatingBallWrap || !runtime.state.floatingBallWrap.isConnected) {
@@ -77,24 +79,6 @@ export function installControlsUi(runtime) {
     runtime.updateFloatingBallState();
   }
   runtime.ensureExtensionUiMounted = ensureExtensionUiMounted;
-  function getOverlayLayerVisibility() {
-    if (runtime.state.overlayHideDepth > 0) return false;
-    // 多图层：任一图层被隐藏（例如截图前统一隐藏）就算整体不可见。
-    let hidden = false;
-    runtime.forEachOverlayLayerUi(layer => { if (layer && layer.style && layer.style.visibility === "hidden") hidden = true; });
-    return !hidden;
-  }
-  runtime.getOverlayLayerVisibility = getOverlayLayerVisibility;
-  function setOverlayLayerVisibility(visible) {
-    const depth = runtime.state.overlayHideDepth;
-    runtime.state.overlayHideDepth = visible ? Math.max(0, depth - 1) : depth + 1;
-    runtime.forEachOverlayLayerUi(layer => {
-      if (!layer || !layer.style) return;
-      if (runtime.state.overlayHideDepth === 0) layer.style.visibility = "";
-      else if (visible && depth === 0) layer.style.visibility = "hidden";
-    });
-  }
-  runtime.setOverlayLayerVisibility = setOverlayLayerVisibility;
   function stopExtensionUiEvent(event) {
     if (!event) return;
     event.preventDefault();

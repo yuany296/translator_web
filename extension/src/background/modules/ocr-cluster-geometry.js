@@ -175,6 +175,14 @@ export function installOcrClusterGeometry(runtime) {
     return leftTall && rightTall && Math.abs(leftBox.centerX - rightBox.centerX) <= avgWidth * 1.35;
   }
   runtime.isLocalPaddleVerticalPair = isLocalPaddleVerticalPair;
+  function inferLocalPaddleClusterOrientation(cluster) {
+    const entries = Array.isArray(cluster) ? cluster : [];
+    const vertical = entries
+      .map(entry => Number(entry && entry.item && entry.item.orientation_applied) || 0)
+      .filter(value => Math.abs(value) === 90);
+    return vertical.length > 0 && vertical.length * 2 > entries.length ? vertical[0] : 0;
+  }
+  runtime.inferLocalPaddleClusterOrientation = inferLocalPaddleClusterOrientation;
   function mergeLocalPaddleCluster(cluster, imageSize, imageAnalysis, regionType = "") {
     if (!Array.isArray(cluster) || cluster.length === 0) {
       return null;
@@ -242,6 +250,11 @@ export function installOcrClusterGeometry(runtime) {
     merged.nonTranslate = cluster.nonTranslate === true && !runtime.normalizeChatTranslationRole(translationRole);
     merged.memberRegionIds = [...new Set(cluster.flatMap(entry => Array.isArray(entry && entry.item && entry.item.member_region_ids) ? entry.item.member_region_ids : [entry && entry.item && entry.item.region_id]).map(String).filter(Boolean))];
     merged.detectedRegions = cluster.map(entry => entry && entry.item && entry.item.detected_region).filter(Boolean);
+    const orientationApplied = runtime.inferLocalPaddleClusterOrientation(cluster);
+    merged.orientation_applied = orientationApplied;
+    if (Math.abs(orientationApplied) === 90) {
+      merged.writing_mode = "vertical";
+    }
     return merged;
   }
   runtime.mergeLocalPaddleCluster = mergeLocalPaddleCluster;

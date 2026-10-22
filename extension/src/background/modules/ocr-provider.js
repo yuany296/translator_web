@@ -119,6 +119,7 @@ export function installOcrProvider(runtime) {
           text_det_box_thresh: runtime.normalizeLocalOcrNumber(params && params.text_det_box_thresh, runtime.DEFAULT_LOCAL_OCR_DET_BOX_THRESH),
           text_det_unclip_ratio: runtime.normalizeLocalOcrNumber(params && params.text_det_unclip_ratio, runtime.DEFAULT_LOCAL_OCR_DET_UNCLIP_RATIO),
           text_rec_score_thresh: runtime.normalizeLocalOcrNumber(params && params.text_rec_score_thresh, 0),
+          rec_engine: String(params && params.rec_engine || ""),
           debug: debug === true,
           debug_id: debugId || "",
           ocr_geometry_version: runtime.LOCAL_OCR_GEOMETRY_VERSION,
@@ -134,7 +135,7 @@ export function installOcrProvider(runtime) {
         timeoutMessage: "本地 OCR 服务请求超时，请确认 local-ocr-service 正在运行"
       });
       if (!response.ok) {
-        const message = payload && payload.error ? payload.error : `${response.status} ${response.statusText}`;
+        const message = payload && (payload.error || payload.detail) ? payload.error || payload.detail : `${response.status} ${response.statusText}`;
         throw new Error(`Local OCR request failed: ${message}`);
       }
       if (!payload || typeof payload !== "object") {
@@ -180,7 +181,10 @@ export function installOcrProvider(runtime) {
     let words = sourceItems.map(item => runtime.normalizeLocalPaddleOcrItem(item, ocrImageSize)).filter(Boolean).filter((item, index) => runtime.keepOrTraceOcrWord(item, ocrImageSize, ocrTuning, ocrDebug, index, "local_paddle"));
     // ルビ（振り仮名）必须在**聚类之前**整条丢掉：并进正文会把一句正常台词翻成乱码
     // （「あしたもと」+「明日地元」→「明日元,明天是本地。」），留着又会各自多一个气泡。
-    words = runtime.filterRubyAnnotationWords(words, ocrImageSize, ocrDebug, "local_paddle");
+    // manga-ocr 的列框几何与 paddle 不同（ Confidence 普遍更高，ruby 列能活到过滤面前），
+    // 粗细阈值按引擎分开：manga_ocr 0.9 / paddle 0.8。
+    const rubyEngine = options?.recEngine === "manga_ocr" ? "manga_ocr" : "local_paddle";
+    words = runtime.filterRubyAnnotationWords(words, ocrImageSize, ocrDebug, rubyEngine);
     words = await runtime.repairLowConfidenceLocalPaddleWordsWithVision(words, dataUrl, ocrImageSize, visionOcrOptions, debug);
     const imageAnalysis = await runtime.analyzeLocalOcrImage(dataUrl, ocrImageSize);
     // 跨图窗口聚类全部 OCR 行；归属判断统一由 content.js 在 mapKakaoStitchedResult() 中处理。
@@ -268,7 +272,8 @@ export function installOcrProvider(runtime) {
     if (!runtime.shouldUseVisionCropOcr(options) || !Array.isArray(words) || words.length === 0) {
       return words;
     }
-    const groups = runtime.buildVisionCropOcrGroups(words, imageSize).slice(0, 8);
+    const lang = String(options.lang || "korean");
+    const groups = runtime.buildVisionCropOcrGroups(words, imageSize, lang).slice(0, 8);
     if (groups.length === 0) {
       return words;
     }
@@ -292,9 +297,10 @@ export function installOcrProvider(runtime) {
           apiKey: options.apiKey,
           baseUrl: options.baseUrl,
           model: options.model,
-          requestTimeoutMs: Math.min(runtime.VISION_OCR_REQUEST_TIMEOUT_MS, remainingMs)
+          requestTimeoutMs: Math.min(runtime.VISION_OCR_REQUEST_TIMEOUT_MS, remainingMs),
+          lang
         });
-        if (!runtime.isUsableVisionCropOcrText(recognized)) {
+        if (!runtime.isUsableVisionCropOcrText(recognized, lang)) {
           continue;
         }
         group.forEach(entry => usedIndexes.add(entry.index));

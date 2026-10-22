@@ -147,6 +147,8 @@ test("Korean source text stays horizontal after translation even in a tall rotat
   assert.equal(runtime.__test.shouldUseVerticalJapaneseLayout(node, "这不就是小嘛！"), false);
   node.dataset.rotationDeg = "-89";
   assert.equal(runtime.__test.shouldUseVerticalJapaneseLayout(node, "竖排文字"), false);
+  node.dataset.writingMode = "vertical";
+  assert.equal(runtime.__test.shouldUseVerticalJapaneseLayout(node, "竖排文字"), true);
 });
 test("Kakao page identity ignores CDN signing changes but tracks actual image bytes", async () => {
   const target = new globalThis.HTMLImageElement();

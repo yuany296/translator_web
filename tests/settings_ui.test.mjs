@@ -106,7 +106,7 @@ test("quick popup contains only high-frequency controls", () => {
   assert.match(html, /id="translateBtn"/);
   assert.match(html, /id="settingsBtn"/);
   assert.doesNotMatch(html, /API Key|Provider|配对码|id="clearCacheBtn"|id="glossaryBtn"|id="translationLibraryBtn"/);
-  assert.match(read("extension", "public", "popup.html"), /url=quick-popup\.html/);
+  assert.equal(fs.existsSync(path.join(root, "extension", "public", "popup.html")), false, "legacy popup.html must stay deleted");
   const lifecycle = read("extension", "src", "content", "modules", "lifecycle-bubble.js");
   const embedded = read("extension", "src", "content", "modules", "renderer-embed.js");
   assert.match(lifecycle, /state\.displayMode === "bilingual"/);

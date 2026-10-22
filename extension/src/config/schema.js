@@ -20,7 +20,9 @@ export const DEFAULT_OCR_CONFIG = Object.freeze({
   baidu: { apiKey: "", secretKey: "" },
   localPaddle: {
     baseUrl: "http://127.0.0.1:8765", lang: "auto", mode: "fast", debug: false,
-    detThresh: 0.3, detBoxThresh: 0.6, detUnclipRatio: 1.2
+    detThresh: 0.3, detBoxThresh: 0.6, detUnclipRatio: 1.2,
+    // 日文识别引擎：manga-ocr 在竖排/ルビ/多列混读上全面优于 PP-OCR（实测三类残留全破）。
+    recEngine: "manga_ocr"
   },
   tuning: {
     confidenceThreshold: 0.72, minBoxArea: 36, maxBoxArea: 0.35,
@@ -38,7 +40,7 @@ export const DEFAULT_TRANSLATION_CONFIG = Object.freeze({
   apiKey: "",
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-chat",
-  sourceLanguage: "auto",
+  sourceLanguage: languages.DEFAULT_SOURCE_LANGUAGE,
   targetLanguage: "zh-CN",
   // 思考模式：auto = 不发送任何参数（与服务商默认一致，也是升级前的行为）。
   // 选 off/on 才会往请求体里加 thinking / enable_thinking，见 shared/thinking-mode.js。
@@ -49,6 +51,14 @@ export const DEFAULT_TRANSLATION_CONFIG = Object.freeze({
 // followTranslation 供旧存档解析，旧的自有字段在迁移后清空即表示「没有可用 AI 服务」。
 // thinkingMode 由配置库条目下发（见 config/vendors.js#overlayVendorEntry）：提取也是机械任务，
 // 思考同样白花钱，所以它跟着用户选的那条配置走，不单独再给一个开关。
+export const TERM_EXTRACTION_ENGINES = Object.freeze({ AUTO: "auto", LOCAL: "local", AI: "ai" });
+
+/** 整章提取走哪条路：auto=有可用 AI 配置就用 AI、否则本地；local=强制不发 AI；ai=强制 AI（没配好就跳过并说明）。 */
+export function normalizeTermExtractionEngine(value) {
+  return value === TERM_EXTRACTION_ENGINES.LOCAL || value === TERM_EXTRACTION_ENGINES.AI
+    ? value : TERM_EXTRACTION_ENGINES.AUTO;
+}
+
 export const DEFAULT_TERM_EXTRACTION_CONFIG = Object.freeze({
   provider: "",
   apiKey: "",
@@ -56,7 +66,9 @@ export const DEFAULT_TERM_EXTRACTION_CONFIG = Object.freeze({
   model: "qwen2.5:7b",
   vendor: "",
   followTranslation: true,
-  thinkingMode: "auto"
+  thinkingMode: "auto",
+  // 默认 auto = 老存档（没有这个字段）与改动前逐字一致，不会把已配 AI 的人突然切到本地。
+  engine: "auto"
 });
 
 export const DEFAULT_SENTENCE_EXTRACTION_CONFIG = Object.freeze({
@@ -129,7 +141,8 @@ export function normalizeOcrConfig(value = {}) {
       debug: local.debug === true,
       detThresh: numberIn(local.detThresh, 0.01, 0.99, 0.3),
       detBoxThresh: numberIn(local.detBoxThresh, 0.01, 0.99, 0.6),
-      detUnclipRatio: numberIn(local.detUnclipRatio, 1, 5, 1.2)
+      detUnclipRatio: numberIn(local.detUnclipRatio, 1, 5, 1.2),
+      recEngine: ["paddle", "manga_ocr"].includes(local.recEngine) ? local.recEngine : "manga_ocr"
     },
     tuning: {
       confidenceThreshold: numberIn(tuning.confidenceThreshold, 0, 1, 0.72),
@@ -151,7 +164,10 @@ export function normalizeOcrConfig(value = {}) {
 }
 
 export function normalizeTranslationConfig(value = {}) {
-  const sourceLanguage = languages.normalizeSourceLanguage(value.sourceLanguage);
+  // 存储边界唯一迁移点：「自动识别（auto）」已从设置里移除，存档里的 auto（含脏值
+  // 归一化回落）在这里改写为默认语言。auto 之后只是内部哨兵，不再是一个可保存的选项。
+  const normalizedSourceLanguage = languages.normalizeSourceLanguage(value.sourceLanguage);
+  const sourceLanguage = normalizedSourceLanguage === "auto" ? languages.DEFAULT_SOURCE_LANGUAGE : normalizedSourceLanguage;
   const targetLanguage = languages.normalizeTargetLanguage(value.targetLanguage);
   const provider = llmProviders.getProvider(value.provider)
     ? value.provider
@@ -225,7 +241,11 @@ function normalizePerProviderValues(value, provider, legacy) {
 }
 
 export function normalizeTermExtractionConfig(value = {}) {
-  return normalizeLlmExtractionConfig(value, DEFAULT_TERM_EXTRACTION_CONFIG);
+  return {
+    ...normalizeLlmExtractionConfig(value, DEFAULT_TERM_EXTRACTION_CONFIG),
+    // 只挂整章提取；句子级提取共用 normalizeLlmExtractionConfig，但不认这个字段。
+    engine: normalizeTermExtractionEngine(value.engine)
+  };
 }
 
 export function normalizeSentenceExtractionConfig(value = {}) {

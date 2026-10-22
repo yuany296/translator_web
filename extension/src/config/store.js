@@ -311,6 +311,7 @@ export function toLegacySettings(config) {
     localOcrBaseUrl: local.baseUrl,
     localOcrLang: languages.translationLanguageToOcrLanguage(translation.sourceLanguage),
     localOcrMode: local.mode,
+    localOcrRecEngine: local.recEngine,
     localOcrDetThresh: local.detThresh, localOcrDetBoxThresh: local.detBoxThresh,
     localOcrDetUnclipRatio: local.detUnclipRatio, localOcrDebug: local.debug,
     ocrConfidenceThreshold: tuning.confidenceThreshold, ocrMinBoxArea: tuning.minBoxArea,

@@ -67,14 +67,13 @@ function fill(configuration) {
   byId("targetLanguage").value = translation.targetLanguage;
   document.querySelector(`input[name='displayMode'][value='${runtime.displayMode}']`).checked = true;
   [
-    ["ocrProvider", ocr.provider], ["ocrBaseUrl", ocr.localPaddle.baseUrl], ["ocrMode", ocr.localPaddle.mode], ["detThresh", ocr.localPaddle.detThresh],
-    ["detBoxThresh", ocr.localPaddle.detBoxThresh], ["detUnclipRatio", ocr.localPaddle.detUnclipRatio], ["baiduAk", ocr.baidu.apiKey], ["baiduSk", ocr.baidu.secretKey],
-    ["confidenceThreshold", ocr.tuning.confidenceThreshold], ["minBoxArea", ocr.tuning.minBoxArea], ["maxBoxArea", ocr.tuning.maxBoxArea], ["minBoxWidth", ocr.tuning.minBoxWidth],
-    ["minBoxHeight", ocr.tuning.minBoxHeight], ["maxAspectRatio", ocr.tuning.maxAspectRatio], ["mergeLineGap", ocr.tuning.mergeLineGap], ["visionKey", ocr.visionRepair.apiKey],
+    ["ocrProvider", ocr.provider], ["ocrBaseUrl", ocr.localPaddle.baseUrl], ["ocrMode", ocr.localPaddle.mode], ["ocrRecEngine", ocr.localPaddle.recEngine],
+    ["baiduAk", ocr.baidu.apiKey], ["baiduSk", ocr.baidu.secretKey],
+    ["visionKey", ocr.visionRepair.apiKey],
     ["visionUrl", ocr.visionRepair.baseUrl], ["visionModel", ocr.visionRepair.model]
   ].forEach(([id, v]) => { byId(id).value = v; });
   [
-    ["ocrDebug", ocr.localPaddle.debug], ["novelImageMergeLines", ocr.tuning.novelImageMergeLines], ["visionEnabled", ocr.visionRepair.enabled],
+    ["ocrDebug", ocr.localPaddle.debug], ["visionEnabled", ocr.visionRepair.enabled],
     ["showBall", runtime.showBall], ["ignoreSimplifiedChinese", runtime.ignoreSimplifiedChinese]
   ].forEach(([id, v]) => { byId(id).checked = v === true; });
   [
@@ -137,7 +136,9 @@ let configuration = null;
 const serviceSelection = installServiceSelection({
   byId, checked, send, saveSection, setStatus,
   getConfiguration: () => configuration,
-  requestCreate: prefix => vendorUi?.openWizard("create", { onSaved: name => serviceSelection.assign(prefix, name) })
+  requestCreate: prefix => vendorUi?.openWizard("create", { onSaved: name => serviceSelection.assign(prefix, name) }),
+  // 预热要几十秒，别让它把失败弹到界面上：后台已经在日志里留痕。
+  warmUp: () => send({ type: "WARM_TERM_EXTRACTOR" }).catch(() => undefined)
 });
 
 /** 思考模式不再是这里的一行：它是配置档案条目的字段，随「新建/编辑配置」向导一起填。 */
@@ -164,15 +165,11 @@ function collectOcr() {
     localPaddle: {
       ...configuration.ocr.localPaddle,
       baseUrl: value("ocrBaseUrl"), mode: value("ocrMode"), debug: checked("ocrDebug"),
-      detThresh: numberValue("detThresh"), detBoxThresh: numberValue("detBoxThresh"),
-      detUnclipRatio: numberValue("detUnclipRatio")
+      recEngine: value("ocrRecEngine")
     },
-    tuning: {
-      confidenceThreshold: numberValue("confidenceThreshold"), minBoxArea: numberValue("minBoxArea"),
-      maxBoxArea: numberValue("maxBoxArea"), minBoxWidth: numberValue("minBoxWidth"),
-      minBoxHeight: numberValue("minBoxHeight"), maxAspectRatio: numberValue("maxAspectRatio"),
-      mergeLineGap: numberValue("mergeLineGap"), novelImageMergeLines: checked("novelImageMergeLines")
-    },    visionRepair: {
+    // 检测/筛选调参（detThresh、tuning 等）已不在页面上暴露：透传存储值，归一化仍在 schema 里兜底。
+    tuning: { ...configuration.ocr.tuning },
+    visionRepair: {
       enabled: checked("visionEnabled"), apiKey: value("visionKey"),
       baseUrl: value("visionUrl"), model: value("visionModel")
     }

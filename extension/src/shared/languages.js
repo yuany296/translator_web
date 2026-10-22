@@ -3,6 +3,14 @@ import { hasTraditionalOnlyChar } from "./traditional-chinese.js";
 const SOURCE_LANGUAGES = Object.freeze(["auto", "ko", "ja", "en", "zh-CN", "zh-TW"]);
 const TARGET_LANGUAGES = Object.freeze(["zh-CN", "zh-TW", "en", "ja", "ko"]);
 
+/**
+ * 原文语言的默认值。「自动识别（auto）」已从设置里移除：用户显式选语言，读什么切什么。
+ * auto 仍是**内部哨兵值**（缺配置兜底、resolveSourceLanguage 文本判定的中间值），
+ * 但存储边界（config/schema.js#normalizeTranslationConfig）会把归一化结果为 auto 的
+ * 存档值改写到这里——语义是「迁移默认」，不是「自动检测」。
+ */
+const DEFAULT_SOURCE_LANGUAGE = "en";
+
 const LANGUAGE_NAMES = Object.freeze({
   auto: "auto-detected source language",
   ko: "Korean",
@@ -136,6 +144,7 @@ function resolveSourceLanguage(configured, text = "", recognized = "") {
 export default Object.freeze({
   SOURCE_LANGUAGES,
   TARGET_LANGUAGES,
+  DEFAULT_SOURCE_LANGUAGE,
   LANGUAGE_NAMES,
   LANGUAGE_ALIASES,
   canonicalSourceLanguage,

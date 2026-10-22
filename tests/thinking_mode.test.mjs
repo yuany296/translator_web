@@ -51,8 +51,9 @@ test("normalizeTranslationConfig 收敛 thinkingMode，默认 auto", () => {
   assert.equal(normalizeTranslationConfig({}).thinkingMode, "auto");
   assert.equal(normalizeTranslationConfig({ thinkingMode: "off" }).thinkingMode, "off");
   assert.equal(normalizeTranslationConfig({ thinkingMode: "胡说" }).thinkingMode, "auto");
-  // 换配置档案时语言等字段保留，思考模式也一样（它不在配置库条目里）
-  assert.equal(normalizeTranslationConfig({ provider: "deepseek", thinkingMode: "on" }).sourceLanguage, "auto");
+  // 换配置档案时语言等字段保留，思考模式也一样（它不在配置库条目里）。
+  // 原文语言已无「自动识别」：缺省/存档 auto 在 normalizeTranslationConfig 迁移为默认语言。
+  assert.equal(normalizeTranslationConfig({ provider: "deepseek", thinkingMode: "on" }).sourceLanguage, "en");
 });
 
 // ── 请求体上的实际行为 ──
